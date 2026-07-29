@@ -4876,13 +4876,13 @@ function generateTagihanBulanLalu() {
         return tgl.getMonth() + 1 === bulan && tgl.getFullYear() === tahun;
     });
 
-    // Kelompokkan berdasarkan penjualId (Termasuk SuperAdmin)
+    // Kelompokkan berdasarkan penjualId
     const grouped = {};
     transaksiBulanLalu.forEach(trx => {
         if (!grouped[trx.penjualId]) {
             grouped[trx.penjualId] = {
                 penjualNama: trx.penjualNama,
-                role: 'Toko', // Default role
+                role: 'Toko',
                 totalFee: 0,
                 bukti: []
             };
@@ -4895,19 +4895,47 @@ function generateTagihanBulanLalu() {
     let tagihanBaru = [];
     for (const [sellerId, data] of Object.entries(grouped)) {
         if (data.totalFee === 0) continue;
+
         // Cegah duplikasi tagihan untuk periode yang sama
         const existing = dataTagihan.find(t => t.sellerId === sellerId && t.periode === periode);
         if (!existing) {
+            // --- AMBIL DATA FEE DARI FORM PENAGIHAN (dataPenagihan) ---
+            const penagihanData = dataPenagihan.find(p => p.seller_id === sellerId);
+            
+            let feeSewa, feeKomisi, feeUpload, kuotaGratis, jatuhTempo;
+            if (penagihanData) {
+                feeSewa = penagihanData.fee_sewa;
+                feeKomisi = penagihanData.fee_komisi;
+                feeUpload = penagihanData.fee_upload;
+                kuotaGratis = penagihanData.kuota_gratis;
+                jatuhTempo = penagihanData.jatuh_tempo;
+            } else {
+                // Fallback ke pengaturan global
+                const config = JSON.parse(localStorage.getItem('appFeeConfig')) || {};
+                feeSewa = config.sewaFeeAmount || 10000;
+                feeKomisi = config.appFeePercent || 5.0;
+                feeUpload = config.uploadFeePerImage || 500;
+                kuotaGratis = config.uploadFreeLimit || 5;
+                jatuhTempo = 10;
+            }
+
             tagihanBaru.push({
-                id: 'BILL-' + tahun + String(bulan).padStart(2,'0') + '-' + Date.now(),
+                id: 'BILL-' + tahun + String(bulan).padStart(2, '0') + '-' + Date.now(),
                 sellerId: sellerId,
                 sellerNama: data.penjualNama,
                 role: data.role,
                 periode: periode,
                 totalFee: data.totalFee,
                 status: 'Menunggu Pembayaran',
-                jatuhTempo: new Date(now.getFullYear(), now.getMonth(), 10).toISOString().split('T')[0],
-                bukti: data.bukti
+                jatuhTempo: new Date(now.getFullYear(), now.getMonth(), jatuhTempo).toISOString().split('T')[0],
+                bukti: data.bukti,
+                // Simpan juga data fee untuk referensi
+                feeDetail: {
+                    sewa: feeSewa,
+                    komisi: feeKomisi,
+                    upload: feeUpload,
+                    kuotaGratis: kuotaGratis
+                }
             });
         }
     }
@@ -5089,6 +5117,8 @@ function konfirmasiBayarTagihan(index) {
     if (confirm(`Konfirmasi bahwa tagihan ini sudah dibayar oleh ${dataTagihan[index].sellerNama}?`)) {
         dataTagihan[index].status = 'Lunas';
         saveTagihan();
+        
+        // Jika akun sebelumnya Nonaktif, aktifkan kembali
         const akun = dataAkunAktif.find(a => a.id === dataTagihan[index].sellerId);
         if (akun && akun.status === 'Nonaktif') {
             akun.status = 'Aktif';
