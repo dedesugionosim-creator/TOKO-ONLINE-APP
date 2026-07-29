@@ -4165,7 +4165,7 @@ function updateUploadSimulation() {
 }
 </script>
 <!--- ===== AKHIR BLOK 9.15 ===== --->
-<!--- ===== BLOK 9.16 JavaScript Data Penagihan & Sistem Tagihan ===== --->
+<!--- ===== BLOK 9.16.1 Data Dummy & Penyimpanan Tagihan ===== --->
 <script>
 // ========== DATA PENAGIHAN & TAGIHAN ==========
 
@@ -4207,7 +4207,7 @@ function generateInitialDummyTagihan() {
             sellerNama: akun.nama,
             role: akun.role,
             periode: 'Juli 2026',
-            totalFee: Math.floor(Math.random() * 50000) + 10000, // Fee acak antara 10k - 60k
+            totalFee: Math.floor(Math.random() * 50000) + 10000, // Fee acak
             status: 'Menunggu Pembayaran',
             jatuhTempo: '2026-08-10',
             bukti: dataTransaksiDummy.filter(t => t.penjualId === akun.id)
@@ -4250,16 +4250,118 @@ function generateInitialDummyTagihan() {
     });
     saveTagihan();
 }
+</script>
+<!--- ===== AKHIR BLOK 9.16.1 ===== --->
+<!--- ===== BLOK 9.16.2 Logika Generate Tagihan Otomatis ===== --->
+<script>
+// --- 4. FUNGSI GENERATE TAGIHAN BULANAN OTOMATIS (Tanggal 5) ---
+function generateTagihanBulanLalu() {
+    const now = new Date();
+    const lastMonth = new Date(now);
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    const periode = lastMonth.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+    const tahun = lastMonth.getFullYear();
+    const bulan = lastMonth.getMonth() + 1;
 
-// --- 4. FILTER BERDASARKAN KLIK KARTU ---
+    // Ambil semua transaksi dari bulan lalu
+    const transaksiBulanLalu = dataTransaksiDummy.filter(trx => {
+        const tgl = new Date(trx.tanggal);
+        return tgl.getMonth() + 1 === bulan && tgl.getFullYear() === tahun;
+    });
+
+    // Kelompokkan berdasarkan penjualId (Termasuk SuperAdmin)
+    const grouped = {};
+    transaksiBulanLalu.forEach(trx => {
+        if (!grouped[trx.penjualId]) {
+            grouped[trx.penjualId] = {
+                penjualNama: trx.penjualNama,
+                role: 'Toko', // Default role
+                totalFee: 0,
+                bukti: []
+            };
+        }
+        grouped[trx.penjualId].totalFee += trx.feeAplikasi;
+        grouped[trx.penjualId].bukti.push(trx);
+    });
+
+    // Buat tagihan untuk setiap penjual yang memiliki fee > 0
+    let tagihanBaru = [];
+    for (const [sellerId, data] of Object.entries(grouped)) {
+        if (data.totalFee === 0) continue;
+        // Cegah duplikasi tagihan untuk periode yang sama
+        const existing = dataTagihan.find(t => t.sellerId === sellerId && t.periode === periode);
+        if (!existing) {
+            tagihanBaru.push({
+                id: 'BILL-' + tahun + String(bulan).padStart(2,'0') + '-' + Date.now(),
+                sellerId: sellerId,
+                sellerNama: data.penjualNama,
+                role: data.role,
+                periode: periode,
+                totalFee: data.totalFee,
+                status: 'Menunggu Pembayaran',
+                jatuhTempo: new Date(now.getFullYear(), now.getMonth(), 10).toISOString().split('T')[0],
+                bukti: data.bukti
+            });
+        }
+    }
+    
+    if (tagihanBaru.length > 0) {
+        dataTagihan = dataTagihan.concat(tagihanBaru);
+        saveTagihan();
+        cekAkunNonaktif();
+    }
+}
+
+// --- 5. FUNGSI CEK TANGGAL & EKSEKUSI OTOMATIS ---
+function cekTanggalTagihan() {
+    const today = new Date();
+    const day = today.getDate();
+
+    // Jika tanggal 5, generate tagihan bulan lalu
+    if (day === 5) {
+        const lastMonth = new Date(today);
+        lastMonth.setMonth(lastMonth.getMonth() - 1);
+        const periode = lastMonth.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+        const existing = dataTagihan.find(t => t.periode === periode);
+        if (!existing) {
+            generateTagihanBulanLalu();
+        }
+    }
+
+    // Jika tanggal > 10, cek akun yang belum bayar
+    if (day > 10) {
+        cekAkunNonaktif();
+    }
+}
+
+// --- 6. FUNGSI NONAKTIFKAN AKUN YANG BELUM BAYAR ---
+function cekAkunNonaktif() {
+    const today = new Date().toISOString().split('T')[0];
+    const daftarTagihanBelumBayar = dataTagihan.filter(t => t.status === 'Menunggu Pembayaran' && t.jatuhTempo < today);
+
+    daftarTagihanBelumBayar.forEach(tagihan => {
+        // Jangan nonaktifkan SuperAdmin
+        if (tagihan.role === 'SuperAdmin') return;
+
+        const akun = dataAkunAktif.find(a => a.id === tagihan.sellerId);
+        if (akun && akun.status === 'Aktif') {
+            akun.status = 'Nonaktif';
+            localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+            // Tidak alert setiap detik agar tidak spam, tapi admin bisa lihat di UI
+        }
+    });
+}
+</script>
+<!--- ===== AKHIR BLOK 9.16.2 ===== --->
+<!--- ===== BLOK 9.16.3 Render Tabel & Filter Tagihan ===== --->
+<script>
+// --- 7. FILTER BERDASARKAN KLIK KARTU ---
 function filterTagihanByStatus(status) {
     if (status === 'Nonaktif') {
-        // Jika klik kartu Akun Nonaktif, kita filter tagihan yang punya akun Nonaktif
         const nonaktifIds = dataAkunAktif.filter(a => a.status === 'Nonaktif').map(a => a.id);
         document.getElementById('filterStatusTagihan').value = '';
         document.getElementById('cariTagihan').value = '';
         document.getElementById('filterRoleTagihan').value = '';
-        // Simpan filter khusus di variabel temporary
         window.filterNonaktif = nonaktifIds;
     } else {
         window.filterNonaktif = null;
@@ -4268,12 +4370,11 @@ function filterTagihanByStatus(status) {
     renderTabelDataPenagihan(1);
 }
 
-// --- 5. FUNGSI RENDER TABEL DENGAN FILTER ---
+// --- 8. FUNGSI RENDER TABEL DENGAN FILTER ---
 function renderTabelDataPenagihan(hal = 1) {
     const tbody = document.getElementById('tabelDataPenagihan');
     if (!tbody) return;
 
-    // Ambil filter
     const cari = (document.getElementById('cariTagihan')?.value || '').toLowerCase().trim();
     const filterRole = document.getElementById('filterRoleTagihan')?.value || '';
     const filterStatus = document.getElementById('filterStatusTagihan')?.value || '';
@@ -4287,7 +4388,6 @@ function renderTabelDataPenagihan(hal = 1) {
         let cocokRole = filterRole === '' || item.role === filterRole;
         let cocokStatus = filterStatus === '' || item.status === filterStatus;
         
-        // Jika filter klik kartu Nonaktif
         if (window.filterNonaktif && Array.isArray(window.filterNonaktif)) {
             cocokStatus = window.filterNonaktif.includes(item.sellerId);
         }
@@ -4295,7 +4395,7 @@ function renderTabelDataPenagihan(hal = 1) {
         return cocokCari && cocokRole && cocokStatus;
     });
 
-    // Update Statistik & Pagination
+    // Update Statistik
     const totalTagihanBelumBayar = dataTagihan.filter(t => t.status === 'Menunggu Pembayaran').length;
     const totalTagihanLunas = dataTagihan.filter(t => t.status === 'Lunas').length;
     const totalAkunNonaktif = dataAkunAktif.filter(a => a.status === 'Nonaktif').length;
@@ -4352,7 +4452,7 @@ function renderTabelDataPenagihan(hal = 1) {
     tbody.innerHTML = html;
 }
 
-// --- 6. RESET FILTER ---
+// --- 9. RESET FILTER ---
 function resetFilterTagihan() {
     document.getElementById('cariTagihan').value = '';
     document.getElementById('filterRoleTagihan').value = '';
@@ -4360,11 +4460,185 @@ function resetFilterTagihan() {
     window.filterNonaktif = null;
     renderTabelDataPenagihan(1);
 }
-
-// --- FUNGSI LAINNYA (Generate, Konfirmasi, Modal, dll) SAMA SEPERTI SEBELUMNYA ---
-// (generateTagihanBulanLalu, cekTanggalTagihan, cekAkunNonaktif, konfirmasiBayarTagihan, bukaModalTambahTagihan, simpanTagihanManual, bukaModalEditTagihan, hapusTagihanManual, previewBuktiPenagihan, tampilkanDataPenagihan tetap sama)
-// *Catatan: Karena panjang, saya hanya menampilkan perubahan logika render tabelnya. Untuk fungsi lain, pastikan Anda tetap menggunakan versi BLOK 9.16 sebelumnya.*
 </script>
-<!--- ===== AKHIR BLOK 9.16 ===== --->
+<!--- ===== AKHIR BLOK 9.16.3 ===== --->
+<!--- ===== BLOK 9.16.4 Fungsi Aksi Tagihan (Modal & CRUD) ===== --->
+<script>
+// --- 10. FUNGSI KONFIRMASI BAYAR ---
+function konfirmasiBayarTagihan(index) {
+    if (confirm(`Konfirmasi bahwa tagihan ini sudah dibayar oleh ${dataTagihan[index].sellerNama}?`)) {
+        dataTagihan[index].status = 'Lunas';
+        saveTagihan();
+        const akun = dataAkunAktif.find(a => a.id === dataTagihan[index].sellerId);
+        if (akun && akun.status === 'Nonaktif') {
+            akun.status = 'Aktif';
+            localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+            alert(`✅ Akun ${dataTagihan[index].sellerNama} telah diaktifkan kembali.`);
+        }
+        renderTabelDataPenagihan();
+    }
+}
+
+// --- 11. MODAL TAMBAH / EDIT TAGIHAN MANUAL ---
+function bukaModalTambahTagihan() {
+    document.getElementById('modalTagihanLabel').innerHTML = '<i class="fas fa-plus-circle me-2"></i>Tambah Tagihan Manual';
+    document.getElementById('editIndexTagihan').value = '-1';
+    document.getElementById('tagihanRole').value = '';
+    document.getElementById('tagihanSellerId').value = '';
+    document.getElementById('tagihanSellerNama').value = '';
+    document.getElementById('tagihanPeriode').value = '';
+    document.getElementById('tagihanTotalFee').value = '';
+    document.getElementById('tagihanJatuhTempo').value = '';
+    var modal = new bootstrap.Modal(document.getElementById('modalTambahTagihan'));
+    modal.show();
+}
+
+function simpanTagihanManual(event) {
+    event.preventDefault();
+    const index = parseInt(document.getElementById('editIndexTagihan').value);
+    const role = document.getElementById('tagihanRole').value;
+    const sellerId = document.getElementById('tagihanSellerId').value.trim();
+    const sellerNama = document.getElementById('tagihanSellerNama').value.trim();
+    const periode = document.getElementById('tagihanPeriode').value.trim();
+    const totalFee = parseFloat(document.getElementById('tagihanTotalFee').value) || 0;
+    const jatuhTempo = document.getElementById('tagihanJatuhTempo').value;
+
+    if (!role || !sellerId || !sellerNama || !periode || totalFee === 0 || !jatuhTempo) {
+        alert('Semua kolom wajib diisi dengan benar!');
+        return false;
+    }
+
+    const buktiTransaksi = dataTransaksiDummy.filter(t => t.penjualId === sellerId);
+
+    if (index >= 0 && index < dataTagihan.length) {
+        // Mode Edit
+        dataTagihan[index] = {
+            ...dataTagihan[index],
+            role: role,
+            sellerId: sellerId,
+            sellerNama: sellerNama,
+            periode: periode,
+            totalFee: totalFee,
+            jatuhTempo: jatuhTempo,
+            bukti: buktiTransaksi
+        };
+        alert('✅ Tagihan berhasil diperbarui.');
+    } else {
+        // Mode Tambah
+        dataTagihan.push({
+            id: 'BILL-MANUAL-' + Date.now(),
+            sellerId: sellerId,
+            sellerNama: sellerNama,
+            role: role,
+            periode: periode,
+            totalFee: totalFee,
+            status: 'Menunggu Pembayaran',
+            jatuhTempo: jatuhTempo,
+            bukti: buktiTransaksi
+        });
+        alert('✅ Tagihan manual berhasil ditambahkan.');
+    }
+
+    saveTagihan();
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalTambahTagihan'));
+    modal.hide();
+    renderTabelDataPenagihan();
+    return false;
+}
+
+function bukaModalEditTagihan(index) {
+    const item = dataTagihan[index];
+    document.getElementById('modalTagihanLabel').innerHTML = '<i class="fas fa-edit me-2"></i>Edit Tagihan';
+    document.getElementById('editIndexTagihan').value = index;
+    document.getElementById('tagihanRole').value = item.role;
+    document.getElementById('tagihanSellerId').value = item.sellerId;
+    document.getElementById('tagihanSellerNama').value = item.sellerNama;
+    document.getElementById('tagihanPeriode').value = item.periode;
+    document.getElementById('tagihanTotalFee').value = item.totalFee;
+    document.getElementById('tagihanJatuhTempo').value = item.jatuhTempo;
+    var modal = new bootstrap.Modal(document.getElementById('modalTambahTagihan'));
+    modal.show();
+}
+
+function hapusTagihanManual(index) {
+    if (confirm(`Hapus tagihan ${dataTagihan[index].id}?`)) {
+        dataTagihan.splice(index, 1);
+        saveTagihan();
+        renderTabelDataPenagihan();
+    }
+}
+
+// --- 12. FUNGSI PREVIEW BUKTI PENAGIHAN ---
+function previewBuktiPenagihan(index) {
+    const item = dataTagihan[index];
+    if (!item.bukti || item.bukti.length === 0) {
+        alert('Tidak ada history order/transaksi untuk dijadikan bukti.');
+        return;
+    }
+
+    const container = document.getElementById('containerHistoryOrder');
+    let html = `
+        <h6 class="fw-bold mb-3">History Order untuk ${item.sellerNama} (${item.role}) - ${item.periode}</h6>
+        <table class="table table-bordered table-hover">
+            <thead class="table-light">
+                <tr>
+                    <th>ID Transaksi</th>
+                    <th>Tanggal</th>
+                    <th>Pembeli</th>
+                    <th>Total Bayar</th>
+                    <th>Fee Aplikasi</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    let totalFeeBukti = 0;
+    item.bukti.forEach(trx => {
+        totalFeeBukti += trx.feeAplikasi;
+        const formattedFee = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(trx.feeAplikasi);
+        const formattedTotal = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(trx.totalBayar);
+        html += `
+            <tr>
+                <td><span class="fw-bold small">${trx.id}</span></td>
+                <td>${trx.tanggal}</td>
+                <td>${trx.pembeli}</td>
+                <td>${formattedTotal}</td>
+                <td>${formattedFee}</td>
+            </tr>
+        `;
+    });
+    
+    const formattedTotalFee = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(totalFeeBukti);
+    html += `
+            </tbody>
+            <tfoot>
+                <tr class="table-warning">
+                    <td colspan="4" class="fw-bold text-end">Total Fee Aplikasi terkumpul:</td>
+                    <td class="fw-bold">${formattedTotalFee}</td>
+                </tr>
+            </tfoot>
+        </table>
+    `;
+    container.innerHTML = html;
+    var modal = new bootstrap.Modal(document.getElementById('modalPreviewBukti'));
+    modal.show();
+}
+</script>
+<!--- ===== AKHIR BLOK 9.16.4 ===== --->
+<!--- ===== BLOK 9.16.5 Fungsi Tampilkan Halaman & Inisialisasi ===== --->
+<script>
+// --- 13. FUNGSI TAMPILKAN HALAMAN ---
+function tampilkanDataPenagihan() {
+    const konten = document.getElementById('kontenDasbor');
+    const container = document.getElementById('dataPenagihanContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        loadTagihan(); // Load data dari localStorage
+        renderTabelDataPenagihan(1); // Render tabel dimulai dari halaman 1
+        const offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
+        if (offcanvas) offcanvas.hide();
+    }
+}
+</script>
+<!--- ===== AKHIR BLOK 9.16.5 ===== --->
 </body>
 </html>
