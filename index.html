@@ -3137,7 +3137,7 @@
     </div>
 </div>
 <!--- ===== AKHIR BLOK 10.41 ===== --->
-<!--- ===== BLOK 11.2 Manajemen Produk & Stok Toko ===== --->
+<!--- ===== BLOK 11.2 Manajemen Produk & Stok Toko (Revisi) ===== --->
 <div id="manajemenProdukContainer" style="display:none;">
     <div class="container-fluid px-4 py-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
@@ -3153,6 +3153,7 @@
             <li class="nav-item"><button class="nav-link" id="listTab" data-bs-toggle="tab" data-bs-target="#listProduk" type="button">Daftar Produk</button></li>
             <li class="nav-item"><button class="nav-link" id="gridTab" data-bs-toggle="tab" data-bs-target="#gridProduk" type="button">Direktori (Grid)</button></li>
             <li class="nav-item"><button class="nav-link" id="stokTab" data-bs-toggle="tab" data-bs-target="#pemeriksaanStok" type="button">Pemeriksaan Stok</button></li>
+            <li class="nav-item"><button class="nav-link" id="laporanTab" data-bs-toggle="tab" data-bs-target="#riwayatPemeriksaan" type="button">Riwayat Pemeriksaan</button></li>
         </ul>
 
         <div class="tab-content" id="produkTabsContent">
@@ -3297,7 +3298,7 @@
                         <i class="fas fa-clipboard-check me-2"></i>Pemeriksaan Stok (Aplikasi vs Gudang)
                     </div>
                     <div class="card-body">
-                        <p class="text-muted small">Masukkan jumlah stok fisik di gudang, lalu klik "Periksa Selisih".</p>
+                        <p class="text-muted small">Masukkan jumlah stok fisik di gudang, lalu klik "Periksa Selisih". Jika ada selisih, klik "Laporkan Selisih" untuk mengirim ke Pemilik.</p>
                         <div class="table-responsive">
                             <table class="table table-bordered align-middle">
                                 <thead class="table-light">
@@ -3314,8 +3315,39 @@
                                 </tbody>
                             </table>
                         </div>
-                        <div class="mt-3">
+                        <div class="mt-3 d-flex gap-2">
                             <button class="btn btn-danger fw-bold" onclick="hitungSelisihStok()"><i class="fas fa-calculator me-2"></i>Periksa Selisih</button>
+                            <button class="btn btn-warning fw-bold" onclick="laporkanSelisihStok()"><i class="fas fa-flag me-2"></i>Laporkan Selisih</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 5. TAB RIWAYAT PEMERIKSAAN -->
+            <div class="tab-pane fade" id="riwayatPemeriksaan" role="tabpanel">
+                <div class="card border-0 shadow">
+                    <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #17A2B8;">
+                        <span><i class="fas fa-history me-2"></i>Riwayat Pemeriksaan Stok</span>
+                        <span class="badge bg-light text-dark" id="totalLaporanCount">0 Laporan</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-bordered align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Tanggal</th>
+                                        <th>Produk</th>
+                                        <th>Stok Aplikasi</th>
+                                        <th>Stok Gudang</th>
+                                        <th>Selisih</th>
+                                        <th>Status</th>
+                                        <th>Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tabelLaporanStok">
+                                    <tr><td colspan="7" class="text-center text-muted">Belum ada laporan pemeriksaan.</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -3328,8 +3360,10 @@
 
 <!--- ===== BLOK 11.2 JavaScript (Logika Produk & Stok) ===== --->
 <script>
-// --- 1. DEKLARASI DATA PRODUK (Kosong, Tanpa Dummy) ---
+// --- 1. DEKLARASI DATA ---
 let dataProdukToko = [];
+let dataLaporanStok = []; // Laporan pemeriksaan stok
+let dataPengeluaran = []; // Akan digunakan untuk catatan pengeluaran/kerugian
 
 // --- 2. FUNGSI TAMPILKAN HALAMAN ---
 function tampilkanManajemenProduk() {
@@ -3338,17 +3372,16 @@ function tampilkanManajemenProduk() {
     const container = document.getElementById('manajemenProdukContainer');
     if (container) {
         konten.innerHTML = container.innerHTML;
-        
-        // Set tanggal otomatis
         const today = new Date().toISOString().split('T')[0];
         const inputTanggal = document.getElementById('tanggalInputProduk');
         if (inputTanggal) inputTanggal.value = today;
 
-        // Render data
         loadProdukDariLocal();
+        loadLaporanStokDariLocal();
         renderTabelProduk();
         renderGridProduk();
         renderTabelPeriksaStok();
+        renderTabelLaporanStok();
         
         const offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
         if (offcanvas) offcanvas.hide();
@@ -3368,15 +3401,22 @@ function loadProdukDariLocal() {
     }
 }
 
+function simpanLaporanStokKeLocal() {
+    localStorage.setItem('dataLaporanStok_' + userAktif.idUser, JSON.stringify(dataLaporanStok));
+}
+function loadLaporanStokDariLocal() {
+    const stored = localStorage.getItem('dataLaporanStok_' + userAktif.idUser);
+    if (stored) {
+        try { dataLaporanStok = JSON.parse(stored); } catch(e) { dataLaporanStok = []; }
+    } else {
+        dataLaporanStok = [];
+    }
+}
+
 // --- 4. LOGIKA KODE PRODUK (AUTO + SCAN + MANUAL) ---
-// Scanner menggunakan library html5-qrcode (CDN)
 function bukaScannerProduk() {
-    // Cek apakah user ingin scan
     const kodeInput = document.getElementById('kodeProduk');
     if (!confirm('Buka kamera untuk scan barcode?')) return;
-    
-    // Ini adalah simulasi placeholder, untuk integrasi asli butuh library html5-qrcode
-    // Karena bang mau dirakit sendiri, saya siapkan fallback input manual
     kodeInput.readOnly = false;
     kodeInput.placeholder = 'Scan gagal, ketik manual';
     kodeInput.focus();
@@ -3390,7 +3430,6 @@ function manualKodeProduk() {
     kodeInput.focus();
 }
 
-// Auto-generate code jika user mengklik simpan tanpa mengisi
 function generateKodeProduk() {
     return 'PRD-' + Date.now() + Math.floor(Math.random() * 1000);
 }
@@ -3412,10 +3451,8 @@ function simpanProdukToko(event) {
         return;
     }
 
-    // Jika kode kosong, generate otomatis
     const finalKode = kode || generateKodeProduk();
 
-    // Upload foto (convert ke base64)
     const fileInput = document.getElementById('fotoProduk');
     let fotoBase64 = '';
     if (fileInput.files && fileInput.files[0]) {
@@ -3443,12 +3480,11 @@ function finalSimpan(kode, nama, harga, satuan, kategori, kadaluarsa, tglInput, 
         tanggal_input: tglInput,
         petugas: petugas,
         foto: foto,
-        stok: 0 // Default stok
+        stok: 0
     };
     dataProdukToko.push(produkBaru);
     simpanProdukKeLocal();
     
-    // Reset form
     document.getElementById('formInputProduk').reset();
     document.getElementById('kodeProduk').value = '';
     document.getElementById('kodeProduk').readOnly = true;
@@ -3459,7 +3495,7 @@ function finalSimpan(kode, nama, harga, satuan, kategori, kadaluarsa, tglInput, 
     renderTabelPeriksaStok();
 }
 
-// --- 6. RENDER TABEL PRODUK (Dengan Pencarian) ---
+// --- 6. RENDER TABEL PRODUK ---
 function renderTabelProduk() {
     const tbody = document.getElementById('tabelProdukToko');
     const totalSpan = document.getElementById('totalProdukCount');
@@ -3546,7 +3582,7 @@ function renderTabelPeriksaStok() {
     tbody.innerHTML = html;
 }
 
-// --- 9. HITUNG SELISIH STOK ---
+// --- 9. HITUNG SELISIH STOK (Tampilkan di tabel) ---
 function hitungSelisihStok() {
     let adaSelisih = false;
     dataProdukToko.forEach(p => {
@@ -3570,7 +3606,143 @@ function hitungSelisihStok() {
     }
 }
 
-// --- 10. HAPUS PRODUK ---
+// --- 10. LAPORKAN SELISIH STOK (Simpan sebagai laporan) ---
+function laporkanSelisihStok() {
+    let laporanCount = 0;
+    dataProdukToko.forEach(p => {
+        const inputGudang = document.getElementById('stokGudang_' + p.id);
+        if (inputGudang) {
+            const stokGudang = parseInt(inputGudang.value) || 0;
+            const selisih = stokGudang - p.stok;
+            if (selisih !== 0) {
+                // Cek apakah sudah ada laporan pending untuk produk ini
+                const existing = dataLaporanStok.find(l => l.produkId === p.id && l.status === 'Pending');
+                if (!existing) {
+                    dataLaporanStok.push({
+                        id: 'LAP-' + Date.now() + Math.floor(Math.random() * 1000),
+                        tanggal: new Date().toISOString(),
+                        produkId: p.id,
+                        kode: p.kode,
+                        nama: p.nama,
+                        stokAplikasi: p.stok,
+                        stokGudang: stokGudang,
+                        selisih: selisih,
+                        status: 'Pending'
+                    });
+                    laporanCount++;
+                }
+            }
+        }
+    });
+
+    if (laporanCount === 0) {
+        alert('Tidak ada selisih untuk dilaporkan.');
+        return;
+    }
+
+    simpanLaporanStokKeLocal();
+    renderTabelLaporanStok();
+    alert(`✅ ${laporanCount} laporan selisih telah dikirim ke Pemilik.`);
+}
+
+// --- 11. RENDER TABEL RIWAYAT LAPORAN STOK ---
+function renderTabelLaporanStok() {
+    const tbody = document.getElementById('tabelLaporanStok');
+    const totalSpan = document.getElementById('totalLaporanCount');
+    if (!tbody) return;
+
+    totalSpan.textContent = dataLaporanStok.length + ' Laporan';
+
+    if (dataLaporanStok.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted">Belum ada laporan pemeriksaan.</td></tr>`;
+        return;
+    }
+
+    let html = '';
+    // Tampilkan laporan terbaru di atas
+    dataLaporanStok.slice().reverse().forEach(l => {
+        const tgl = new Date(l.tanggal).toLocaleString('id-ID');
+        const statusBadge = l.status === 'Pending' 
+            ? '<span class="badge bg-warning text-dark">Menunggu</span>' 
+            : '<span class="badge bg-success">Disetujui</span>';
+        const selisihDisplay = l.selisih > 0 ? `<span class="text-success">+${l.selisih}</span>` : `<span class="text-danger">${l.selisih}</span>`;
+
+        // Hanya tampilkan tombol Setujui jika status Pending dan user adalah Pemilik (role Toko)
+        let aksiHtml = '';
+        if (l.status === 'Pending' && userAktif.role === 'Toko') {
+            aksiHtml = `<button class="btn btn-sm btn-success" onclick="setujuiLaporanStok('${l.id}')"><i class="fas fa-check me-1"></i>Setujui & Sync</button>`;
+        } else if (l.status === 'Pending' && userAktif.role !== 'Toko') {
+            aksiHtml = `<span class="text-muted small">Menunggu persetujuan Pemilik</span>`;
+        } else {
+            aksiHtml = `<span class="text-muted small">Selesai</span>`;
+        }
+
+        html += `
+            <tr>
+                <td>${tgl}</td>
+                <td>${l.nama} <br><small>${l.kode}</small></td>
+                <td>${l.stokAplikasi}</td>
+                <td>${l.stokGudang}</td>
+                <td>${selisihDisplay}</td>
+                <td>${statusBadge}</td>
+                <td>${aksiHtml}</td>
+            </tr>`;
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 12. SETUJUI LAPORAN STOK (Hanya untuk Pemilik Toko) ---
+function setujuiLaporanStok(id) {
+    if (userAktif.role !== 'Toko') {
+        alert('Hanya Pemilik Toko yang dapat menyetujui laporan.');
+        return;
+    }
+
+    const laporan = dataLaporanStok.find(l => l.id === id);
+    if (!laporan) return;
+
+    if (!confirm(`Setujui laporan selisih untuk produk "${laporan.nama}"?\nStok Aplikasi: ${laporan.stokAplikasi}\nStok Gudang: ${laporan.stokGudang}\nSelisih: ${laporan.selisih}\n\nStok akan disesuaikan dan kerugian akan dicatat sebagai pengeluaran.`)) return;
+
+    // 1. Update stok produk di dataProdukToko
+    const produk = dataProdukToko.find(p => p.id === laporan.produkId);
+    if (produk) {
+        produk.stok = laporan.stokGudang;
+        simpanProdukKeLocal();
+    }
+
+    // 2. Jika selisih negatif (stok gudang lebih kecil), catat kerugian sebagai pengeluaran
+    if (laporan.selisih < 0) {
+        // Hitung kerugian = selisih * harga produk (atau harga beli? kita pakai harga jual sebagai estimasi)
+        const kerugian = Math.abs(laporan.selisih) * produk.harga;
+        // Simpan ke dataPengeluaran (kita akan inisialisasi array ini di BLOK 11.4)
+        // Untuk sementara kita simpan di localStorage dengan key 'pengeluaranToko'
+        let pengeluaran = [];
+        const storedPengeluaran = localStorage.getItem('pengeluaranToko_' + userAktif.idUser);
+        if (storedPengeluaran) {
+            try { pengeluaran = JSON.parse(storedPengeluaran); } catch(e) { pengeluaran = []; }
+        }
+        pengeluaran.push({
+            id: 'KERUGIAN-' + Date.now(),
+            tanggal: new Date().toISOString(),
+            keterangan: 'Kerugian stok: ' + produk.nama + ' (' + Math.abs(laporan.selisih) + ' ' + produk.satuan + ')',
+            jumlah: kerugian,
+            kategori: 'Kerugian Stok'
+        });
+        localStorage.setItem('pengeluaranToko_' + userAktif.idUser, JSON.stringify(pengeluaran));
+        alert('Kerugian sebesar Rp ' + kerugian.toLocaleString() + ' telah dicatat sebagai pengeluaran.');
+    }
+
+    // 3. Tandai laporan sebagai Disetujui
+    laporan.status = 'Disetujui';
+    simpanLaporanStokKeLocal();
+
+    // 4. Refresh tabel
+    renderTabelPeriksaStok();
+    renderTabelLaporanStok();
+    renderTabelProduk();
+}
+
+// --- 13. HAPUS PRODUK ---
 function hapusProdukToko(id) {
     if (confirm('Hapus produk ini?')) {
         dataProdukToko = dataProdukToko.filter(p => p.id !== id);
@@ -3580,15 +3752,8 @@ function hapusProdukToko(id) {
         renderTabelPeriksaStok();
     }
 }
-function tampilkanManajemenProduk() {
-    // Kasir tidak boleh mengakses ini
-    if (userAktif.role === 'Kasir') {
-        alert('Anda tidak memiliki akses ke menu ini.');
-        return;
-    }
-    // ... kode render halaman ...
-}
-// --- 11. EXPORT KE EXCEL (CSV) ---
+
+// --- 14. EXPORT KE EXCEL (CSV) ---
 function exportProdukExcel() {
     if (dataProdukToko.length === 0) {
         alert('Belum ada data produk untuk diekspor.');
@@ -3608,7 +3773,7 @@ function exportProdukExcel() {
 }
 </script>
 <!--- ===== AKHIR BLOK 11.2 JavaScript ===== --->
-<!--- ===== BLOK 11.3 Transaksi Offline & Kasir Toko ===== --->
+<!--- ===== BLOK 11.3 Transaksi Offline & Kasir Toko (REVISI) ===== --->
 <div id="transaksiKasirContainer" style="display:none;">
     <div class="container-fluid px-4 py-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
@@ -3743,18 +3908,18 @@ function exportProdukExcel() {
                         <i class="fas fa-hand-holding-usd me-2"></i>Catatan Pengeluaran & Kasbon Pelanggan
                     </div>
                     <div class="card-body">
-                        <!-- Form Kasbon -->
+                        <!-- Form Kasbon (Dengan ID Unik) -->
                         <h6 class="fw-bold text-primary">Tambah Kasbon Pelanggan</h6>
-                        <form id="formKasbon" onsubmit="return simpanKasbon(event)">
+                        <form id="formKasbonToko" onsubmit="return simpanKasbon(event)">
                             <div class="row g-2">
-                                <div class="col-md-3"><input type="text" id="namaKasbon" class="form-control" placeholder="Nama Pelanggan" required></div>
-                                <div class="col-md-3"><input type="text" id="hpKasbon" class="form-control" placeholder="Nomor HP"></div>
-                                <div class="col-md-3"><input type="number" id="jumlahKasbon" class="form-control" placeholder="Jumlah (Rp)" required></div>
-                                <div class="col-md-3"><input type="date" id="tanggalKasbon" class="form-control" required></div>
+                                <div class="col-md-3"><input type="text" id="namaKasbonToko" class="form-control" placeholder="Nama Pelanggan" required></div>
+                                <div class="col-md-3"><input type="text" id="hpKasbonToko" class="form-control" placeholder="Nomor HP"></div>
+                                <div class="col-md-3"><input type="number" id="jumlahKasbonToko" class="form-control" placeholder="Jumlah (Rp)" required></div>
+                                <div class="col-md-3"><input type="date" id="tanggalKasbonToko" class="form-control" required></div>
                             </div>
                             <div class="row g-2 mt-2">
-                                <div class="col-md-6"><textarea id="ketKasbon" class="form-control" rows="1" placeholder="Keterangan Kasbon"></textarea></div>
-                                <div class="col-md-3"><input type="date" id="rencanaBayarKasbon" class="form-control" placeholder="Rencana Bayar"></div>
+                                <div class="col-md-6"><textarea id="ketKasbonToko" class="form-control" rows="1" placeholder="Keterangan Kasbon"></textarea></div>
+                                <div class="col-md-3"><input type="date" id="rencanaBayarKasbonToko" class="form-control" placeholder="Rencana Bayar"></div>
                                 <div class="col-md-3">
                                     <button type="submit" class="btn btn-success w-100"><i class="fas fa-save me-1"></i> Simpan Kasbon</button>
                                 </div>
@@ -3768,186 +3933,7 @@ function exportProdukExcel() {
                                 <thead class="table-light">
                                     <tr><th>Nama</th><th>Jumlah</th><th>Status</th><th>Aksi</th></tr>
                                 </thead>
-                                <tbody id="tabelKasbon">
-                                    <tr><td colspan="4" class="text-center text-muted">Belum ada kasbon.</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-<!--- ===== AKHIR BLOK 11.3 HTML ===== --->
-
-<!--- ===== BLOK 11.3 Transaksi Offline & Kasir Toko ===== --->
-<div id="transaksiKasirContainer" style="display:none;">
-    <div class="container-fluid px-4 py-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h4 class="fw-bold text-white"><i class="fas fa-cash-register me-2"></i>Transaksi & Kasir</h4>
-            <button class="btn btn-outline-light" onclick="tampilkanDasborToko()">
-                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
-            </button>
-        </div>
-
-        <!-- Tab Navigasi -->
-        <ul class="nav nav-tabs mb-4" id="kasirTabs" role="tablist">
-            <li class="nav-item">
-                <button class="nav-link active" id="transaksiTab" data-bs-toggle="tab" data-bs-target="#transaksiOffline" type="button">Transaksi Offline</button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="rekapTab" data-bs-toggle="tab" data-bs-target="#rekapTransaksi" type="button">Rekap & Laporan</button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="pengeluaranTab" data-bs-toggle="tab" data-bs-target="#pengeluaranKasbon" type="button">Pengeluaran & Kasbon</button>
-            </li>
-        </ul>
-
-        <div class="tab-content" id="kasirTabsContent">
-            
-            <!-- 1. TAB TRANSAKSI OFFLINE -->
-            <div class="tab-pane fade show active" id="transaksiOffline" role="tabpanel">
-                <div class="card border-0 shadow">
-                    <div class="card-header text-white" style="background-color: #FF8C00;">
-                        <i class="fas fa-shopping-cart me-2"></i>Transaksi Offline
-                    </div>
-                    <div class="card-body">
-                        <!-- Pilih Produk -->
-                        <div class="row g-3 mb-3 align-items-end">
-                            <div class="col-md-5">
-                                <label class="fw-bold">Cari & Pilih Produk</label>
-                                <select id="pilihProdukTransaksi" class="form-select" onchange="tambahKeKeranjang()">
-                                    <option value="">-- Pilih Produk --</option>
-                                </select>
-                            </div>
-                            <div class="col-md-2">
-                                <label class="fw-bold">Jumlah</label>
-                                <input type="number" id="jumlahBeli" class="form-control" value="1" min="1" onchange="tambahKeKeranjang()">
-                            </div>
-                            <div class="col-md-2">
-                                <button class="btn btn-success w-100" onclick="tambahKeKeranjang()"><i class="fas fa-plus me-1"></i> Tambah</button>
-                            </div>
-                        </div>
-
-                        <!-- Tabel Keranjang -->
-                        <div class="table-responsive">
-                            <table class="table table-bordered table-hover">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th>Nama Produk</th>
-                                        <th>Harga</th>
-                                        <th>Jumlah</th>
-                                        <th>Subtotal</th>
-                                        <th>Aksi</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="tabelKeranjang">
-                                    <tr><td colspan="5" class="text-center text-muted">Keranjang masih kosong.</td></tr>
-                                </tbody>
-                                <tfoot>
-                                    <tr class="table-warning">
-                                        <td colspan="3" class="fw-bold text-end">Total Belanja:</td>
-                                        <td id="totalBelanjaDisplay" class="fw-bold">Rp 0</td>
-                                        <td></td>
-                                    </tr>
-                                </tfoot>
-                            </table>
-                        </div>
-
-                        <!-- Pembayaran -->
-                        <div class="row g-3 mt-3 align-items-end">
-                            <div class="col-md-4">
-                                <label class="fw-bold">Uang Dibayar (Rp)</label>
-                                <input type="number" id="uangDibayar" class="form-control" placeholder="0" oninput="hitungKembalianOtomatis()">
-                            </div>
-                            <div class="col-md-4">
-                                <label class="fw-bold text-success">Uang Kembalian</label>
-                                <h3 id="uangKembalianDisplay" class="fw-bold text-success">Rp 0</h3>
-                            </div>
-                            <div class="col-md-4 text-end">
-                                <button class="btn btn-primary fw-bold w-100" onclick="simpanTransaksi()">
-                                    <i class="fas fa-check-circle me-2"></i>Selesaikan & Cetak Struk
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 2. TAB REKAP & LAPORAN -->
-            <div class="tab-pane fade" id="rekapTransaksi" role="tabpanel">
-                <div class="card border-0 shadow">
-                    <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
-                        <span><i class="fas fa-chart-line me-2"></i>Rekap Transaksi</span>
-                        <div>
-                            <button class="btn btn-sm btn-light me-2" onclick="exportTransaksiExcel()"><i class="fas fa-file-excel me-1"></i> Export Excel</button>
-                            <span class="badge bg-light text-dark" id="totalTransaksiCount">0 Transaksi</span>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="row mb-3">
-                            <div class="col-md-4">
-                                <label class="fw-bold small">Filter Tanggal</label>
-                                <input type="date" id="filterTanggalTransaksi" class="form-control" onchange="renderRekapTransaksi()">
-                            </div>
-                            <div class="col-md-4 d-flex align-items-end">
-                                <button class="btn btn-outline-secondary btn-sm" onclick="resetFilterTransaksi()">Reset</button>
-                            </div>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-hover align-middle">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Tanggal</th>
-                                        <th>Produk</th>
-                                        <th>Jumlah</th>
-                                        <th>Total</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="tabelRekapTransaksi">
-                                    <tr><td colspan="5" class="text-center text-muted">Belum ada transaksi.</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 3. TAB PENGELUARAN & KASBON -->
-            <div class="tab-pane fade" id="pengeluaranKasbon" role="tabpanel">
-                <div class="card border-0 shadow">
-                    <div class="card-header text-white" style="background-color: #FF6B00;">
-                        <i class="fas fa-hand-holding-usd me-2"></i>Catatan Pengeluaran & Kasbon Pelanggan
-                    </div>
-                    <div class="card-body">
-                        <!-- Form Kasbon -->
-                        <h6 class="fw-bold text-primary">Tambah Kasbon Pelanggan</h6>
-                        <form id="formKasbon" onsubmit="return simpanKasbon(event)">
-                            <div class="row g-2">
-                                <div class="col-md-3"><input type="text" id="namaKasbon" class="form-control" placeholder="Nama Pelanggan" required></div>
-                                <div class="col-md-3"><input type="text" id="hpKasbon" class="form-control" placeholder="Nomor HP"></div>
-                                <div class="col-md-3"><input type="number" id="jumlahKasbon" class="form-control" placeholder="Jumlah (Rp)" required></div>
-                                <div class="col-md-3"><input type="date" id="tanggalKasbon" class="form-control" required></div>
-                            </div>
-                            <div class="row g-2 mt-2">
-                                <div class="col-md-6"><textarea id="ketKasbon" class="form-control" rows="1" placeholder="Keterangan Kasbon"></textarea></div>
-                                <div class="col-md-3"><input type="date" id="rencanaBayarKasbon" class="form-control" placeholder="Rencana Bayar"></div>
-                                <div class="col-md-3">
-                                    <button type="submit" class="btn btn-success w-100"><i class="fas fa-save me-1"></i> Simpan Kasbon</button>
-                                </div>
-                            </div>
-                        </form>
-                        <hr>
-                        <!-- Tabel Kasbon -->
-                        <h6 class="fw-bold text-danger mt-3">Daftar Kasbon</h6>
-                        <div class="table-responsive">
-                            <table class="table table-sm table-bordered">
-                                <thead class="table-light">
-                                    <tr><th>Nama</th><th>Jumlah</th><th>Status</th><th>Aksi</th></tr>
-                                </thead>
-                                <tbody id="tabelKasbon">
+                                <tbody id="tabelKasbonToko">
                                     <tr><td colspan="4" class="text-center text-muted">Belum ada kasbon.</td></tr>
                                 </tbody>
                             </table>
@@ -3964,7 +3950,7 @@ function exportProdukExcel() {
 <script>
 // --- 1. DATA GLOBAL ---
 let dataTransaksiOffline = [];
-let dataKasbon = [];
+let dataKasbonToko = [];
 let keranjangBelanja = [];
 
 // --- 2. FUNGSI TAMPILKAN HALAMAN ---
@@ -3994,12 +3980,12 @@ function loadTransaksiDariLocal() {
     else { dataTransaksiOffline = []; }
 }
 function simpanKasbonKeLocal() {
-    localStorage.setItem('dataKasbon_' + userAktif.idUser, JSON.stringify(dataKasbon));
+    localStorage.setItem('dataKasbonToko_' + userAktif.idUser, JSON.stringify(dataKasbonToko));
 }
 function loadKasbonDariLocal() {
-    const stored = localStorage.getItem('dataKasbon_' + userAktif.idUser);
-    if (stored) { try { dataKasbon = JSON.parse(stored); } catch(e) { dataKasbon = []; } }
-    else { dataKasbon = []; }
+    const stored = localStorage.getItem('dataKasbonToko_' + userAktif.idUser);
+    if (stored) { try { dataKasbonToko = JSON.parse(stored); } catch(e) { dataKasbonToko = []; } }
+    else { dataKasbonToko = []; }
 }
 
 // --- 4. RENDER DROPDOWN PRODUK ---
@@ -4211,35 +4197,35 @@ function exportTransaksiExcel() {
 // --- 10. KASBON PELANGGAN ---
 function simpanKasbon(event) {
     event.preventDefault();
-    const nama = document.getElementById('namaKasbon').value.trim();
-    const hp = document.getElementById('hpKasbon').value.trim();
-    const jumlah = parseInt(document.getElementById('jumlahKasbon').value) || 0;
-    const tanggal = document.getElementById('tanggalKasbon').value;
-    const ket = document.getElementById('ketKasbon').value.trim();
-    const rencana = document.getElementById('rencanaBayarKasbon').value;
+    const nama = document.getElementById('namaKasbonToko').value.trim();
+    const hp = document.getElementById('hpKasbonToko').value.trim();
+    const jumlah = parseInt(document.getElementById('jumlahKasbonToko').value) || 0;
+    const tanggal = document.getElementById('tanggalKasbonToko').value;
+    const ket = document.getElementById('ketKasbonToko').value.trim();
+    const rencana = document.getElementById('rencanaBayarKasbonToko').value;
 
     if (!nama || jumlah === 0 || !tanggal) { alert('Isi data dengan benar!'); return; }
 
-    dataKasbon.push({
+    dataKasbonToko.push({
         id: 'KAS-' + Date.now(),
         nama, hp, jumlah, tanggal, ket, rencana,
         status: 'Belum Terbayar'
     });
     simpanKasbonKeLocal();
     renderTabelKasbon();
-    document.getElementById('formKasbon').reset();
+    document.getElementById('formKasbonToko').reset();
     alert('✅ Kasbon untuk ' + nama + ' berhasil dicatat!');
     return false;
 }
 
 function renderTabelKasbon() {
-    const tbody = document.getElementById('tabelKasbon');
-    if (dataKasbon.length === 0) {
+    const tbody = document.getElementById('tabelKasbonToko');
+    if (dataKasbonToko.length === 0) {
         tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">Belum ada kasbon.</td></tr>`;
         return;
     }
     let html = '';
-    dataKasbon.reverse().forEach(k => {
+    dataKasbonToko.reverse().forEach(k => {
         const statusBadge = k.status === 'Terbayar' 
             ? '<span class="badge bg-success">Lunas</span>' 
             : `<span class="badge bg-danger">Belum Bayar</span>`;
@@ -4260,8 +4246,8 @@ function renderTabelKasbon() {
 
 function bayarKasbon(id) {
     if (confirm('Tandai kasbon ini sebagai LUNAS?')) {
-        const idx = dataKasbon.findIndex(k => k.id === id);
-        if (idx !== -1) { dataKasbon[idx].status = 'Terbayar'; }
+        const idx = dataKasbonToko.findIndex(k => k.id === id);
+        if (idx !== -1) { dataKasbonToko[idx].status = 'Terbayar'; }
         simpanKasbonKeLocal();
         renderTabelKasbon();
     }
@@ -4269,64 +4255,13 @@ function bayarKasbon(id) {
 
 function hapusKasbon(id) {
     if (confirm('Hapus data kasbon ini?')) {
-        dataKasbon = dataKasbon.filter(k => k.id !== id);
+        dataKasbonToko = dataKasbonToko.filter(k => k.id !== id);
         simpanKasbonKeLocal();
         renderTabelKasbon();
     }
 }
 </script>
 <!--- ===== AKHIR BLOK 11.3 JavaScript ===== --->
-// --- DASBOR KASIR (BLOK 17.1) ---
-function tampilkanDasborKasir() {
-    const konten = document.getElementById('kontenDasbor');
-    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
-    
-    // Hitung transaksi hari ini
-    const today = new Date().toISOString().split('T')[0];
-    const transaksiHariIni = dataTransaksiOffline.filter(t => t.tanggal.split('T')[0] === today);
-    const totalPenjualan = transaksiHariIni.reduce((sum, t) => sum + t.total, 0);
-    const jumlahTransaksi = transaksiHariIni.length;
-
-    konten.innerHTML = `
-        <div class="container-fluid px-4 py-4">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h4 class="fw-bold text-white"><i class="fas fa-cash-register me-2"></i>Dasbor Kasir</h4>
-                <button class="btn btn-outline-light" onclick="tampilkanTransaksiKasir()">
-                    <i class="fas fa-arrow-left me-1"></i> Kembali ke Transaksi
-                </button>
-            </div>
-            <div class="row g-4">
-                <div class="col-md-4">
-                    <div class="card border-0 shadow-sm bg-white">
-                        <div class="card-body text-center py-4">
-                            <i class="fas fa-shopping-cart fa-2x mb-2 text-primary"></i>
-                            <h4 class="fw-bold mb-0">${jumlahTransaksi}</h4>
-                            <small class="text-muted">Transaksi Hari Ini</small>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card border-0 shadow-sm bg-white">
-                        <div class="card-body text-center py-4">
-                            <i class="fas fa-coins fa-2x mb-2 text-success"></i>
-                            <h4 class="fw-bold mb-0">Rp ${totalPenjualan.toLocaleString()}</h4>
-                            <small class="text-muted">Total Penjualan Hari Ini</small>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card border-0 shadow-sm bg-white">
-                        <div class="card-body text-center py-4">
-                            <i class="fas fa-robot fa-2x mb-2 text-warning"></i>
-                            <h4 class="fw-bold mb-0">${dataProdukToko.length}</h4>
-                            <small class="text-muted">Total Produk</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-}        
 <!--- ===== BLOK 9.1 Penghubung Halaman Maintenance ke JavaScript ===== --->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <!--- ===== AKHIR BLOK 9.1 ===== --->
@@ -4936,16 +4871,7 @@ function loadMenuNavigasi(kodeRole, statusVerifikasi) {
         if (item.aksi === 'dashboardUtama') {
             htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="kembaliKeDasbor()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
         }
-            // --- MANAJEMEN PRODUK & STOK TOKO (BLOK 11.2) ---
-        else if (item.aksi === 'manajemenProdukToko') {
-            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanManajemenProduk()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-        }
-            // --- TRANSAKSI & KASIR TOKO (BLOK 11.3) ---
-        else if (item.aksi === 'transaksiKasir') {
-            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanTransaksiKasir()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-        }
         else if (item.aksi === 'profil') {
-            // Logika percabangan: Jika SuperAdmin, panggil fungsi khusus. Jika bukan, panggil fungsi umum.
             if (userAktif && userAktif.role === 'SuperAdmin') {
                 htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanProfilSuperAdmin()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
             } else {
@@ -5013,6 +4939,15 @@ function loadMenuNavigasi(kodeRole, statusVerifikasi) {
         else if (item.aksi === 'dasborToko') {
             htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanDasborToko()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
         }
+        // --- TAMBAHAN: MANAJEMEN PRODUK & STOK TOKO (BLOK 11.2) ---
+        else if (item.aksi === 'manajemenProdukToko') {
+            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanManajemenProduk()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
+        }
+        // --- TAMBAHAN: TRANSAKSI & KASIR TOKO (BLOK 11.3) ---
+        else if (item.aksi === 'transaksiKasir') {
+            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanTransaksiKasir()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
+        }
+        // --- Placeholder untuk Role Lain ---
         else if (item.aksi === 'dasborOjek' || item.aksi === 'dasborPP' || item.aksi === 'dasborPM' || item.aksi === 'dasborCOD' || item.aksi === 'dasborCT') {
             htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanPlaceholderRole('${item.nama}', '${item.blok || '0'}', '${item.aksi.replace('dasbor','')}')"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
         }
@@ -5024,10 +4959,6 @@ function loadMenuNavigasi(kodeRole, statusVerifikasi) {
         }
         else {
             htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanPlaceholderMenu('${item.nama}', '${item.blok || '0'}')"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-        }
-            // --- DASBOR KASIR (BLOK 17.1) ---
-        else if (item.aksi === 'dasborKasir') {
-            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanDasborKasir()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
         }
     });
 
