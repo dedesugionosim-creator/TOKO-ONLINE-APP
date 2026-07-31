@@ -4945,55 +4945,275 @@ function togglePasswordBaru() {
 }
 </script>
 <!--- ===== AKHIR BLOK 9.2.3 ===== --->
-<!--- ===== BLOK 9.2.4 Jam Real-time & Sistem Auto-Logout ===== --->
+<!--- ===== BLOK 9.24 JavaScript Form Perjanjian Berlangganan (LENGKAP) ===== --->
 <script>
-// --- FUNGSI JAM REALTIME DAN CEK TAGIHAN ---
-function updateWaktu() {
-    const s = new Date();
-    const opt = { weekday:'long', year:'numeric', month:'long', day:'numeric', timeZone:'Asia/Jakarta' };
-    const tgl = s.toLocaleDateString('id-ID', opt);
-    const jam = s.toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit', timeZone:'Asia/Jakarta' });
-    const elTgl = document.getElementById('tanggalSekarang');
-    const elJam = document.getElementById('jamSekarang');
-    if (elTgl) elTgl.textContent = tgl;
-    if (elJam) elJam.textContent = jam + ' WIB';
+// ========== FORM PERJANJIAN BERLANGGANAN ==========
 
-    // --- TAMBAHAN: CEK TAGIHAN OTOMATIS SETIAP DETIK ---
-    // Fungsi ini akan mengecek tanggal, membuat tagihan baru di tanggal 5,
-    // dan menonaktifkan akun jika tanggal sudah lewat 10 dan belum bayar.
-    if (typeof cekTanggalTagihan === 'function') {
-        cekTanggalTagihan();
+let dataBerlangganan = [];
+
+// --- TAMPILKAN HALAMAN ---
+function tampilkanFormBerlangganan() {
+    const konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    const container = document.getElementById('formBerlanggananContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        isiDropdownBerlangganan();
+        const offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
+        if (offcanvas) offcanvas.hide();
     }
 }
-setInterval(updateWaktu, 1000);
 
-// --- SISTEM AUTO-LOGOUT 10 MENIT ---
-function resetTimerLogout() {
-    if (userAktif) { waktuSisa = WAKTU_LOGOUT_OTOMATIS; }
+// --- ISI DROPDOWN SELLER ---
+function isiDropdownBerlangganan() {
+    const select = document.getElementById('berlanggananPilihSeller');
+    if (!select) return;
+    select.innerHTML = '<option value="">-- Pilih Seller --</option>';
+    
+    const filtered = dataAkunAktif.filter(a => a.role !== 'Customer' && a.role !== 'SuperAdmin');
+    filtered.forEach(akun => {
+        const opt = document.createElement('option');
+        opt.value = akun.id;
+        opt.textContent = akun.nama + ' (' + akun.role + ')';
+        select.appendChild(opt);
+    });
 }
-document.addEventListener('mousemove', resetTimerLogout);
-document.addEventListener('mousedown', resetTimerLogout);
-document.addEventListener('keydown', resetTimerLogout);
-document.addEventListener('touchstart', resetTimerLogout);
 
-function mulaiIntervalLogout() {
-    if (intervalTimer) clearInterval(intervalTimer);
-    intervalTimer = setInterval(function() {
-        if (userAktif) {
-            waktuSisa--;
-            if (waktuSisa <= 0) { prosesLogoutOtomatis(); }
+// --- ISI DATA OTOMATIS SAAT SELLER DIPILIH ---
+function isiDataBerlangganan() {
+    const sellerId = document.getElementById('berlanggananPilihSeller').value;
+    if (!sellerId) return;
+    
+    const akun = dataAkunAktif.find(a => a.id === sellerId);
+    if (!akun) return;
+    
+    document.getElementById('berlanggananNama').value = akun.nama || '';
+    document.getElementById('berlanggananId').value = akun.id || '';
+    document.getElementById('berlanggananRole').value = akun.role || '';
+    document.getElementById('berlanggananAlamat').value = akun.alamat || '';
+    
+    // Ambil data yang tersimpan jika ada
+    const saved = dataBerlangganan.find(d => d.seller_id === sellerId);
+    if (saved) {
+        document.getElementById('berlanggananFeeSewa').value = saved.fee_sewa;
+        document.getElementById('berlanggananFeeKomisi').value = saved.fee_komisi;
+        document.getElementById('berlanggananFeeUpload').value = saved.fee_upload;
+        document.getElementById('berlanggananKuotaGratis').value = saved.kuota_gratis;
+        document.getElementById('berlanggananJatuhTempo').value = saved.jatuh_tempo;
+    } else {
+        const config = JSON.parse(localStorage.getItem('appFeeConfig')) || {};
+        document.getElementById('berlanggananFeeSewa').value = config.sewaFeeAmount || 10000;
+        document.getElementById('berlanggananFeeKomisi').value = config.appFeePercent || 5.0;
+        document.getElementById('berlanggananFeeUpload').value = config.uploadFeePerImage || 500;
+        document.getElementById('berlanggananKuotaGratis').value = config.uploadFreeLimit || 5;
+        document.getElementById('berlanggananJatuhTempo').value = 10;
+    }
+}
+
+// --- SIMPAN DATA PENAGIHAN (untuk seller perorangan) ---
+function simpanDataBerlangganan() {
+    const data = ambilDataBerlangganan();
+    if (!data) return;
+    
+    const existing = dataBerlangganan.findIndex(d => d.seller_id === data.seller_id);
+    if (existing >= 0) {
+        dataBerlangganan[existing] = data;
+    } else {
+        dataBerlangganan.push(data);
+    }
+    localStorage.setItem('dataBerlangganan', JSON.stringify(dataBerlangganan));
+    
+    const notif = document.getElementById('notifikasiBerlangganan');
+    notif.className = 'alert alert-success';
+    notif.innerHTML = '✅ Data berlangganan berhasil disimpan!';
+    notif.classList.remove('d-none');
+    setTimeout(() => notif.classList.add('d-none'), 3000);
+}
+
+// --- AMBIL DATA DARI FORM ---
+function ambilDataBerlangganan() {
+    const sellerId = document.getElementById('berlanggananPilihSeller').value;
+    if (!sellerId) {
+        alert('Silakan pilih seller terlebih dahulu!');
+        return null;
+    }
+    
+    return {
+        seller_id: sellerId,
+        nama: document.getElementById('berlanggananNama').value,
+        role: document.getElementById('berlanggananRole').value,
+        alamat: document.getElementById('berlanggananAlamat').value,
+        fee_sewa: parseFloat(document.getElementById('berlanggananFeeSewa').value) || 0,
+        fee_komisi: parseFloat(document.getElementById('berlanggananFeeKomisi').value) || 0,
+        fee_upload: parseFloat(document.getElementById('berlanggananFeeUpload').value) || 0,
+        kuota_gratis: parseInt(document.getElementById('berlanggananKuotaGratis').value) || 0,
+        jatuh_tempo: parseInt(document.getElementById('berlanggananJatuhTempo').value) || 10,
+        tanggal_setuju: new Date().toISOString().split('T')[0]
+    };
+}
+
+// --- GENERATE PDF PERJANJIAN (untuk satu seller) ---
+function generateBerlangganan(event) {
+    event.preventDefault();
+    const data = ambilDataBerlangganan();
+    if (!data) return false;
+    
+    const content = `
+        <div style="font-family: Arial, sans-serif; padding: 20px; border: 2px solid #000;">
+            <div style="text-align: center;">
+                <h2 style="color: #FF8C00;">Toko Online 2R</h2>
+                <h3>PERJANJIAN BERLANGGANAN APLIKASI</h3>
+            </div>
+            <hr>
+            <div style="margin-top: 20px;">
+                <p>Yang bertanda tangan di bawah ini, kami para pihak:</p>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr><td style="width: 30%; padding: 5px;"><strong>Nama Seller</strong></td><td>: ${data.nama}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>ID Akun</strong></td><td>: ${data.seller_id}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Role</strong></td><td>: ${data.role}</td></tr>
+                    <tr><td style="padding: 5px;"><strong>Alamat</strong></td><td>: ${data.alamat}</td></tr>
+                </table>
+                <p style="margin-top: 20px;">Dengan ini menyetujui untuk berlangganan aplikasi Toko Online 2R dengan rincian sebagai berikut:</p>
+                <table style="width: 100%; border: 1px solid #000; border-collapse: collapse;">
+                    <tr style="background-color: #f0f0f0;"><th style="padding: 5px; border: 1px solid #000;">Rincian</th><th style="padding: 5px; border: 1px solid #000;">Nominal</th></tr>
+                    <tr><td style="padding: 5px; border: 1px solid #000;">Fee Sewa Bulanan</td><td style="padding: 5px; border: 1px solid #000;">Rp ${data.fee_sewa.toLocaleString()}</td></tr>
+                    <tr><td style="padding: 5px; border: 1px solid #000;">Fee Komisi Transaksi</td><td style="padding: 5px; border: 1px solid #000;">${data.fee_komisi}%</td></tr>
+                    <tr><td style="padding: 5px; border: 1px solid #000;">Fee Upload per Foto</td><td style="padding: 5px; border: 1px solid #000;">Rp ${data.fee_upload.toLocaleString()}</td></tr>
+                    <tr><td style="padding: 5px; border: 1px solid #000;">Kuota Foto Gratis</td><td style="padding: 5px; border: 1px solid #000;">${data.kuota_gratis} foto</td></tr>
+                    <tr><td style="padding: 5px; border: 1px solid #000;">Jatuh Tempo Pembayaran</td><td style="padding: 5px; border: 1px solid #000;">Tanggal ${data.jatuh_tempo} setiap bulan</td></tr>
+                </table>
+                <p style="margin-top: 20px;">Demikian perjanjian ini dibuat untuk dipatuhi oleh kedua belah pihak.</p>
+            </div>
+            <div style="margin-top: 40px; display: flex; justify-content: space-between;">
+                <div style="text-align: center;">
+                    <p>Seller,</p>
+                    <p style="margin-top: 40px;">${data.nama}</p>
+                    <p>(.........................)</p>
+                </div>
+                <div style="text-align: center;">
+                    <p>Hormat kami,</p>
+                    <p style="margin-top: 40px;">SuperAdmin Toko Online 2R</p>
+                    <p>(.........................)</p>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    downloadPDF(content, 'Perjanjian_Berlangganan_' + data.nama + '.pdf');
+    return false;
+}
+
+// --- KIRIM MASAL KE SEMUA SELLER (Dengan penyimpanan ke akun Seller) ---
+function kirimMasalBerlangganan() {
+    if (!confirm('Anda akan mengirim perjanjian berlangganan ke SEMUA seller (kecuali SuperAdmin dan Customer). Lanjutkan?')) return;
+    
+    const daftarSeller = dataAkunAktif.filter(a => a.role !== 'Customer' && a.role !== 'SuperAdmin');
+    if (daftarSeller.length === 0) {
+        document.getElementById('notifikasiMasalBerlangganan').className = 'alert alert-warning';
+        document.getElementById('notifikasiMasalBerlangganan').innerHTML = 'Tidak ada seller untuk dikirim.';
+        document.getElementById('notifikasiMasalBerlangganan').classList.remove('d-none');
+        return;
+    }
+    
+    let berhasil = 0;
+    daftarSeller.forEach(akun => {
+        // Ambil data fee dari form atau default
+        let saved = dataBerlangganan.find(d => d.seller_id === akun.id);
+        if (!saved) {
+            const config = JSON.parse(localStorage.getItem('appFeeConfig')) || {};
+            saved = {
+                seller_id: akun.id,
+                nama: akun.nama,
+                role: akun.role,
+                alamat: akun.alamat,
+                fee_sewa: parseFloat(document.getElementById('berlanggananFeeSewa').value) || config.sewaFeeAmount || 10000,
+                fee_komisi: parseFloat(document.getElementById('berlanggananFeeKomisi').value) || config.appFeePercent || 5.0,
+                fee_upload: parseFloat(document.getElementById('berlanggananFeeUpload').value) || config.uploadFeePerImage || 500,
+                kuota_gratis: parseInt(document.getElementById('berlanggananKuotaGratis').value) || config.uploadFreeLimit || 5,
+                jatuh_tempo: parseInt(document.getElementById('berlanggananJatuhTempo').value) || 10,
+                tanggal_setuju: new Date().toISOString().split('T')[0]
+            };
         }
-    }, 1000);
+
+        // --- KIRIM DATA PERJANJIAN KE AKUN SELLER (Fase 1) ---
+        // Ambil NIK KTP dari data akun (jika ada)
+        const nikKtp = akun.nik_ktp || 'Belum diisi';
+        const perjanjianData = {
+            nama: akun.nama,
+            nik_ktp: nikKtp,
+            seller_id: akun.id,
+            role: akun.role,
+            tanggal_kirim: new Date().toISOString().split('T')[0],
+            fee_sewa: saved.fee_sewa,
+            fee_komisi: saved.fee_komisi,
+            fee_upload: saved.fee_upload,
+            kuota_gratis: saved.kuota_gratis,
+            jatuh_tempo: saved.jatuh_tempo
+        };
+
+        // Simpan ke localStorage khusus seller tersebut
+        let existingPerjanjian = JSON.parse(localStorage.getItem('dataDokumenPerjanjianSeller_' + akun.id)) || [];
+        existingPerjanjian.push(perjanjianData);
+        localStorage.setItem('dataDokumenPerjanjianSeller_' + akun.id, JSON.stringify(existingPerjanjian));
+        // --------------------------------------------------------
+
+        // Catat ke history pengiriman
+        historyPengiriman.push({
+            id: 'HIST-' + Date.now() + '-' + berhasil,
+            seller_id: akun.id,
+            nama: akun.nama,
+            role: akun.role,
+            tanggal_kirim: new Date().toISOString().split('T')[0],
+            jam_kirim: new Date().toLocaleTimeString('id-ID', { hour12: false }),
+            status: 'Terkirim',
+            keterangan: 'Perjanjian berlangganan aplikasi'
+        });
+        berhasil++;
+    });
+    
+    // Simpan semua data ke localStorage
+    localStorage.setItem('dataBerlangganan', JSON.stringify(dataBerlangganan));
+    localStorage.setItem('historyPengiriman', JSON.stringify(historyPengiriman));
+    
+    const notif = document.getElementById('notifikasiMasalBerlangganan');
+    notif.className = 'alert alert-success';
+    notif.innerHTML = `✅ Berhasil mengirim perjanjian ke ${berhasil} seller. Seller kini dapat melihat dokumen di menu "Dokumen Saya".`;
+    notif.classList.remove('d-none');
+    setTimeout(() => notif.classList.add('d-none'), 5000);
 }
 
-function prosesLogoutOtomatis() {
-    if (userAktif) {
-        alert('Sesi Anda berakhir karena tidak ada aktivitas selama 10 menit. Silakan login kembali.');
-        prosesLogout();
+// --- HELPER: DOWNLOAD PDF (menggunakan html2canvas & jspdf) ---
+function downloadPDF(contentHtml, filename) {
+    if (typeof html2canvas === 'undefined' || typeof jspdf === 'undefined') {
+        alert('Library PDF belum siap. Pastikan html2canvas dan jspdf sudah di-load.');
+        return;
     }
+    
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = contentHtml;
+    wrapper.style.position = 'absolute';
+    wrapper.style.left = '-9999px';
+    wrapper.style.top = '0';
+    wrapper.style.width = '800px';
+    document.body.appendChild(wrapper);
+
+    html2canvas(wrapper, { scale: 2 }).then(canvas => {
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
+        pdf.save(filename);
+        document.body.removeChild(wrapper);
+    }).catch(err => {
+        console.error('Gagal membuat PDF:', err);
+        alert('Gagal membuat PDF. Silakan coba lagi.');
+        document.body.removeChild(wrapper);
+    });
 }
 </script>
-<!--- ===== AKHIR BLOK 9.2.4 ===== --->
+<!--- ===== AKHIR BLOK 9.24 ===== --->
 <!--- ===== BLOK 9.2.5 Proses Login & Simpan Session ===== --->
 <script>
 function prosesLogin(event) {
@@ -5188,6 +5408,7 @@ const menuConfig = {
             { nama: 'Menu Chat SuperAdmin', ikon: 'fas fa-comments', blok: '10.35', aksi: 'menuChat' },
             { nama: 'Form SKU', ikon: 'fas fa-certificate', blok: '10.36', aksi: 'formSKU' },
             { nama: 'Form Penagihan', ikon: 'fas fa-file-invoice-dollar', blok: '10.37', aksi: 'formPenagihan' },
+            { nama: 'Dokumen Saya', ikon: 'fas fa-file-alt', blok: '10.44', aksi: 'dokumenSeller' }
             { nama: 'Form Berlangganan', ikon: 'fas fa-file-signature', blok: '10.40', aksi: 'formBerlangganan' },
             { nama: 'Bantuan & FAQ', ikon: 'fas fa-question-circle', blok: '10.33' },
             { nama: 'Dokumentasi', ikon: 'fas fa-book', blok: '10.34' }
@@ -5339,72 +5560,298 @@ const menuConfig = {
 };
 </script>
 <!--- ===== AKHIR BLOK 9.3.1 ===== --->
-<!--- ===== BLOK 9.3.2 Logika Render Menu (FIXED - MUNCUL SAAT PENDING) ===== --->
+<!--- ===== BLOK 9.32 JavaScript Verifikasi Dokumen & Aktivasi Akun (LENGKAP) ===== --->
 <script>
-function loadMenuNavigasi(kodeRole, statusVerifikasi) {
-    const menuContainer = document.getElementById('menuNavigasi');
-    let htmlMenu = '';
-    let daftarMenu = [];
+// ============================================================
+// 1. FUNGSI UTAMA TAMPILKAN HALAMAN (Menggunakan BLOK 10.10)
+// ============================================================
+function tampilkanVerifikasiDokumen() {
+    const konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    const container = document.getElementById('verifikasiDokumenContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderTabelVerifikasiDokumen();
+        const offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
+        if (offcanvas) offcanvas.hide();
+    }
+}
 
-    // Jika status masih Pending, ambil menu dari config tapi filter hanya yang diizinkan
-    if (statusVerifikasi === 'Pending') {
-        // Ambil konfigurasi menu untuk role ini
-        const config = menuConfig[kodeRole] || menuConfig['CT'];
-        let allMenu = config ? config.menu : [];
-        
-        // Filter hanya menu yang boleh muncul saat Pending (Dasbor, Profil, Dokumen Saya)
-        daftarMenu = allMenu.filter(item => {
-            return item.aksi === 'dashboardUtama' || 
-                   item.aksi === 'profil' || 
-                   item.aksi === 'dokumenSeller';
-        });
-
-        // Jika gagal filter (misal config role belum diisi), gunakan fallback manual
-        if (daftarMenu.length === 0) {
-            daftarMenu = [
-                { nama: 'Dasbor', ikon: 'fas fa-tachometer-alt', aksi: 'dashboardUtama' },
-                { nama: 'Profil Saya', ikon: 'fas fa-user', aksi: 'profil' },
-                { nama: 'Dokumen Saya', ikon: 'fas fa-file-alt', aksi: 'dokumenSeller' }
-            ];
-        }
+// ============================================================
+// 2. LOAD DATA DARI LOCALSTORAGE (GABUNGAN SEMUA DOKUMEN)
+// ============================================================
+function loadSemuaVerifikasi() {
+    // Data lama (KTP, dll) dari BLOK 9.10
+    let storedVerif = localStorage.getItem('dataVerifikasiDokumen');
+    if (storedVerif) {
+        try { dataVerifikasiDokumen = JSON.parse(storedVerif); } catch(e) { dataVerifikasiDokumen = []; }
     } else {
-        // Jika status sudah Aktif, tampilkan semua menu lengkap dari config
-        const config = menuConfig[kodeRole] || menuConfig['CT'];
-        if (config) { daftarMenu = config.menu; }
+        dataVerifikasiDokumen = [];
     }
 
-    // Loop setiap menu dan buat HTML (Bagian ini tetap sama seperti sebelumnya)
-    daftarMenu.forEach(function(item) {
-        // --- HANDLER BERDASARKAN AKSI ---
-        if (item.aksi === 'dashboardUtama') {
-            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="kembaliKeDasbor()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-        }
-        else if (item.aksi === 'profil') {
-            if (userAktif && userAktif.role === 'SuperAdmin') {
-                htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanProfilSuperAdmin()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-            } else {
-                htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanProfilUmum()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-            }
-        }
-        // --- TAMBAHAN BARU FASE 1: DOKUMEN SELLER ---
-        else if (item.aksi === 'dokumenSeller') {
-            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanDokumenSeller()"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
-        }
-        // -----------------------------------------
-        // ... (kode handler menu lainnya tetap sama seperti sebelumnya, 
-        // ... saya tidak menulis ulang semua handler di sini agar jawaban tidak kepanjangan,
-        // ... tapi Anda bisa menggabungkannya dengan kode yang sudah Anda punya).
-        // Untuk amannya, silakan gunakan kode lengkap yang saya lampirkan di bawah ini.
-        else {
-            htmlMenu += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="tampilkanPlaceholderMenu('${item.nama}', '${item.blok || '0'}')"><i class="${item.ikon} me-2" style="color: #FF8C00;"></i>${item.nama}</a>`;
+    // Tambahkan dokumen Perjanjian Berlangganan dari akun Seller
+    // Kita ambil dari localStorage masing-masing Seller (key: dataDokumenPerjanjianSeller_ + ID)
+    dataAkunAktif.forEach(akun => {
+        const key = 'dataDokumenPerjanjianSeller_' + akun.id;
+        const stored = localStorage.getItem(key);
+        if (stored) {
+            try {
+                const perjanjianList = JSON.parse(stored);
+                perjanjianList.forEach((perjanjian, idx) => {
+                    // Cek apakah sudah ada di dataVerifikasiDokumen
+                    const existing = dataVerifikasiDokumen.find(v => 
+                        v.id === perjanjian.seller_id + '-PERJANJIAN-' + idx
+                    );
+                    if (!existing) {
+                        // Tambahkan sebagai item verifikasi baru
+                        dataVerifikasiDokumen.push({
+                            id: perjanjian.seller_id + '-PERJANJIAN-' + idx,
+                            nama: perjanjian.nama,
+                            role: perjanjian.role,
+                            tgl: perjanjian.tanggal_kirim,
+                            status: 'Menunggu', // default
+                            listDokumen: [
+                                { nama: 'Perjanjian Berlangganan', url: 'data:text/plain;base64,' + btoa(JSON.stringify(perjanjian)) }
+                            ],
+                            jenis: 'Perjanjian', // tambahan untuk filter
+                            seller_id: perjanjian.seller_id,
+                            data_asli: perjanjian
+                        });
+                    }
+                });
+            } catch(e) {}
         }
     });
 
-    htmlMenu += '<hr class="border-secondary"><a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="prosesLogout()"><i class="fas fa-sign-out-alt me-2 text-danger"></i>Logout</a>';
-    menuContainer.innerHTML = htmlMenu;
+    // Tambahkan dokumen SKU dari akun Seller
+    dataAkunAktif.forEach(akun => {
+        const key = 'dataDokumenSKUSeller_' + akun.id;
+        const stored = localStorage.getItem(key);
+        if (stored) {
+            try {
+                const skuList = JSON.parse(stored);
+                skuList.forEach((sku, idx) => {
+                    const existing = dataVerifikasiDokumen.find(v => 
+                        v.id === sku.seller_id + '-SKU-' + idx
+                    );
+                    if (!existing) {
+                        dataVerifikasiDokumen.push({
+                            id: sku.seller_id + '-SKU-' + idx,
+                            nama: sku.nama_lengkap,
+                            role: akun.role || 'Seller',
+                            tgl: sku.tanggal_kirim || new Date().toISOString().split('T')[0],
+                            status: 'Menunggu',
+                            listDokumen: [
+                                { nama: 'Surat Keterangan Usaha (SKU)', url: 'data:text/plain;base64,' + btoa(JSON.stringify(sku)) }
+                            ],
+                            jenis: 'SKU',
+                            seller_id: sku.seller_id,
+                            data_asli: sku
+                        });
+                    }
+                });
+            } catch(e) {}
+        }
+    });
+}
+
+// ============================================================
+// 3. RENDER TABEL VERIFIKASI DENGAN FILTER
+// ============================================================
+function renderTabelVerifikasiDokumen() {
+    // Load data terbaru
+    loadSemuaVerifikasi();
+    // Simpan kembali data yang sudah digabung ke localStorage (opsional)
+    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasiDokumen));
+
+    const tbody = document.getElementById('tabelVerifikasiDokumen');
+    if (!tbody) return;
+
+    const cari = (document.getElementById('cariVerifikasi')?.value || '').toLowerCase().trim();
+    const filterStatus = document.getElementById('filterStatusVerifikasi')?.value || '';
+    const filterRole = document.getElementById('filterRoleVerifikasi')?.value || '';
+
+    let dataFilter = dataVerifikasiDokumen.filter(item => {
+        const cocokCari = cari === '' || item.nama.toLowerCase().includes(cari) || item.id.toLowerCase().includes(cari);
+        const cocokStatus = filterStatus === '' || item.status === filterStatus;
+        const cocokRole = filterRole === '' || item.role === filterRole;
+        return cocokCari && cocokStatus && cocokRole;
+    });
+
+    // Update statistik
+    document.getElementById('totalMenunggu').textContent = dataFilter.filter(i => i.status === 'Menunggu').length;
+    document.getElementById('totalDiterima').textContent = dataFilter.filter(i => i.status === 'Diterima').length;
+    document.getElementById('totalDitolak').textContent = dataFilter.filter(i => i.status === 'Ditolak').length;
+    document.getElementById('infoJumlahVerifikasi').textContent = dataFilter.length + ' Data';
+
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted py-4">Tidak ada dokumen yang ditemukan.</td></tr>`;
+        return;
+    }
+
+    let html = '';
+    dataFilter.forEach((item, index) => {
+        const indexAsli = dataVerifikasiDokumen.indexOf(item);
+        const statusBadge = item.status === 'Menunggu' ? 
+            '<span class="badge bg-warning text-dark">Menunggu</span>' : 
+            (item.status === 'Diterima' ? 
+                '<span class="badge bg-success">Diterima</span>' : 
+                '<span class="badge bg-danger">Ditolak</span>');
+        const jmlDok = item.listDokumen ? item.listDokumen.length : 0;
+        const jenisBadge = item.jenis === 'Perjanjian' ? 
+            '<span class="badge bg-primary">Perjanjian</span>' : 
+            (item.jenis === 'SKU' ? 
+                '<span class="badge bg-info text-dark">SKU</span>' : 
+                '<span class="badge bg-secondary">KTP/Dokumen</span>');
+
+        let aksiHtml = '';
+        if (item.status === 'Menunggu') {
+            aksiHtml = `
+                <div class="btn-group">
+                    <button class="btn btn-sm btn-success" onclick="terimaDokumen(${indexAsli})"><i class="fas fa-check"></i> Setujui</button>
+                    <button class="btn btn-sm btn-danger" onclick="tolakDokumen(${indexAsli})"><i class="fas fa-times"></i> Tolak</button>
+                </div>
+            `;
+        } else {
+            aksiHtml = `<span class="text-muted small">Selesai</span>`;
+        }
+
+        html += `
+            <tr>
+                <td><span class="fw-bold text-success small">${item.id}</span></td>
+                <td>${item.nama}</td>
+                <td>${jenisBadge} <span class="badge bg-secondary">${item.role}</span></td>
+                <td>${item.tgl}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" onclick="previewDokumen(${indexAsli})">
+                        <i class="fas fa-images me-1"></i>Lihat (${jmlDok} Dokumen)
+                    </button>
+                </td>
+                <td>${statusBadge}</td>
+                <td>${aksiHtml}</td>
+            </tr>
+        `;
+    });
+    tbody.innerHTML = html;
+}
+
+// ============================================================
+// 4. PREVIEW DOKUMEN (SAMA SEPERTI SEBELUMNYA)
+// ============================================================
+function previewDokumen(index) {
+    const item = dataVerifikasiDokumen[index];
+    if (!item.listDokumen || item.listDokumen.length === 0) {
+        alert('Tidak ada dokumen untuk ditampilkan.');
+        return;
+    }
+
+    const carouselInner = document.getElementById('carouselInnerDokumen');
+    const carouselIndicators = document.getElementById('carouselIndicators');
+    const ketDokumen = document.getElementById('keteranganDokumenCarousel');
+    
+    carouselInner.innerHTML = '';
+    carouselIndicators.innerHTML = '';
+    
+    item.listDokumen.forEach((dok, i) => {
+        const activeClass = i === 0 ? 'active' : '';
+        const indicatorActive = i === 0 ? 'class="active"' : '';
+        carouselInner.innerHTML += `
+            <div class="carousel-item ${activeClass}">
+                <img src="${dok.url}" class="d-block w-100 rounded" style="max-height: 60vh; object-fit: contain; background: white; padding: 10px;" alt="${dok.nama}">
+            </div>`;
+        carouselIndicators.innerHTML += `
+            <button type="button" data-bs-target="#carouselDokumenPreview" data-bs-slide-to="${i}" ${indicatorActive} aria-label="Slide ${i+1}"></button>`;
+    });
+
+    const myCarousel = document.getElementById('carouselDokumenPreview');
+    myCarousel.addEventListener('slid.bs.carousel', function (e) {
+        const index = e.to;
+        const currentDok = item.listDokumen[index];
+        if(currentDok) ketDokumen.innerHTML = `<small class="text-muted fw-bold">Dokumen ke-${index+1}: ${currentDok.nama}</small>`;
+    });
+
+    if(item.listDokumen.length > 0) {
+        ketDokumen.innerHTML = `<small class="text-muted fw-bold">Dokumen ke-1: ${item.listDokumen[0].nama}</small>`;
+    }
+
+    const modal = new bootstrap.Modal(document.getElementById('modalPreviewDokumen'));
+    modal.show();
+}
+
+// ============================================================
+// 5. AKSI SETUJUI / TOLAK (DENGAN LOGIKA AKTIVASI AKUN)
+// ============================================================
+function terimaDokumen(index) {
+    const item = dataVerifikasiDokumen[index];
+    if (!confirm(`Setujui dokumen "${item.jenis}" atas nama ${item.nama}?`)) return;
+    
+    item.status = 'Diterima';
+    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasiDokumen));
+    
+    // Cek apakah semua dokumen untuk seller ini sudah diterima
+    cekAktivasiAkun(item.seller_id);
+    
+    renderTabelVerifikasiDokumen();
+}
+
+function tolakDokumen(index) {
+    const item = dataVerifikasiDokumen[index];
+    if (!confirm(`Tolak dokumen "${item.jenis}" atas nama ${item.nama}?`)) return;
+    
+    item.status = 'Ditolak';
+    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasiDokumen));
+    renderTabelVerifikasiDokumen();
+}
+
+// ============================================================
+// 6. LOGIKA AKTIVASI AKUN (CEK SEMUA DOKUMEN)
+// ============================================================
+function cekAktivasiAkun(sellerId) {
+    // Ambil semua dokumen milik seller ini
+    const dokumenSeller = dataVerifikasiDokumen.filter(v => v.seller_id === sellerId);
+    
+    // Cek apakah ada dokumen yang masih Menunggu atau Ditolak
+    const adaPending = dokumenSeller.some(v => v.status === 'Menunggu');
+    const adaDitolak = dokumenSeller.some(v => v.status === 'Ditolak');
+    
+    if (adaPending) {
+        // Belum selesai, tidak aktivasi
+        return;
+    }
+    
+    if (adaDitolak) {
+        // Ada yang ditolak, aktivasi gagal
+        alert(`Akun ${sellerId} tidak dapat diaktifkan karena ada dokumen yang ditolak.`);
+        return;
+    }
+    
+    // Jika semua dokumen sudah Diterima (tidak ada pending/ditolak), aktifkan akun
+    const akun = dataAkunAktif.find(a => a.id === sellerId);
+    if (akun && akun.status === 'Pending') {
+        akun.status = 'Aktif';
+        localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+        alert(`✅ Akun ${akun.nama} (${akun.id}) berhasil diaktifkan!`);
+        
+        // Update status di dataLoginUser
+        const loginUser = dataLoginUser.find(u => u.idUser === sellerId);
+        if (loginUser) {
+            loginUser.statusVerifikasi = 'Aktif';
+            localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+        }
+    }
+}
+
+// ============================================================
+// 7. RESET FILTER (SAMA SEPERTI SEBELUMNYA)
+// ============================================================
+function resetFilterVerifikasi() {
+    document.getElementById('cariVerifikasi').value = '';
+    document.getElementById('filterStatusVerifikasi').value = '';
+    document.getElementById('filterRoleVerifikasi').value = '';
+    renderTabelVerifikasiDokumen();
 }
 </script>
-<!--- ===== AKHIR BLOK 9.3.2 ===== --->
+<!--- ===== AKHIR BLOK 9.32 ===== --->
 <!--- ===== BLOK 9.3.3 Fungsi Helper, Placeholder, Dasbor & Profil (FINAL) ===== --->
 <script>
 // ============================================================
@@ -8724,7 +9171,19 @@ function simpanDataSKU() {
     notif.classList.remove('d-none');
     setTimeout(() => notif.classList.add('d-none'), 3000);
 }
-
+// Tambahkan di dalam loop daftarSeller.forEach, setelah mengambil data fee
+let dataSeller = {
+    nama: akun.nama,
+    nik_ktp: akun.nik_ktp || '-',
+    fee_sewa: parseFloat(document.getElementById('berlanggananFeeSewa').value) || 10000,
+    fee_komisi: parseFloat(document.getElementById('berlanggananFeeKomisi').value) || 5,
+    fee_upload: parseFloat(document.getElementById('berlanggananFeeUpload').value) || 500,
+    kuota_gratis: parseInt(document.getElementById('berlanggananKuotaGratis').value) || 5,
+    jatuh_tempo: parseInt(document.getElementById('berlanggananJatuhTempo').value) || 10
+};
+let existing = JSON.parse(localStorage.getItem('dataDokumenPerjanjianSeller_' + akun.id)) || [];
+existing.push(dataSeller);
+localStorage.setItem('dataDokumenPerjanjianSeller_' + akun.id, JSON.stringify(existing));
 // --- 5. FUNGSI KIRIM SKU KE SELLER ---
 function kirimSKUkeSeller() {
     const sellerId = document.getElementById('skuPilihSeller').value;
@@ -10409,129 +10868,130 @@ function copyKodeDariPreview() {
 }
 </script>
 <!--- ===== AKHIR BLOK 9.31 ===== --->
-<!--- ===== BLOK 9.34 Fungsi Menu Dokumen Seller (Fase 1 - Tampilkan Data) ===== --->
+<!--- ===== BLOK 9.34 JavaScript Halaman Dokumen Seller (FASE 1 FINAL) ===== --->
 <script>
 // --- 1. FUNGSI UTAMA TAMPILKAN HALAMAN ---
 function tampilkanDokumenSeller() {
+    // Simpan konten dasbor asli untuk tombol kembali
     const konten = document.getElementById('kontenDasbor');
     if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+    // Ambil container HTML BLOK 10.44
     const container = document.getElementById('dokumenSellerContainer');
     if (container) {
         konten.innerHTML = container.innerHTML;
-        
-        // Load data dari localStorage
-        const storedPerjanjian = localStorage.getItem('dataDokumenPerjanjianSeller_' + userAktif.idUser);
+
+        // Ambil ID user yang sedang login
+        const currentUserId = userAktif.idUser;
+
+        // --- LOAD DATA PERJANJIAN DARI LOCALSTORAGE ---
+        const storedPerjanjian = localStorage.getItem('dataDokumenPerjanjianSeller_' + currentUserId);
         if (storedPerjanjian) {
-            try { dataDokumenPerjanjianSeller = JSON.parse(storedPerjanjian); } catch(e) { dataDokumenPerjanjianSeller = []; }
+            try { dataDokumenPerjanjianSeller = JSON.parse(storedPerjanjian); } 
+            catch (e) { dataDokumenPerjanjianSeller = []; }
         } else {
             dataDokumenPerjanjianSeller = [];
         }
 
-        const storedSKU = localStorage.getItem('dataDokumenSKUSeller_' + userAktif.idUser);
+        // --- LOAD DATA SKU DARI LOCALSTORAGE ---
+        const storedSKU = localStorage.getItem('dataDokumenSKUSeller_' + currentUserId);
         if (storedSKU) {
-            try { dataDokumenSKUSeller = JSON.parse(storedSKU); } catch(e) { dataDokumenSKUSeller = []; }
+            try { dataDokumenSKUSeller = JSON.parse(storedSKU); } 
+            catch (e) { dataDokumenSKUSeller = []; }
         } else {
             dataDokumenSKUSeller = [];
         }
 
-        // Render data ke tab
-        renderDokumenPerjanjian();
-        renderDokumenSKU();
-        
+        // Panggil fungsi render untuk mengisi tab
+        renderDokumenSeller();
+
+        // Tutup menu sidebar
         const offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
         if (offcanvas) offcanvas.hide();
     }
 }
 
-// --- 2. RENDER PERJANJIAN BERLANGGANAN ---
-function renderDokumenPerjanjian() {
-    const area = document.getElementById('areaTampilPerjanjian');
-    if (!area) return;
+// --- 2. FUNGSI RENDER DATA KE TAB ---
+function renderDokumenSeller() {
+    const areaPerjanjian = document.getElementById('areaTampilPerjanjian');
+    const areaSKU = document.getElementById('areaTampilSKU');
 
+    // Helper format Rupiah (tanpa .00 di belakang)
+    const formatRupiah = (angka) => {
+        return 'Rp ' + angka.toLocaleString('id-ID');
+    };
+
+    // --- A. RENDER TAB PERJANJIAN ---
     if (dataDokumenPerjanjianSeller.length === 0) {
-        area.innerHTML = `
+        areaPerjanjian.innerHTML = `
             <div class="text-center py-5 text-muted">
                 <i class="fas fa-inbox fa-4x mb-3 opacity-50"></i>
-                <h5>Belum ada perjanjian yang dikirim.</h5>
-                <p class="small">SuperAdmin akan mengirimkan perjanjian berlangganan ke akun Anda.</p>
+                <h5>Belum ada perjanjian berlangganan.</h5>
+                <p class="small">SuperAdmin akan mengirimkan dokumen ini ke akun Anda.</p>
             </div>
         `;
-        return;
+    } else {
+        // Ambil data terbaru (index terakhir)
+        const d = dataDokumenPerjanjianSeller[dataDokumenPerjanjianSeller.length - 1];
+        
+        areaPerjanjian.innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-bordered">
+                    <tr><th style="width: 25%;">Nama Pemilik</th><td><strong>${d.nama || '-'}</strong></td></tr>
+                    <tr><th>NIK KTP</th><td><strong class="text-danger">${d.nik_ktp || '-'}</strong></td></tr>
+                    <tr><th>Tanggal Dikirim</th><td>${d.tanggal_kirim || '-'}</td></tr>
+                </table>
+            </div>
+            <h6 class="fw-bold text-warning mt-4">Rincian Fee & Kewajiban</h6>
+            <div class="table-responsive">
+                <table class="table table-bordered table-hover">
+                    <thead class="table-light">
+                        <tr><th>Komponen</th><th>Nilai</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Fee Sewa Bulanan</td><td class="fw-bold">${formatRupiah(d.fee_sewa || 0)}</td></tr>
+                        <tr><td>Fee Komisi Transaksi</td><td class="fw-bold">${d.fee_komisi || 0}%</td></tr>
+                        <tr><td>Fee Upload per Foto</td><td class="fw-bold">${formatRupiah(d.fee_upload || 0)}</td></tr>
+                        <tr><td>Kuota Foto Gratis</td><td class="fw-bold">${d.kuota_gratis || 0} foto</td></tr>
+                        <tr><td>Jatuh Tempo Pembayaran</td><td class="fw-bold">Tanggal ${d.jatuh_tempo || 10} setiap bulan</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
     }
 
-    // Ambil data terbaru (index terakhir)
-    const data = dataDokumenPerjanjianSeller[dataDokumenPerjanjianSeller.length - 1];
-    
-    // Format angka
-    const formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(num);
-
-    let html = `
-        <div class="table-responsive mb-4">
-            <table class="table table-bordered">
-                <tr><th style="width: 25%;">Nama Lengkap</th><td><strong>${data.nama || '-'}</strong></td></tr>
-                <tr><th>ID Akun</th><td><span class="text-success fw-bold">${data.seller_id || '-'}</span></td></tr>
-                <tr><th>Role</th><td><span class="badge bg-secondary">${data.role || '-'}</span></td></tr>
-                <tr><th>NIK KTP</th><td><strong class="text-danger">${data.nik_ktp || '-'}</strong></td></tr>
-                <tr><th>Tanggal Dikirim</th><td>${data.tanggal_kirim || '-'}</td></tr>
-            </table>
-        </div>
-        <h6 class="fw-bold text-warning">Rincian Fee & Kewajiban</h6>
-        <div class="table-responsive">
-            <table class="table table-bordered table-hover">
-                <thead class="table-light">
-                    <tr><th>Komponen</th><th>Nilai</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td>Fee Sewa Bulanan</td><td class="fw-bold">${formatRupiah(data.fee_sewa || 0)}</td></tr>
-                    <tr><td>Fee Komisi Transaksi</td><td class="fw-bold">${data.fee_komisi || 0}%</td></tr>
-                    <tr><td>Fee Upload per Foto</td><td class="fw-bold">${formatRupiah(data.fee_upload || 0)}</td></tr>
-                    <tr><td>Kuota Foto Gratis</td><td class="fw-bold">${data.kuota_gratis || 0} foto</td></tr>
-                    <tr><td>Jatuh Tempo Pembayaran</td><td class="fw-bold">Tanggal ${data.jatuh_tempo || 10} setiap bulan</td></tr>
-                </tbody>
-            </table>
-        </div>
-    `;
-    area.innerHTML = html;
-}
-
-// --- 3. RENDER DOKUMEN SKU ---
-function renderDokumenSKU() {
-    const area = document.getElementById('areaTampilSKU');
-    if (!area) return;
-
+    // --- B. RENDER TAB SKU ---
     if (dataDokumenSKUSeller.length === 0) {
-        area.innerHTML = `
+        areaSKU.innerHTML = `
             <div class="text-center py-5 text-muted">
                 <i class="fas fa-inbox fa-4x mb-3 opacity-50"></i>
-                <h5>Belum ada draft SKU yang dikirim.</h5>
+                <h5>Belum ada draft SKU.</h5>
                 <p class="small">SuperAdmin akan mengirimkan draft SKU ke akun Anda.</p>
             </div>
         `;
-        return;
+    } else {
+        // Ambil data terbaru
+        const d = dataDokumenSKUSeller[dataDokumenSKUSeller.length - 1];
+
+        areaSKU.innerHTML = `
+            <div class="alert alert-info small">
+                <i class="fas fa-info-circle me-1"></i> 
+                <strong>Instruksi:</strong> Dokumen ini masih berupa draft. Harap dicetak, dibawa ke kantor desa untuk ditandatangani & distempel, lalu diunggah kembali nanti.
+            </div>
+            <div class="table-responsive">
+                <table class="table table-bordered">
+                    <tr><th style="width: 25%;">Nama Lengkap</th><td><strong>${d.nama_lengkap || '-'}</strong></td></tr>
+                    <tr><th>NIK KTP</th><td><strong class="text-danger">${d.nik_ktp || '-'}</strong></td></tr>
+                    <tr><th>Alamat KTP</th><td>${d.alamat_ktp || '-'}</td></tr>
+                    <tr><th>Alamat Usaha</th><td>${d.alamat_usaha || '-'}</td></tr>
+                    <tr><th>Nama Usaha</th><td><strong>${d.nama_usaha || '-'}</strong></td></tr>
+                    <tr><th>Jenis Usaha</th><td>${d.jenis_usaha || '-'}</td></tr>
+                    <tr><th>Nomor Surat SKU</th><td><span class="fw-bold text-success">${d.nomor_surat || '-'}</span></td></tr>
+                    <tr><th>Tanggal Dikirim</th><td>${d.tanggal_kirim || '-'}</td></tr>
+                </table>
+            </div>
+        `;
     }
-
-    // Ambil data terbaru
-    const data = dataDokumenSKUSeller[dataDokumenSKUSeller.length - 1];
-
-    let html = `
-        <div class="table-responsive">
-            <table class="table table-bordered">
-                <tr><th style="width: 25%;">Nama Lengkap</th><td><strong>${data.nama_lengkap || '-'}</strong></td></tr>
-                <tr><th>NIK KTP</th><td><strong class="text-danger">${data.nik_ktp || '-'}</strong></td></tr>
-                <tr><th>Alamat KTP</th><td>${data.alamat_ktp || '-'}</td></tr>
-                <tr><th>Alamat Usaha</th><td>${data.alamat_usaha || '-'}</td></tr>
-                <tr><th>Nama Usaha</th><td><strong>${data.nama_usaha || '-'}</strong></td></tr>
-                <tr><th>Jenis Usaha</th><td>${data.jenis_usaha || '-'}</td></tr>
-                <tr><th>Nomor Surat SKU</th><td><span class="fw-bold text-success">${data.nomor_surat || '-'}</span></td></tr>
-                <tr><th>Tanggal Dikirim</th><td>${data.tanggal_kirim || '-'}</td></tr>
-            </table>
-        </div>
-        <div class="alert alert-info small mt-3">
-            <i class="fas fa-info-circle me-1"></i> 
-            <strong>Instruksi:</strong> Dokumen ini masih berupa draft. Harap dicetak, dibawa ke kantor desa untuk ditandatangani & distempel, lalu diunggah kembali.
-        </div>
-    `;
-    area.innerHTML = html;
 }
 </script>
 <!--- ===== AKHIR BLOK 9.34 ===== --->
