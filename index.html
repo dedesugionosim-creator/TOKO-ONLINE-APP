@@ -4858,6 +4858,10 @@ function togglePasswordBaru() {
 <!--- ===== AKHIR BLOK 9.2.3 ===== --->
 <!--- ===== BLOK 9.2.4 Jam Real-time & Sistem Auto-Logout ===== --->
 <script>
+// --- VARIABEL UNTUK TIMER ---
+let intervalTimer = null;
+let waktuSisa = WAKTU_LOGOUT_OTOMATIS;
+
 // --- FUNGSI JAM REALTIME DAN CEK TAGIHAN ---
 function updateWaktu() {
     const s = new Date();
@@ -4869,9 +4873,7 @@ function updateWaktu() {
     if (elTgl) elTgl.textContent = tgl;
     if (elJam) elJam.textContent = jam + ' WIB';
 
-    // --- TAMBAHAN: CEK TAGIHAN OTOMATIS SETIAP DETIK ---
-    // Fungsi ini akan mengecek tanggal, membuat tagihan baru di tanggal 5,
-    // dan menonaktifkan akun jika tanggal sudah lewat 10 dan belum bayar.
+    // --- CEK TAGIHAN OTOMATIS SETIAP DETIK ---
     if (typeof cekTanggalTagihan === 'function') {
         cekTanggalTagihan();
     }
@@ -4880,7 +4882,9 @@ setInterval(updateWaktu, 1000);
 
 // --- SISTEM AUTO-LOGOUT 10 MENIT ---
 function resetTimerLogout() {
-    if (userAktif) { waktuSisa = WAKTU_LOGOUT_OTOMATIS; }
+    if (userAktif) { 
+        waktuSisa = WAKTU_LOGOUT_OTOMATIS; 
+    }
 }
 document.addEventListener('mousemove', resetTimerLogout);
 document.addEventListener('mousedown', resetTimerLogout);
@@ -4892,7 +4896,9 @@ function mulaiIntervalLogout() {
     intervalTimer = setInterval(function() {
         if (userAktif) {
             waktuSisa--;
-            if (waktuSisa <= 0) { prosesLogoutOtomatis(); }
+            if (waktuSisa <= 0) { 
+                prosesLogoutOtomatis(); 
+            }
         }
     }, 1000);
 }
@@ -4901,6 +4907,117 @@ function prosesLogoutOtomatis() {
     if (userAktif) {
         alert('Sesi Anda berakhir karena tidak ada aktivitas selama 10 menit. Silakan login kembali.');
         prosesLogout();
+    }
+}
+
+// --- FUNGSI CEK TANGGAL & EKSEKUSI OTOMATIS (Untuk tagihan) ---
+function cekTanggalTagihan() {
+    // Pastikan dataTagihan sudah ada dan terdefinisi
+    if (typeof dataTagihan === 'undefined' || !dataTagihan) return;
+
+    const today = new Date();
+    const day = today.getDate();
+
+    // Jika tanggal 5, generate tagihan bulan lalu (hanya jika belum ada)
+    if (day === 5) {
+        const lastMonth = new Date(today);
+        lastMonth.setMonth(lastMonth.getMonth() - 1);
+        const periode = lastMonth.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+        const existing = dataTagihan.find(t => t.periode === periode);
+        if (!existing) {
+            // Panggil fungsi generateTagihanBulanLalu jika ada
+            if (typeof generateTagihanBulanLalu === 'function') {
+                generateTagihanBulanLalu();
+            }
+        }
+    }
+
+    // Jika tanggal > 10, cek akun yang belum bayar
+    if (day > 10) {
+        if (typeof cekAkunNonaktif === 'function') {
+            cekAkunNonaktif();
+        }
+    }
+}
+
+// --- FUNGSI NONAKTIFKAN AKUN YANG BELUM BAYAR ---
+function cekAkunNonaktif() {
+    if (typeof dataTagihan === 'undefined' || !dataTagihan) return;
+    const today = new Date().toISOString().split('T')[0];
+    const daftarTagihanBelumBayar = dataTagihan.filter(t => t.status === 'Menunggu Pembayaran' && t.jatuhTempo < today);
+
+    daftarTagihanBelumBayar.forEach(tagihan => {
+        // Jangan nonaktifkan SuperAdmin
+        if (tagihan.role === 'SuperAdmin') return;
+
+        const akun = dataAkunAktif.find(a => a.id === tagihan.sellerId);
+        if (akun && akun.status === 'Aktif') {
+            akun.status = 'Nonaktif';
+            localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+        }
+    });
+}
+
+// --- FUNGSI GENERATE TAGIHAN BULAN LALU (Diperlukan untuk cekTanggalTagihan) ---
+// Fungsi ini akan dipanggil jika tanggal 5 dan belum ada tagihan untuk periode itu.
+// Jika Anda sudah punya di blok lain, pastikan tidak ada konflik.
+// Jika belum, berikut implementasi sederhana.
+function generateTagihanBulanLalu() {
+    // Pastikan dataTransaksi dan dataPenagihan tersedia
+    if (typeof dataTransaksi === 'undefined') return;
+    const now = new Date();
+    const lastMonth = new Date(now);
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    const periode = lastMonth.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+    const tahun = lastMonth.getFullYear();
+    const bulan = lastMonth.getMonth() + 1;
+
+    // Ambil semua transaksi dari bulan lalu
+    const transaksiBulanLalu = dataTransaksi.filter(trx => {
+        const tgl = new Date(trx.tanggal);
+        return tgl.getMonth() + 1 === bulan && tgl.getFullYear() === tahun;
+    });
+
+    // Kelompokkan berdasarkan penjualId
+    const grouped = {};
+    transaksiBulanLalu.forEach(trx => {
+        if (!grouped[trx.penjualId]) {
+            grouped[trx.penjualId] = { penjualNama: trx.penjualNama, role: 'Toko', totalFee: 0, bukti: [] };
+        }
+        grouped[trx.penjualId].totalFee += trx.feeAplikasi || 0;
+        grouped[trx.penjualId].bukti.push(trx);
+    });
+
+    // Buat tagihan untuk setiap penjual yang memiliki fee > 0
+    let tagihanBaru = [];
+    for (const [sellerId, data] of Object.entries(grouped)) {
+        if (data.totalFee === 0) continue;
+        // Cegah duplikasi
+        const existing = dataTagihan.find(t => t.sellerId === sellerId && t.periode === periode);
+        if (!existing) {
+            // Ambil data fee dari penagihan atau default
+            const penagihanData = (typeof dataPenagihan !== 'undefined') ? dataPenagihan.find(p => p.seller_id === sellerId) : null;
+            let feeSewa = penagihanData ? penagihanData.fee_sewa : 10000;
+            let jatuhTempo = penagihanData ? penagihanData.jatuh_tempo : 10;
+
+            tagihanBaru.push({
+                id: 'BILL-' + tahun + String(bulan).padStart(2, '0') + '-' + Date.now(),
+                sellerId: sellerId,
+                sellerNama: data.penjualNama,
+                role: data.role,
+                periode: periode,
+                totalFee: data.totalFee,
+                status: 'Menunggu Pembayaran',
+                jatuhTempo: new Date(now.getFullYear(), now.getMonth(), jatuhTempo).toISOString().split('T')[0],
+                bukti: data.bukti
+            });
+        }
+    }
+
+    if (tagihanBaru.length > 0) {
+        dataTagihan = dataTagihan.concat(tagihanBaru);
+        localStorage.setItem('dataTagihan', JSON.stringify(dataTagihan));
+        cekAkunNonaktif();
     }
 }
 </script>
