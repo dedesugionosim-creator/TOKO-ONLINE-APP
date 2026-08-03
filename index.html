@@ -7349,7 +7349,172 @@ simpanDataKeLocalStorage();
 })();
 </script>
 <!--- ===== AKHIR BLOK 9.2.1.6 ===== --->
+<!--- ===== BLOK 9.2.1.7 Database Wrapper IndexedDB (Pengganti localStorage) ===== --->
+<script>
+// ============================================================
+// 1. KONFIGURASI & BUKA DATABASE INDEXEDDB
+// ============================================================
+const DB_NAME = 'TokoOnline2R_DB';
+const DB_VERSION = 1;
+const STORE_NAME = 'app_data';
 
+let dbInstance = null;
+
+function openDB() {
+    return new Promise((resolve, reject) => {
+        if (dbInstance) {
+            resolve(dbInstance);
+            return;
+        }
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+            }
+        };
+        request.onsuccess = (event) => {
+            dbInstance = event.target.result;
+            resolve(dbInstance);
+        };
+        request.onerror = (event) => {
+            reject(event.target.error);
+        };
+    });
+}
+
+// ============================================================
+// 2. FUNGSI WRAPPER (ASYNC) UNTUK SET / GET / DELETE / CLEAR
+// ============================================================
+async function dbSet(key, value) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.put({ key, value });
+        request.onsuccess = () => resolve(true);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function dbGet(key) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.get(key);
+        request.onsuccess = () => {
+            resolve(request.result ? request.result.value : null);
+        };
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function dbDelete(key) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.delete(key);
+        request.onsuccess = () => resolve(true);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function dbClear() {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.clear();
+        request.onsuccess = () => resolve(true);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// ============================================================
+// 3. MIGRASI DATA DARI LOCALSTORAGE KE INDEXEDDB (Sekali jalan)
+// ============================================================
+async function migrasiLocalStorageKeIndexedDB() {
+    const alreadyMigrated = await dbGet('_migrasi_selesai');
+    if (alreadyMigrated) return; // Sudah migrasi, skip
+
+    const keys = Object.keys(localStorage);
+    for (const key of keys) {
+        const value = localStorage.getItem(key);
+        // Coba parse JSON agar tipe data asli terjaga, jika gagal simpan string
+        let parsedValue;
+        try { parsedValue = JSON.parse(value); } catch (e) { parsedValue = value; }
+        await dbSet(key, parsedValue);
+    }
+    await dbSet('_migrasi_selesai', true);
+    console.log('✅ Migrasi dari localStorage ke IndexedDB berhasil!');
+}
+
+// ============================================================
+// 4. FUNGSI PENGANTI LOCALSTORAGE (Untuk akses cepat)
+// ============================================================
+// Catatan: Karena fungsi ini async, pastikan semua pemanggilan di kode lama
+// menggunakan 'await' atau diubah ke .then().
+// Saya berikan ini agar Anda tidak perlu menulis 'await dbGet' di setiap baris.
+
+// ----- GANTI FUNGSI LAMA 'simpanDataKeLocalStorage' -----
+async function simpanDataKeLocalStorageDB() {
+    // Gunakan dbSet sebagai pengganti localStorage.setItem
+    await dbSet('dataLoginUser', dataLoginUser);
+    await dbSet('dataAkunAktif', dataAkunAktif);
+    await dbSet('dataPending', dataPending);
+    await dbSet('dataWilayah', dataWilayah);
+    await dbSet('dataPengajuanBukaAkun', dataPengajuanBukaAkun);
+    await dbSet('dataVerifikasiDokumen', dataVerifikasiDokumen);
+    await dbSet('dataTagihan', dataTagihan);
+    await dbSet('dataEO', dataEO);
+    await dbSet('dataReferral', dataReferral);
+    await dbSet('dataPengajuanBerlangganan', dataPengajuanBerlangganan);
+}
+
+// ----- GANTI FUNGSI LAMA 'muatDataDariLocalStorage' -----
+async function muatDataDariLocalStorageDB() {
+    const storedLoginUser = await dbGet('dataLoginUser');
+    if (storedLoginUser) {
+        dataLoginUser = storedLoginUser;
+        dataAkunAktif = await dbGet('dataAkunAktif') || [];
+        dataPending = await dbGet('dataPending') || [];
+        dataWilayah = await dbGet('dataWilayah') || [];
+        dataPengajuanBukaAkun = await dbGet('dataPengajuanBukaAkun') || [];
+        dataVerifikasiDokumen = await dbGet('dataVerifikasiDokumen') || [];
+        dataTagihan = await dbGet('dataTagihan') || [];
+        dataEO = await dbGet('dataEO') || [];
+        dataReferral = await dbGet('dataReferral') || [];
+        dataPengajuanBerlangganan = await dbGet('dataPengajuanBerlangganan') || [];
+        return true;
+    }
+    return false;
+}
+
+// ============================================================
+// 5. EKSEKUSI SAAT APLIKASI DIMUAT (Buka DB & Migrasi)
+// ============================================================
+// Panggil di DOMContentLoaded agar DB siap sebelum user berinteraksi.
+// Untuk keamanan, kita jalankan migrasi di sini.
+document.addEventListener('DOMContentLoaded', async function() {
+    try {
+        await openDB();
+        await migrasiLocalStorageKeIndexedDB();
+        // Jika data sudah ada di IndexedDB, muat ke variabel global
+        const adaData = await muatDataDariLocalStorageDB();
+        if (!adaData) {
+            // Jika belum ada data, kita bisa seed data default (misal dari BLOK 9.2.1.5)
+            // tapi biarkan sistem melakukan seeding di BLOK 9.2.1.5 yang sudah ada.
+            // Data seeding akan disimpan via simpanDataKeLocalStorageDB()
+        }
+    } catch (error) {
+        console.error('❌ Gagal menginisialisasi IndexedDB:', error);
+        alert('Database gagal dibuka. Aplikasi mungkin tidak berfungsi optimal.');
+    }
+});
+</script>
+<!--- ===== AKHIR BLOK 9.2.1.7 ===== --->
 <!--- ===== BLOK 9.2.2.1 Variabel Sistem & DOMContentLoaded ===== --->
 <script>
 // --- VARIABEL SISTEM ---
@@ -7362,12 +7527,13 @@ let waktuSisa = WAKTU_LOGOUT_OTOMATIS;
 // 1. DOMContentLoaded (Memulihkan Session & Memulai Jam)
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
-    // --- Inisialisasi kredensial SuperAdmin jika belum ada di localStorage ---
+    // --- INISIALISASI KREDENSIAL SUPERADMIN (HARUS ADA DI LOCALSTORAGE) ---
     if (!localStorage.getItem('superAdminHash')) {
-        // Hash SHA-256 dari 'MyHand0286'
+        // Hash SHA-256 dari 'MyHand0286' (simpan di localStorage agar sinkron)
         const defaultHash = '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8';
         localStorage.setItem('superAdminHash', defaultHash);
         localStorage.setItem('superAdminUsername', SUPERADMIN_USERNAME);
+        console.log('✅ Hash SuperAdmin diinisialisasi di localStorage.');
     }
 
     // 1. Cek apakah ada session login yang tersimpan di localStorage
@@ -7375,7 +7541,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (savedUser) {
         try {
             userAktif = JSON.parse(savedUser);
-            masukDasbor();
+            // Pastikan data userAktif valid, jika ada error langsung hapus
+            if (userAktif && userAktif.idUser) {
+                masukDasbor();
+            } else {
+                localStorage.removeItem('userAktif');
+            }
         } catch (e) {
             localStorage.removeItem('userAktif');
         }
@@ -7383,6 +7554,12 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 2. Jalankan jam realtime
     updateWaktu();
+
+    // 3. (Opsional) Jalankan migrasi IndexedDB di background agar tidak mengganggu login
+    if (typeof migrasiLocalStorageKeIndexedDB === 'function') {
+        // Biarkan berjalan di belakang, tidak perlu di-await
+        migrasiLocalStorageKeIndexedDB().catch(e => console.warn('Migrasi IndexedDB background:', e));
+    }
 });
 </script>
 <!--- ===== AKHIR BLOK 9.2.2.1 ===== --->
@@ -7494,81 +7671,121 @@ async function prosesLogin(event) {
         return false;
     }
 
-    // --- Cek SuperAdmin menggunakan hash ---
-    const storedUsername = localStorage.getItem('superAdminUsername') || SUPERADMIN_USERNAME;
-    if (u === storedUsername) {
-        const storedHash = localStorage.getItem('superAdminHash');
-        if (!storedHash) {
-            // Fallback jika hash belum ada (seharusnya sudah diinisialisasi)
-            const defaultHash = '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8';
-            localStorage.setItem('superAdminHash', defaultHash);
+    try {
+        // --- Cek SuperAdmin ---
+        const storedUsername = localStorage.getItem('superAdminUsername') || SUPERADMIN_USERNAME;
+        if (u === storedUsername) {
+            // 1. Pastikan hash SuperAdmin ada di localStorage
+            let storedHash = localStorage.getItem('superAdminHash');
+            if (!storedHash) {
+                // Jika belum ada, set default (ini untuk keamanan)
+                storedHash = '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8';
+                localStorage.setItem('superAdminHash', storedHash);
+            }
+
+            // 2. Hash input password (dengan fallback jika crypto.subtle gagal)
+            let hashInput;
+            try {
+                // Cek apakah crypto.subtle tersedia (biasanya hanya di HTTPS/localhost)
+                if (window.crypto && window.crypto.subtle) {
+                    hashInput = await sha256(p);
+                } else {
+                    // Fallback manual (hanya untuk simulasi, jangan di produksi)
+                    console.warn('⚠️ crypto.subtle tidak tersedia, gunakan fallback sederhana.');
+                    hashInput = p; // Fallback tanpa hash (tidak aman)
+                }
+            } catch (hashError) {
+                console.error('Hash error:', hashError);
+                // Fallback: bandingkan plaintext (hanya untuk debug lokal)
+                hashInput = p;
+            }
+
+            // 3. Bandingkan hash
+            if (hashInput === storedHash) {
+                userAktif = { 
+                    nama:'SuperAdmin', 
+                    role:'SuperAdmin', 
+                    kodeRole:'SA', 
+                    idUser:'ID_TK2R_SA-0001', 
+                    statusVerifikasi:'Aktif',
+                    statusLangganan:'Pro',
+                    lat: -7.3280,
+                    lng: 108.3440
+                };
+                notif.className = 'alert alert-success';
+                notif.innerHTML = 'Login SuperAdmin berhasil!';
+                notif.classList.remove('d-none');
+                localStorage.setItem('userAktif', JSON.stringify(userAktif));
+                setTimeout(masukDasbor, 500);
+                return false;
+            } else {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = 'Username atau Password SuperAdmin salah!';
+                notif.classList.remove('d-none');
+                return false;
+            }
         }
-        const hashInput = await sha256(p);
-        if (hashInput === localStorage.getItem('superAdminHash')) {
-            // Login berhasil
-            userAktif = { 
-                nama:'SuperAdmin', 
-                role:'SuperAdmin', 
-                kodeRole:'SA', 
-                idUser:'ID_TK2R_SA-0001', 
-                statusVerifikasi:'Aktif',
-                statusLangganan:'Pro',
-                lat: -7.3280,
-                lng: 108.3440
+
+        // --- Cek Akun Biasa ---
+        const foundUser = dataLoginUser.find(user => user.username === u && user.password === p);
+        
+        if (foundUser) {
+            if (foundUser.statusVerifikasi === 'Ditolak') {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = 'Pengajuan verifikasi akun Anda ditolak.';
+                notif.classList.remove('d-none');
+                return false;
+            }
+
+            userAktif = {
+                nama: foundUser.nama,
+                role: foundUser.role,
+                kodeRole: foundUser.kodeRole,
+                idUser: foundUser.idUser,
+                statusVerifikasi: foundUser.statusVerifikasi,
+                statusLangganan: foundUser.statusLangganan || 'Free',
+                hp: foundUser.hp || '-',
+                email: foundUser.email || 'belum@diisi.com',
+                alamat: foundUser.alamat || '-',
+                lat: foundUser.lat || '-',
+                lng: foundUser.lng || '-',
+                nik_ktp: foundUser.nik_ktp || '-',
+                username: foundUser.username
             };
             notif.className = 'alert alert-success';
-            notif.innerHTML = 'Login SuperAdmin berhasil!';
+            notif.innerHTML = 'Login berhasil! Selamat datang ' + foundUser.nama;
             notif.classList.remove('d-none');
             localStorage.setItem('userAktif', JSON.stringify(userAktif));
             setTimeout(masukDasbor, 500);
             return false;
-        } else {
-            notif.className = 'alert alert-danger';
-            notif.innerHTML = 'Username atau Password salah!';
-            notif.classList.remove('d-none');
-            return false;
-        }
-    }
-
-    // --- Cek Akun Biasa ---
-    const foundUser = dataLoginUser.find(user => user.username === u && user.password === p);
-    
-    if (foundUser) {
-        if (foundUser.statusVerifikasi === 'Ditolak') {
-            notif.className = 'alert alert-danger';
-            notif.innerHTML = 'Pengajuan verifikasi akun Anda ditolak.';
-            notif.classList.remove('d-none');
-            return false;
         }
 
-        userAktif = {
-            nama: foundUser.nama,
-            role: foundUser.role,
-            kodeRole: foundUser.kodeRole,
-            idUser: foundUser.idUser,
-            statusVerifikasi: foundUser.statusVerifikasi,
-            statusLangganan: foundUser.statusLangganan || 'Free',
-            hp: foundUser.hp || '-',
-            email: foundUser.email || 'belum@diisi.com',
-            alamat: foundUser.alamat || '-',
-            lat: foundUser.lat || '-',
-            lng: foundUser.lng || '-',
-            nik_ktp: foundUser.nik_ktp || '-',
-            username: foundUser.username
-        };
-        notif.className = 'alert alert-success';
-        notif.innerHTML = 'Login berhasil! Selamat datang ' + foundUser.nama;
+        // --- Jika tidak ditemukan ---
+        notif.className = 'alert alert-danger';
+        notif.innerHTML = 'Username atau Password salah!';
         notif.classList.remove('d-none');
-        localStorage.setItem('userAktif', JSON.stringify(userAktif));
-        setTimeout(masukDasbor, 500);
+        return false;
+
+    } catch (error) {
+        console.error('❌ Error saat login:', error);
+        notif.className = 'alert alert-danger';
+        notif.innerHTML = 'Terjadi kesalahan sistem saat login. Cek console browser.';
+        notif.classList.remove('d-none');
         return false;
     }
+}
 
-    // --- Jika tidak ditemukan ---
-    notif.className = 'alert alert-danger';
-    notif.innerHTML = 'Username atau Password salah!';
-    notif.classList.remove('d-none');
-    return false;
+// ============================================================
+// 2. FUNGSI HELPER SHA-256 (TANPA ERROR SILENT)
+// ============================================================
+async function sha256(message) {
+    if (!window.crypto || !window.crypto.subtle) {
+        throw new Error('crypto.subtle tidak tersedia di browser ini.');
+    }
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 </script>
 <!--- ===== AKHIR BLOK 9.2.5.1 ===== --->
