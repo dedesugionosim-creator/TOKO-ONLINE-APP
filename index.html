@@ -15181,12 +15181,13 @@ function exportAllTransaksiCSV() {
 <!--- ===== BLOK 9.50 – FUNGSI FORM VERIFIKASI UNTUK AKUN PENDING ===== --->
 <script>
 // ============================================================
-// TAMPILKAN FORM PENGAJUAN VERIFIKASI (UNTUK AKUN PENDING)
+// TAMPILKAN FORM PENGAJUAN VERIFIKASI
 // ============================================================
 function tampilkanFormVerifikasiAkun() {
     const konten = document.getElementById('kontenDasbor');
     if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
 
+    // Ambil data user yang sedang login
     const user = userAktif || {};
     const storedProfil = localStorage.getItem('profil_' + user.idUser);
     let profilData = {};
@@ -15197,7 +15198,9 @@ function tampilkanFormVerifikasiAkun() {
     const namaToko = profilData.namaToko || user.nama || '-';
     const email = user.email || 'belum@diisi.com';
     const hp = user.hp || '-';
+    const role = user.role || '-';
 
+    // Render HTML form (menggunakan template yang sama dengan BLOK 10.46)
     konten.innerHTML = `
         <div class="container-fluid px-4 py-4">
             <div class="d-flex justify-content-between align-items-center mb-4">
@@ -15227,17 +15230,28 @@ function tampilkanFormVerifikasiAkun() {
                             <label class="fw-bold">Nomor HP</label>
                             <input type="text" class="form-control bg-light" value="${hp}" readonly>
                         </div>
+                        <div class="col-md-6">
+                            <label class="fw-bold">Role</label>
+                            <input type="text" class="form-control bg-light" value="${role}" readonly>
+                        </div>
                     </div>
 
                     <div class="mb-3">
-                        <label class="fw-bold">Upload Foto KTP</label>
-                        <input type="file" id="uploadKtpVerifikasi" class="form-control" accept="image/*">
-                        <small class="text-muted">*Wajib diisi</small>
+                        <label class="fw-bold">Upload Foto KTP <span class="text-danger">*</span></label>
+                        <input type="file" id="uploadKtpVerifikasi" class="form-control" accept="image/*" required>
+                        <small class="text-muted">Format JPG/PNG, maks 2MB</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Upload Selfie Wajah <span class="text-danger">*</span></label>
+                        <input type="file" id="uploadSelfieVerifikasi" class="form-control" accept="image/*" required>
+                        <small class="text-muted">Foto selfie memegang KTP</small>
                     </div>
                     <div class="mb-3">
                         <label class="fw-bold">Upload SKU / SIUP (Opsional)</label>
                         <input type="file" id="uploadSkuVerifikasi" class="form-control" accept="image/*">
                     </div>
+
+                    <div class="row g-2 mt-3" id="previewVerifDokumen"></div>
 
                     <div class="d-grid mt-4">
                         <button class="btn btn-lg text-white fw-bold" style="background-color: #FF8C00;" onclick="kirimVerifikasiAkun()">
@@ -15250,17 +15264,54 @@ function tampilkanFormVerifikasiAkun() {
         </div>
     `;
     tutupMenu();
+
+    // Tambahkan event listener untuk preview file (opsional)
+    const inputKtp = document.getElementById('uploadKtpVerifikasi');
+    const inputSelfie = document.getElementById('uploadSelfieVerifikasi');
+    const inputSku = document.getElementById('uploadSkuVerifikasi');
+    if (inputKtp) {
+        inputKtp.addEventListener('change', function(e) { previewFile(e, 'KTP'); });
+    }
+    if (inputSelfie) {
+        inputSelfie.addEventListener('change', function(e) { previewFile(e, 'Selfie'); });
+    }
+    if (inputSku) {
+        inputSku.addEventListener('change', function(e) { previewFile(e, 'SKU'); });
+    }
+}
+
+// --- FUNGSI PREVIEW FILE (Untuk menampilkan thumbnail di form) ---
+function previewFile(event, label) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const previewDiv = document.getElementById('previewVerifDokumen');
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const col = document.createElement('div');
+        col.className = 'col-3';
+        col.innerHTML = `
+            <div class="card p-1">
+                <img src="${e.target.result}" class="img-fluid rounded" style="height:100px; object-fit:cover;">
+                <small class="text-muted">${label}</small>
+            </div>
+        `;
+        previewDiv.appendChild(col);
+    };
+    reader.readAsDataURL(file);
 }
 
 // ============================================================
 // KIRIM VERIFIKASI KE SUPERADMIN
 // ============================================================
 function kirimVerifikasiAkun() {
-    const fileKtp = document.getElementById('uploadKtpVerifikasi').files[0];
-    const fileSku = document.getElementById('uploadSkuVerifikasi').files[0];
+    // Ambil elemen input
+    const inputKtp = document.getElementById('uploadKtpVerifikasi');
+    const inputSelfie = document.getElementById('uploadSelfieVerifikasi');
+    const inputSku = document.getElementById('uploadSkuVerifikasi');
     const notif = document.getElementById('notifikasiVerifikasiAkun');
 
-    if (!fileKtp) {
+    // Validasi file KTP
+    if (!inputKtp || !inputKtp.files || inputKtp.files.length === 0) {
         notif.className = 'alert alert-warning';
         notif.innerHTML = 'Foto KTP wajib diupload!';
         notif.classList.remove('d-none');
@@ -15268,12 +15319,26 @@ function kirimVerifikasiAkun() {
     }
 
     const user = userAktif || {};
-    const listDokumen = [ { nama: 'Foto KTP', url: URL.createObjectURL(fileKtp) } ];
-    if (fileSku) {
-        listDokumen.push({ nama: 'SKU / SIUP', url: URL.createObjectURL(fileSku) });
+    // Siapkan list dokumen
+    const listDokumen = [];
+
+    // KTP
+    const fileKtp = inputKtp.files[0];
+    listDokumen.push({ nama: 'Foto KTP', url: URL.createObjectURL(fileKtp), tipe: 'ktp' });
+
+    // Selfie (jika ada)
+    if (inputSelfie && inputSelfie.files && inputSelfie.files.length > 0) {
+        const fileSelfie = inputSelfie.files[0];
+        listDokumen.push({ nama: 'Selfie Wajah', url: URL.createObjectURL(fileSelfie), tipe: 'selfie' });
     }
 
-    // Cek apakah sudah ada pengajuan sebelumnya
+    // SKU (jika ada)
+    if (inputSku && inputSku.files && inputSku.files.length > 0) {
+        const fileSku = inputSku.files[0];
+        listDokumen.push({ nama: 'SKU / SIUP', url: URL.createObjectURL(fileSku), tipe: 'sku' });
+    }
+
+    // Cek apakah sudah ada pengajuan sebelumnya untuk user ini
     const existing = dataVerifikasiDokumen.find(item => item.id === user.idUser);
     if (existing) {
         if (existing.status === 'Menunggu') {
@@ -15282,11 +15347,13 @@ function kirimVerifikasiAkun() {
             notif.classList.remove('d-none');
             return;
         } else {
+            // Jika sebelumnya ditolak/diterima, timpa dengan yang baru
             existing.status = 'Menunggu';
             existing.listDokumen = listDokumen;
             existing.tgl = new Date().toISOString().split('T')[0];
         }
     } else {
+        // Buat pengajuan baru
         dataVerifikasiDokumen.push({
             id: user.idUser,
             nama: user.nama,
@@ -15297,11 +15364,20 @@ function kirimVerifikasiAkun() {
         });
     }
 
+    // Simpan ke localStorage
+    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasiDokumen));
+
+    // Tampilkan notifikasi sukses
     notif.className = 'alert alert-success';
     notif.innerHTML = '✅ Dokumen berhasil dikirim ke Admin!';
     notif.classList.remove('d-none');
+
+    // Reset form
     document.getElementById('uploadKtpVerifikasi').value = '';
+    document.getElementById('uploadSelfieVerifikasi').value = '';
     document.getElementById('uploadSkuVerifikasi').value = '';
+    document.getElementById('previewVerifDokumen').innerHTML = '';
+
     setTimeout(() => notif.classList.add('d-none'), 5000);
 }
 </script>
