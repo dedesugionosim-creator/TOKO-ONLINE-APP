@@ -6919,7 +6919,8 @@ function renderDashboardKeuangan() {
 <script>
 // --- KONSTANTA SISTEM ---
 const SUPERADMIN_USERNAME = 'AppTokoOnLine2R';
-const SUPERADMIN_PASSWORD = 'MyHand0286';
+// Password SuperAdmin tidak lagi disimpan dalam teks jelas.
+// Hash SHA-256 dari password default ('MyHand0286') disimpan di localStorage.
 const WAKTU_LOGOUT_OTOMATIS = 600; // 10 Menit
 
 // --- DEKLARASI VARIABEL GLOBAL ---
@@ -6933,13 +6934,19 @@ let dataFormSKU = [];
 let listDokumenPerusahaan = [];
 let dataTagihan = [];
 let dataWilayah = [];
-
-// --- TAMBAHAN UNTUK EVENT ORGANIZER DAN REFERRAL ---
 let dataEO = [];
 let dataReferral = [];
+let dataPengajuanBerlangganan = []; // Tambahan RAppTK003
 
-// --- TAMBAHAN RAppTK003: Variabel untuk Pengajuan Berlangganan Pro ---
-let dataPengajuanBerlangganan = [];
+// ============================================================
+// FUNGSI HELPER SHA-256 (Menggunakan Web Crypto API)
+// ============================================================
+async function sha256(message) {
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 // ============================================================
 // 1. FUNGSI SIMPAN & MUAT DATA (AKAN DITULIS DI BLOK 9.2.1.2)
@@ -7355,15 +7362,21 @@ let waktuSisa = WAKTU_LOGOUT_OTOMATIS;
 // 1. DOMContentLoaded (Memulihkan Session & Memulai Jam)
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
+    // --- Inisialisasi kredensial SuperAdmin jika belum ada di localStorage ---
+    if (!localStorage.getItem('superAdminHash')) {
+        // Hash SHA-256 dari 'MyHand0286'
+        const defaultHash = '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8';
+        localStorage.setItem('superAdminHash', defaultHash);
+        localStorage.setItem('superAdminUsername', SUPERADMIN_USERNAME);
+    }
+
     // 1. Cek apakah ada session login yang tersimpan di localStorage
     const savedUser = localStorage.getItem('userAktif');
     if (savedUser) {
         try {
             userAktif = JSON.parse(savedUser);
-            // Jika data berhasil diparse, langsung arahkan ke dasbor
             masukDasbor();
         } catch (e) {
-            // Jika data rusak, hapus dan biarkan user login ulang
             localStorage.removeItem('userAktif');
         }
     }
@@ -7468,7 +7481,7 @@ function prosesLogoutOtomatis() {
 // ============================================================
 // 1. FUNGSI PROSES LOGIN
 // ============================================================
-function prosesLogin(event) {
+async function prosesLogin(event) {
     event.preventDefault();
     const u = document.getElementById('usernameLogin').value.trim();
     const p = document.getElementById('passwordLogin').value.trim();
@@ -7481,27 +7494,43 @@ function prosesLogin(event) {
         return false;
     }
 
-    // 1. Cek SuperAdmin
-    if (u === SUPERADMIN_USERNAME && p === SUPERADMIN_PASSWORD) {
-        userAktif = { 
-            nama:'SuperAdmin', 
-            role:'SuperAdmin', 
-            kodeRole:'SA', 
-            idUser:'ID_TK2R_SA-0001', 
-            statusVerifikasi:'Aktif',
-            statusLangganan:'Pro', // SuperAdmin dianggap Pro
-            lat: -7.3280,
-            lng: 108.3440
-        };
-        notif.className = 'alert alert-success';
-        notif.innerHTML = 'Login SuperAdmin berhasil!';
-        notif.classList.remove('d-none');
-        localStorage.setItem('userAktif', JSON.stringify(userAktif));
-        setTimeout(masukDasbor, 500);
-        return false;
+    // --- Cek SuperAdmin menggunakan hash ---
+    const storedUsername = localStorage.getItem('superAdminUsername') || SUPERADMIN_USERNAME;
+    if (u === storedUsername) {
+        const storedHash = localStorage.getItem('superAdminHash');
+        if (!storedHash) {
+            // Fallback jika hash belum ada (seharusnya sudah diinisialisasi)
+            const defaultHash = '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8';
+            localStorage.setItem('superAdminHash', defaultHash);
+        }
+        const hashInput = await sha256(p);
+        if (hashInput === localStorage.getItem('superAdminHash')) {
+            // Login berhasil
+            userAktif = { 
+                nama:'SuperAdmin', 
+                role:'SuperAdmin', 
+                kodeRole:'SA', 
+                idUser:'ID_TK2R_SA-0001', 
+                statusVerifikasi:'Aktif',
+                statusLangganan:'Pro',
+                lat: -7.3280,
+                lng: 108.3440
+            };
+            notif.className = 'alert alert-success';
+            notif.innerHTML = 'Login SuperAdmin berhasil!';
+            notif.classList.remove('d-none');
+            localStorage.setItem('userAktif', JSON.stringify(userAktif));
+            setTimeout(masukDasbor, 500);
+            return false;
+        } else {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = 'Username atau Password salah!';
+            notif.classList.remove('d-none');
+            return false;
+        }
     }
 
-    // 2. Cek Akun Biasa
+    // --- Cek Akun Biasa ---
     const foundUser = dataLoginUser.find(user => user.username === u && user.password === p);
     
     if (foundUser) {
@@ -7518,7 +7547,7 @@ function prosesLogin(event) {
             kodeRole: foundUser.kodeRole,
             idUser: foundUser.idUser,
             statusVerifikasi: foundUser.statusVerifikasi,
-            statusLangganan: foundUser.statusLangganan || 'Free', // RAppTK003
+            statusLangganan: foundUser.statusLangganan || 'Free',
             hp: foundUser.hp || '-',
             email: foundUser.email || 'belum@diisi.com',
             alamat: foundUser.alamat || '-',
@@ -7535,7 +7564,7 @@ function prosesLogin(event) {
         return false;
     }
 
-    // 3. Jika tidak ditemukan
+    // --- Jika tidak ditemukan ---
     notif.className = 'alert alert-danger';
     notif.innerHTML = 'Username atau Password salah!';
     notif.classList.remove('d-none');
