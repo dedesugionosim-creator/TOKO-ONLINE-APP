@@ -33759,6 +33759,425 @@ function hapusHistoriLama() {
 }
 </script>
 <!--- ===== AKHIR BLOK 9.40 ===== --->
+<!--- ===== BLOK 9.41 – PEMERIKSAAN PRODUK KHUSUS (JS) ===== --->
+<script>
+// ============================================================
+// BLOK 9.41 – JAVASCRIPT PEMERIKSAAN PRODUK KHUSUS
+// ============================================================
+
+var currentPageKhusus = 1;
+var itemsPerPageKhusus = 10;
+
+// ============================================================
+// 1. FUNGSI UTAMA TAMPILKAN HALAMAN
+// ============================================================
+function tampilkanPemeriksaanKhususSA() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('pemeriksaanKhususContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderPemeriksaanKhusus(1);
+        var offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
+        if (offcanvas) offcanvas.hide();
+    } else {
+        // Fallback jika container belum ada
+        konten.innerHTML = `
+            <div class="container-fluid px-4 py-4">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h4 class="fw-bold text-white"><i class="fas fa-search me-2"></i>Pemeriksaan Produk Khusus</h4>
+                    <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                        <i class="fas fa-arrow-left me-1"></i> Kembali
+                    </button>
+                </div>
+                <div class="card border-0 shadow">
+                    <div class="card-body text-center py-5">
+                        <i class="fas fa-tools fa-5x text-muted mb-4"></i>
+                        <h3 class="text-muted">Fitur dalam pengembangan</h3>
+                        <p class="lead text-muted">Pemeriksaan Produk Khusus akan segera hadir.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        tutupMenu();
+    }
+}
+
+// ============================================================
+// 2. FUNGSI MENGUMPULKAN SEMUA PRODUK DARI SEMUA TOKO
+// ============================================================
+function getAllProdukDariSemuaToko() {
+    var semuaProduk = [];
+
+    for (var i = 0; i < dataAkunAktif.length; i++) {
+        var akun = dataAkunAktif[i];
+
+        var roleProduk = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller', 'Ojek', 'Grosir'];
+        var isRoleProduk = false;
+        for (var j = 0; j < roleProduk.length; j++) {
+            if (akun.role === roleProduk[j]) {
+                isRoleProduk = true;
+                break;
+            }
+        }
+        if (!isRoleProduk) continue;
+
+        var key = 'dataProdukToko_' + akun.id;
+        var stored = localStorage.getItem(key);
+        if (stored) {
+            try {
+                var produkToko = JSON.parse(stored);
+                for (var k = 0; k < produkToko.length; k++) {
+                    var produk = produkToko[k];
+                    produk.namaToko = akun.nama;
+                    produk.idToko = akun.id;
+                    produk.roleToko = akun.role;
+                    produk.statusSeller = akun.status || 'Aktif';
+                    semuaProduk.push(produk);
+                }
+            } catch (e) {
+                console.warn('Data produk toko ' + akun.nama + ' rusak, dilewati.');
+            }
+        }
+    }
+    return semuaProduk;
+}
+
+// ============================================================
+// 3. FUNGSI HITUNG RATA-RATA HARGA PER KATEGORI
+// ============================================================
+function hitungRataRataHarga(produkList, kategori) {
+    var total = 0;
+    var count = 0;
+    for (var i = 0; i < produkList.length; i++) {
+        var p = produkList[i];
+        if (p.kategori === kategori && p.harga > 0) {
+            total += p.harga;
+            count++;
+        }
+    }
+    if (count === 0) return 0;
+    return total / count;
+}
+
+// ============================================================
+// 4. FUNGSI TENTUKAN STATUS PRODUK (NORMAL / BERMASALAH)
+// ============================================================
+function getStatusProduk(produk, semuaProduk) {
+    var masalah = [];
+
+    // 1. Stok habis
+    if (produk.stok <= 0) {
+        masalah.push('Stok Habis');
+    }
+
+    // 2. Tanpa foto
+    if (!produk.foto || produk.foto === '') {
+        masalah.push('Tanpa Foto');
+    }
+
+    // 3. Kadaluarsa
+    if (produk.kadaluarsa) {
+        var expDate = new Date(produk.kadaluarsa);
+        var now = new Date();
+        if (expDate < now) {
+            masalah.push('Kadaluarsa');
+        }
+    }
+
+    // 4. Harga tidak wajar (rata-rata kategori)
+    var rataRata = hitungRataRataHarga(semuaProduk, produk.kategori);
+    if (rataRata > 0) {
+        if (produk.harga < rataRata * 0.1 || produk.harga > rataRata * 5) {
+            masalah.push('Harga Tidak Wajar');
+        }
+    }
+
+    // 5. Tidak terjual > 6 bulan
+    if (produk.tanggal_input) {
+        var inputDate = new Date(produk.tanggal_input);
+        var now = new Date();
+        var diffMonths = (now.getFullYear() - inputDate.getFullYear()) * 12 + (now.getMonth() - inputDate.getMonth());
+        if (diffMonths > 6 && produk.stok === produk.stok_awal) {
+            masalah.push('Tidak Terjual');
+        }
+    }
+
+    if (masalah.length === 0) return 'Normal';
+    return masalah.join(', ');
+}
+
+// ============================================================
+// 5. FUNGSI RENDER TABEL DENGAN FILTER & PAGINATION
+// ============================================================
+function renderPemeriksaanKhusus(hal) {
+    currentPageKhusus = hal;
+
+    var tbody = document.getElementById('tabelPemeriksaanKhusus');
+    var totalProduk = document.getElementById('totalProdukKhusus');
+    var produkBermasalah = document.getElementById('produkBermasalahKhusus');
+    var sellerBermasalah = document.getElementById('sellerBermasalahKhusus');
+    var produkKadaluarsa = document.getElementById('produkKadaluarsaKhusus');
+    var infoJumlah = document.getElementById('infoJumlahKhusus');
+    var totalCount = document.getElementById('totalProdukKhususCount');
+    var infoPagination = document.getElementById('infoPaginationKhusus');
+    var btnPrev = document.getElementById('btnPrevKhusus');
+    var btnNext = document.getElementById('btnNextKhusus');
+
+    if (!tbody) return;
+
+    // Loading state
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="10" class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Memuat...</span>
+                </div>
+                <p class="text-muted mt-2">Memuat data produk...</p>
+            </td>
+        </tr>
+    `;
+
+    // Ambil semua produk
+    var semua = getAllProdukDariSemuaToko();
+
+    // Statistik total
+    if (totalProduk) totalProduk.textContent = semua.length;
+
+    // Filter
+    var cari = (document.getElementById('cariKhususGlobal')?.value || '').toLowerCase().trim();
+    var filterKategori = document.getElementById('filterKategoriKhusus')?.value || '';
+    var filterMasalah = document.getElementById('filterMasalahKhusus')?.value || '';
+    var filterStatusSeller = document.getElementById('filterStatusSellerKhusus')?.value || '';
+
+    var dataFilter = [];
+    for (var i = 0; i < semua.length; i++) {
+        var p = semua[i];
+        var status = getStatusProduk(p, semua);
+
+        var matchCari = cari === '' || p.nama.toLowerCase().includes(cari) || (p.namaToko || '').toLowerCase().includes(cari);
+        var matchKategori = filterKategori === '' || p.kategori === filterKategori;
+        var matchMasalah = filterMasalah === '' || status.indexOf(filterMasalah) !== -1;
+        var matchStatusSeller = filterStatusSeller === '' || p.statusSeller === filterStatusSeller;
+
+        if (matchCari && matchKategori && matchMasalah && matchStatusSeller) {
+            dataFilter.push(p);
+        }
+    }
+
+    // Statistik produk bermasalah
+    var jmlBermasalah = 0;
+    var jmlKadaluarsa = 0;
+    var sellerSet = {};
+    for (var i = 0; i < dataFilter.length; i++) {
+        var p = dataFilter[i];
+        var status = getStatusProduk(p, semua);
+        if (status !== 'Normal') {
+            jmlBermasalah++;
+            sellerSet[p.idToko] = true;
+            if (status.indexOf('Kadaluarsa') !== -1) {
+                jmlKadaluarsa++;
+            }
+        }
+    }
+    if (produkBermasalah) produkBermasalah.textContent = jmlBermasalah;
+    if (sellerBermasalah) sellerBermasalah.textContent = Object.keys(sellerSet).length;
+    if (produkKadaluarsa) produkKadaluarsa.textContent = jmlKadaluarsa;
+    if (totalCount) totalCount.textContent = dataFilter.length;
+    if (infoJumlah) infoJumlah.textContent = dataFilter.length + ' Produk';
+
+    // Pagination
+    var totalPages = Math.ceil(dataFilter.length / itemsPerPageKhusus) || 1;
+    if (currentPageKhusus > totalPages) currentPageKhusus = totalPages;
+    if (currentPageKhusus < 1) currentPageKhusus = 1;
+
+    var start = (currentPageKhusus - 1) * itemsPerPageKhusus;
+    var end = start + itemsPerPageKhusus;
+    var dataPaged = dataFilter.slice(start, end);
+
+    if (infoPagination) infoPagination.textContent = 'Halaman ' + currentPageKhusus + ' dari ' + totalPages;
+    if (btnPrev) btnPrev.disabled = (currentPageKhusus === 1);
+    if (btnNext) btnNext.disabled = (currentPageKhusus === totalPages);
+
+    if (dataPaged.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="10" class="text-center text-muted py-4">
+                    <i class="fas fa-check-circle fa-3x text-success mb-2"></i>
+                    <p>Tidak ada produk yang ditemukan dengan filter ini.</p>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    // Render tabel
+    var html = '';
+    for (var i = 0; i < dataPaged.length; i++) {
+        var p = dataPaged[i];
+        var no = start + i + 1;
+
+        var img = p.foto ? '<img src="' + p.foto + '" style="width:40px; height:40px; object-fit:cover; border-radius:5px;">' : '<i class="fas fa-box text-muted fa-2x"></i>';
+        var hargaFormat = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(p.harga);
+        var status = getStatusProduk(p, semua);
+        var statusBadge = status === 'Normal'
+            ? '<span class="badge bg-success">Normal</span>'
+            : '<span class="badge bg-danger">' + status + '</span>';
+        var kadaluarsa = p.kadaluarsa || '-';
+
+        html += `
+            <tr>
+                <td>${no}</td>
+                <td>${img}</td>
+                <td><strong>${p.nama}</strong></td>
+                <td>${p.namaToko || '-'}</td>
+                <td><span class="badge bg-secondary">${p.kategori}</span></td>
+                <td>${hargaFormat}</td>
+                <td>${p.stok || 0}</td>
+                <td>${kadaluarsa}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="hapusProdukKhusus('${p.id}', '${p.idToko}')">
+                        <i class="fas fa-trash"></i> Hapus
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning" onclick="nonaktifkanSellerKhusus('${p.idToko}')">
+                        <i class="fas fa-ban"></i> Nonaktifkan Seller
+                    </button>
+                </td>
+            </tr>
+        `;
+    }
+    tbody.innerHTML = html;
+}
+
+// ============================================================
+// 6. NAVIGASI PAGINATION
+// ============================================================
+function ubahHalamanKhusus(arah) {
+    if (arah === 'prev' && currentPageKhusus > 1) {
+        renderPemeriksaanKhusus(currentPageKhusus - 1);
+    } else if (arah === 'next') {
+        renderPemeriksaanKhusus(currentPageKhusus + 1);
+    }
+}
+
+// ============================================================
+// 7. RESET FILTER
+// ============================================================
+function resetFilterKhusus() {
+    document.getElementById('cariKhususGlobal').value = '';
+    document.getElementById('filterKategoriKhusus').value = '';
+    document.getElementById('filterMasalahKhusus').value = '';
+    document.getElementById('filterStatusSellerKhusus').value = '';
+    renderPemeriksaanKhusus(1);
+}
+
+// ============================================================
+// 8. HAPUS PRODUK GLOBAL
+// ============================================================
+function hapusProdukKhusus(idProduk, idToko) {
+    if (!confirm('Apakah Anda yakin ingin menghapus produk ini? Data tidak dapat dikembalikan.')) return;
+
+    var key = 'dataProdukToko_' + idToko;
+    var stored = localStorage.getItem(key);
+    if (stored) {
+        try {
+            var produk = JSON.parse(stored);
+            var filtered = [];
+            for (var i = 0; i < produk.length; i++) {
+                if (produk[i].id !== idProduk) {
+                    filtered.push(produk[i]);
+                }
+            }
+            localStorage.setItem(key, JSON.stringify(filtered));
+            renderPemeriksaanKhusus(currentPageKhusus);
+            alert('✅ Produk berhasil dihapus.');
+        } catch (e) {
+            alert('❌ Gagal menghapus produk.');
+            console.error(e);
+        }
+    }
+}
+
+// ============================================================
+// 9. NONAKTIFKAN SELLER
+// ============================================================
+function nonaktifkanSellerKhusus(idToko) {
+    if (!confirm('Nonaktifkan seller ini? Semua produknya akan tetap ada tapi seller tidak bisa login.')) return;
+
+    var akun = null;
+    for (var i = 0; i < dataAkunAktif.length; i++) {
+        if (dataAkunAktif[i].id === idToko) {
+            akun = dataAkunAktif[i];
+            break;
+        }
+    }
+    if (!akun) {
+        alert('Seller tidak ditemukan.');
+        return;
+    }
+
+    akun.status = 'Nonaktif';
+    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+
+    // Update juga di dataLoginUser
+    var loginUser = null;
+    for (var i = 0; i < dataLoginUser.length; i++) {
+        if (dataLoginUser[i].idUser === idToko) {
+            loginUser = dataLoginUser[i];
+            break;
+        }
+    }
+    if (loginUser) {
+        loginUser.statusVerifikasi = 'Ditolak';
+        localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    }
+
+    renderPemeriksaanKhusus(currentPageKhusus);
+    alert('✅ Seller ' + akun.nama + ' telah dinonaktifkan.');
+}
+
+// ============================================================
+// 10. EKSPOR CSV
+// ============================================================
+function exportKhususCSV() {
+    var semua = getAllProdukDariSemuaToko();
+    if (semua.length === 0) {
+        alert('Tidak ada data untuk diekspor.');
+        return;
+    }
+
+    var csv = 'No,Nama Produk,Toko,Kategori,Harga,Stok,Kadaluarsa,Status\n';
+    for (var i = 0; i < semua.length; i++) {
+        var p = semua[i];
+        var status = getStatusProduk(p, semua);
+        var no = i + 1;
+        csv += '"' + no + '","' + p.nama + '","' + (p.namaToko || '-') + '","' + p.kategori + '","' + p.harga + '","' + (p.stok || 0) + '","' + (p.kadaluarsa || '-') + '","' + status + '"\n';
+    }
+
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'Pemeriksaan_Produk_Khusus_' + new Date().toISOString().split('T')[0] + '.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// ============================================================
+// 11. FUNGSI TUTUP MENU
+// ============================================================
+function tutupMenu() {
+    try {
+        var offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasMenu'));
+        if (offcanvas) offcanvas.hide();
+    } catch (e) {
+        var menu = document.getElementById('offcanvasMenu');
+        if (menu) menu.classList.remove('show');
+    }
+}
+</script>
+<!--- ===== AKHIR BLOK 9.41 ===== --->
     <!--- ===== BLOK 9.41 – MANAJEMEN OWNER ===== --->
     <script>
     // ========== MANAJEMEN OWNER ==========
