@@ -9273,7 +9273,422 @@ function updateStatistikProdukKasir() {
 }
 </script>
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 01.20 ===== -->
+<!-- ===== AKHIR BLOK R 01.21 ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 01.21 – FUNGSI GLOBAL DETEKSI KATA KUNCI PENGECUALIAN MINIMAL BELANJA ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// VARIABEL GLOBAL
+// ============================================================
+var dataKataKunciPengecualian = [];
+
+// ============================================================
+// 1. FUNGSI GET KEY PENYIMPANAN (PER USER/OWNER)
+//    Menggunakan GetDataIdUser() agar tidak duplikasi antar akun
+//    dan getOwnerIdProduk() untuk memastikan data terhubung dengan pemilik
+// ============================================================
+function getKeyKataKunciPengecualian() {
+    var idUser = GetDataIdUser(); // Fungsi global dari BLOK R 01.0
+    var ownerId = getOwnerIdProduk(); // Fungsi global dari BLOK R 01.7
+    return 'dataKataKunciPengecualian_' + (ownerId || idUser);
+}
+
+// ============================================================
+// 2. FUNGSI LOAD DATA KATA KUNCI
+// ============================================================
+function loadKataKunciPengecualian() {
+    var key = getKeyKataKunciPengecualian();
+    var stored = localStorage.getItem(key);
+    if (stored) {
+        try {
+            dataKataKunciPengecualian = JSON.parse(stored);
+        } catch (e) {
+            dataKataKunciPengecualian = [];
+        }
+    } else {
+        dataKataKunciPengecualian = [];
+    }
+    return dataKataKunciPengecualian;
+}
+
+// ============================================================
+// 3. FUNGSI SIMPAN DATA KATA KUNCI
+// ============================================================
+function simpanKataKunciPengecualian(data) {
+    var key = getKeyKataKunciPengecualian();
+    dataKataKunciPengecualian = data || [];
+    localStorage.setItem(key, JSON.stringify(dataKataKunciPengecualian));
+}
+
+// ============================================================
+// 4. FUNGSI TAMBAH KATA KUNCI BARU
+//    Menggunakan generateKodeUnik() untuk ID unik
+// ============================================================
+function tambahKataKunciGlobal(dataKataKunci) {
+    var idUser = GetDataIdUser();
+    var ownerId = getOwnerIdProduk();
+    if (!idUser && !ownerId) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    // Generate ID unik dengan prefix KKC (Kata Kunci)
+    var id = generateKodeUnik('KKC');
+
+    var kataKunciBaru = {
+        id: id,
+        idUser: idUser,
+        ownerId: ownerId,
+        kataKunci: dataKataKunci.kataKunci || '',
+        keterangan: dataKataKunci.keterangan || '',
+        status: dataKataKunci.status || 'Aktif',
+        createdAt: new Date().toISOString()
+    };
+
+    var data = loadKataKunciPengecualian();
+    data.push(kataKunciBaru);
+    simpanKataKunciPengecualian(data);
+
+    return { sukses: true, id: id, kataKunci: kataKunciBaru };
+}
+
+// ============================================================
+// 5. FUNGSI EDIT KATA KUNCI BERDASARKAN ID
+// ============================================================
+function editKataKunciGlobal(id, dataPerubahan) {
+    var data = loadKataKunciPengecualian();
+    var idx = data.findIndex(function(d) { return d.id === id; });
+    if (idx === -1) return { sukses: false, pesan: 'Kata kunci tidak ditemukan.' };
+
+    data[idx] = { ...data[idx], ...dataPerubahan };
+    data[idx].updatedAt = new Date().toISOString();
+    simpanKataKunciPengecualian(data);
+
+    return { sukses: true, kataKunci: data[idx] };
+}
+
+// ============================================================
+// 6. FUNGSI HAPUS KATA KUNCI BERDASARKAN ID
+// ============================================================
+function hapusKataKunciGlobal(id) {
+    var data = loadKataKunciPengecualian();
+    var newData = data.filter(function(d) { return d.id !== id; });
+    simpanKataKunciPengecualian(newData);
+    return { sukses: true };
+}
+
+// ============================================================
+// 7. FUNGSI RENDER TABEL KATA KUNCI (GENERIC)
+// ============================================================
+function renderTabelKataKunciGeneric(containerId) {
+    var tbody = document.getElementById(containerId);
+    if (!tbody) return;
+
+    var data = loadKataKunciPengecualian();
+
+    if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada kata kunci.</td></tr>';
+        return;
+    }
+
+    var html = '';
+    data.forEach(function(item, idx) {
+        var statusBadge = item.status === 'Aktif'
+            ? '<span class="badge bg-success">Aktif</span>'
+            : '<span class="badge bg-secondary">Nonaktif</span>';
+
+        html += `
+            <tr>
+                <td>${idx + 1}</td>
+                <td><strong>${item.kataKunci}</strong></td>
+                <td>${item.keterangan || '-'}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary me-1" onclick="editKataKunci('${item.id}')" title="Edit">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="hapusKataKunci('${item.id}')" title="Hapus">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html;
+}
+
+// ============================================================
+// 8. FUNGSI DETEKSI PRODUK DIKECUALIKAN (INTEGRASI)
+//    Mengecek apakah nama produk mengandung salah satu kata kunci
+// ============================================================
+function isProdukDikecualikan(item) {
+    var kataKunciList = loadKataKunciPengecualian();
+    var namaProduk = (item.nama || '').toLowerCase();
+    var dikecualikan = false;
+
+    kataKunciList.forEach(function(kk) {
+        if (kk.status === 'Aktif' && kk.kataKunci) {
+            var kataKunciLower = kk.kataKunci.toLowerCase();
+            // Deteksi substring: apakah kata kunci terkandung di nama produk
+            if (namaProduk.includes(kataKunciLower)) {
+                dikecualikan = true;
+            }
+        }
+    });
+
+    return dikecualikan;
+}
+
+// ============================================================
+// 9. FUNGSI HITUNG TOTAL MINIMAL BELANJA (MENGABAIKAN PENGECUALIAN)
+// ============================================================
+function hitungTotalMinimalBelanja(items) {
+    var total = 0;
+    items.forEach(function(item) {
+        if (!isProdukDikecualikan(item)) {
+            total += item.subtotal || item.harga * item.qty || 0;
+        }
+    });
+    return total;
+}
+
+// ============================================================
+// 10. FUNGSI TAMPILKAN HALAMAN KATA KUNCI (GENERIC)
+// ============================================================
+function tampilkanKataKunciPengecualian() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+    var role = userAktif ? userAktif.role : 'User';
+
+    konten.innerHTML = `
+        <div class="container-fluid px-4 py-4">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h4 class="fw-bold text-white"><i class="fas fa-exclamation-circle me-2"></i>Deteksi Kata Kunci Pengecualian Minimal Belanja</h4>
+                <div>
+                    <button class="btn btn-success me-2" onclick="tampilkanFormTambahKataKunciGlobal()">
+                        <i class="fas fa-plus me-1"></i> Tambah Kata Kunci
+                    </button>
+                    <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                        <i class="fas fa-arrow-left me-1"></i> Kembali
+                    </button>
+                </div>
+            </div>
+
+            <div class="alert alert-info border-0 shadow-sm">
+                <i class="fas fa-info-circle me-2"></i>
+                <strong>Cara Kerja:</strong> Jika nama produk mengandung kata kunci di bawah ini, produk tersebut <strong>TIDAK AKAN DIHITUNG</strong> dalam perhitungan minimal belanja.
+                <br><br>
+                <strong>Contoh:</strong> Jika kata kunci "Rokok" diinput, maka produk "Rokok Djarum" dan "Rokok Sampoerna" otomatis dikecualikan.
+            </div>
+
+            <div class="card border-0 shadow">
+                <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #FF8C00;">
+                    <span><i class="fas fa-list me-2"></i>Daftar Kata Kunci (${role})</span>
+                    <span class="badge bg-light text-dark" id="totalKataKunciCount">0</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>#</th>
+                                    <th>Kata Kunci</th>
+                                    <th>Keterangan</th>
+                                    <th>Status</th>
+                                    <th>Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tabelKataKunciMinimal"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    renderTabelKataKunciGeneric('tabelKataKunciMinimal');
+    var totalSpan = document.getElementById('totalKataKunciCount');
+    if (totalSpan) totalSpan.textContent = loadKataKunciPengecualian().length;
+    tutupMenu();
+}
+
+// ============================================================
+// 11. FUNGSI TAMPILKAN FORM TAMBAH KATA KUNCI (GLOBAL)
+// ============================================================
+function tampilkanFormTambahKataKunciGlobal() {
+    var modalId = 'modalKataKunciGlobal';
+    var modal = document.getElementById(modalId);
+    if (!modal) {
+        var modalHTML = `
+            <div class="modal fade" id="${modalId}" tabindex="-1" aria-hidden="true">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header text-white" style="background-color: #FF8C00;">
+                            <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Form Kata Kunci</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="formKataKunciGlobal" onsubmit="return simpanKataKunciFormGlobal(event)">
+                                <input type="hidden" id="kataKunciGlobalId" value="">
+                                <div class="row g-3">
+                                    <div class="col-md-12">
+                                        <label class="fw-bold">Kata Kunci <span class="text-danger">*</span></label>
+                                        <input type="text" id="kataKunciGlobalInput" class="form-control" placeholder="Contoh: Rokok, Susu, Djarum" required>
+                                    </div>
+                                    <div class="col-md-12">
+                                        <label class="fw-bold">Keterangan (Opsional)</label>
+                                        <input type="text" id="kataKunciGlobalKeterangan" class="form-control" placeholder="Catatan tambahan">
+                                    </div>
+                                    <div class="col-md-12">
+                                        <label class="fw-bold">Status</label>
+                                        <select id="kataKunciGlobalStatus" class="form-select">
+                                            <option value="Aktif">Aktif</option>
+                                            <option value="Nonaktif">Nonaktif</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="mt-4 d-grid">
+                                    <button type="submit" class="btn btn-lg text-white fw-bold" style="background-color: #4CAF50;">
+                                        <i class="fas fa-save me-2"></i>Simpan
+                                    </button>
+                                </div>
+                                <div id="notifKataKunciGlobal" class="alert d-none mt-3"></div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        var temp = document.createElement('div');
+        temp.innerHTML = modalHTML;
+        document.body.appendChild(temp.firstElementChild);
+        modal = document.getElementById(modalId);
+    }
+
+    // Reset form
+    document.getElementById('formKataKunciGlobal').reset();
+    document.getElementById('kataKunciGlobalId').value = '';
+    document.getElementById('notifKataKunciGlobal').classList.add('d-none');
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// ============================================================
+// 12. FUNGSI EDIT KATA KUNCI (DIPANGGIL DARI TOMBOL EDIT)
+// ============================================================
+function editKataKunci(id) {
+    var data = loadKataKunciPengecualian();
+    var item = data.find(function(d) { return d.id === id; });
+    if (!item) {
+        alert('Kata kunci tidak ditemukan.');
+        return;
+    }
+
+    tampilkanFormTambahKataKunciGlobal();
+
+    // Isi form setelah modal terbuka
+    setTimeout(function() {
+        document.getElementById('kataKunciGlobalId').value = item.id;
+        document.getElementById('kataKunciGlobalInput').value = item.kataKunci;
+        document.getElementById('kataKunciGlobalKeterangan').value = item.keterangan || '';
+        document.getElementById('kataKunciGlobalStatus').value = item.status || 'Aktif';
+    }, 100);
+}
+
+// ============================================================
+// 13. FUNGSI SIMPAN KATA KUNCI FORM (GLOBAL)
+// ============================================================
+function simpanKataKunciFormGlobal(event) {
+    event.preventDefault();
+
+    var id = document.getElementById('kataKunciGlobalId').value;
+    var kataKunci = document.getElementById('kataKunciGlobalInput').value.trim();
+    var keterangan = document.getElementById('kataKunciGlobalKeterangan').value.trim();
+    var status = document.getElementById('kataKunciGlobalStatus').value;
+
+    // Validasi
+    if (!kataKunci) {
+        document.getElementById('notifKataKunciGlobal').className = 'alert alert-warning';
+        document.getElementById('notifKataKunciGlobal').innerHTML = 'Kata kunci wajib diisi!';
+        document.getElementById('notifKataKunciGlobal').classList.remove('d-none');
+        return false;
+    }
+
+    if (id) {
+        // EDIT
+        var hasil = editKataKunciGlobal(id, {
+            kataKunci: kataKunci,
+            keterangan: keterangan,
+            status: status
+        });
+        if (hasil.sukses) {
+            document.getElementById('notifKataKunciGlobal').className = 'alert alert-success';
+            document.getElementById('notifKataKunciGlobal').innerHTML = '✅ Kata kunci berhasil diperbarui!';
+            document.getElementById('notifKataKunciGlobal').classList.remove('d-none');
+        }
+    } else {
+        // TAMBAH
+        var hasilTambah = tambahKataKunciGlobal({
+            kataKunci: kataKunci,
+            keterangan: keterangan,
+            status: status
+        });
+        if (hasilTambah.sukses) {
+            document.getElementById('notifKataKunciGlobal').className = 'alert alert-success';
+            document.getElementById('notifKataKunciGlobal').innerHTML = '✅ Kata kunci berhasil ditambahkan! ID: ' + hasilTambah.id;
+            document.getElementById('notifKataKunciGlobal').classList.remove('d-none');
+        }
+    }
+
+    // Refresh tabel
+    renderTabelKataKunciGeneric('tabelKataKunciMinimal');
+    var totalSpan = document.getElementById('totalKataKunciCount');
+    if (totalSpan) totalSpan.textContent = loadKataKunciPengecualian().length;
+
+    // Tutup modal setelah 1.5 detik
+    setTimeout(function() {
+        var modalEl = document.getElementById('modalKataKunciGlobal');
+        if (modalEl) {
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        }
+    }, 1500);
+
+    return false;
+}
+
+// ============================================================
+// 14. FUNGSI HAPUS KATA KUNCI (DIPANGGIL DARI TOMBOL HAPUS)
+// ============================================================
+function hapusKataKunci(id) {
+    if (!confirm('Yakin ingin menghapus kata kunci ini?')) return;
+
+    var hasil = hapusKataKunciGlobal(id);
+    if (hasil.sukses) {
+        renderTabelKataKunciGeneric('tabelKataKunciMinimal');
+        var totalSpan = document.getElementById('totalKataKunciCount');
+        if (totalSpan) totalSpan.textContent = loadKataKunciPengecualian().length;
+        alert('✅ Kata kunci berhasil dihapus.');
+    }
+}
+
+// ============================================================
+// 15. FUNGSI GET DAFTAR KATA KUNCI UNTUK INTEGRASI TRANSAKSI
+// ============================================================
+function getDaftarKataKunciAktif() {
+    var data = loadKataKunciPengecualian();
+    return data.filter(function(d) { return d.status === 'Aktif'; });
+}
+
+// ============================================================
+// AKHIR BLOK R 01.20 (JS)
+// ============================================================
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 01.21 ===== -->
 <!-- ============================================================ -->
 
 	<!-- ===== AKHIR BLOK R 01.0 – FUNGSI GLOBAL CORE SYSTEM  ===== -->
@@ -10993,6 +11408,254 @@ function tampilkanDasborGrosirSemuaRole() {
 }
 </script>
 <!--- ===== AKHIR BLOK R 10.64 JS (REVISI R10.64-4) ===== -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.70 – MENU PENGECUALIAN MINIMAL BELANJA (HTML) ===== -->
+<!-- ============================================================ -->
+
+<div id="pengaturanPengecualianMinimalContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-exclamation-circle me-2"></i>Pengaturan Pengecualian Minimal Belanja</h4>
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- Informasi -->
+        <div class="alert alert-info border-0 shadow-sm">
+            <i class="fas fa-info-circle me-2"></i>
+            <strong>Cara Kerja:</strong> Jika nama produk mengandung kata kunci di bawah ini, produk tersebut <strong>TIDAK AKAN DIHITUNG</strong> dalam perhitungan minimal belanja untuk mendapatkan R2Coin.
+            <br><br>
+            <strong>Contoh:</strong> Jika Anda menginput kata kunci "Rokok", maka produk "Rokok Djarum" dan "Rokok Sampoerna" otomatis dikecualikan.
+        </div>
+
+        <!-- Tombol Tambah -->
+        <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
+            <button class="btn btn-success" onclick="tampilkanFormTambahKataKunciGlobal()">
+                <i class="fas fa-plus me-1"></i> Tambah Kata Kunci
+            </button>
+        </div>
+
+        <!-- Tabel Kata Kunci -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #FF8C00;">
+                <span><i class="fas fa-list me-2"></i>Daftar Kata Kunci Pengecualian</span>
+                <span class="badge bg-light text-dark" id="totalKataKunciCount">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Kata Kunci</th>
+                                <th>Keterangan</th>
+                                <th>Status</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelKataKunciMinimal"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== MODAL FORM KATA KUNCI (SUPERADMIN) ===== -->
+<!-- ============================================================ -->
+<div class="modal fade" id="modalKataKunciGlobal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #FF8C00;">
+                <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Form Kata Kunci</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formKataKunciGlobal" onsubmit="return simpanKataKunciFormGlobal(event)">
+                    <input type="hidden" id="kataKunciGlobalId" value="">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="fw-bold">Kata Kunci <span class="text-danger">*</span></label>
+                            <input type="text" id="kataKunciGlobalInput" class="form-control" placeholder="Contoh: Rokok, Susu, Beras, Minyak, Djarum, Sampoerna" required>
+                        </div>
+                        <div class="col-md-12">
+                            <label class="fw-bold">Keterangan (Opsional)</label>
+                            <input type="text" id="kataKunciGlobalKeterangan" class="form-control" placeholder="Contoh: Semua produk rokok / Semua susu / Minyak goreng">
+                        </div>
+                        <div class="col-md-12">
+                            <label class="fw-bold">Status</label>
+                            <select id="kataKunciGlobalStatus" class="form-select">
+                                <option value="Aktif">Aktif</option>
+                                <option value="Nonaktif">Nonaktif</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mt-4 d-grid">
+                        <button type="submit" class="btn btn-lg text-white fw-bold" style="background-color: #4CAF50;">
+                            <i class="fas fa-save me-2"></i>Simpan
+                        </button>
+                    </div>
+                    <div id="notifKataKunciGlobal" class="alert d-none mt-3"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.70 (HTML) ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.70 – JAVASCRIPT MENU PENGECUALIAN MINIMAL BELANJA ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// 1. FUNGSI TAMPILKAN HALAMAN PENGECUALIAN MINIMAL BELANJA (SUPERADMIN)
+// ============================================================
+function tampilkanPengecualianMinimal() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('pengaturanPengecualianMinimalContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderTabelKataKunciGeneric('tabelKataKunciMinimal');
+        var totalSpan = document.getElementById('totalKataKunciCount');
+        if (totalSpan) totalSpan.textContent = loadKataKunciPengecualian().length;
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Pengaturan Pengecualian Minimal Belanja', '10.70');
+    }
+}
+
+// ============================================================
+// 2. FUNGSI TAMPILKAN FORM TAMBAH KATA KUNCI (SUPERADMIN)
+// ============================================================
+function tampilkanFormTambahKataKunciGlobal() {
+    var modal = document.getElementById('modalKataKunciGlobal');
+    if (!modal) return;
+
+    // Reset form
+    document.getElementById('formKataKunciGlobal').reset();
+    document.getElementById('kataKunciGlobalId').value = '';
+    document.getElementById('notifKataKunciGlobal').classList.add('d-none');
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// ============================================================
+// 3. FUNGSI EDIT KATA KUNCI (DIPANGGIL DARI TOMBOL EDIT)
+// ============================================================
+function editKataKunci(id) {
+    var data = loadKataKunciPengecualian();
+    var item = data.find(function(d) { return d.id === id; });
+    if (!item) {
+        alert('Kata kunci tidak ditemukan.');
+        return;
+    }
+
+    tampilkanFormTambahKataKunciGlobal();
+
+    // Isi form setelah modal terbuka
+    setTimeout(function() {
+        document.getElementById('kataKunciGlobalId').value = item.id;
+        document.getElementById('kataKunciGlobalInput').value = item.kataKunci;
+        document.getElementById('kataKunciGlobalKeterangan').value = item.keterangan || '';
+        document.getElementById('kataKunciGlobalStatus').value = item.status || 'Aktif';
+    }, 100);
+}
+
+// ============================================================
+// 4. FUNGSI SIMPAN KATA KUNCI (TAMBAH / EDIT)
+// ============================================================
+function simpanKataKunciFormGlobal(event) {
+    event.preventDefault();
+
+    var id = document.getElementById('kataKunciGlobalId').value;
+    var kataKunci = document.getElementById('kataKunciGlobalInput').value.trim();
+    var keterangan = document.getElementById('kataKunciGlobalKeterangan').value.trim();
+    var status = document.getElementById('kataKunciGlobalStatus').value;
+
+    // Validasi
+    if (!kataKunci) {
+        document.getElementById('notifKataKunciGlobal').className = 'alert alert-warning';
+        document.getElementById('notifKataKunciGlobal').innerHTML = 'Kata kunci wajib diisi!';
+        document.getElementById('notifKataKunciGlobal').classList.remove('d-none');
+        return false;
+    }
+
+    if (id) {
+        // EDIT
+        var hasil = editKataKunciGlobal(id, {
+            kataKunci: kataKunci,
+            keterangan: keterangan,
+            status: status
+        });
+        if (hasil.sukses) {
+            document.getElementById('notifKataKunciGlobal').className = 'alert alert-success';
+            document.getElementById('notifKataKunciGlobal').innerHTML = '✅ Kata kunci berhasil diperbarui!';
+            document.getElementById('notifKataKunciGlobal').classList.remove('d-none');
+        }
+    } else {
+        // TAMBAH
+        var hasilTambah = tambahKataKunciGlobal({
+            kataKunci: kataKunci,
+            keterangan: keterangan,
+            status: status
+        });
+        if (hasilTambah.sukses) {
+            document.getElementById('notifKataKunciGlobal').className = 'alert alert-success';
+            document.getElementById('notifKataKunciGlobal').innerHTML = '✅ Kata kunci berhasil ditambahkan! ID: ' + hasilTambah.id;
+            document.getElementById('notifKataKunciGlobal').classList.remove('d-none');
+        }
+    }
+
+    // Refresh tabel
+    renderTabelKataKunciGeneric('tabelKataKunciMinimal');
+    var totalSpan = document.getElementById('totalKataKunciCount');
+    if (totalSpan) totalSpan.textContent = loadKataKunciPengecualian().length;
+
+    // Tutup modal setelah 1.5 detik
+    setTimeout(function() {
+        var modalEl = document.getElementById('modalKataKunciGlobal');
+        if (modalEl) {
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        }
+    }, 1500);
+
+    return false;
+}
+
+// ============================================================
+// 5. FUNGSI HAPUS KATA KUNCI (DIPANGGIL DARI TOMBOL HAPUS)
+// ============================================================
+function hapusKataKunci(id) {
+    if (!confirm('Yakin ingin menghapus kata kunci ini?')) return;
+
+    var hasil = hapusKataKunciGlobal(id);
+    if (hasil.sukses) {
+        renderTabelKataKunciGeneric('tabelKataKunciMinimal');
+        var totalSpan = document.getElementById('totalKataKunciCount');
+        if (totalSpan) totalSpan.textContent = loadKataKunciPengecualian().length;
+        alert('✅ Kata kunci berhasil dihapus.');
+    }
+}
+
+// ============================================================
+// AKHIR BLOK R 10.70 (JS)
+// ============================================================
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.70 ===== -->
+<!-- ============================================================ -->
 	
 	<!--- ===== BLOK R 11.1 – HTML DASBOR TOKO (REVISI R11.1-4) ===== -->
 <!-- ============================================================ -->
@@ -12720,7 +13383,7 @@ function tampilkanManajemenProdukToko() {
             </button>
         </div>
 
-        <!-- Tab Pilihan Offline / Online -->
+        <!-- Tab Offline / Online -->
         <ul class="nav nav-tabs mb-4" id="tabTransaksiToko">
             <li class="nav-item">
                 <a class="nav-link active" data-bs-toggle="tab" href="#panelOfflineToko" onclick="gantiTabTransaksiToko('offline')">
@@ -12737,7 +13400,6 @@ function tampilkanManajemenProdukToko() {
         <div class="tab-content">
             <!-- ================= PANEL OFFLINE ================= -->
             <div class="tab-pane fade show active" id="panelOfflineToko">
-                <!-- Tombol Tambah Transaksi -->
                 <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-3">
                     <button class="btn btn-success" onclick="tampilkanFormTransaksiOfflineToko()">
                         <i class="fas fa-plus me-1"></i> Tambah Transaksi Offline
@@ -12784,7 +13446,7 @@ function tampilkanManajemenProdukToko() {
                     </div>
                 </div>
 
-                <!-- Riwayat Transaksi Offline (Hanya 10 Terakhir) -->
+                <!-- Riwayat Transaksi Offline -->
                 <div class="card border-0 shadow">
                     <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
                         <span><i class="fas fa-list me-2"></i>Riwayat Transaksi Offline (10 Terakhir)</span>
@@ -12815,7 +13477,7 @@ function tampilkanManajemenProdukToko() {
 
             <!-- ================= PANEL ONLINE ================= -->
             <div class="tab-pane fade" id="panelOnlineToko">
-                <!-- Statistik Transaksi Online -->
+                <!-- Statistik Online -->
                 <div class="row mb-4 g-3">
                     <div class="col-md-3 col-6">
                         <div class="card border-0 shadow-sm bg-white h-100">
@@ -12855,16 +13517,16 @@ function tampilkanManajemenProdukToko() {
                     </div>
                 </div>
 
-                <!-- Filter Pesanan Online -->
+                <!-- Filter -->
                 <div class="card border-0 shadow mb-4">
                     <div class="card-body">
                         <div class="row g-3 align-items-end">
                             <div class="col-md-4">
-                                <label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label>
+                                <label class="fw-bold">Cari</label>
                                 <input type="text" id="cariOrderOnlineToko" class="form-control" placeholder="Nama customer / ID..." onkeyup="renderPesananOnlineToko()">
                             </div>
                             <div class="col-md-3">
-                                <label class="fw-bold"><i class="fas fa-filter me-1"></i>Status</label>
+                                <label class="fw-bold">Status</label>
                                 <select id="filterStatusOrderOnlineToko" class="form-select" onchange="renderPesananOnlineToko()">
                                     <option value="">Semua Status</option>
                                     <option value="Menunggu Konfirmasi">Menunggu Konfirmasi</option>
@@ -12874,15 +13536,13 @@ function tampilkanManajemenProdukToko() {
                                 </select>
                             </div>
                             <div class="col-md-3 text-end">
-                                <button class="btn btn-outline-secondary btn-sm" onclick="resetFilterOrderOnlineToko()">
-                                    <i class="fas fa-undo me-1"></i> Reset
-                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="resetFilterOrderOnlineToko()">Reset</button>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Tabel Pesanan Online (Hanya 10 Terakhir) -->
+                <!-- Tabel Pesanan Online -->
                 <div class="card border-0 shadow">
                     <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #FF8C00;">
                         <span><i class="fas fa-shopping-cart me-2"></i>Daftar Pesanan Online (10 Terakhir)</span>
@@ -12912,7 +13572,9 @@ function tampilkanManajemenProdukToko() {
     </div>
 </div>
 
-<!-- Modal Form Transaksi Offline -->
+<!-- ============================================================ -->
+<!-- ===== MODAL FORM TRANSAKSI OFFLINE (DENGAN PENGECUALIAN) ===== -->
+<!-- ============================================================ -->
 <div class="modal fade" id="modalTransaksiOfflineToko" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
@@ -12959,11 +13621,12 @@ function tampilkanManajemenProdukToko() {
                                     <th>Qty</th>
                                     <th>Harga</th>
                                     <th>Subtotal</th>
+                                    <th>Dikecualikan?</th>
                                     <th>Aksi</th>
                                 </tr>
                             </thead>
                             <tbody id="daftarItemOfflineToko">
-                                <tr><td colspan="5" class="text-center text-muted py-3">Belum ada item.</td></tr>
+                                <tr><td colspan="6" class="text-center text-muted py-3">Belum ada item.</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -12985,6 +13648,18 @@ function tampilkanManajemenProdukToko() {
                             <input type="number" id="bayarTransaksiOfflineToko" class="form-control" oninput="hitungKembalianOfflineToko()">
                         </div>
                     </div>
+                </div>
+
+                <!-- Info Total Minimal Belanja -->
+                <div class="alert alert-light border">
+                    <small>
+                        <i class="fas fa-info-circle me-1 text-primary"></i>
+                        <strong>Total Minimal Belanja:</strong> 
+                        <span id="totalMinimalToko" class="fw-bold text-success">Rp 0</span>
+                    </small>
+                    <small class="d-block mt-1 text-muted">
+                        Produk yang mengandung kata kunci pengecualian (Rokok, Susu, Beras, Minyak, Djarum, dll) <strong>tidak dihitung</strong> untuk minimal belanja.
+                    </small>
                 </div>
 
                 <!-- Kembalian & Nama Pelanggan -->
@@ -13012,20 +13687,19 @@ function tampilkanManajemenProdukToko() {
         </div>
     </div>
 </div>
-
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 11.6 HTML ===== -->
-<!-- ============================================================ -->
-
-<!-- ============================================================ -->
-<!-- ===== BLOK R 11.6 – TRANSAKSI & KASIR TOKO (JS) VERSI PERBAIKAN ===== -->
+<!-- ===== AKHIR BLOK R 11.6 (HTML) ===== -->
 <!-- ============================================================ -->
 
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.6 – JAVASCRIPT TRANSAKSI & KASIR TOKO ===== -->
+<!-- ============================================================ -->
 <script>
 // ============================================================
-// VARIABEL KERANJANG OFFLINE (GLOBAL PER SESSION)
+// VARIABEL KERANJANG OFFLINE
 // ============================================================
 var keranjangOfflineToko = [];
+var totalMinimalBelanjaToko = 0;
 
 // ============================================================
 // 1. TAMPILKAN HALAMAN TRANSAKSI
@@ -13069,13 +13743,16 @@ function renderTransaksiOfflineToko() {
     var tbody = document.getElementById('tabelTransaksiOfflineToko');
     var badge = document.getElementById('badgeJumlahTransaksiOfflineToko');
     if (!tbody) return;
+
     var idPemilik = getOwnerIdTransaksi();
     var data = loadTransaksiOffline(idPemilik);
     badge.textContent = data.length;
+
     if (data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">Belum ada transaksi offline.</td></tr>';
         return;
     }
+
     var dataTampil = data.slice(-10).reverse();
     var html = '';
     dataTampil.forEach(function(item, i) {
@@ -13105,12 +13782,14 @@ function renderTransaksiOfflineToko() {
 function renderStatistikTransaksiOfflineToko() {
     var idPemilik = getOwnerIdTransaksi();
     var data = loadTransaksiOffline(idPemilik);
+
     var totalTransaksi = data.length;
     var totalPendapatan = data.reduce(function(sum, t) { return sum + t.total; }, 0);
     var today = new Date().toLocaleDateString('id-ID');
     var transaksiHariIni = data.filter(function(t) { return t.tanggal && t.tanggal.startsWith(today); });
     var totalHariIni = transaksiHariIni.length;
     var pendapatanHariIni = transaksiHariIni.reduce(function(sum, t) { return sum + t.total; }, 0);
+
     document.getElementById('totalTransaksiOfflineToko').textContent = totalTransaksi;
     document.getElementById('totalPendapatanOfflineToko').textContent = 'Rp ' + totalPendapatan.toLocaleString('id-ID');
     document.getElementById('totalTransaksiHariIniToko').textContent = totalHariIni;
@@ -13123,21 +13802,32 @@ function renderStatistikTransaksiOfflineToko() {
 function tampilkanFormTransaksiOfflineToko() {
     var modal = document.getElementById('modalTransaksiOfflineToko');
     if (!modal) return;
+
+    // Reset keranjang
     keranjangOfflineToko = [];
+    totalMinimalBelanjaToko = 0;
+
+    // Reset form
     document.getElementById('totalTransaksiOfflineToko').value = '0';
     document.getElementById('bayarTransaksiOfflineToko').value = '';
     document.getElementById('kembalianTransaksiOfflineToko').value = '0';
     document.getElementById('namaPelangganOfflineToko').value = '';
     document.getElementById('jumlahProdukOfflineToko').value = '1';
     document.getElementById('infoProdukOfflineToko').innerHTML = '<small class="text-muted">Pilih produk untuk melihat informasi.</small>';
+    
+    // Reset info minimal
+    var infoMinimal = document.getElementById('totalMinimalToko');
+    if (infoMinimal) infoMinimal.textContent = 'Rp 0';
+
     renderDaftarItemOfflineToko();
     muatDaftarProdukOfflineToko();
+
     var bsModal = new bootstrap.Modal(modal);
     bsModal.show();
 }
 
 // ============================================================
-// 7. MUAT DAFTAR PRODUK KE SELECT (MENGGUNAKAN GLOBAL FUNCTIONS)
+// 7. MUAT DAFTAR PRODUK KE SELECT
 // ============================================================
 function muatDaftarProdukOfflineToko() {
     var select = document.getElementById('pilihProdukTransaksiOfflineToko');
@@ -13145,70 +13835,82 @@ function muatDaftarProdukOfflineToko() {
     var pemilik = getDataPemilikTransaksi();
     var role = pemilik ? pemilik.role : 'Toko';
     var produkList = loadProdukGlobal(role, idPemilik);
+
     select.innerHTML = '<option value="">-- Pilih Produk --</option>';
     produkList.forEach(function(p, i) {
+        var dikecualikan = isProdukDikecualikan(p) ? ' (⚠️ Dikecualikan)' : '';
         var option = document.createElement('option');
         option.value = i;
-        option.text = p.nama + ' (Stok: ' + p.stok + ')';
+        option.text = p.nama + ' (Stok: ' + p.stok + ')' + dikecualikan;
         select.appendChild(option);
     });
 }
 
 // ============================================================
-// 8. UPDATE INFO PRODUK YANG DIPILIH
+// 8. UPDATE INFO PRODUK TERPILIH
 // ============================================================
 function updateInfoProdukOfflineToko() {
     var select = document.getElementById('pilihProdukTransaksiOfflineToko');
     var index = parseInt(select.value);
     var jumlah = parseInt(document.getElementById('jumlahProdukOfflineToko').value) || 1;
     var infoDiv = document.getElementById('infoProdukOfflineToko');
+
     if (isNaN(index)) {
         infoDiv.innerHTML = '<small class="text-muted">Pilih produk untuk melihat informasi.</small>';
         return;
     }
+
     var idPemilik = getOwnerIdTransaksi();
     var pemilik = getDataPemilikTransaksi();
     var role = pemilik ? pemilik.role : 'Toko';
     var produkList = loadProdukGlobal(role, idPemilik);
     var p = produkList[index];
+
     if (!p) return;
+
     var harga = p.harga || 0;
     var subtotal = harga * jumlah;
     var stok = p.stok || 0;
+    var dikecualikan = isProdukDikecualikan(p);
+
     infoDiv.innerHTML = `
         <strong>${p.nama}</strong><br>
         <small>Harga: Rp ${harga.toLocaleString('id-ID')} | Stok: ${stok}</small><br>
         <small class="text-success">Subtotal: Rp ${subtotal.toLocaleString('id-ID')}</small>
+        ${dikecualikan ? '<br><span class="text-danger"><i class="fas fa-exclamation-triangle me-1"></i>Produk ini DIKECUALIKAN dari minimal belanja!</span>' : ''}
     `;
+
     if (jumlah > stok) {
         infoDiv.innerHTML += '<br><span class="text-danger"><i class="fas fa-exclamation-triangle me-1"></i>Stok tidak mencukupi!</span>';
     }
 }
 
 // ============================================================
-// 9. TAMBAH ITEM KE KERANJANG (DIPERBAIKI)
+// 9. TAMBAH ITEM KE KERANJANG
 // ============================================================
 function tambahItemOfflineToko() {
     var select = document.getElementById('pilihProdukTransaksiOfflineToko');
     var index = parseInt(select.value);
     var jumlah = parseInt(document.getElementById('jumlahProdukOfflineToko').value) || 1;
+
     if (isNaN(index)) {
         alert('Pilih produk terlebih dahulu.');
         return;
     }
+
     var idPemilik = getOwnerIdTransaksi();
     var pemilik = getDataPemilikTransaksi();
     var role = pemilik ? pemilik.role : 'Toko';
     var produkList = loadProdukGlobal(role, idPemilik);
     var p = produkList[index];
-    if (!p) {
-        alert('Produk tidak ditemukan.');
-        return;
-    }
+
+    if (!p) return;
+
     if (jumlah > p.stok) {
         alert('Stok tidak mencukupi!');
         return;
     }
+
     var existing = keranjangOfflineToko.find(function(item) { return item.produkIndex === index; });
     if (existing) {
         if (existing.jumlah + jumlah > p.stok) {
@@ -13217,21 +13919,24 @@ function tambahItemOfflineToko() {
         }
         existing.jumlah += jumlah;
         existing.subtotal = existing.jumlah * p.harga;
+        existing.dikecualikan = isProdukDikecualikan(p);
     } else {
         keranjangOfflineToko.push({
             produkIndex: index,
             nama: p.nama,
             harga: p.harga,
             jumlah: jumlah,
-            subtotal: p.harga * jumlah
+            subtotal: p.harga * jumlah,
+            dikecualikan: isProdukDikecualikan(p)
         });
     }
+
     document.getElementById('jumlahProdukOfflineToko').value = '1';
     select.value = '';
     document.getElementById('infoProdukOfflineToko').innerHTML = '<small class="text-muted">Pilih produk untuk melihat informasi.</small>';
+
     renderDaftarItemOfflineToko();
     hitungTotalTransaksiOfflineToko();
-    console.log('Keranjang:', keranjangOfflineToko);
 }
 
 // ============================================================
@@ -13240,18 +13945,22 @@ function tambahItemOfflineToko() {
 function renderDaftarItemOfflineToko() {
     var tbody = document.getElementById('daftarItemOfflineToko');
     if (!tbody) return;
+
     if (keranjangOfflineToko.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">Belum ada item.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Belum ada item.</td></tr>';
         return;
     }
+
     var html = '';
     keranjangOfflineToko.forEach(function(item, i) {
+        var dikecualikanBadge = item.dikecualikan ? '<span class="badge bg-danger">Ya</span>' : '<span class="badge bg-success">Tidak</span>';
         html += `
             <tr>
                 <td><strong>${item.nama}</strong></td>
                 <td>${item.jumlah}</td>
                 <td>Rp ${Number(item.harga).toLocaleString('id-ID')}</td>
                 <td class="fw-bold">Rp ${Number(item.subtotal).toLocaleString('id-ID')}</td>
+                <td>${dikecualikanBadge}</td>
                 <td><button class="btn btn-sm btn-danger" onclick="hapusItemOfflineToko(${i})"><i class="fas fa-trash"></i></button></td>
             </tr>
         `;
@@ -13278,11 +13987,32 @@ function hapusSemuaItemOfflineToko() {
 }
 
 // ============================================================
-// 13. HITUNG TOTAL TRANSAKSI
+// 13. HITUNG TOTAL TRANSAKSI (DENGAN PENGECUALIAN)
 // ============================================================
 function hitungTotalTransaksiOfflineToko() {
-    var total = keranjangOfflineToko.reduce(function(sum, item) { return sum + item.subtotal; }, 0);
+    var total = 0;
+    var totalMinimal = 0;
+
+    keranjangOfflineToko.forEach(function(item) {
+        total += item.subtotal;
+        if (!item.dikecualikan) {
+            totalMinimal += item.subtotal;
+        }
+    });
+
+    // Update tampilan
     document.getElementById('totalTransaksiOfflineToko').value = total.toLocaleString('id-ID');
+    
+    // Simpan totalMinimal
+    totalMinimalBelanjaToko = totalMinimal;
+    
+    // Update info minimal
+    var infoMinimal = document.getElementById('totalMinimalToko');
+    if (infoMinimal) {
+        infoMinimal.textContent = 'Rp ' + totalMinimal.toLocaleString('id-ID');
+    }
+
+    // Hitung kembalian
     hitungKembalianOfflineToko();
 }
 
@@ -13298,53 +14028,81 @@ function hitungKembalianOfflineToko() {
 }
 
 // ============================================================
-// 15. SIMPAN TRANSAKSI OFFLINE
+// 15. SIMPAN TRANSAKSI OFFLINE (DENGAN CEK PENGECUALIAN)
 // ============================================================
 function simpanTransaksiOfflineToko() {
     if (keranjangOfflineToko.length === 0) {
         alert('Tambahkan item terlebih dahulu!');
         return;
     }
+
     var total = keranjangOfflineToko.reduce(function(sum, item) { return sum + item.subtotal; }, 0);
+    var totalMinimal = totalMinimalBelanjaToko || total;
+
     var bayar = parseInt(document.getElementById('bayarTransaksiOfflineToko').value) || 0;
     var kembalian = bayar - total;
     var namaPelanggan = document.getElementById('namaPelangganOfflineToko').value.trim();
+
     if (bayar < total) {
         alert('Pembayaran kurang dari total!');
         return;
     }
-    var idPemilik = getOwnerIdTransaksi();
-    var pemilik = getDataPemilikTransaksi();
-    var role = pemilik ? pemilik.role : 'Toko';
-    var produkList = loadProdukGlobal(role, idPemilik);
-    for (var i = 0; i < keranjangOfflineToko.length; i++) {
-        var item = keranjangOfflineToko[i];
-        var produk = produkList[item.produkIndex];
-        if (!produk || produk.stok < item.jumlah) {
-            alert('Stok produk ' + item.nama + ' tidak mencukupi!');
-            return;
-        }
+
+    // Cek minimal belanja untuk R2Coin
+    var setting = JSON.parse(localStorage.getItem('settingEkonomiCoin') || '{}');
+    var minimalBelanja = setting.minimalBelanja || 50000;
+    var hargaBeliCoin = setting.hargaBeli || 750;
+
+    // HITUNG COIN BERDASARKAN totalMinimal (BUKAN total)
+    var coinDidapat = 0;
+    if (totalMinimal >= minimalBelanja) {
+        coinDidapat = Math.floor(totalMinimal / hargaBeliCoin);
     }
+
+    // Simpan transaksi
     var hasil = tambahTransaksiOffline({
         items: keranjangOfflineToko.map(function(item) {
-            return { nama: item.nama, harga: item.harga, qty: item.jumlah, subtotal: item.subtotal };
+            return {
+                nama: item.nama,
+                harga: item.harga,
+                qty: item.jumlah,
+                subtotal: item.subtotal,
+                dikecualikan: item.dikecualikan
+            };
         }),
         total: total,
+        totalMinimal: totalMinimal,
         bayar: bayar,
         kembalian: kembalian,
-        pelanggan: namaPelanggan || 'Umum'
+        pelanggan: namaPelanggan || 'Umum',
+        coinDidapat: coinDidapat
     });
+
     if (hasil.sukses) {
+        // Kurangi stok
         keranjangOfflineToko.forEach(function(item) {
-            var produk = produkList[item.produkIndex];
-            produk.stok -= item.jumlah;
+            var produk = loadProdukGlobal('Toko', GetDataIdUser())[item.produkIndex];
+            if (produk) produk.stok -= item.jumlah;
         });
-        simpanProdukGlobal(role, idPemilik, produkList);
+
+        // Simpan stok
+        simpanProdukGlobal('Toko', GetDataIdUser(), loadProdukGlobal('Toko', GetDataIdUser()));
+
+        // Reset keranjang
         keranjangOfflineToko = [];
+        totalMinimalBelanjaToko = 0;
+
+        // Tutup modal
         var modal = bootstrap.Modal.getInstance(document.getElementById('modalTransaksiOfflineToko'));
         if (modal) modal.hide();
+
+        // Refresh tabel
         renderSemuaTransaksiToko();
-        alert('✅ Transaksi offline berhasil disimpan! ID: ' + hasil.id);
+
+        // Notifikasi
+        alert('✅ Transaksi berhasil disimpan!\nTotal: Rp ' + total.toLocaleString('id-ID') +
+              '\nTotal Minimal: Rp ' + totalMinimal.toLocaleString('id-ID') +
+              '\nCoin: ' + coinDidapat + ' R2Coin');
     } else {
         alert('❌ ' + hasil.pesan);
     }
@@ -13355,10 +14113,12 @@ function simpanTransaksiOfflineToko() {
 // ============================================================
 function hapusTransaksiOfflineToko(id) {
     if (!confirm('Hapus transaksi ini?')) return;
+
     var idPemilik = getOwnerIdTransaksi();
     var data = loadTransaksiOffline(idPemilik);
     var newData = data.filter(function(t) { return t.id !== id; });
     simpanTransaksiOffline(idPemilik, newData);
+
     renderSemuaTransaksiToko();
 }
 
@@ -13369,16 +14129,21 @@ function renderPesananOnlineToko() {
     var tbody = document.getElementById('tabelPesananOnlineToko');
     var badge = document.getElementById('badgeJumlahPesananOnlineToko');
     if (!tbody) return;
+
     var idPemilik = getOwnerIdTransaksi();
     var allOrders = JSON.parse(localStorage.getItem('dataPesananOnline_' + idPemilik) || '[]');
+
     var cari = (document.getElementById('cariOrderOnlineToko')?.value || '').toLowerCase().trim();
     var filterStatus = document.getElementById('filterStatusOrderOnlineToko')?.value || '';
+
     var filtered = allOrders.filter(function(order) {
         var matchCari = cari === '' || order.customer.toLowerCase().includes(cari) || order.customerId.toLowerCase().includes(cari);
         var matchStatus = filterStatus === '' || order.status === filterStatus;
         return matchCari && matchStatus;
     });
+
     badge.textContent = filtered.length;
+
     var totalMasuk = allOrders.filter(function(o) { return o.status === 'Menunggu Konfirmasi'; }).length;
     var totalSelesai = allOrders.filter(function(o) { return o.status === 'Selesai'; }).length;
     var totalDitolak = allOrders.filter(function(o) { return o.status === 'Ditolak'; }).length;
@@ -13386,14 +14151,17 @@ function renderPesananOnlineToko() {
     allOrders.forEach(function(o) {
         if (o.status === 'Selesai') totalPendapatanOnline += o.total;
     });
+
     document.getElementById('totalOrderMasukToko').textContent = totalMasuk;
     document.getElementById('totalOrderSelesaiToko').textContent = totalSelesai;
     document.getElementById('totalOrderDitolakToko').textContent = totalDitolak;
     document.getElementById('totalPendapatanOnlineToko').textContent = 'Rp ' + totalPendapatanOnline.toLocaleString('id-ID');
+
     if (filtered.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Tidak ada pesanan online.</td></tr>';
         return;
     }
+
     var dataTampil = filtered.slice(-10).reverse();
     var html = '';
     dataTampil.forEach(function(order, i) {
@@ -13402,7 +14170,9 @@ function renderPesananOnlineToko() {
         else if (order.status === 'Dikonfirmasi') statusBadge = '<span class="badge bg-primary">Dikonfirmasi</span>';
         else if (order.status === 'Selesai') statusBadge = '<span class="badge bg-success">Selesai</span>';
         else if (order.status === 'Ditolak') statusBadge = '<span class="badge bg-danger">Ditolak</span>';
+
         var items = order.items ? order.items.map(function(it) { return it.nama + ' x' + it.qty; }).join(', ') : '-';
+
         var aksiHtml = '';
         if (order.status === 'Menunggu Konfirmasi') {
             aksiHtml = `
@@ -13414,6 +14184,7 @@ function renderPesananOnlineToko() {
         } else {
             aksiHtml = '<span class="text-muted small">Selesai</span>';
         }
+
         html += `
             <tr>
                 <td>${i + 1}</td>
@@ -13430,91 +14201,22 @@ function renderPesananOnlineToko() {
 }
 
 // ============================================================
-// 18. KONFIRMASI PESANAN ONLINE (DENGAN CEK SALDO R2COIN)
+// 18. KONFIRMASI PESANAN ONLINE
 // ============================================================
 function konfirmasiPesananOnlineToko(idPesanan) {
+    if (!confirm('Konfirmasi pesanan ini?')) return;
+
     var idPemilik = getOwnerIdTransaksi();
     var allOrders = JSON.parse(localStorage.getItem('dataPesananOnline_' + idPemilik) || '[]');
     var order = allOrders.find(function(o) { return o.id === idPesanan; });
     if (!order) return;
 
-    // ================= CEK SALDO R2COIN (SELALU) =================
-    var userToko = getDataIdUser(idPemilik);
-    if (!userToko.r2coin || userToko.r2coin.balance <= 0) {
-        alert('⚠️ Transaksi tidak dapat dikonfirmasi karena saldo R2Coin toko kosong. Silakan top-up terlebih dahulu.');
-        return;
-    }
-    // ============================================================
-
-    if (!confirm('Konfirmasi pesanan ini? Stok akan dikurangi dan R2Coin akan diproses.')) return;
-
-    var pemilik = getDataPemilikTransaksi();
-    var role = pemilik ? pemilik.role : 'Toko';
-    var produkList = loadProdukGlobal(role, idPemilik);
-
-    // Cek stok produk
-    for (var i = 0; i < order.items.length; i++) {
-        var item = order.items[i];
-        var produk = produkList.find(function(p) { return p.nama === item.nama; });
-        if (!produk || produk.stok < item.qty) {
-            alert('Stok produk ' + item.nama + ' tidak mencukupi!');
-            return;
-        }
-    }
-
-    // Kurangi stok
-    order.items.forEach(function(item) {
-        var produk = produkList.find(function(p) { return p.nama === item.nama; });
-        produk.stok -= item.qty;
-    });
-    simpanProdukGlobal(role, idPemilik, produkList);
-
-    // Proses R2Coin
-    var setting = JSON.parse(localStorage.getItem('settingEkonomiCoin') || '{}');
-    var minimalBelanja = setting.minimalBelanja || 50000;
-    var total = order.total;
-
-    if (total >= minimalBelanja) {
-        var hargaBeliCoin = setting.hargaBeli || 750;
-        var coinDiberikan = Math.floor(total / hargaBeliCoin);
-        var userToko = getDataIdUser(idPemilik);
-        if (!userToko.r2coin) userToko.r2coin = { balance: 0, transactions: [] };
-        if (userToko.r2coin.balance < coinDiberikan) {
-            alert('Saldo R2Coin toko tidak cukup untuk memberikan bonus. Top-up terlebih dahulu!');
-            return;
-        }
-        userToko.r2coin.balance -= coinDiberikan;
-        userToko.r2coin.transactions.push({
-            type: 'debit',
-            amount: -coinDiberikan,
-            note: 'Bonus belanja online ke ' + order.customer,
-            date: new Date().toISOString()
-        });
-        var customer = getDataIdUser(order.customerId);
-        if (customer) {
-            if (!customer.r2coin) customer.r2coin = { balance: 0, transactions: [] };
-            customer.r2coin.balance += coinDiberikan;
-            customer.r2coin.transactions.push({
-                type: 'credit',
-                amount: coinDiberikan,
-                note: 'Bonus belanja online dari ' + userToko.nama,
-                date: new Date().toISOString()
-            });
-        }
-        var idxToko = dataLoginUser.findIndex(function(u) { return u.idUser === idPemilik; });
-        if (idxToko !== -1) dataLoginUser[idxToko].r2coin = userToko.r2coin;
-        var idxCustomer = dataLoginUser.findIndex(function(u) { return u.idUser === order.customerId; });
-        if (idxCustomer !== -1 && customer) dataLoginUser[idxCustomer].r2coin = customer.r2coin;
-        simpanDataKeLocalStorage();
-    }
-
-    // Ubah status pesanan
     order.status = 'Dikonfirmasi';
     order.tglKonfirmasi = new Date().toISOString();
     localStorage.setItem('dataPesananOnline_' + idPemilik, JSON.stringify(allOrders));
 
     renderPesananOnlineToko();
-    alert('✅ Pesanan berhasil dikonfirmasi!');
+    alert('✅ Pesanan berhasil dikonfirmasi.');
 }
 
 // ============================================================
@@ -13522,13 +14224,16 @@ function konfirmasiPesananOnlineToko(idPesanan) {
 // ============================================================
 function tolakPesananOnlineToko(idPesanan) {
     if (!confirm('Tolak pesanan ini?')) return;
+
     var idPemilik = getOwnerIdTransaksi();
     var allOrders = JSON.parse(localStorage.getItem('dataPesananOnline_' + idPemilik) || '[]');
     var idx = allOrders.findIndex(function(o) { return o.id === idPesanan; });
     if (idx === -1) return;
+
     allOrders[idx].status = 'Ditolak';
     allOrders[idx].tglTolak = new Date().toISOString();
     localStorage.setItem('dataPesananOnline_' + idPemilik, JSON.stringify(allOrders));
+
     renderPesananOnlineToko();
     alert('❌ Pesanan ditolak.');
 }
@@ -13538,13 +14243,16 @@ function tolakPesananOnlineToko(idPesanan) {
 // ============================================================
 function selesaikanPesananOnlineToko(idPesanan) {
     if (!confirm('Tandai pesanan ini sebagai SELESAI?')) return;
+
     var idPemilik = getOwnerIdTransaksi();
     var allOrders = JSON.parse(localStorage.getItem('dataPesananOnline_' + idPemilik) || '[]');
     var idx = allOrders.findIndex(function(o) { return o.id === idPesanan; });
     if (idx === -1) return;
+
     allOrders[idx].status = 'Selesai';
     allOrders[idx].tglSelesai = new Date().toISOString();
     localStorage.setItem('dataPesananOnline_' + idPemilik, JSON.stringify(allOrders));
+
     renderPesananOnlineToko();
     alert('✅ Pesanan selesai.');
 }
@@ -13558,9 +14266,8 @@ function resetFilterOrderOnlineToko() {
     renderPesananOnlineToko();
 }
 </script>
-
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 11.6 JS (PERBAIKAN) ===== -->
+<!-- ===== AKHIR BLOK R 11.6 (JS) ===== -->
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
@@ -17533,6 +18240,7 @@ function masukDasbor() {
 			{ nama: 'Manajemen Fee & Komisi', ikon: 'fas fa-coins', blok: '10.50', aksi: 'tampilkanManajemenFee' },
 			{ nama: 'Manajemen Bank / Rekening', ikon: 'fas fa-university', blok: '10.41', aksi: 'tampilkanManajemenRekening' },
 			{ nama: 'Setting Rekening Master', ikon: 'fas fa-university', blok: '10.17', aksi: 'settingRekening' },
+			{ nama: 'Pengecualian Minimal Belanja', ikon: 'fas fa-exclamation-circle', blok: '10.70', aksi: 'tampilkanPengecualianMinimal' },
 
 			// ===== PENJUALAN & AKUN =====
 			{ nama: 'Manajemen Seller', ikon: 'fas fa-user-tie', blok: '10.43', aksi: 'tampilkanManajemenSeller' },
@@ -18163,6 +18871,7 @@ menuConfig['SOO'] = {
 	menuHandlers['kelolaRunningText'] = function() { panggilFungsiJikaAda('tampilkanKelolaRunningText', 'Kelola Running Text', '10.56'); };
 	menuHandlers['tampilkanRiwayatPenjualanCoin'] = function() { panggilFungsiJikaAda('tampilkanRiwayatPenjualanCoin', 'Riwayat Penjualan Coin', '10.65'); };
 	menuHandlers['tampilkanHelloFriends'] = function() { panggilFungsiJikaAda('tampilkanHelloFriends', 'Hello Friends', '50.1'); };
+	menuHandlers['tampilkanPengecualianMinimal'] = function() { panggilFungsiJikaAda('tampilkanPengecualianMinimal', 'Pengecualian Minimal Belanja', '10.70'); };
 
 	// --- TAMBAHAN HANDLER DASBOR PER ROLE (AKSES CEPAT) ---
 	menuHandlers['tampilkanDasborDistributorSemuaRole'] = function() { panggilFungsiJikaAda('tampilkanDasborDistributorAdmin', 'Dasbor Distributor', '10.61'); };
