@@ -301,6 +301,189 @@
 <!-- ============================================================ -->
 <script>
 // ============================================================
+// BLOK R 01.0 – FUNGSI GLOBAL DOMPET R2COIN (LENGKAP)
+// ------------------------------------------------------------
+// Fungsi ini dipakai oleh semua role seller dan customer.
+// ============================================================
+
+// --- 1. LOAD R2COIN USER (SUDAH ADA, DIREVISI) ---
+function loadR2CoinUser(idUser) {
+    var user = getDataIdUser(idUser);
+    if (!user) return null;
+    if (!user.r2coin) user.r2coin = { balance: 0, transactions: [] };
+    return user.r2coin;
+}
+
+// --- 2. SAVE R2COIN USER (BARU) ---
+function saveR2CoinUser(idUser, data) {
+    var user = getDataIdUser(idUser);
+    if (!user) return false;
+    user.r2coin = data;
+    localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    return true;
+}
+
+// --- 3. GET SALDO R2COIN (SUDAH ADA, DIREVISI) ---
+function getSaldoR2Coin(idUser) {
+    var r2coin = loadR2CoinUser(idUser);
+    if (!r2coin) return 0;
+    return r2coin.balance || 0;
+}
+
+// --- 4. TAMBAH SALDO COIN (BARU) ---
+function tambahSaldoCoin(idUser, jumlah) {
+    var r2coin = loadR2CoinUser(idUser);
+    if (!r2coin) return { sukses: false, pesan: 'User tidak ditemukan.' };
+    r2coin.balance += jumlah;
+    r2coin.transactions.push({
+        id: generateKodeUnik('R2C'),
+        type: 'credit',
+        amount: jumlah,
+        note: 'Top-Up / Penerimaan Coin',
+        date: new Date().toISOString()
+    });
+    saveR2CoinUser(idUser, r2coin);
+    return { sukses: true, saldoBaru: r2coin.balance };
+}
+
+// --- 5. KURANGI SALDO COIN (BARU) ---
+function kurangiSaldoCoin(idUser, jumlah) {
+    var r2coin = loadR2CoinUser(idUser);
+    if (!r2coin) return { sukses: false, pesan: 'User tidak ditemukan.' };
+    if (r2coin.balance < jumlah) return { sukses: false, pesan: 'Saldo tidak mencukupi.' };
+    r2coin.balance -= jumlah;
+    r2coin.transactions.push({
+        id: generateKodeUnik('R2C'),
+        type: 'debit',
+        amount: -jumlah,
+        note: 'Withdraw / Transfer Coin',
+        date: new Date().toISOString()
+    });
+    saveR2CoinUser(idUser, r2coin);
+    return { sukses: true, saldoBaru: r2coin.balance };
+}
+
+// --- 6. TRANSFER COIN ANTAR USER (BARU) ---
+function transferCoin(pengirim, penerima, jumlah) {
+    var hasilKirim = kurangiSaldoCoin(pengirim, jumlah);
+    if (!hasilKirim.sukses) return hasilKirim;
+    var hasilTerima = tambahSaldoCoin(penerima, jumlah);
+    if (!hasilTerima.sukses) {
+        // Rollback jika gagal
+        tambahSaldoCoin(pengirim, jumlah);
+        return hasilTerima;
+    }
+    return { sukses: true, pesan: 'Transfer berhasil.' };
+}
+
+// --- 7. CATAT TRANSAKSI COIN (BARU) ---
+function catatTransaksiCoin(idUser, type, amount, note) {
+    var r2coin = loadR2CoinUser(idUser);
+    if (!r2coin) return false;
+    r2coin.transactions.push({
+        id: generateKodeUnik('R2C'),
+        type: type,
+        amount: amount,
+        note: note || '-',
+        date: new Date().toISOString()
+    });
+    saveR2CoinUser(idUser, r2coin);
+    return true;
+}
+
+// --- 8. HITUNG COIN DARI HARGA PRODUK (BARU) ---
+function hitungCoinDariHarga(hargaProduk) {
+    var setting = getSettingEkonomiGlobal();
+    var hargaBeli = setting.hargaBeli || 750;
+    return Math.round(hargaProduk / hargaBeli);
+}
+
+// --- 9. CEK SALDO MINIMAL COIN (BARU) ---
+function cekSaldoMinimalCoin(idUser) {
+    var saldo = getSaldoR2Coin(idUser);
+    return saldo >= 10;
+}
+
+// --- 10. TOP-UP COIN (BARU) ---
+function topUpCoin(idUser, jumlah) {
+    var hasil = tambahSaldoCoin(idUser, jumlah);
+    if (hasil.sukses) {
+        catatTransaksiCoin(idUser, 'credit', jumlah, 'Top-Up Coin');
+        return { sukses: true, saldoBaru: hasil.saldoBaru };
+    }
+    return hasil;
+}
+
+// --- 11. WITHDRAW COIN (BARU) ---
+function withdrawCoin(idUser, jumlah) {
+    var hasil = kurangiSaldoCoin(idUser, jumlah);
+    if (hasil.sukses) {
+        catatTransaksiCoin(idUser, 'debit', -jumlah, 'Withdraw Coin');
+        return { sukses: true, saldoBaru: hasil.saldoBaru };
+    }
+    return hasil;
+}
+
+// --- 12. RENDER TABEL RIWAYAT TRANSAKSI COIN (BARU) ---
+function renderDompetR2Coin(tbodyId) {
+    var tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+    if (!r2coin || r2coin.transactions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+    var html = '';
+    r2coin.transactions.slice().reverse().forEach(function(t) {
+        var tipeBadge = t.type === 'credit'
+            ? '<span class="badge bg-success">Masuk</span>'
+            : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+        html += '<tr>' +
+            '<td>' + t.date + '</td>' +
+            '<td>' + tipeBadge + '</td>' +
+            '<td class="fw-bold">' + jumlah + ' Coin</td>' +
+            '<td>' + t.note + '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 13. RENDER STATISTIK R2COIN (BARU) ---
+function renderStatistikR2Coin(idUser) {
+    var r2coin = loadR2CoinUser(idUser);
+    if (!r2coin) return { totalTransaksi: 0, totalMasuk: 0, totalKeluar: 0, totalTopUp: 0 };
+
+    var totalMasuk = 0, totalKeluar = 0, totalTopUp = 0;
+    r2coin.transactions.forEach(function(t) {
+        if (t.type === 'credit') totalMasuk += t.amount;
+        else if (t.type === 'debit') totalKeluar += Math.abs(t.amount);
+        if (t.note === 'Top-Up Coin') totalTopUp += t.amount;
+    });
+
+    return {
+        totalTransaksi: r2coin.transactions.length,
+        totalMasuk: totalMasuk,
+        totalKeluar: totalKeluar,
+        totalTopUp: totalTopUp
+    };
+}
+
+// --- 14. GET SETTING EKONOMI (SUDAH ADA, DIPASTIKAN) ---
+function getSettingEkonomiGlobal() {
+    var stored = localStorage.getItem('settingEkonomiCoin');
+    if (stored) {
+        try {
+            return JSON.parse(stored);
+        } catch(e) {
+            return { minimalBelanja: 50000, coinWajib: 1, hargaJual: 1000, hargaBeli: 750, biayaAdminWithdraw: 5, minimalWithdraw: 10 };
+        }
+    }
+    return { minimalBelanja: 50000, coinWajib: 1, hargaJual: 1000, hargaBeli: 750, biayaAdminWithdraw: 5, minimalWithdraw: 10 };
+}
+
+// ============================================================
 // BLOK R 01.0 (1) – GENERATE KODE UNIK
 // ============================================================
 function generateKodeUnik(prefix) {
@@ -8784,6 +8967,2962 @@ function renderDasborKSRGR() {
 }
 </script>
 <!--- ===== AKHIR BLOK R 29.1(5) JS (REVISI FINAL) ===== -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(1) – DOMPET R2COIN TOKO (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinTKContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-coins me-2"></i>Dompet R2Coin - Toko</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTopUp()"><i class="fas fa-plus me-1"></i> Top-Up</button>
+                <button class="btn btn-warning me-2" onclick="tampilkanFormWithdraw()"><i class="fas fa-minus me-1"></i> Withdraw</button>
+                <button class="btn btn-info me-2" onclick="tampilkanFormTransfer()"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Banner Saldo -->
+        <div class="card border-0 shadow mb-4" style="background-color: #FFF8E1;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="fw-bold mb-1"><i class="fas fa-coins me-2 text-warning"></i>Saldo R2Coin</h5>
+                        <h2 class="fw-bold mb-0" id="saldoR2CoinTK">0</h2>
+                        <small class="text-muted">Coin</small>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <span class="badge bg-success fs-6" id="statusSaldoR2CoinTK">Aktif</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTransaksiCoin">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalMasukCoin">0</h5><small class="text-muted">Total Masuk</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalKeluarCoin">0</h5><small class="text-muted">Total Keluar</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTopUp">0</h5><small class="text-muted">Total Top-Up</small></div></div></div>
+        </div>
+
+        <!-- Filter Riwayat -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="cariRiwayatCoinTK" class="form-control" placeholder="Cari transaksi..." onkeyup="renderRiwayatR2CoinTK()"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tipe</label><select id="filterTipeRiwayatCoinTK" class="form-select" onchange="renderRiwayatR2CoinTK()"><option value="">Semua</option><option value="credit">Masuk</option><option value="debit">Keluar</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tanggal</label><input type="date" id="filterTanggalRiwayatCoinTK" class="form-control" onchange="renderRiwayatR2CoinTK()"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterRiwayatCoinTK()"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Riwayat -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-history me-2"></i>Riwayat Transaksi Coin</span>
+                <span class="badge bg-light text-dark" id="totalRiwayatCoinTK">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Tanggal</th>
+                                <th>Tipe</th>
+                                <th>Jumlah</th>
+                                <th>Keterangan</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelRiwayatR2CoinTK"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Top-Up -->
+<div class="modal fade" id="modalTopUpCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #28A745;">
+                <h5 class="modal-title"><i class="fas fa-plus me-2"></i>Top-Up Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTopUpCoin" onsubmit="return prosesTopUpCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahTopUp" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 1.000 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Metode Pembayaran</label>
+                        <select id="metodeTopUp" class="form-select">
+                            <option value="Transfer Bank">Transfer Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="QRIS">QRIS</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningTopUp" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bukti Transfer</label>
+                        <input type="file" id="buktiTopUp" class="form-control" accept="image/*" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-success"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Withdraw -->
+<div class="modal fade" id="modalWithdrawCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title"><i class="fas fa-minus me-2"></i>Withdraw Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formWithdrawCoin" onsubmit="return prosesWithdrawCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahWithdraw" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 750 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bank / E-Wallet Tujuan</label>
+                        <select id="bankWithdraw" class="form-select">
+                            <option value="">-- Pilih --</option>
+                            <option value="BCA">BCA</option>
+                            <option value="BRI">BRI</option>
+                            <option value="Mandiri">Mandiri</option>
+                            <option value="DANA">DANA</option>
+                            <option value="OVO">OVO</option>
+                            <option value="GoPay">GoPay</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningWithdraw" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Transfer -->
+<div class="modal fade" id="modalTransferCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #17A2B8;">
+                <h5 class="modal-title"><i class="fas fa-exchange-alt me-2"></i>Transfer Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTransferCoin" onsubmit="return prosesTransferCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">ID Penerima</label>
+                        <input type="text" id="idPenerimaTransfer" class="form-control" placeholder="Masukkan ID user penerima" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="jumlahTransferCoin" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-info"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(1) – HTML ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(1) – JAVASCRIPT DOMPET R2COIN TOKO ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.31(1) – JAVASCRIPT DOMPET R2COIN TOKO
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - tutupMenu()            -> BLOK R 01.0
+//   - kembaliKeDasbor()      -> BLOK R 01.0
+//   - getSaldoR2Coin()       -> BLOK R 01.0
+//   - loadR2CoinUser()       -> BLOK R 01.0
+//   - tambahSaldoCoin()      -> BLOK R 01.0
+//   - kurangiSaldoCoin()     -> BLOK R 01.0
+//   - transferCoin()         -> BLOK R 01.0
+//   - catatTransaksiCoin()   -> BLOK R 01.0
+//   - topUpCoin()            -> BLOK R 01.0
+//   - withdrawCoin()         -> BLOK R 01.0
+//   - renderDompetR2Coin()   -> BLOK R 01.0
+//   - getSettingEkonomiGlobal() -> BLOK R 01.0
+// ============================================================
+
+// --- 1. TAMPILKAN HALAMAN ---
+function tampilkanDompetR2CoinTK() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dompetR2CoinTKContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDompetR2CoinTK();
+        tutupMenu(); // global
+    } else {
+        tampilkanPlaceholderMenu('Dompet R2Coin Toko', '11.31(1)');
+    }
+}
+
+// --- 2. RENDER DOMPET R2COIN ---
+function renderDompetR2CoinTK() {
+    var idUser = GetDataIdUser();
+    var saldo = getSaldoR2Coin(idUser);
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Tampilkan saldo
+    document.getElementById('saldoR2CoinTK').textContent = saldo;
+
+    // Statistik
+    var statistik = renderStatistikR2Coin(idUser);
+    document.getElementById('statTotalTransaksiCoin').textContent = statistik.totalTransaksi;
+    document.getElementById('statTotalMasukCoin').textContent = statistik.totalMasuk;
+    document.getElementById('statTotalKeluarCoin').textContent = statistik.totalKeluar;
+    document.getElementById('statTotalTopUp').textContent = statistik.totalTopUp;
+
+    // Cek status saldo minimal
+    var statusSaldo = cekSaldoMinimalCoin(idUser) ? 'Aktif' : 'Di bawah minimal (10 Coin)';
+    document.getElementById('statusSaldoR2CoinTK').textContent = statusSaldo;
+
+    // Render riwayat
+    renderRiwayatR2CoinTK();
+}
+
+// --- 3. RENDER RIWAYAT TRANSAKSI COIN ---
+function renderRiwayatR2CoinTK() {
+    var tbody = document.getElementById('tabelRiwayatR2CoinTK');
+    if (!tbody) return;
+
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Filter
+    var cari = (document.getElementById('cariRiwayatCoinTK')?.value || '').toLowerCase().trim();
+    var filterTipe = (document.getElementById('filterTipeRiwayatCoinTK')?.value || '');
+    var filterTanggal = (document.getElementById('filterTanggalRiwayatCoinTK')?.value || '');
+
+    var transaksiList = (r2coin && r2coin.transactions) ? r2coin.transactions : [];
+
+    var dataFilter = transaksiList.filter(function(t) {
+        var matchCari = cari === '' || (t.note || '').toLowerCase().includes(cari);
+        var matchTipe = filterTipe === '' || t.type === filterTipe;
+        var matchTanggal = filterTanggal === '' || t.date.split('T')[0] === filterTanggal;
+        return matchCari && matchTipe && matchTanggal;
+    });
+
+    document.getElementById('totalRiwayatCoinTK').textContent = dataFilter.length;
+
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+
+    var html = '';
+    dataFilter.slice().reverse().forEach(function(t, i) {
+        var tipeBadge = t.type === 'credit' ? '<span class="badge bg-success">Masuk</span>' : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + t.date + '</td>' +
+            '<td>' + tipeBadge + '</td>' +
+            '<td class="fw-bold">' + jumlah + ' Coin</td>' +
+            '<td>' + t.note + '</td>' +
+            '<td>' +
+            '<button class="btn btn-sm btn-outline-primary" onclick="lihatDetailTransaksiCoin(\'' + t.id + '\')"><i class="fas fa-eye"></i></button>' +
+            '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 4. RESET FILTER RIWAYAT ---
+function resetFilterRiwayatCoinTK() {
+    document.getElementById('cariRiwayatCoinTK').value = '';
+    document.getElementById('filterTipeRiwayatCoinTK').value = '';
+    document.getElementById('filterTanggalRiwayatCoinTK').value = '';
+    renderRiwayatR2CoinTK();
+}
+
+// --- 5. TAMPILKAN FORM TOP-UP ---
+function tampilkanFormTopUp() {
+    var modal = document.getElementById('modalTopUpCoin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    document.getElementById('inputJumlahTopUp').value = '';
+    document.getElementById('metodeTopUp').value = 'Transfer Bank';
+    document.getElementById('rekeningTopUp').value = '';
+    document.getElementById('buktiTopUp').value = '';
+    document.getElementById('inputJumlahTopUp').setAttribute('data-harga', setting.hargaJual);
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 6. PROSES TOP-UP ---
+function prosesTopUpCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahTopUp').value) || 0;
+    var metode = document.getElementById('metodeTopUp').value;
+    var rekening = document.getElementById('rekeningTopUp').value.trim();
+    var bukti = document.getElementById('buktiTopUp').files[0];
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+    if (!bukti) {
+        alert('Bukti transfer wajib diupload!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaJual;
+
+    // Simpan pengajuan top-up ke dataTopUpHistory
+    var dataTopUp = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+    dataTopUp.push({
+        id: generateKodeUnik('TOPUP'),
+        idUser: GetDataIdUser(),
+        namaPembeli: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        metode: metode,
+        rekeningTujuan: rekening,
+        buktiTransfer: URL.createObjectURL(bukti),
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataTopUpHistory', JSON.stringify(dataTopUp));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalTopUpCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan top-up berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 7. TAMPILKAN FORM WITHDRAW ---
+function tampilkanFormWithdraw() {
+    var modal = document.getElementById('modalWithdrawCoin');
+    if (!modal) return;
+
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    document.getElementById('inputJumlahWithdraw').value = '';
+    document.getElementById('bankWithdraw').value = '';
+    document.getElementById('rekeningWithdraw').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 8. PROSES WITHDRAW ---
+function prosesWithdrawCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahWithdraw').value) || 0;
+    var bank = document.getElementById('bankWithdraw').value;
+    var rekening = document.getElementById('rekeningWithdraw').value.trim();
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!bank) {
+        alert('Bank/E-Wallet tujuan wajib diisi!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+
+    // Cek saldo minimal
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    if (saldo < jumlah) {
+        alert('Saldo tidak mencukupi!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaBeli;
+
+    // Simpan pengajuan withdraw ke dataWithdrawalRequests
+    var dataWithdraw = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+    dataWithdraw.push({
+        id: generateKodeUnik('WD'),
+        idUser: GetDataIdUser(),
+        namaPemohon: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        bankTujuan: bank,
+        rekeningTujuan: rekening,
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataWithdrawalRequests', JSON.stringify(dataWithdraw));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalWithdrawCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan withdraw berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 9. TAMPILKAN FORM TRANSFER ---
+function tampilkanFormTransfer() {
+    var modal = document.getElementById('modalTransferCoin');
+    if (!modal) return;
+
+    document.getElementById('idPenerimaTransfer').value = '';
+    document.getElementById('jumlahTransferCoin').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 10. PROSES TRANSFER ---
+function prosesTransferCoin(event) {
+    event.preventDefault();
+
+    var idPenerima = document.getElementById('idPenerimaTransfer').value.trim();
+    var jumlah = parseInt(document.getElementById('jumlahTransferCoin').value) || 0;
+
+    if (!idPenerima) {
+        alert('ID penerima wajib diisi!');
+        return false;
+    }
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+
+    var hasil = transferCoin(GetDataIdUser(), idPenerima, jumlah);
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalTransferCoin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinTK();
+        alert('✅ Transfer coin berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+    return false;
+}
+
+// --- 11. LIHAT DETAIL TRANSAKSI COIN ---
+function lihatDetailTransaksiCoin(idTransaksi) {
+    var r2coin = loadR2CoinUser(GetDataIdUser());
+    var transaksi = (r2coin && r2coin.transactions) ? r2coin.transactions.find(function(t) { return t.id === idTransaksi; }) : null;
+
+    if (!transaksi) {
+        alert('Transaksi tidak ditemukan!');
+        return;
+    }
+
+    alert('Detail Transaksi:\nID: ' + transaksi.id + '\nTipe: ' + transaksi.type + '\nJumlah: ' + transaksi.amount + ' Coin\nKeterangan: ' + transaksi.note + '\nTanggal: ' + transaksi.date);
+}
+
+// --- 12. TAMPILKAN MODAL PEMBAYARAN R2COIN ---
+function tampilkanPembayaranR2Coin(total) {
+    var modal = document.getElementById('modalPembayaranR2Coin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    document.getElementById('totalPembayaranR2Coin').value = 'Rp ' + total.toLocaleString('id-ID');
+    document.getElementById('jumlahCoinPembayaran').value = jumlahCoin + ' Coin';
+    document.getElementById('saldoCoinPembayaran').value = saldo + ' Coin';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 13. PROSES PEMBAYARAN R2COIN ---
+function prosesPembayaranR2Coin() {
+    var total = parseFloat(document.getElementById('totalPembayaranR2Coin').value.replace(/[^0-9]/g, '')) || 0;
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    if (saldo < jumlahCoin) {
+        alert('❌ Saldo R2Coin tidak mencukupi!');
+        return;
+    }
+
+    var hasil = kurangiSaldoCoin(GetDataIdUser(), jumlahCoin);
+    if (hasil.sukses) {
+        catatTransaksiCoin(GetDataIdUser(), 'debit', -jumlahCoin, 'Pembayaran Produk');
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalPembayaranR2Coin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinTK();
+        alert('✅ Pembayaran berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(1) – JAVASCRIPT ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(2) – DOMPET R2COIN PEDAGANG PASAR (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinPPContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-coins me-2"></i>Dompet R2Coin - Pedagang Pasar</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTopUp()"><i class="fas fa-plus me-1"></i> Top-Up</button>
+                <button class="btn btn-warning me-2" onclick="tampilkanFormWithdraw()"><i class="fas fa-minus me-1"></i> Withdraw</button>
+                <button class="btn btn-info me-2" onclick="tampilkanFormTransfer()"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Banner Saldo -->
+        <div class="card border-0 shadow mb-4" style="background-color: #FFF8E1;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="fw-bold mb-1"><i class="fas fa-coins me-2 text-warning"></i>Saldo R2Coin</h5>
+                        <h2 class="fw-bold mb-0" id="saldoR2CoinPP">0</h2>
+                        <small class="text-muted">Coin</small>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <span class="badge bg-success fs-6" id="statusSaldoR2CoinPP">Aktif</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTransaksiCoinPP">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalMasukCoinPP">0</h5><small class="text-muted">Total Masuk</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalKeluarCoinPP">0</h5><small class="text-muted">Total Keluar</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTopUpPP">0</h5><small class="text-muted">Total Top-Up</small></div></div></div>
+        </div>
+
+        <!-- Filter Riwayat -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="cariRiwayatCoinPP" class="form-control" placeholder="Cari transaksi..." onkeyup="renderRiwayatR2CoinPP()"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tipe</label><select id="filterTipeRiwayatCoinPP" class="form-select" onchange="renderRiwayatR2CoinPP()"><option value="">Semua</option><option value="credit">Masuk</option><option value="debit">Keluar</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tanggal</label><input type="date" id="filterTanggalRiwayatCoinPP" class="form-control" onchange="renderRiwayatR2CoinPP()"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterRiwayatCoinPP()"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Riwayat -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-history me-2"></i>Riwayat Transaksi Coin</span>
+                <span class="badge bg-light text-dark" id="totalRiwayatCoinPP">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Tanggal</th>
+                                <th>Tipe</th>
+                                <th>Jumlah</th>
+                                <th>Keterangan</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelRiwayatR2CoinPP"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Top-Up -->
+<div class="modal fade" id="modalTopUpCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #28A745;">
+                <h5 class="modal-title"><i class="fas fa-plus me-2"></i>Top-Up Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTopUpCoin" onsubmit="return prosesTopUpCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahTopUp" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 1.000 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Metode Pembayaran</label>
+                        <select id="metodeTopUp" class="form-select">
+                            <option value="Transfer Bank">Transfer Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="QRIS">QRIS</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningTopUp" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bukti Transfer</label>
+                        <input type="file" id="buktiTopUp" class="form-control" accept="image/*" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-success"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Withdraw -->
+<div class="modal fade" id="modalWithdrawCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title"><i class="fas fa-minus me-2"></i>Withdraw Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formWithdrawCoin" onsubmit="return prosesWithdrawCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahWithdraw" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 750 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bank / E-Wallet Tujuan</label>
+                        <select id="bankWithdraw" class="form-select">
+                            <option value="">-- Pilih --</option>
+                            <option value="BCA">BCA</option>
+                            <option value="BRI">BRI</option>
+                            <option value="Mandiri">Mandiri</option>
+                            <option value="DANA">DANA</option>
+                            <option value="OVO">OVO</option>
+                            <option value="GoPay">GoPay</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningWithdraw" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Transfer -->
+<div class="modal fade" id="modalTransferCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #17A2B8;">
+                <h5 class="modal-title"><i class="fas fa-exchange-alt me-2"></i>Transfer Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTransferCoin" onsubmit="return prosesTransferCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">ID Penerima</label>
+                        <input type="text" id="idPenerimaTransfer" class="form-control" placeholder="Masukkan ID user penerima" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="jumlahTransferCoin" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-info"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(2) – HTML ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(2) – JAVASCRIPT DOMPET R2COIN PEDAGANG PASAR ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.31(2) – JAVASCRIPT DOMPET R2COIN PEDAGANG PASAR
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - tutupMenu()            -> BLOK R 01.0
+//   - kembaliKeDasbor()      -> BLOK R 01.0
+//   - getSaldoR2Coin()       -> BLOK R 01.0
+//   - loadR2CoinUser()       -> BLOK R 01.0
+//   - tambahSaldoCoin()      -> BLOK R 01.0
+//   - kurangiSaldoCoin()     -> BLOK R 01.0
+//   - transferCoin()         -> BLOK R 01.0
+//   - catatTransaksiCoin()   -> BLOK R 01.0
+//   - topUpCoin()            -> BLOK R 01.0
+//   - withdrawCoin()         -> BLOK R 01.0
+//   - renderDompetR2Coin()   -> BLOK R 01.0
+//   - getSettingEkonomiGlobal() -> BLOK R 01.0
+// ============================================================
+
+// --- 1. TAMPILKAN HALAMAN ---
+function tampilkanDompetR2CoinPP() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dompetR2CoinPPContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDompetR2CoinPP();
+        tutupMenu(); // global
+    } else {
+        tampilkanPlaceholderMenu('Dompet R2Coin Pedagang Pasar', '11.31(2)');
+    }
+}
+
+// --- 2. RENDER DOMPET R2COIN ---
+function renderDompetR2CoinPP() {
+    var idUser = GetDataIdUser();
+    var saldo = getSaldoR2Coin(idUser);
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Tampilkan saldo
+    document.getElementById('saldoR2CoinPP').textContent = saldo;
+
+    // Statistik
+    var statistik = renderStatistikR2Coin(idUser);
+    document.getElementById('statTotalTransaksiCoinPP').textContent = statistik.totalTransaksi;
+    document.getElementById('statTotalMasukCoinPP').textContent = statistik.totalMasuk;
+    document.getElementById('statTotalKeluarCoinPP').textContent = statistik.totalKeluar;
+    document.getElementById('statTotalTopUpPP').textContent = statistik.totalTopUp;
+
+    // Cek status saldo minimal
+    var statusSaldo = cekSaldoMinimalCoin(idUser) ? 'Aktif' : 'Di bawah minimal (10 Coin)';
+    document.getElementById('statusSaldoR2CoinPP').textContent = statusSaldo;
+
+    // Render riwayat
+    renderRiwayatR2CoinPP();
+}
+
+// --- 3. RENDER RIWAYAT TRANSAKSI COIN ---
+function renderRiwayatR2CoinPP() {
+    var tbody = document.getElementById('tabelRiwayatR2CoinPP');
+    if (!tbody) return;
+
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Filter
+    var cari = (document.getElementById('cariRiwayatCoinPP')?.value || '').toLowerCase().trim();
+    var filterTipe = (document.getElementById('filterTipeRiwayatCoinPP')?.value || '');
+    var filterTanggal = (document.getElementById('filterTanggalRiwayatCoinPP')?.value || '');
+
+    var transaksiList = (r2coin && r2coin.transactions) ? r2coin.transactions : [];
+
+    var dataFilter = transaksiList.filter(function(t) {
+        var matchCari = cari === '' || (t.note || '').toLowerCase().includes(cari);
+        var matchTipe = filterTipe === '' || t.type === filterTipe;
+        var matchTanggal = filterTanggal === '' || t.date.split('T')[0] === filterTanggal;
+        return matchCari && matchTipe && matchTanggal;
+    });
+
+    document.getElementById('totalRiwayatCoinPP').textContent = dataFilter.length;
+
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+
+    var html = '';
+    dataFilter.slice().reverse().forEach(function(t, i) {
+        var tipeBadge = t.type === 'credit' ? '<span class="badge bg-success">Masuk</span>' : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + t.date + '</td>' +
+            '<td>' + tipeBadge + '</td>' +
+            '<td class="fw-bold">' + jumlah + ' Coin</td>' +
+            '<td>' + t.note + '</td>' +
+            '<td>' +
+            '<button class="btn btn-sm btn-outline-primary" onclick="lihatDetailTransaksiCoin(\'' + t.id + '\')"><i class="fas fa-eye"></i></button>' +
+            '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 4. RESET FILTER RIWAYAT ---
+function resetFilterRiwayatCoinPP() {
+    document.getElementById('cariRiwayatCoinPP').value = '';
+    document.getElementById('filterTipeRiwayatCoinPP').value = '';
+    document.getElementById('filterTanggalRiwayatCoinPP').value = '';
+    renderRiwayatR2CoinPP();
+}
+
+// --- 5. TAMPILKAN FORM TOP-UP ---
+function tampilkanFormTopUp() {
+    var modal = document.getElementById('modalTopUpCoin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    document.getElementById('inputJumlahTopUp').value = '';
+    document.getElementById('metodeTopUp').value = 'Transfer Bank';
+    document.getElementById('rekeningTopUp').value = '';
+    document.getElementById('buktiTopUp').value = '';
+    document.getElementById('inputJumlahTopUp').setAttribute('data-harga', setting.hargaJual);
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 6. PROSES TOP-UP ---
+function prosesTopUpCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahTopUp').value) || 0;
+    var metode = document.getElementById('metodeTopUp').value;
+    var rekening = document.getElementById('rekeningTopUp').value.trim();
+    var bukti = document.getElementById('buktiTopUp').files[0];
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+    if (!bukti) {
+        alert('Bukti transfer wajib diupload!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaJual;
+
+    // Simpan pengajuan top-up ke dataTopUpHistory
+    var dataTopUp = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+    dataTopUp.push({
+        id: generateKodeUnik('TOPUP'),
+        idUser: GetDataIdUser(),
+        namaPembeli: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        metode: metode,
+        rekeningTujuan: rekening,
+        buktiTransfer: URL.createObjectURL(bukti),
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataTopUpHistory', JSON.stringify(dataTopUp));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalTopUpCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan top-up berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 7. TAMPILKAN FORM WITHDRAW ---
+function tampilkanFormWithdraw() {
+    var modal = document.getElementById('modalWithdrawCoin');
+    if (!modal) return;
+
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    document.getElementById('inputJumlahWithdraw').value = '';
+    document.getElementById('bankWithdraw').value = '';
+    document.getElementById('rekeningWithdraw').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 8. PROSES WITHDRAW ---
+function prosesWithdrawCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahWithdraw').value) || 0;
+    var bank = document.getElementById('bankWithdraw').value;
+    var rekening = document.getElementById('rekeningWithdraw').value.trim();
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!bank) {
+        alert('Bank/E-Wallet tujuan wajib diisi!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+
+    // Cek saldo minimal
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    if (saldo < jumlah) {
+        alert('Saldo tidak mencukupi!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaBeli;
+
+    // Simpan pengajuan withdraw ke dataWithdrawalRequests
+    var dataWithdraw = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+    dataWithdraw.push({
+        id: generateKodeUnik('WD'),
+        idUser: GetDataIdUser(),
+        namaPemohon: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        bankTujuan: bank,
+        rekeningTujuan: rekening,
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataWithdrawalRequests', JSON.stringify(dataWithdraw));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalWithdrawCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan withdraw berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 9. TAMPILKAN FORM TRANSFER ---
+function tampilkanFormTransfer() {
+    var modal = document.getElementById('modalTransferCoin');
+    if (!modal) return;
+
+    document.getElementById('idPenerimaTransfer').value = '';
+    document.getElementById('jumlahTransferCoin').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 10. PROSES TRANSFER ---
+function prosesTransferCoin(event) {
+    event.preventDefault();
+
+    var idPenerima = document.getElementById('idPenerimaTransfer').value.trim();
+    var jumlah = parseInt(document.getElementById('jumlahTransferCoin').value) || 0;
+
+    if (!idPenerima) {
+        alert('ID penerima wajib diisi!');
+        return false;
+    }
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+
+    var hasil = transferCoin(GetDataIdUser(), idPenerima, jumlah);
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalTransferCoin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinPP();
+        alert('✅ Transfer coin berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+    return false;
+}
+
+// --- 11. LIHAT DETAIL TRANSAKSI COIN ---
+function lihatDetailTransaksiCoin(idTransaksi) {
+    var r2coin = loadR2CoinUser(GetDataIdUser());
+    var transaksi = (r2coin && r2coin.transactions) ? r2coin.transactions.find(function(t) { return t.id === idTransaksi; }) : null;
+
+    if (!transaksi) {
+        alert('Transaksi tidak ditemukan!');
+        return;
+    }
+
+    alert('Detail Transaksi:\nID: ' + transaksi.id + '\nTipe: ' + transaksi.type + '\nJumlah: ' + transaksi.amount + ' Coin\nKeterangan: ' + transaksi.note + '\nTanggal: ' + transaksi.date);
+}
+
+// --- 12. TAMPILKAN MODAL PEMBAYARAN R2COIN ---
+function tampilkanPembayaranR2Coin(total) {
+    var modal = document.getElementById('modalPembayaranR2Coin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    document.getElementById('totalPembayaranR2Coin').value = 'Rp ' + total.toLocaleString('id-ID');
+    document.getElementById('jumlahCoinPembayaran').value = jumlahCoin + ' Coin';
+    document.getElementById('saldoCoinPembayaran').value = saldo + ' Coin';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 13. PROSES PEMBAYARAN R2COIN ---
+function prosesPembayaranR2Coin() {
+    var total = parseFloat(document.getElementById('totalPembayaranR2Coin').value.replace(/[^0-9]/g, '')) || 0;
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    if (saldo < jumlahCoin) {
+        alert('❌ Saldo R2Coin tidak mencukupi!');
+        return;
+    }
+
+    var hasil = kurangiSaldoCoin(GetDataIdUser(), jumlahCoin);
+    if (hasil.sukses) {
+        catatTransaksiCoin(GetDataIdUser(), 'debit', -jumlahCoin, 'Pembayaran Produk');
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalPembayaranR2Coin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinPP();
+        alert('✅ Pembayaran berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(2) – JAVASCRIPT ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(3) – DOMPET R2COIN PEDAGANG MAKANAN (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinPMContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-coins me-2"></i>Dompet R2Coin - Pedagang Makanan</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTopUp()"><i class="fas fa-plus me-1"></i> Top-Up</button>
+                <button class="btn btn-warning me-2" onclick="tampilkanFormWithdraw()"><i class="fas fa-minus me-1"></i> Withdraw</button>
+                <button class="btn btn-info me-2" onclick="tampilkanFormTransfer()"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Banner Saldo -->
+        <div class="card border-0 shadow mb-4" style="background-color: #FFF8E1;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="fw-bold mb-1"><i class="fas fa-coins me-2 text-warning"></i>Saldo R2Coin</h5>
+                        <h2 class="fw-bold mb-0" id="saldoR2CoinPM">0</h2>
+                        <small class="text-muted">Coin</small>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <span class="badge bg-success fs-6" id="statusSaldoR2CoinPM">Aktif</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTransaksiCoinPM">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalMasukCoinPM">0</h5><small class="text-muted">Total Masuk</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalKeluarCoinPM">0</h5><small class="text-muted">Total Keluar</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTopUpPM">0</h5><small class="text-muted">Total Top-Up</small></div></div></div>
+        </div>
+
+        <!-- Filter Riwayat -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="cariRiwayatCoinPM" class="form-control" placeholder="Cari transaksi..." onkeyup="renderRiwayatR2CoinPM()"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tipe</label><select id="filterTipeRiwayatCoinPM" class="form-select" onchange="renderRiwayatR2CoinPM()"><option value="">Semua</option><option value="credit">Masuk</option><option value="debit">Keluar</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tanggal</label><input type="date" id="filterTanggalRiwayatCoinPM" class="form-control" onchange="renderRiwayatR2CoinPM()"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterRiwayatCoinPM()"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Riwayat -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-history me-2"></i>Riwayat Transaksi Coin</span>
+                <span class="badge bg-light text-dark" id="totalRiwayatCoinPM">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Tanggal</th>
+                                <th>Tipe</th>
+                                <th>Jumlah</th>
+                                <th>Keterangan</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelRiwayatR2CoinPM"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Top-Up -->
+<div class="modal fade" id="modalTopUpCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #28A745;">
+                <h5 class="modal-title"><i class="fas fa-plus me-2"></i>Top-Up Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTopUpCoin" onsubmit="return prosesTopUpCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahTopUp" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 1.000 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Metode Pembayaran</label>
+                        <select id="metodeTopUp" class="form-select">
+                            <option value="Transfer Bank">Transfer Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="QRIS">QRIS</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningTopUp" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bukti Transfer</label>
+                        <input type="file" id="buktiTopUp" class="form-control" accept="image/*" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-success"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Withdraw -->
+<div class="modal fade" id="modalWithdrawCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title"><i class="fas fa-minus me-2"></i>Withdraw Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formWithdrawCoin" onsubmit="return prosesWithdrawCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahWithdraw" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 750 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bank / E-Wallet Tujuan</label>
+                        <select id="bankWithdraw" class="form-select">
+                            <option value="">-- Pilih --</option>
+                            <option value="BCA">BCA</option>
+                            <option value="BRI">BRI</option>
+                            <option value="Mandiri">Mandiri</option>
+                            <option value="DANA">DANA</option>
+                            <option value="OVO">OVO</option>
+                            <option value="GoPay">GoPay</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningWithdraw" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Transfer -->
+<div class="modal fade" id="modalTransferCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #17A2B8;">
+                <h5 class="modal-title"><i class="fas fa-exchange-alt me-2"></i>Transfer Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTransferCoin" onsubmit="return prosesTransferCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">ID Penerima</label>
+                        <input type="text" id="idPenerimaTransfer" class="form-control" placeholder="Masukkan ID user penerima" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="jumlahTransferCoin" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-info"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(3) – HTML ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(3) – JAVASCRIPT DOMPET R2COIN PEDAGANG MAKANAN ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.31(3) – JAVASCRIPT DOMPET R2COIN PEDAGANG MAKANAN
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - tutupMenu()            -> BLOK R 01.0
+//   - kembaliKeDasbor()      -> BLOK R 01.0
+//   - getSaldoR2Coin()       -> BLOK R 01.0
+//   - loadR2CoinUser()       -> BLOK R 01.0
+//   - tambahSaldoCoin()      -> BLOK R 01.0
+//   - kurangiSaldoCoin()     -> BLOK R 01.0
+//   - transferCoin()         -> BLOK R 01.0
+//   - catatTransaksiCoin()   -> BLOK R 01.0
+//   - topUpCoin()            -> BLOK R 01.0
+//   - withdrawCoin()         -> BLOK R 01.0
+//   - renderDompetR2Coin()   -> BLOK R 01.0
+//   - getSettingEkonomiGlobal() -> BLOK R 01.0
+// ============================================================
+
+// --- 1. TAMPILKAN HALAMAN ---
+function tampilkanDompetR2CoinPM() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dompetR2CoinPMContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDompetR2CoinPM();
+        tutupMenu(); // global
+    } else {
+        tampilkanPlaceholderMenu('Dompet R2Coin Pedagang Makanan', '11.31(3)');
+    }
+}
+
+// --- 2. RENDER DOMPET R2COIN ---
+function renderDompetR2CoinPM() {
+    var idUser = GetDataIdUser();
+    var saldo = getSaldoR2Coin(idUser);
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Tampilkan saldo
+    document.getElementById('saldoR2CoinPM').textContent = saldo;
+
+    // Statistik
+    var statistik = renderStatistikR2Coin(idUser);
+    document.getElementById('statTotalTransaksiCoinPM').textContent = statistik.totalTransaksi;
+    document.getElementById('statTotalMasukCoinPM').textContent = statistik.totalMasuk;
+    document.getElementById('statTotalKeluarCoinPM').textContent = statistik.totalKeluar;
+    document.getElementById('statTotalTopUpPM').textContent = statistik.totalTopUp;
+
+    // Cek status saldo minimal
+    var statusSaldo = cekSaldoMinimalCoin(idUser) ? 'Aktif' : 'Di bawah minimal (10 Coin)';
+    document.getElementById('statusSaldoR2CoinPM').textContent = statusSaldo;
+
+    // Render riwayat
+    renderRiwayatR2CoinPM();
+}
+
+// --- 3. RENDER RIWAYAT TRANSAKSI COIN ---
+function renderRiwayatR2CoinPM() {
+    var tbody = document.getElementById('tabelRiwayatR2CoinPM');
+    if (!tbody) return;
+
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Filter
+    var cari = (document.getElementById('cariRiwayatCoinPM')?.value || '').toLowerCase().trim();
+    var filterTipe = (document.getElementById('filterTipeRiwayatCoinPM')?.value || '');
+    var filterTanggal = (document.getElementById('filterTanggalRiwayatCoinPM')?.value || '');
+
+    var transaksiList = (r2coin && r2coin.transactions) ? r2coin.transactions : [];
+
+    var dataFilter = transaksiList.filter(function(t) {
+        var matchCari = cari === '' || (t.note || '').toLowerCase().includes(cari);
+        var matchTipe = filterTipe === '' || t.type === filterTipe;
+        var matchTanggal = filterTanggal === '' || t.date.split('T')[0] === filterTanggal;
+        return matchCari && matchTipe && matchTanggal;
+    });
+
+    document.getElementById('totalRiwayatCoinPM').textContent = dataFilter.length;
+
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+
+    var html = '';
+    dataFilter.slice().reverse().forEach(function(t, i) {
+        var tipeBadge = t.type === 'credit' ? '<span class="badge bg-success">Masuk</span>' : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + t.date + '</td>' +
+            '<td>' + tipeBadge + '</td>' +
+            '<td class="fw-bold">' + jumlah + ' Coin</td>' +
+            '<td>' + t.note + '</td>' +
+            '<td>' +
+            '<button class="btn btn-sm btn-outline-primary" onclick="lihatDetailTransaksiCoin(\'' + t.id + '\')"><i class="fas fa-eye"></i></button>' +
+            '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 4. RESET FILTER RIWAYAT ---
+function resetFilterRiwayatCoinPM() {
+    document.getElementById('cariRiwayatCoinPM').value = '';
+    document.getElementById('filterTipeRiwayatCoinPM').value = '';
+    document.getElementById('filterTanggalRiwayatCoinPM').value = '';
+    renderRiwayatR2CoinPM();
+}
+
+// --- 5. TAMPILKAN FORM TOP-UP ---
+function tampilkanFormTopUp() {
+    var modal = document.getElementById('modalTopUpCoin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    document.getElementById('inputJumlahTopUp').value = '';
+    document.getElementById('metodeTopUp').value = 'Transfer Bank';
+    document.getElementById('rekeningTopUp').value = '';
+    document.getElementById('buktiTopUp').value = '';
+    document.getElementById('inputJumlahTopUp').setAttribute('data-harga', setting.hargaJual);
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 6. PROSES TOP-UP ---
+function prosesTopUpCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahTopUp').value) || 0;
+    var metode = document.getElementById('metodeTopUp').value;
+    var rekening = document.getElementById('rekeningTopUp').value.trim();
+    var bukti = document.getElementById('buktiTopUp').files[0];
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+    if (!bukti) {
+        alert('Bukti transfer wajib diupload!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaJual;
+
+    // Simpan pengajuan top-up ke dataTopUpHistory
+    var dataTopUp = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+    dataTopUp.push({
+        id: generateKodeUnik('TOPUP'),
+        idUser: GetDataIdUser(),
+        namaPembeli: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        metode: metode,
+        rekeningTujuan: rekening,
+        buktiTransfer: URL.createObjectURL(bukti),
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataTopUpHistory', JSON.stringify(dataTopUp));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalTopUpCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan top-up berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 7. TAMPILKAN FORM WITHDRAW ---
+function tampilkanFormWithdraw() {
+    var modal = document.getElementById('modalWithdrawCoin');
+    if (!modal) return;
+
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    document.getElementById('inputJumlahWithdraw').value = '';
+    document.getElementById('bankWithdraw').value = '';
+    document.getElementById('rekeningWithdraw').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 8. PROSES WITHDRAW ---
+function prosesWithdrawCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahWithdraw').value) || 0;
+    var bank = document.getElementById('bankWithdraw').value;
+    var rekening = document.getElementById('rekeningWithdraw').value.trim();
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!bank) {
+        alert('Bank/E-Wallet tujuan wajib diisi!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+
+    // Cek saldo minimal
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    if (saldo < jumlah) {
+        alert('Saldo tidak mencukupi!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaBeli;
+
+    // Simpan pengajuan withdraw ke dataWithdrawalRequests
+    var dataWithdraw = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+    dataWithdraw.push({
+        id: generateKodeUnik('WD'),
+        idUser: GetDataIdUser(),
+        namaPemohon: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        bankTujuan: bank,
+        rekeningTujuan: rekening,
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataWithdrawalRequests', JSON.stringify(dataWithdraw));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalWithdrawCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan withdraw berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 9. TAMPILKAN FORM TRANSFER ---
+function tampilkanFormTransfer() {
+    var modal = document.getElementById('modalTransferCoin');
+    if (!modal) return;
+
+    document.getElementById('idPenerimaTransfer').value = '';
+    document.getElementById('jumlahTransferCoin').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 10. PROSES TRANSFER ---
+function prosesTransferCoin(event) {
+    event.preventDefault();
+
+    var idPenerima = document.getElementById('idPenerimaTransfer').value.trim();
+    var jumlah = parseInt(document.getElementById('jumlahTransferCoin').value) || 0;
+
+    if (!idPenerima) {
+        alert('ID penerima wajib diisi!');
+        return false;
+    }
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+
+    var hasil = transferCoin(GetDataIdUser(), idPenerima, jumlah);
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalTransferCoin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinPM();
+        alert('✅ Transfer coin berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+    return false;
+}
+
+// --- 11. LIHAT DETAIL TRANSAKSI COIN ---
+function lihatDetailTransaksiCoin(idTransaksi) {
+    var r2coin = loadR2CoinUser(GetDataIdUser());
+    var transaksi = (r2coin && r2coin.transactions) ? r2coin.transactions.find(function(t) { return t.id === idTransaksi; }) : null;
+
+    if (!transaksi) {
+        alert('Transaksi tidak ditemukan!');
+        return;
+    }
+
+    alert('Detail Transaksi:\nID: ' + transaksi.id + '\nTipe: ' + transaksi.type + '\nJumlah: ' + transaksi.amount + ' Coin\nKeterangan: ' + transaksi.note + '\nTanggal: ' + transaksi.date);
+}
+
+// --- 12. TAMPILKAN MODAL PEMBAYARAN R2COIN ---
+function tampilkanPembayaranR2Coin(total) {
+    var modal = document.getElementById('modalPembayaranR2Coin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    document.getElementById('totalPembayaranR2Coin').value = 'Rp ' + total.toLocaleString('id-ID');
+    document.getElementById('jumlahCoinPembayaran').value = jumlahCoin + ' Coin';
+    document.getElementById('saldoCoinPembayaran').value = saldo + ' Coin';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 13. PROSES PEMBAYARAN R2COIN ---
+function prosesPembayaranR2Coin() {
+    var total = parseFloat(document.getElementById('totalPembayaranR2Coin').value.replace(/[^0-9]/g, '')) || 0;
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    if (saldo < jumlahCoin) {
+        alert('❌ Saldo R2Coin tidak mencukupi!');
+        return;
+    }
+
+    var hasil = kurangiSaldoCoin(GetDataIdUser(), jumlahCoin);
+    if (hasil.sukses) {
+        catatTransaksiCoin(GetDataIdUser(), 'debit', -jumlahCoin, 'Pembayaran Produk');
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalPembayaranR2Coin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinPM();
+        alert('✅ Pembayaran berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(3) – JAVASCRIPT ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(4) – DOMPET R2COIN COD SELLER (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinCODContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-coins me-2"></i>Dompet R2Coin - COD Seller</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTopUp()"><i class="fas fa-plus me-1"></i> Top-Up</button>
+                <button class="btn btn-warning me-2" onclick="tampilkanFormWithdraw()"><i class="fas fa-minus me-1"></i> Withdraw</button>
+                <button class="btn btn-info me-2" onclick="tampilkanFormTransfer()"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Banner Saldo -->
+        <div class="card border-0 shadow mb-4" style="background-color: #FFF8E1;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="fw-bold mb-1"><i class="fas fa-coins me-2 text-warning"></i>Saldo R2Coin</h5>
+                        <h2 class="fw-bold mb-0" id="saldoR2CoinCOD">0</h2>
+                        <small class="text-muted">Coin</small>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <span class="badge bg-success fs-6" id="statusSaldoR2CoinCOD">Aktif</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTransaksiCoinCOD">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalMasukCoinCOD">0</h5><small class="text-muted">Total Masuk</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalKeluarCoinCOD">0</h5><small class="text-muted">Total Keluar</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTopUpCOD">0</h5><small class="text-muted">Total Top-Up</small></div></div></div>
+        </div>
+
+        <!-- Filter Riwayat -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="cariRiwayatCoinCOD" class="form-control" placeholder="Cari transaksi..." onkeyup="renderRiwayatR2CoinCOD()"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tipe</label><select id="filterTipeRiwayatCoinCOD" class="form-select" onchange="renderRiwayatR2CoinCOD()"><option value="">Semua</option><option value="credit">Masuk</option><option value="debit">Keluar</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tanggal</label><input type="date" id="filterTanggalRiwayatCoinCOD" class="form-control" onchange="renderRiwayatR2CoinCOD()"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterRiwayatCoinCOD()"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Riwayat -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-history me-2"></i>Riwayat Transaksi Coin</span>
+                <span class="badge bg-light text-dark" id="totalRiwayatCoinCOD">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Tanggal</th>
+                                <th>Tipe</th>
+                                <th>Jumlah</th>
+                                <th>Keterangan</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelRiwayatR2CoinCOD"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Top-Up -->
+<div class="modal fade" id="modalTopUpCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #28A745;">
+                <h5 class="modal-title"><i class="fas fa-plus me-2"></i>Top-Up Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTopUpCoin" onsubmit="return prosesTopUpCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahTopUp" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 1.000 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Metode Pembayaran</label>
+                        <select id="metodeTopUp" class="form-select">
+                            <option value="Transfer Bank">Transfer Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="QRIS">QRIS</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningTopUp" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bukti Transfer</label>
+                        <input type="file" id="buktiTopUp" class="form-control" accept="image/*" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-success"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Withdraw -->
+<div class="modal fade" id="modalWithdrawCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title"><i class="fas fa-minus me-2"></i>Withdraw Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formWithdrawCoin" onsubmit="return prosesWithdrawCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahWithdraw" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 750 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bank / E-Wallet Tujuan</label>
+                        <select id="bankWithdraw" class="form-select">
+                            <option value="">-- Pilih --</option>
+                            <option value="BCA">BCA</option>
+                            <option value="BRI">BRI</option>
+                            <option value="Mandiri">Mandiri</option>
+                            <option value="DANA">DANA</option>
+                            <option value="OVO">OVO</option>
+                            <option value="GoPay">GoPay</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningWithdraw" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Transfer -->
+<div class="modal fade" id="modalTransferCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #17A2B8;">
+                <h5 class="modal-title"><i class="fas fa-exchange-alt me-2"></i>Transfer Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTransferCoin" onsubmit="return prosesTransferCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">ID Penerima</label>
+                        <input type="text" id="idPenerimaTransfer" class="form-control" placeholder="Masukkan ID user penerima" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="jumlahTransferCoin" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-info"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(4) – HTML ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(4) – JAVASCRIPT DOMPET R2COIN COD SELLER ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.31(4) – JAVASCRIPT DOMPET R2COIN COD SELLER
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - tutupMenu()            -> BLOK R 01.0
+//   - kembaliKeDasbor()      -> BLOK R 01.0
+//   - getSaldoR2Coin()       -> BLOK R 01.0
+//   - loadR2CoinUser()       -> BLOK R 01.0
+//   - tambahSaldoCoin()      -> BLOK R 01.0
+//   - kurangiSaldoCoin()     -> BLOK R 01.0
+//   - transferCoin()         -> BLOK R 01.0
+//   - catatTransaksiCoin()   -> BLOK R 01.0
+//   - topUpCoin()            -> BLOK R 01.0
+//   - withdrawCoin()         -> BLOK R 01.0
+//   - renderDompetR2Coin()   -> BLOK R 01.0
+//   - getSettingEkonomiGlobal() -> BLOK R 01.0
+// ============================================================
+
+// --- 1. TAMPILKAN HALAMAN ---
+function tampilkanDompetR2CoinCOD() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dompetR2CoinCODContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDompetR2CoinCOD();
+        tutupMenu(); // global
+    } else {
+        tampilkanPlaceholderMenu('Dompet R2Coin COD Seller', '11.31(4)');
+    }
+}
+
+// --- 2. RENDER DOMPET R2COIN ---
+function renderDompetR2CoinCOD() {
+    var idUser = GetDataIdUser();
+    var saldo = getSaldoR2Coin(idUser);
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Tampilkan saldo
+    document.getElementById('saldoR2CoinCOD').textContent = saldo;
+
+    // Statistik
+    var statistik = renderStatistikR2Coin(idUser);
+    document.getElementById('statTotalTransaksiCoinCOD').textContent = statistik.totalTransaksi;
+    document.getElementById('statTotalMasukCoinCOD').textContent = statistik.totalMasuk;
+    document.getElementById('statTotalKeluarCoinCOD').textContent = statistik.totalKeluar;
+    document.getElementById('statTotalTopUpCOD').textContent = statistik.totalTopUp;
+
+    // Cek status saldo minimal
+    var statusSaldo = cekSaldoMinimalCoin(idUser) ? 'Aktif' : 'Di bawah minimal (10 Coin)';
+    document.getElementById('statusSaldoR2CoinCOD').textContent = statusSaldo;
+
+    // Render riwayat
+    renderRiwayatR2CoinCOD();
+}
+
+// --- 3. RENDER RIWAYAT TRANSAKSI COIN ---
+function renderRiwayatR2CoinCOD() {
+    var tbody = document.getElementById('tabelRiwayatR2CoinCOD');
+    if (!tbody) return;
+
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+
+    // Filter
+    var cari = (document.getElementById('cariRiwayatCoinCOD')?.value || '').toLowerCase().trim();
+    var filterTipe = (document.getElementById('filterTipeRiwayatCoinCOD')?.value || '');
+    var filterTanggal = (document.getElementById('filterTanggalRiwayatCoinCOD')?.value || '');
+
+    var transaksiList = (r2coin && r2coin.transactions) ? r2coin.transactions : [];
+
+    var dataFilter = transaksiList.filter(function(t) {
+        var matchCari = cari === '' || (t.note || '').toLowerCase().includes(cari);
+        var matchTipe = filterTipe === '' || t.type === filterTipe;
+        var matchTanggal = filterTanggal === '' || t.date.split('T')[0] === filterTanggal;
+        return matchCari && matchTipe && matchTanggal;
+    });
+
+    document.getElementById('totalRiwayatCoinCOD').textContent = dataFilter.length;
+
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+
+    var html = '';
+    dataFilter.slice().reverse().forEach(function(t, i) {
+        var tipeBadge = t.type === 'credit' ? '<span class="badge bg-success">Masuk</span>' : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + t.date + '</td>' +
+            '<td>' + tipeBadge + '</td>' +
+            '<td class="fw-bold">' + jumlah + ' Coin</td>' +
+            '<td>' + t.note + '</td>' +
+            '<td>' +
+            '<button class="btn btn-sm btn-outline-primary" onclick="lihatDetailTransaksiCoin(\'' + t.id + '\')"><i class="fas fa-eye"></i></button>' +
+            '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 4. RESET FILTER RIWAYAT ---
+function resetFilterRiwayatCoinCOD() {
+    document.getElementById('cariRiwayatCoinCOD').value = '';
+    document.getElementById('filterTipeRiwayatCoinCOD').value = '';
+    document.getElementById('filterTanggalRiwayatCoinCOD').value = '';
+    renderRiwayatR2CoinCOD();
+}
+
+// --- 5. TAMPILKAN FORM TOP-UP ---
+function tampilkanFormTopUp() {
+    var modal = document.getElementById('modalTopUpCoin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    document.getElementById('inputJumlahTopUp').value = '';
+    document.getElementById('metodeTopUp').value = 'Transfer Bank';
+    document.getElementById('rekeningTopUp').value = '';
+    document.getElementById('buktiTopUp').value = '';
+    document.getElementById('inputJumlahTopUp').setAttribute('data-harga', setting.hargaJual);
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 6. PROSES TOP-UP ---
+function prosesTopUpCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahTopUp').value) || 0;
+    var metode = document.getElementById('metodeTopUp').value;
+    var rekening = document.getElementById('rekeningTopUp').value.trim();
+    var bukti = document.getElementById('buktiTopUp').files[0];
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+    if (!bukti) {
+        alert('Bukti transfer wajib diupload!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaJual;
+
+    // Simpan pengajuan top-up ke dataTopUpHistory
+    var dataTopUp = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+    dataTopUp.push({
+        id: generateKodeUnik('TOPUP'),
+        idUser: GetDataIdUser(),
+        namaPembeli: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        metode: metode,
+        rekeningTujuan: rekening,
+        buktiTransfer: URL.createObjectURL(bukti),
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataTopUpHistory', JSON.stringify(dataTopUp));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalTopUpCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan top-up berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 7. TAMPILKAN FORM WITHDRAW ---
+function tampilkanFormWithdraw() {
+    var modal = document.getElementById('modalWithdrawCoin');
+    if (!modal) return;
+
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    document.getElementById('inputJumlahWithdraw').value = '';
+    document.getElementById('bankWithdraw').value = '';
+    document.getElementById('rekeningWithdraw').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 8. PROSES WITHDRAW ---
+function prosesWithdrawCoin(event) {
+    event.preventDefault();
+
+    var jumlah = parseInt(document.getElementById('inputJumlahWithdraw').value) || 0;
+    var bank = document.getElementById('bankWithdraw').value;
+    var rekening = document.getElementById('rekeningWithdraw').value.trim();
+
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+    if (!bank) {
+        alert('Bank/E-Wallet tujuan wajib diisi!');
+        return false;
+    }
+    if (!rekening) {
+        alert('Rekening tujuan wajib diisi!');
+        return false;
+    }
+
+    // Cek saldo minimal
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+    if (saldo < jumlah) {
+        alert('Saldo tidak mencukupi!');
+        return false;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var totalRupiah = jumlah * setting.hargaBeli;
+
+    // Simpan pengajuan withdraw ke dataWithdrawalRequests
+    var dataWithdraw = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+    dataWithdraw.push({
+        id: generateKodeUnik('WD'),
+        idUser: GetDataIdUser(),
+        namaPemohon: userAktif.nama || '-',
+        role: userAktif.role || '-',
+        jumlahKoin: jumlah,
+        totalRupiah: totalRupiah,
+        bankTujuan: bank,
+        rekeningTujuan: rekening,
+        tanggal: new Date().toISOString().split('T')[0],
+        status: 'Menunggu'
+    });
+    localStorage.setItem('dataWithdrawalRequests', JSON.stringify(dataWithdraw));
+
+    var modal = bootstrap.Modal.getInstance(document.getElementById('modalWithdrawCoin'));
+    if (modal) modal.hide();
+    alert('✅ Pengajuan withdraw berhasil dikirim. Tunggu verifikasi SuperAdmin.');
+    return false;
+}
+
+// --- 9. TAMPILKAN FORM TRANSFER ---
+function tampilkanFormTransfer() {
+    var modal = document.getElementById('modalTransferCoin');
+    if (!modal) return;
+
+    document.getElementById('idPenerimaTransfer').value = '';
+    document.getElementById('jumlahTransferCoin').value = '';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 10. PROSES TRANSFER ---
+function prosesTransferCoin(event) {
+    event.preventDefault();
+
+    var idPenerima = document.getElementById('idPenerimaTransfer').value.trim();
+    var jumlah = parseInt(document.getElementById('jumlahTransferCoin').value) || 0;
+
+    if (!idPenerima) {
+        alert('ID penerima wajib diisi!');
+        return false;
+    }
+    if (!jumlah || jumlah <= 0) {
+        alert('Jumlah coin harus lebih dari 0!');
+        return false;
+    }
+
+    var hasil = transferCoin(GetDataIdUser(), idPenerima, jumlah);
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalTransferCoin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinCOD();
+        alert('✅ Transfer coin berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+    return false;
+}
+
+// --- 11. LIHAT DETAIL TRANSAKSI COIN ---
+function lihatDetailTransaksiCoin(idTransaksi) {
+    var r2coin = loadR2CoinUser(GetDataIdUser());
+    var transaksi = (r2coin && r2coin.transactions) ? r2coin.transactions.find(function(t) { return t.id === idTransaksi; }) : null;
+
+    if (!transaksi) {
+        alert('Transaksi tidak ditemukan!');
+        return;
+    }
+
+    alert('Detail Transaksi:\nID: ' + transaksi.id + '\nTipe: ' + transaksi.type + '\nJumlah: ' + transaksi.amount + ' Coin\nKeterangan: ' + transaksi.note + '\nTanggal: ' + transaksi.date);
+}
+
+// --- 12. TAMPILKAN MODAL PEMBAYARAN R2COIN ---
+function tampilkanPembayaranR2Coin(total) {
+    var modal = document.getElementById('modalPembayaranR2Coin');
+    if (!modal) return;
+
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    document.getElementById('totalPembayaranR2Coin').value = 'Rp ' + total.toLocaleString('id-ID');
+    document.getElementById('jumlahCoinPembayaran').value = jumlahCoin + ' Coin';
+    document.getElementById('saldoCoinPembayaran').value = saldo + ' Coin';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 13. PROSES PEMBAYARAN R2COIN ---
+function prosesPembayaranR2Coin() {
+    var total = parseFloat(document.getElementById('totalPembayaranR2Coin').value.replace(/[^0-9]/g, '')) || 0;
+    var setting = getSettingEkonomiGlobal();
+    var jumlahCoin = Math.round(total / setting.hargaBeli);
+    var saldo = getSaldoR2Coin(GetDataIdUser());
+
+    if (saldo < jumlahCoin) {
+        alert('❌ Saldo R2Coin tidak mencukupi!');
+        return;
+    }
+
+    var hasil = kurangiSaldoCoin(GetDataIdUser(), jumlahCoin);
+    if (hasil.sukses) {
+        catatTransaksiCoin(GetDataIdUser(), 'debit', -jumlahCoin, 'Pembayaran Produk');
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalPembayaranR2Coin'));
+        if (modal) modal.hide();
+        renderDompetR2CoinCOD();
+        alert('✅ Pembayaran berhasil!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.31(4) – JAVASCRIPT ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(5) – DOMPET R2COIN OJEK (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinOJContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-coins me-2"></i>Dompet R2Coin - Ojek</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTopUp()"><i class="fas fa-plus me-1"></i> Top-Up</button>
+                <button class="btn btn-warning me-2" onclick="tampilkanFormWithdraw()"><i class="fas fa-minus me-1"></i> Withdraw</button>
+                <button class="btn btn-info me-2" onclick="tampilkanFormTransfer()"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Banner Saldo -->
+        <div class="card border-0 shadow mb-4" style="background-color: #FFF8E1;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="fw-bold mb-1"><i class="fas fa-coins me-2 text-warning"></i>Saldo R2Coin</h5>
+                        <h2 class="fw-bold mb-0" id="saldoR2CoinOJ">0</h2>
+                        <small class="text-muted">Coin</small>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <span class="badge bg-success fs-6" id="statusSaldoR2CoinOJ">Aktif</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTransaksiCoinOJ">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalMasukCoinOJ">0</h5><small class="text-muted">Total Masuk</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalKeluarCoinOJ">0</h5><small class="text-muted">Total Keluar</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTopUpOJ">0</h5><small class="text-muted">Total Top-Up</small></div></div></div>
+        </div>
+
+        <!-- Filter Riwayat -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="cariRiwayatCoinOJ" class="form-control" placeholder="Cari transaksi..." onkeyup="renderRiwayatR2CoinOJ()"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tipe</label><select id="filterTipeRiwayatCoinOJ" class="form-select" onchange="renderRiwayatR2CoinOJ()"><option value="">Semua</option><option value="credit">Masuk</option><option value="debit">Keluar</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tanggal</label><input type="date" id="filterTanggalRiwayatCoinOJ" class="form-control" onchange="renderRiwayatR2CoinOJ()"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterRiwayatCoinOJ()"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Riwayat -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-history me-2"></i>Riwayat Transaksi Coin</span>
+                <span class="badge bg-light text-dark" id="totalRiwayatCoinOJ">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Tanggal</th>
+                                <th>Tipe</th>
+                                <th>Jumlah</th>
+                                <th>Keterangan</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelRiwayatR2CoinOJ"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Top-Up (Sama seperti sebelumnya) -->
+<div class="modal fade" id="modalTopUpCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #28A745;">
+                <h5 class="modal-title"><i class="fas fa-plus me-2"></i>Top-Up Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTopUpCoin" onsubmit="return prosesTopUpCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahTopUp" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 1.000 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Metode Pembayaran</label>
+                        <select id="metodeTopUp" class="form-select">
+                            <option value="Transfer Bank">Transfer Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="QRIS">QRIS</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningTopUp" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bukti Transfer</label>
+                        <input type="file" id="buktiTopUp" class="form-control" accept="image/*" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-success"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Withdraw (Sama seperti sebelumnya) -->
+<div class="modal fade" id="modalWithdrawCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title"><i class="fas fa-minus me-2"></i>Withdraw Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formWithdrawCoin" onsubmit="return prosesWithdrawCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="inputJumlahWithdraw" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                        <small class="text-muted">Harga: Rp 750 / Coin</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Bank / E-Wallet Tujuan</label>
+                        <select id="bankWithdraw" class="form-select">
+                            <option value="">-- Pilih --</option>
+                            <option value="BCA">BCA</option>
+                            <option value="BRI">BRI</option>
+                            <option value="Mandiri">Mandiri</option>
+                            <option value="DANA">DANA</option>
+                            <option value="OVO">OVO</option>
+                            <option value="GoPay">GoPay</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Rekening Tujuan</label>
+                        <input type="text" id="rekeningWithdraw" class="form-control" placeholder="Nomor rekening tujuan" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-danger"><i class="fas fa-paper-plane me-1"></i> Kirim Pengajuan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Transfer (Sama seperti sebelumnya) -->
+<div class="modal fade" id="modalTransferCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #17A2B8;">
+                <h5 class="modal-title"><i class="fas fa-exchange-alt me-2"></i>Transfer Coin</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTransferCoin" onsubmit="return prosesTransferCoin(event)">
+                    <div class="mb-3">
+                        <label class="fw-bold">ID Penerima</label>
+                        <input type="text" id="idPenerimaTransfer" class="form-control" placeholder="Masukkan ID user penerima" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="jumlahTransferCoin" class="form-control" placeholder="Masukkan jumlah coin" min="1" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-info"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ===== AKHIR BLOK R 11.31(5) – HTML ===== -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.6(1) – TRANSAKSI & KASIR TOKO (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="transaksiTokoContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-cash-register me-2"></i>Transaksi & Kasir - Toko</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTransaksi(null)"><i class="fas fa-plus me-1"></i> Tambah Transaksi</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="transaksiToko_stat_total">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="transaksiToko_stat_pendapatan">Rp 0</h5><small class="text-muted">Total Pendapatan</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="transaksiToko_stat_selesai">0</h5><small class="text-muted">Transaksi Selesai</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="transaksiToko_stat_hariIni">0</h5><small class="text-muted">Transaksi Hari Ini</small></div></div></div>
+        </div>
+
+        <!-- Filter -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="transaksiToko_cari" class="form-control" placeholder="Nama pelanggan/ID..." onkeyup="renderTabelTransaksiUniversal('tabelTransaksiToko', 'transaksiToko_stat')"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Metode</label><select id="transaksiToko_metode" class="form-select" onchange="renderTabelTransaksiUniversal('tabelTransaksiToko', 'transaksiToko_stat')"><option value="">Semua</option><option value="Tunai">Tunai</option><option value="Transfer">Transfer</option><option value="QRIS">QRIS</option><option value="R2Coin">R2Coin</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-calendar me-1"></i>Tanggal</label><input type="date" id="transaksiToko_tanggal" class="form-control" onchange="renderTabelTransaksiUniversal('tabelTransaksiToko', 'transaksiToko_stat')"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterTransaksiUniversal('transaksiToko')"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Transaksi -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-list me-2"></i>Daftar Transaksi</span>
+                <span class="badge bg-light text-dark" id="transaksiToko_total">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Tanggal</th>
+                                <th>Pelanggan</th>
+                                <th>Items</th>
+                                <th>Total</th>
+                                <th>Bayar</th>
+                                <th>Kembalian</th>
+                                <th>Kasbon</th>
+                                <th>Metode</th>
+                                <th>Status</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelTransaksiToko"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Form Transaksi -->
+<div class="modal fade" id="modalFormTransaksi" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #FF8C00;">
+                <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Form Transaksi</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="formTransaksi" onsubmit="return simpanTransaksiFromModal(event)">
+                    <input type="hidden" id="transaksiId" value="">
+                    <input type="hidden" id="transaksiJenis" value="Offline">
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="fw-bold">Pelanggan <span class="text-danger">*</span></label>
+                            <input type="text" id="transaksiPelanggan" class="form-control" placeholder="Nama pelanggan" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="fw-bold">Metode Pembayaran</label>
+                            <select id="transaksiMetode" class="form-select" onchange="ubahMetodeTransaksi()">
+                                <option value="Tunai">Tunai</option>
+                                <option value="Transfer">Transfer</option>
+                                <option value="QRIS">QRIS</option>
+                                <option value="R2Coin">R2Coin</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="fw-bold">Total Transaksi</label>
+                            <input type="text" id="transaksiTotal" class="form-control bg-light" readonly>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="fw-bold">Bayar</label>
+                            <input type="number" id="transaksiBayar" class="form-control" oninput="hitungKembalianTransaksi()" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="fw-bold">Kembalian</label>
+                            <input type="number" id="transaksiKembalian" class="form-control bg-light" readonly>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="fw-bold">Kasbon (Hutang)</label>
+                            <input type="number" id="transaksiKasbon" class="form-control bg-light" readonly>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 d-grid">
+                        <button type="submit" class="btn btn-success" id="tombolSimpanTransaksi"><i class="fas fa-save me-1"></i> Simpan Transaksi</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Konfigurasi Struk -->
+<div class="modal fade" id="modalKonfigurasiStruk" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #1976D2;">
+                <h5 class="modal-title"><i class="fas fa-print me-2"></i>Konfigurasi Struk</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="fw-bold">Ukuran Kertas</label>
+                        <select id="konfigurasiUkuranKertas" class="form-select">
+                            <option value="58mm">58mm</option>
+                            <option value="80mm">80mm</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold">Font Size</label>
+                        <select id="konfigurasiFontSize" class="form-select">
+                            <option value="10px">10px</option>
+                            <option value="12px">12px</option>
+                            <option value="14px">14px</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold">Header</label>
+                        <input type="text" id="konfigurasiHeader" class="form-control" placeholder="Toko Online 2R">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold">Footer</label>
+                        <input type="text" id="konfigurasiFooter" class="form-control" placeholder="Terima kasih">
+                    </div>
+                </div>
+                <div class="mt-4 d-grid">
+                    <button class="btn btn-primary" onclick="simpanKonfigurasiStruk()"><i class="fas fa-save me-1"></i> Simpan</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.6(1) – HTML ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.6(1) – JAVASCRIPT TRANSAKSI & KASIR TOKO ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.6(1) – JAVASCRIPT TRANSAKSI & KASIR TOKO
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - tutupMenu()                       -> BLOK R 01.0
+//   - kembaliKeDasbor()                 -> BLOK R 01.0
+//   - renderTabelTransaksiUniversal()   -> BLOK R 01.0 (55)
+//   - resetFilterTransaksiUniversal()   -> BLOK R 01.0 (55)
+//   - tambahTransaksiGlobal()           -> BLOK R 01.0 (55)
+//   - editTransaksiGlobal()             -> BLOK R 01.0 (55)
+//   - hapusTransaksiGlobal()            -> BLOK R 01.0 (55)
+//   - hitungTotalTransaksi()            -> BLOK R 01.0 (55)
+//   - hitungKembalian()                 -> BLOK R 01.0 (55)
+//   - hitungKasbon()                    -> BLOK R 01.0 (55)
+//   - cetakStruk()                      -> BLOK R 01.0 (55)
+//   - downloadStruk()                   -> BLOK R 01.0 (55)
+//   - kirimStrukViaChat()               -> BLOK R 01.0 (55)
+// ============================================================
+
+// --- 1. TAMPILKAN HALAMAN ---
+function tampilkanTransaksiToko() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('transaksiTokoContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderTabelTransaksiUniversal('tabelTransaksiToko', 'transaksiToko_stat');
+        tutupMenu(); // global
+    } else {
+        tampilkanPlaceholderMenu('Transaksi & Kasir', '11.6(1)');
+    }
+}
+
+// --- 2. TAMPILKAN FORM TRANSAKSI ---
+function tampilkanFormTransaksi(idTransaksi) {
+    var modal = document.getElementById('modalFormTransaksi');
+    if (!modal) {
+        alert('Modal form transaksi belum tersedia di HTML!');
+        return;
+    }
+
+    // Reset form
+    document.getElementById('formTransaksi').reset();
+    document.getElementById('transaksiId').value = '';
+    document.getElementById('transaksiJenis').value = 'Offline';
+    document.getElementById('transaksiMetode').value = 'Tunai';
+    document.getElementById('transaksiKembalian').value = 0;
+    document.getElementById('transaksiKasbon').value = 0;
+
+    // Jika edit, isi data
+    if (idTransaksi) {
+        var transaksi = getTransaksiById(idTransaksi);
+        if (transaksi) {
+            document.getElementById('transaksiId').value = transaksi.id;
+            document.getElementById('transaksiPelanggan').value = transaksi.pelanggan;
+            document.getElementById('transaksiMetode').value = transaksi.metodePembayaran;
+            document.getElementById('transaksiTotal').value = transaksi.total;
+            document.getElementById('transaksiBayar').value = transaksi.bayar;
+            document.getElementById('transaksiKembalian').value = transaksi.kembalian;
+            document.getElementById('transaksiKasbon').value = transaksi.kasbon ? transaksi.kasbon.jumlah : 0;
+        }
+    }
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 3. HITUNG KEMBALIAN & KASBON ---
+function hitungKembalianTransaksi() {
+    var total = parseFloat(document.getElementById('transaksiTotal').value) || 0;
+    var bayar = parseFloat(document.getElementById('transaksiBayar').value) || 0;
+
+    var kembalian = bayar - total;
+    var kasbon = 0;
+
+    if (bayar < total) {
+        kembalian = 0;
+        kasbon = total - bayar;
+    }
+
+    document.getElementById('transaksiKembalian').value = kembalian;
+    document.getElementById('transaksiKasbon').value = kasbon;
+}
+
+// --- 4. SIMPAN TRANSAKSI DARI MODAL ---
+function simpanTransaksiFromModal(event) {
+    event.preventDefault();
+
+    var id = document.getElementById('transaksiId').value;
+    var pelanggan = document.getElementById('transaksiPelanggan').value.trim();
+    var metode = document.getElementById('transaksiMetode').value;
+    var total = parseFloat(document.getElementById('transaksiTotal').value) || 0;
+    var bayar = parseFloat(document.getElementById('transaksiBayar').value) || 0;
+    var kembalian = parseFloat(document.getElementById('transaksiKembalian').value) || 0;
+    var kasbon = parseFloat(document.getElementById('transaksiKasbon').value) || 0;
+
+    if (!pelanggan) {
+        alert('Nama pelanggan wajib diisi!');
+        return false;
+    }
+
+    var dataTransaksi = {
+        pelanggan: pelanggan,
+        metodePembayaran: metode,
+        total: total,
+        bayar: bayar,
+        kembalian: kembalian,
+        kasbon: {
+            status: kasbon > 0 ? 'Aktif' : 'Tidak Ada',
+            jumlah: kasbon,
+            jatuhTempo: kasbon > 0 ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] : null,
+            lunas: false
+        },
+        status: 'Selesai',
+        kasir: userAktif.nama || 'Pemilik Toko'
+    };
+
+    var hasil;
+    if (id) {
+        hasil = editTransaksiGlobal(id, dataTransaksi);
+    } else {
+        hasil = tambahTransaksiGlobal(dataTransaksi);
+    }
+
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalFormTransaksi'));
+        if (modal) modal.hide();
+
+        renderTabelTransaksiUniversal('tabelTransaksiToko', 'transaksiToko_stat');
+        alert('✅ Transaksi berhasil disimpan!');
+    } else {
+        alert('❌ Gagal menyimpan: ' + hasil.pesan);
+    }
+    return false;
+}
+
+// --- 5. UBAH METODE PEMBAYARAN ---
+function ubahMetodeTransaksi() {
+    var metode = document.getElementById('transaksiMetode').value;
+    if (metode === 'R2Coin') {
+        // Hitung coin otomatis
+        var total = parseFloat(document.getElementById('transaksiTotal').value) || 0;
+        var coin = hitungCoinDariHarga(total);
+        alert('Total transaksi Rp ' + total.toLocaleString('id-ID') + ' = ' + coin + ' Coin');
+    }
+}
+
+// --- 6. AKSI CETAK STRUK ---
+function aksiCetakStruk(idTransaksi) {
+    var hasil = cetakStruk(idTransaksi);
+    if (hasil && hasil.sukses) {
+        alert('✅ Struk berhasil dicetak!');
+    } else {
+        alert('❌ Gagal mencetak struk.');
+    }
+}
+
+// --- 7. AKSI DOWNLOAD STRUK ---
+function aksiDownloadStruk(idTransaksi) {
+    var hasil = downloadStruk(idTransaksi);
+    if (hasil && hasil.sukses) {
+        alert('✅ Struk berhasil diunduh!');
+    } else {
+        alert('❌ Gagal mengunduh struk.');
+    }
+}
+
+// --- 8. AKSI KIRIM STRUK VIA CHAT ---
+function aksiKirimStrukViaChat(idTransaksi) {
+    var hasil = kirimStrukViaChat(idTransaksi);
+    if (hasil && hasil.sukses) {
+        alert('✅ Struk berhasil dikirim via chat!');
+    } else {
+        alert('❌ Gagal mengirim struk via chat.');
+    }
+}
+
+// --- 9. AKSI HAPUS TRANSAKSI ---
+function aksiHapusTransaksi(idTransaksi) {
+    if (!confirm('Yakin ingin menghapus transaksi ini?')) return;
+
+    var hasil = hapusTransaksiGlobal(idTransaksi);
+    if (hasil.sukses) {
+        renderTabelTransaksiUniversal('tabelTransaksiToko', 'transaksiToko_stat');
+        alert('✅ Transaksi berhasil dihapus!');
+    } else {
+        alert('❌ Gagal menghapus: ' + hasil.pesan);
+    }
+}
+
+// --- 10. TAMPILKAN KONFIGURASI STRUK ---
+function tampilkanKonfigurasiStruk() {
+    var modal = document.getElementById('modalKonfigurasiStruk');
+    if (!modal) return;
+
+    var config = loadKonfigurasiStruk();
+    document.getElementById('konfigurasiUkuranKertas').value = config.ukuranKertas || '58mm';
+    document.getElementById('konfigurasiFontSize').value = config.fontSize || '10px';
+    document.getElementById('konfigurasiHeader').value = config.header || 'Toko Online 2R';
+    document.getElementById('konfigurasiFooter').value = config.footer || 'Terima kasih telah berbelanja';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// --- 11. SIMPAN KONFIGURASI STRUK ---
+function simpanKonfigurasiStruk() {
+    var config = {
+        ukuranKertas: document.getElementById('konfigurasiUkuranKertas').value,
+        fontSize: document.getElementById('konfigurasiFontSize').value,
+        header: document.getElementById('konfigurasiHeader').value,
+        footer: document.getElementById('konfigurasiFooter').value
+    };
+
+    var hasil = simpanKonfigurasiStruk(config);
+    if (hasil && hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalKonfigurasiStruk'));
+        if (modal) modal.hide();
+        alert('✅ Konfigurasi struk berhasil disimpan!');
+    } else {
+        alert('❌ Gagal menyimpan konfigurasi.');
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.6(1) – JAVASCRIPT ===== -->
+<!-- ============================================================ -->
+
+<script>
+// ============================================================
+// BLOK R 11.31(5) – JAVASCRIPT DOMPET R2COIN OJEK
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - tutupMenu()            -> BLOK R 01.0
+//   - kembaliKeDasbor()      -> BLOK R 01.0
+//   - getSaldoR2Coin()       -> BLOK R 01.0
+//   - loadR2CoinUser()       -> BLOK R 01.0
+//   - tambahSaldoCoin()      -> BLOK R 01.0
+//   - kurangiSaldoCoin()     -> BLOK R 01.0
+//   - transferCoin()         -> BLOK R 01.0
+//   - catatTransaksiCoin()   -> BLOK R 01.0
+//   - topUpCoin()            -> BLOK R 01.0
+//   - withdrawCoin()         -> BLOK R 01.0
+//   - renderDompetR2Coin()   -> BLOK R 01.0
+//   - getSettingEkonomiGlobal() -> BLOK R 01.0
+// ============================================================
+
+function tampilkanDompetR2CoinOJ() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dompetR2CoinOJContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDompetR2CoinOJ();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Dompet R2Coin Ojek', '11.31(5)');
+    }
+}
+
+function renderDompetR2CoinOJ() {
+    var idUser = GetDataIdUser();
+    var saldo = getSaldoR2Coin(idUser);
+    var r2coin = loadR2CoinUser(idUser);
+    document.getElementById('saldoR2CoinOJ').textContent = saldo;
+
+    var statistik = renderStatistikR2Coin(idUser);
+    document.getElementById('statTotalTransaksiCoinOJ').textContent = statistik.totalTransaksi;
+    document.getElementById('statTotalMasukCoinOJ').textContent = statistik.totalMasuk;
+    document.getElementById('statTotalKeluarCoinOJ').textContent = statistik.totalKeluar;
+    document.getElementById('statTotalTopUpOJ').textContent = statistik.totalTopUp;
+
+    var statusSaldo = cekSaldoMinimalCoin(idUser) ? 'Aktif' : 'Di bawah minimal (10 Coin)';
+    document.getElementById('statusSaldoR2CoinOJ').textContent = statusSaldo;
+
+    renderRiwayatR2CoinOJ();
+}
+
+function renderRiwayatR2CoinOJ() {
+    var tbody = document.getElementById('tabelRiwayatR2CoinOJ');
+    if (!tbody) return;
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+    var cari = (document.getElementById('cariRiwayatCoinOJ')?.value || '').toLowerCase().trim();
+    var filterTipe = (document.getElementById('filterTipeRiwayatCoinOJ')?.value || '');
+    var filterTanggal = (document.getElementById('filterTanggalRiwayatCoinOJ')?.value || '');
+    var transaksiList = (r2coin && r2coin.transactions) ? r2coin.transactions : [];
+    var dataFilter = transaksiList.filter(function(t) {
+        var matchCari = cari === '' || (t.note || '').toLowerCase().includes(cari);
+        var matchTipe = filterTipe === '' || t.type === filterTipe;
+        var matchTanggal = filterTanggal === '' || t.date.split('T')[0] === filterTanggal;
+        return matchCari && matchTipe && matchTanggal;
+    });
+    document.getElementById('totalRiwayatCoinOJ').textContent = dataFilter.length;
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+    var html = '';
+    dataFilter.slice().reverse().forEach(function(t, i) {
+        var tipeBadge = t.type === 'credit' ? '<span class="badge bg-success">Masuk</span>' : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+        html += '<tr><td>' + (i + 1) + '</td><td>' + t.date + '</td><td>' + tipeBadge + '</td><td class="fw-bold">' + jumlah + ' Coin</td><td>' + t.note + '</td><td><button class="btn btn-sm btn-outline-primary" onclick="lihatDetailTransaksiCoin(\'' + t.id + '\')"><i class="fas fa-eye"></i></button></td></tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+function resetFilterRiwayatCoinOJ() {
+    document.getElementById('cariRiwayatCoinOJ').value = '';
+    document.getElementById('filterTipeRiwayatCoinOJ').value = '';
+    document.getElementById('filterTanggalRiwayatCoinOJ').value = '';
+    renderRiwayatR2CoinOJ();
+}
+
+// Fungsi top-up, withdraw, transfer, dan pembayaran R2Coin sama persis dengan blok sebelumnya
+// (prosesTopUpCoin, prosesWithdrawCoin, prosesTransferCoin, prosesPembayaranR2Coin)
+// Silakan salin dari BLOK R 11.31(1) jika diperlukan, atau gunakan global.
+</script>
+<!-- ===== AKHIR BLOK R 11.31(5) – JAVASCRIPT ===== -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.31(6) – DOMPET R2COIN GROSIR (HTML) ===== -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinGRContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-coins me-2"></i>Dompet R2Coin - Grosir</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormTopUp()"><i class="fas fa-plus me-1"></i> Top-Up</button>
+                <button class="btn btn-warning me-2" onclick="tampilkanFormWithdraw()"><i class="fas fa-minus me-1"></i> Withdraw</button>
+                <button class="btn btn-info me-2" onclick="tampilkanFormTransfer()"><i class="fas fa-exchange-alt me-1"></i> Transfer</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <!-- Banner Saldo -->
+        <div class="card border-0 shadow mb-4" style="background-color: #FFF8E1;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="fw-bold mb-1"><i class="fas fa-coins me-2 text-warning"></i>Saldo R2Coin</h5>
+                        <h2 class="fw-bold mb-0" id="saldoR2CoinGR">0</h2>
+                        <small class="text-muted">Coin</small>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <span class="badge bg-success fs-6" id="statusSaldoR2CoinGR">Aktif</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTransaksiCoinGR">0</h5><small class="text-muted">Total Transaksi</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalMasukCoinGR">0</h5><small class="text-muted">Total Masuk</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalKeluarCoinGR">0</h5><small class="text-muted">Total Keluar</small></div></div></div>
+            <div class="col-md-3"><div class="card border-0 shadow-sm bg-white"><div class="card-body text-center py-2"><h5 class="fw-bold mb-0" id="statTotalTopUpGR">0</h5><small class="text-muted">Total Top-Up</small></div></div></div>
+        </div>
+
+        <!-- Filter Riwayat -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4"><label class="fw-bold"><i class="fas fa-search me-1"></i>Cari</label><input type="text" id="cariRiwayatCoinGR" class="form-control" placeholder="Cari transaksi..." onkeyup="renderRiwayatR2CoinGR()"></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tipe</label><select id="filterTipeRiwayatCoinGR" class="form-select" onchange="renderRiwayatR2CoinGR()"><option value="">Semua</option><option value="credit">Masuk</option><option value="debit">Keluar</option></select></div>
+                    <div class="col-md-3"><label class="fw-bold"><i class="fas fa-filter me-1"></i>Tanggal</label><input type="date" id="filterTanggalRiwayatCoinGR" class="form-control" onchange="renderRiwayatR2CoinGR()"></div>
+                    <div class="col-md-2 text-end"><button class="btn btn-outline-secondary btn-sm" onclick="resetFilterRiwayatCoinGR()"><i class="fas fa-undo"></i> Reset</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel Riwayat -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-history me-2"></i>Riwayat Transaksi Coin</span>
+                <span class="badge bg-light text-dark" id="totalRiwayatCoinGR">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr><th>#</th><th>Tanggal</th><th>Tipe</th><th>Jumlah</th><th>Keterangan</th><th>Aksi</th></tr>
+                        </thead>
+                        <tbody id="tabelRiwayatR2CoinGR"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Top-Up, Withdraw, Transfer (Sama seperti blok sebelumnya) -->
+<!-- ===== AKHIR BLOK R 11.31(6) – HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 11.31(6) – JAVASCRIPT DOMPET R2COIN GROSIR
+// ------------------------------------------------------------
+// Fungsi global yang dipakai sama seperti blok sebelumnya
+// ============================================================
+
+function tampilkanDompetR2CoinGR() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dompetR2CoinGRContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDompetR2CoinGR();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Dompet R2Coin Grosir', '11.31(6)');
+    }
+}
+
+function renderDompetR2CoinGR() {
+    var idUser = GetDataIdUser();
+    var saldo = getSaldoR2Coin(idUser);
+    var r2coin = loadR2CoinUser(idUser);
+    document.getElementById('saldoR2CoinGR').textContent = saldo;
+
+    var statistik = renderStatistikR2Coin(idUser);
+    document.getElementById('statTotalTransaksiCoinGR').textContent = statistik.totalTransaksi;
+    document.getElementById('statTotalMasukCoinGR').textContent = statistik.totalMasuk;
+    document.getElementById('statTotalKeluarCoinGR').textContent = statistik.totalKeluar;
+    document.getElementById('statTotalTopUpGR').textContent = statistik.totalTopUp;
+
+    var statusSaldo = cekSaldoMinimalCoin(idUser) ? 'Aktif' : 'Di bawah minimal (10 Coin)';
+    document.getElementById('statusSaldoR2CoinGR').textContent = statusSaldo;
+
+    renderRiwayatR2CoinGR();
+}
+
+function renderRiwayatR2CoinGR() {
+    var tbody = document.getElementById('tabelRiwayatR2CoinGR');
+    if (!tbody) return;
+    var idUser = GetDataIdUser();
+    var r2coin = loadR2CoinUser(idUser);
+    var cari = (document.getElementById('cariRiwayatCoinGR')?.value || '').toLowerCase().trim();
+    var filterTipe = (document.getElementById('filterTipeRiwayatCoinGR')?.value || '');
+    var filterTanggal = (document.getElementById('filterTanggalRiwayatCoinGR')?.value || '');
+    var transaksiList = (r2coin && r2coin.transactions) ? r2coin.transactions : [];
+    var dataFilter = transaksiList.filter(function(t) {
+        var matchCari = cari === '' || (t.note || '').toLowerCase().includes(cari);
+        var matchTipe = filterTipe === '' || t.type === filterTipe;
+        var matchTanggal = filterTanggal === '' || t.date.split('T')[0] === filterTanggal;
+        return matchCari && matchTipe && matchTanggal;
+    });
+    document.getElementById('totalRiwayatCoinGR').textContent = dataFilter.length;
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Belum ada transaksi.</td></tr>';
+        return;
+    }
+    var html = '';
+    dataFilter.slice().reverse().forEach(function(t, i) {
+        var tipeBadge = t.type === 'credit' ? '<span class="badge bg-success">Masuk</span>' : '<span class="badge bg-danger">Keluar</span>';
+        var jumlah = t.amount > 0 ? '+' + t.amount : t.amount;
+        html += '<tr><td>' + (i + 1) + '</td><td>' + t.date + '</td><td>' + tipeBadge + '</td><td class="fw-bold">' + jumlah + ' Coin</td><td>' + t.note + '</td><td><button class="btn btn-sm btn-outline-primary" onclick="lihatDetailTransaksiCoin(\'' + t.id + '\')"><i class="fas fa-eye"></i></button></td></tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+function resetFilterRiwayatCoinGR() {
+    document.getElementById('cariRiwayatCoinGR').value = '';
+    document.getElementById('filterTipeRiwayatCoinGR').value = '';
+    document.getElementById('filterTanggalRiwayatCoinGR').value = '';
+    renderRiwayatR2CoinGR();
+}
+</script>
+<!-- ===== AKHIR BLOK R 11.31(6) – JAVASCRIPT ===== -->
 
 <!--- ===== BLOK R 30.1 – HTML DASBOR STAF OWNER TOKO (REVISI FINAL) ===== -->
 <!-- ============================================================ -->
