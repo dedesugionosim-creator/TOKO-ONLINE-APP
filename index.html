@@ -3098,6 +3098,211 @@ function getDefaultSettingEkonomi() {
     console.log('   Password semua akun: 123456');
 })();
 
+// ============================================================
+// BLOK R 01.0 (64) – SEEDER PENGAJUAN VERIFIKASI
+//                     KHUSUS BANJARSARI + OJEK
+// ------------------------------------------------------------
+// Membuat entry pengajuan verifikasi (status Disetujui) untuk
+// 7 akun dummy Banjarsari + Ojek:
+//   1. dist_banjarsari  (Distributor)
+//   2. gr_banjarsari    (Grosir)
+//   3. tk_banjarsari    (Toko)
+//   4. pp_banjarsari    (Pedagang Pasar)
+//   5. pm_banjarsari    (Pedagang Makanan)
+//   6. cod_banjarsari   (COD Seller)
+//   7. oj_banjarsari    (Ojek)
+//
+// Tujuan:
+// - Akun-akun ini "Terverifikasi" → bisa akses semua menu
+// - SuperAdmin bisa lihat riwayat di halaman Verifikasi Dokumen
+//
+// Flag: seedingPengajuanVerifikasiBanjarsariLengkap
+// Self-healing: kalau flag 'true' tapi data kosong → re-seed
+// ============================================================
+(function seederPengajuanVerifikasiBanjarsari() {
+
+    var FLAG = 'seedingPengajuanVerifikasiBanjarsariLengkap';
+
+    // ============================================================
+    // SELF-HEALING CHECK
+    // ============================================================
+    var flagSet = localStorage.getItem(FLAG) === 'true';
+    var dataVerifKosong = true;
+
+    try {
+        var existing = JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
+        if (Array.isArray(existing) && existing.length > 0) {
+            dataVerifKosong = false;
+        }
+    } catch (e) {}
+
+    if (flagSet && !dataVerifKosong) {
+        console.log('ℹ️ Seeder Pengajuan Verifikasi Banjarsari sudah jalan & data tersedia, dilewati.');
+        return;
+    }
+
+    if (flagSet && dataVerifKosong) {
+        console.warn('⚠️ Flag Pengajuan Banjarsari = true tapi data kosong. Re-seeding...');
+    }
+
+    // ============================================================
+    // GUARD FUNGSI GLOBAL
+    // ============================================================
+    if (typeof generateKodeUnik !== 'function' ||
+        typeof dataLoginUser === 'undefined' ||
+        typeof dataAkunAktif === 'undefined') {
+        console.warn('⚠️ Fungsi/variabel global belum siap. Seeder Pengajuan Verifikasi dibatalkan.');
+        return;
+    }
+
+    // ============================================================
+    // 1. DATA 7 AKUN TARGET
+    // ============================================================
+    var TARGET_USERS = [
+        { username: 'dist_banjarsari', role: 'Distributor',      kodeRole: 'DST' },
+        { username: 'gr_banjarsari',   role: 'Grosir',            kodeRole: 'GR'  },
+        { username: 'tk_banjarsari',   role: 'Toko',              kodeRole: 'TK'  },
+        { username: 'pp_banjarsari',   role: 'Pedagang Pasar',    kodeRole: 'PP'  },
+        { username: 'pm_banjarsari',   role: 'Pedagang Makanan',  kodeRole: 'PM'  },
+        { username: 'cod_banjarsari',  role: 'COD Seller',        kodeRole: 'COD' },
+        { username: 'oj_banjarsari',   role: 'Ojek',              kodeRole: 'OJ'  }
+    ];
+
+    // ============================================================
+    // 2. HELPER: DUMMY DOKUMEN (PLACEHOLDER)
+    // ============================================================
+    function buatDokumenDummy(label, warna) {
+        var tipe = 'file';
+        if (label.toUpperCase().indexOf('KTP') !== -1) tipe = 'ktp';
+        else if (label.toUpperCase().indexOf('SKU') !== -1) tipe = 'sku';
+        else if (label.toUpperCase().indexOf('SKD') !== -1) tipe = 'skd';
+
+        return {
+            nama: label,
+            url: 'https://placehold.co/400x250/' + warna + '/ffffff?text=' +
+                 encodeURIComponent(label.replace(/\s+/g, '+')),
+            tipe: tipe
+        };
+    }
+
+    function getDummyDokumenList() {
+        return [
+            buatDokumenDummy('Foto KTP',  'FF8C00'),
+            buatDokumenDummy('FORM SKU',  '28A745'),
+            buatDokumenDummy('FORM SKD',  '1976D2')
+        ];
+    }
+
+    // ============================================================
+    // 3. HELPER: PAKSA STATUS AKUN = AKTIF
+    // ============================================================
+    function setStatusAktif(idUser) {
+        // Update di dataLoginUser
+        var idxLogin = dataLoginUser.findIndex(function(u) { return u.idUser === idUser; });
+        if (idxLogin !== -1) {
+            dataLoginUser[idxLogin].statusVerifikasi = 'Aktif';
+            dataLoginUser[idxLogin].verifiedAt = new Date().toISOString();
+        }
+
+        // Update di dataAkunAktif
+        var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === idUser; });
+        if (idxAktif !== -1) {
+            dataAkunAktif[idxAktif].statusVerifikasi = 'Aktif';
+            dataAkunAktif[idxAktif].status = 'Aktif';
+            dataAkunAktif[idxAktif].verifiedAt = new Date().toISOString();
+        }
+    }
+
+    // ============================================================
+    // 4. LOAD DATA VERIFIKASI EXISTING
+    // ============================================================
+    var dataVerifikasi = [];
+    try {
+        dataVerifikasi = JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
+        if (!Array.isArray(dataVerifikasi)) dataVerifikasi = [];
+    } catch (e) {
+        dataVerifikasi = [];
+    }
+
+    // ============================================================
+    // 5. LOOP: BUAT PENGAJUAN DISETUJUI UNTUK SETIAP AKUN
+    // ============================================================
+    var jumlahBerhasil = 0;
+    var now = new Date().toISOString();
+    var tglHariIni = now.split('T')[0];
+
+    TARGET_USERS.forEach(function(target) {
+        // Cari user di dataLoginUser
+        var user = dataLoginUser.find(function(u) { return u.username === target.username; });
+        if (!user) {
+            console.warn('⚠️ Akun "' + target.username + '" tidak ditemukan, dilewati.');
+            return;
+        }
+
+        // Cegah duplikat di dataVerifikasiDokumen
+        var sudahAda = dataVerifikasi.some(function(v) { return v.id === user.idUser; });
+        if (sudahAda) {
+            console.log('ℹ️ Pengajuan untuk ' + target.username + ' sudah ada, dilewati.');
+            // Tetap paksa status Aktif
+            setStatusAktif(user.idUser);
+            return;
+        }
+
+        // Generate ID pengajuan unik
+        var idPengajuan = generateKodeUnik('VERIF_' + target.kodeRole);
+
+        // Bangun objek pengajuan (status Disetujui)
+        var pengajuan = {
+            id: user.idUser,
+            idPengajuan: idPengajuan,
+            nama: user.nama || target.username,
+            role: target.role,
+            tgl: tglHariIni,
+            status: 'Disetujui',
+            listDokumen: getDummyDokumenList(),
+            verifiedBy: 'ID_TK2R_SA-0001',
+            verifiedAt: now,
+            _seeder: 'PENGAJUAN_BANJARSARI'
+        };
+
+        dataVerifikasi.push(pengajuan);
+        setStatusAktif(user.idUser);
+        jumlahBerhasil++;
+
+        console.log('✅ Pengajuan Disetujui: ' + target.username + ' (' + target.role + ')');
+    });
+
+    // ============================================================
+    // 6. SIMPAN KE LOCALSTORAGE
+    // ============================================================
+    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasi));
+    localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+
+    // Sync ke variabel global (kalau ada di memori)
+    if (typeof dataVerifikasiDokumen !== 'undefined' && Array.isArray(dataVerifikasiDokumen)) {
+        dataVerifikasiDokumen.length = 0;
+        dataVerifikasi.forEach(function(v) { dataVerifikasiDokumen.push(v); });
+    }
+
+    // ============================================================
+    // 7. CATAT AKTIVITAS
+    // ============================================================
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            'SEEDER_PENGAJUAN_BANJARSARI',
+            'Seeder Pengajuan Verifikasi',
+            'Membuat ' + jumlahBerhasil + ' pengajuan Disetujui (Banjarsari + Ojek)'
+        );
+    }
+
+    // ============================================================
+    // 8. TANDAI SELESAI
+    // ============================================================
+    localStorage.setItem(FLAG, 'true');
+    console.log('✅ Seeder Pengajuan Verifikasi Banjarsari selesai. ' +
+                jumlahBerhasil + ' / ' + TARGET_USERS.length + ' akun diproses.');
+})();
 
 // ============================================================
 // BLOK R 01.0 (65) – FUNGSI GLOBAL PRODUK (GENERIK)
