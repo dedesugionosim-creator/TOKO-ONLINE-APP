@@ -3099,25 +3099,12 @@ function getDefaultSettingEkonomi() {
 })();
 
 // ============================================================
-// BLOK R 01.0 (64) – SEEDER PENGAJUAN VERIFIKASI
+// BLOK R 01.0 (64) – SEEDER PENGAJUAN VERIFIKASI (REVISI)
 //                     KHUSUS BANJARSARI + OJEK
 // ------------------------------------------------------------
-// Membuat entry pengajuan verifikasi (status Disetujui) untuk
-// 7 akun dummy Banjarsari + Ojek:
-//   1. dist_banjarsari  (Distributor)
-//   2. gr_banjarsari    (Grosir)
-//   3. tk_banjarsari    (Toko)
-//   4. pp_banjarsari    (Pedagang Pasar)
-//   5. pm_banjarsari    (Pedagang Makanan)
-//   6. cod_banjarsari   (COD Seller)
-//   7. oj_banjarsari    (Ojek)
-//
-// Tujuan:
-// - Akun-akun ini "Terverifikasi" → bisa akses semua menu
-// - SuperAdmin bisa lihat riwayat di halaman Verifikasi Dokumen
-//
-// Flag: seedingPengajuanVerifikasiBanjarsariLengkap
-// Self-healing: kalau flag 'true' tapi data kosong → re-seed
+// REVISI: Baca dataLoginUser dari localStorage langsung,
+// karena seeder ini jalan SEBELUM BLOK BOOTSTRAP APP
+// (yang memuat data ke memori).
 // ============================================================
 (function seederPengajuanVerifikasiBanjarsari() {
 
@@ -3148,15 +3135,33 @@ function getDefaultSettingEkonomi() {
     // ============================================================
     // GUARD FUNGSI GLOBAL
     // ============================================================
-    if (typeof generateKodeUnik !== 'function' ||
-        typeof dataLoginUser === 'undefined' ||
-        typeof dataAkunAktif === 'undefined') {
-        console.warn('⚠️ Fungsi/variabel global belum siap. Seeder Pengajuan Verifikasi dibatalkan.');
+    if (typeof generateKodeUnik !== 'function') {
+        console.warn('⚠️ generateKodeUnik belum siap. Seeder dibatalkan.');
         return;
     }
 
     // ============================================================
-    // 1. DATA 7 AKUN TARGET
+    // 1. BACA dataLoginUser DARI LOCALSTORAGE (bukan memori!)
+    // ============================================================
+    var usersFromStorage = [];
+    try {
+        usersFromStorage = JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
+        if (!Array.isArray(usersFromStorage)) usersFromStorage = [];
+    } catch (e) {
+        usersFromStorage = [];
+    }
+
+    if (usersFromStorage.length === 0) {
+        console.warn('⚠️ dataLoginUser di localStorage kosong. Seeder Pengajuan Verifikasi dibatalkan. ' +
+                     'Jalankan seeder akun dummy terlebih dahulu.');
+        return;
+    }
+
+    console.log('ℹ️ Seeder Pengajuan Verifikasi: membaca ' + usersFromStorage.length +
+                ' user dari localStorage.');
+
+    // ============================================================
+    // 2. DATA 7 AKUN TARGET
     // ============================================================
     var TARGET_USERS = [
         { username: 'dist_banjarsari', role: 'Distributor',      kodeRole: 'DST' },
@@ -3169,7 +3174,7 @@ function getDefaultSettingEkonomi() {
     ];
 
     // ============================================================
-    // 2. HELPER: DUMMY DOKUMEN (PLACEHOLDER)
+    // 3. HELPER: DUMMY DOKUMEN
     // ============================================================
     function buatDokumenDummy(label, warna) {
         var tipe = 'file';
@@ -3194,26 +3199,6 @@ function getDefaultSettingEkonomi() {
     }
 
     // ============================================================
-    // 3. HELPER: PAKSA STATUS AKUN = AKTIF
-    // ============================================================
-    function setStatusAktif(idUser) {
-        // Update di dataLoginUser
-        var idxLogin = dataLoginUser.findIndex(function(u) { return u.idUser === idUser; });
-        if (idxLogin !== -1) {
-            dataLoginUser[idxLogin].statusVerifikasi = 'Aktif';
-            dataLoginUser[idxLogin].verifiedAt = new Date().toISOString();
-        }
-
-        // Update di dataAkunAktif
-        var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === idUser; });
-        if (idxAktif !== -1) {
-            dataAkunAktif[idxAktif].statusVerifikasi = 'Aktif';
-            dataAkunAktif[idxAktif].status = 'Aktif';
-            dataAkunAktif[idxAktif].verifiedAt = new Date().toISOString();
-        }
-    }
-
-    // ============================================================
     // 4. LOAD DATA VERIFIKASI EXISTING
     // ============================================================
     var dataVerifikasi = [];
@@ -3225,26 +3210,32 @@ function getDefaultSettingEkonomi() {
     }
 
     // ============================================================
-    // 5. LOOP: BUAT PENGAJUAN DISETUJUI UNTUK SETIAP AKUN
+    // 5. LOOP: BUAT PENGAJUAN UNTUK SETIAP AKUN
     // ============================================================
     var jumlahBerhasil = 0;
+    var jumlahSkip = 0;
     var now = new Date().toISOString();
     var tglHariIni = now.split('T')[0];
+    var usersBerubah = false;
 
     TARGET_USERS.forEach(function(target) {
-        // Cari user di dataLoginUser
-        var user = dataLoginUser.find(function(u) { return u.username === target.username; });
+        // Cari user di localStorage (bukan memori!)
+        var user = usersFromStorage.find(function(u) { return u.username === target.username; });
         if (!user) {
-            console.warn('⚠️ Akun "' + target.username + '" tidak ditemukan, dilewati.');
+            console.warn('⚠️ Akun "' + target.username + '" tidak ditemukan di localStorage, dilewati.');
+            jumlahSkip++;
             return;
         }
 
-        // Cegah duplikat di dataVerifikasiDokumen
+        // Paksa status Aktif di user (localStorage)
+        user.statusVerifikasi = 'Aktif';
+        user.verifiedAt = now;
+        usersBerubah = true;
+
+        // Cek duplikat di dataVerifikasi
         var sudahAda = dataVerifikasi.some(function(v) { return v.id === user.idUser; });
         if (sudahAda) {
-            console.log('ℹ️ Pengajuan untuk ' + target.username + ' sudah ada, dilewati.');
-            // Tetap paksa status Aktif
-            setStatusAktif(user.idUser);
+            console.log('ℹ️ Pengajuan untuk ' + target.username + ' sudah ada, status di-update Aktif.');
             return;
         }
 
@@ -3266,27 +3257,45 @@ function getDefaultSettingEkonomi() {
         };
 
         dataVerifikasi.push(pengajuan);
-        setStatusAktif(user.idUser);
         jumlahBerhasil++;
 
         console.log('✅ Pengajuan Disetujui: ' + target.username + ' (' + target.role + ')');
     });
 
     // ============================================================
-    // 6. SIMPAN KE LOCALSTORAGE
+    // 6. SINKRON KE dataAkunAktif DI LOCALSTORAGE
     // ============================================================
-    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasi));
-    localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
-    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
-
-    // Sync ke variabel global (kalau ada di memori)
-    if (typeof dataVerifikasiDokumen !== 'undefined' && Array.isArray(dataVerifikasiDokumen)) {
-        dataVerifikasiDokumen.length = 0;
-        dataVerifikasi.forEach(function(v) { dataVerifikasiDokumen.push(v); });
+    var akunFromStorage = [];
+    try {
+        akunFromStorage = JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
+        if (!Array.isArray(akunFromStorage)) akunFromStorage = [];
+    } catch (e) {
+        akunFromStorage = [];
     }
 
+    TARGET_USERS.forEach(function(target) {
+        var user = usersFromStorage.find(function(u) { return u.username === target.username; });
+        if (!user) return;
+
+        var idx = akunFromStorage.findIndex(function(a) { return a.id === user.idUser; });
+        if (idx !== -1) {
+            akunFromStorage[idx].statusVerifikasi = 'Aktif';
+            akunFromStorage[idx].status = 'Aktif';
+            akunFromStorage[idx].verifiedAt = now;
+        }
+    });
+
     // ============================================================
-    // 7. CATAT AKTIVITAS
+    // 7. SIMPAN KEMBALI KE LOCALSTORAGE
+    // ============================================================
+    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasi));
+    if (usersBerubah) {
+        localStorage.setItem('dataLoginUser', JSON.stringify(usersFromStorage));
+    }
+    localStorage.setItem('dataAkunAktif', JSON.stringify(akunFromStorage));
+
+    // ============================================================
+    // 8. CATAT AKTIVITAS (jika fungsi tersedia)
     // ============================================================
     if (typeof catatAktivitasGlobal === 'function') {
         catatAktivitasGlobal(
@@ -3297,11 +3306,11 @@ function getDefaultSettingEkonomi() {
     }
 
     // ============================================================
-    // 8. TANDAI SELESAI
+    // 9. TANDAI SELESAI
     // ============================================================
     localStorage.setItem(FLAG, 'true');
     console.log('✅ Seeder Pengajuan Verifikasi Banjarsari selesai. ' +
-                jumlahBerhasil + ' / ' + TARGET_USERS.length + ' akun diproses.');
+                jumlahBerhasil + ' dibuat, ' + jumlahSkip + ' di-skip.');
 })();
 
 // ============================================================
