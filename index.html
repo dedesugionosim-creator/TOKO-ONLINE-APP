@@ -3099,6 +3099,403 @@ function getDefaultSettingEkonomi() {
 })();
 
 // ============================================================
+// BLOK R 01.0 (65) – FUNGSI GLOBAL PRODUK (GENERIK)
+// ------------------------------------------------------------
+// 8 fungsi generik untuk manajemen produk semua role seller.
+// Dipakai oleh BLOK R 11.5 (Toko), dan nanti oleh PP/PM/COD/
+// OJ/GR/DST.
+//
+// Prinsip:
+//   - Semua fungsi pakai pola standar (generateKodeUnik untuk
+//     audit, getDataIdUser untuk validasi user, catatAktivitasGlobal).
+//   - Handle user Kasir via getPemilikProduk info (ownerId).
+//   - Return { sukses: bool, pesan: string, ...data }.
+// ============================================================
+
+// ------------------------------------------------------------
+// BLOK R 01.0 (65.0) – HELPER PRIVAT (prefix _)
+// ------------------------------------------------------------
+
+// Helper: dapatkan info pemilik produk (handle Kasir → owner)
+function _getPemilikProduk() {
+    if (typeof userAktif === 'undefined' || !userAktif) return null;
+
+    if (userAktif.role === 'Kasir' && userAktif.ownerId) {
+        var owner = getDataIdUser(userAktif.ownerId);
+        if (owner) {
+            return { idUser: userAktif.ownerId, role: owner.role };
+        }
+    }
+    return { idUser: userAktif.idUser, role: userAktif.role };
+}
+
+// Helper: generate ID produk unik (hindari tabrakan)
+function _generateIdProduk(role, produkList) {
+    var kodeRole = (typeof kodeRoleToPrefix === 'function')
+        ? kodeRoleToPrefix(role)
+        : 'PRD';
+    produkList = produkList || [];
+
+    var existingIds = produkList.map(function(p) { return p.id; });
+    var counter = 1;
+    var idBaru;
+    var maxLoop = 9999;
+
+    do {
+        var urut = String(counter).padStart(4, '0');
+        idBaru = 'PRD-' + kodeRole + '-' + urut;
+        counter++;
+        if (counter > maxLoop) break;
+    } while (existingIds.indexOf(idBaru) !== -1);
+
+    return idBaru;
+}
+
+// ============================================================
+// BLOK R 01.0 (65.1) – LOAD PRODUK BY ROLE
+// ============================================================
+function loadProdukByRole(role, idUser) {
+    // Auto-resolve kalau parameter kosong
+    if (!role || !idUser) {
+        var pemilik = _getPemilikProduk();
+        if (!pemilik) return [];
+        role = role || pemilik.role;
+        idUser = idUser || pemilik.idUser;
+    }
+
+    // Delegasi ke loadProdukGlobal (BLOK R 01.0 (23)) yang sudah ada
+    if (typeof loadProdukGlobal === 'function') {
+        return loadProdukGlobal(role, idUser);
+    }
+
+    // Fallback inline (kalau loadProdukGlobal tidak ada)
+    try {
+        var key = getKeyProduk(role, idUser);
+        var stored = localStorage.getItem(key);
+        return stored ? JSON.parse(stored) : [];
+    } catch (e) {
+        console.warn('loadProdukByRole gagal:', e);
+        return [];
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (65.2) – SIMPAN PRODUK BY ROLE
+// ============================================================
+function simpanProdukByRole(role, idUser, data) {
+    if (!role || !idUser) {
+        var pemilik = _getPemilikProduk();
+        if (!pemilik) {
+            console.warn('simpanProdukByRole: pemilik tidak ditemukan.');
+            return;
+        }
+        role = role || pemilik.role;
+        idUser = idUser || pemilik.idUser;
+    }
+
+    if (typeof simpanProdukGlobal === 'function') {
+        return simpanProdukGlobal(role, idUser, data);
+    }
+
+    // Fallback inline
+    try {
+        var key = getKeyProduk(role, idUser);
+        localStorage.setItem(key, JSON.stringify(data || []));
+    } catch (e) {
+        console.warn('simpanProdukByRole gagal:', e);
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (65.3) – HITUNG STATISTIK PRODUK
+// ============================================================
+function hitungStatistikProduk(produkList) {
+    produkList = Array.isArray(produkList) ? produkList : [];
+
+    var stat = {
+        totalProduk:    produkList.length,
+        totalPublik:    0,
+        totalPrivat:    0,
+        totalStok:      0,
+        stokHabis:      0,
+        stokKritis:     0,   // 1–5
+        stokNormal:     0,   // > 5
+        totalHargaRp:   0,   // harga x stok (Rp)
+        totalHargaCoin: 0    // hargaCoin x stok
+    };
+
+    produkList.forEach(function(p) {
+        if (p.isPublik) stat.totalPublik++;
+        else stat.totalPrivat++;
+
+        var stok = parseInt(p.stok, 10) || 0;
+        stat.totalStok += stok;
+
+        if (stok === 0) stat.stokHabis++;
+        else if (stok <= 5) stat.stokKritis++;
+        else stat.stokNormal++;
+
+        stat.totalHargaRp   += (parseFloat(p.harga) || 0) * stok;
+        stat.totalHargaCoin += (parseInt(p.hargaCoin, 10) || 0) * stok;
+    });
+
+    return stat;
+}
+
+// ============================================================
+// BLOK R 01.0 (65.4) – TAMBAH PRODUK GLOBAL
+// ============================================================
+function tambahProdukGlobalUniversal(dataProduk) {
+    // 1. Guard user audit
+    var idUserAudit = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idUserAudit) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    // 2. Resolve pemilik produk (handle kasir)
+    var pemilik = _getPemilikProduk();
+    if (!pemilik) {
+        return { sukses: false, pesan: 'Pemilik produk tidak ditemukan.' };
+    }
+
+    // 3. Validasi input
+    if (!dataProduk || !dataProduk.nama || !String(dataProduk.nama).trim()) {
+        return { sukses: false, pesan: 'Nama produk wajib diisi.' };
+    }
+
+    // 4. Ambil list produk existing
+    var produkList = loadProdukByRole(pemilik.role, pemilik.idUser);
+
+    // 5. Generate ID produk unik
+    var idBaru = _generateIdProduk(pemilik.role, produkList);
+
+    // 6. Bangun objek produk baru
+    var now = new Date().toISOString();
+    var produkBaru = {
+        id:         idBaru,
+        nama:       String(dataProduk.nama).trim(),
+        merek:      (dataProduk.merek || '').trim(),
+        kode:       (dataProduk.kode || '').trim(),
+        kategori:   dataProduk.kategori || '',
+        satuan:     dataProduk.satuan || '',
+        harga:      parseFloat(dataProduk.harga) || 0,
+        hargaCoin:  parseInt(dataProduk.hargaCoin, 10) || 0,
+        stok:       parseInt(dataProduk.stok, 10) || 0,
+        isPublik:   !!dataProduk.isPublik,
+        foto:       dataProduk.foto || '',
+        createdBy:  idUserAudit,
+        createdAt:  now,
+        updatedBy:  null,
+        updatedAt:  null
+    };
+
+    // 7. Simpan
+    produkList.push(produkBaru);
+    simpanProdukByRole(pemilik.role, pemilik.idUser, produkList);
+
+    // 8. Catat aktivitas global
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idUserAudit,
+            'Tambah Produk',
+            'Menambah produk: ' + produkBaru.nama + ' (ID: ' + idBaru + ')'
+        );
+    }
+
+    return { sukses: true, id: idBaru, produk: produkBaru };
+}
+
+// ============================================================
+// BLOK R 01.0 (65.5) – UPDATE PRODUK GLOBAL
+// ============================================================
+function updateProdukGlobalUniversal(id, data) {
+    var idUserAudit = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idUserAudit) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    var pemilik = _getPemilikProduk();
+    if (!pemilik) {
+        return { sukses: false, pesan: 'Pemilik produk tidak ditemukan.' };
+    }
+
+    if (!id) {
+        return { sukses: false, pesan: 'ID produk tidak valid.' };
+    }
+    data = data || {};
+
+    var produkList = loadProdukByRole(pemilik.role, pemilik.idUser);
+    var idx = produkList.findIndex(function(p) { return p.id === id; });
+    if (idx === -1) {
+        return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+    }
+
+    var p = produkList[idx];
+
+    // Update field (hanya jika ada di data)
+    if (data.nama !== undefined)      p.nama      = String(data.nama).trim();
+    if (data.merek !== undefined)     p.merek     = (data.merek || '').trim();
+    if (data.kode !== undefined)      p.kode      = (data.kode || '').trim();
+    if (data.kategori !== undefined)  p.kategori  = data.kategori || '';
+    if (data.satuan !== undefined)    p.satuan    = data.satuan || '';
+    if (data.harga !== undefined)     p.harga     = parseFloat(data.harga) || 0;
+    if (data.hargaCoin !== undefined) p.hargaCoin = parseInt(data.hargaCoin, 10) || 0;
+    if (data.stok !== undefined)      p.stok      = parseInt(data.stok, 10) || 0;
+    if (data.isPublik !== undefined)  p.isPublik  = !!data.isPublik;
+    if (data.foto !== undefined)      p.foto      = data.foto || '';
+
+    p.updatedBy = idUserAudit;
+    p.updatedAt = new Date().toISOString();
+
+    simpanProdukByRole(pemilik.role, pemilik.idUser, produkList);
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idUserAudit,
+            'Edit Produk',
+            'Edit produk: ' + p.nama + ' (ID: ' + id + ')'
+        );
+    }
+
+    return { sukses: true, produk: p };
+}
+
+// ============================================================
+// BLOK R 01.0 (65.6) – HAPUS PRODUK GLOBAL
+// ============================================================
+function hapusProdukUniversal(id) {
+    var idUserAudit = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idUserAudit) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    var pemilik = _getPemilikProduk();
+    if (!pemilik) {
+        return { sukses: false, pesan: 'Pemilik produk tidak ditemukan.' };
+    }
+
+    if (!id) {
+        return { sukses: false, pesan: 'ID produk tidak valid.' };
+    }
+
+    var produkList = loadProdukByRole(pemilik.role, pemilik.idUser);
+    var target = produkList.find(function(p) { return p.id === id; });
+    if (!target) {
+        return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+    }
+
+    produkList = produkList.filter(function(p) { return p.id !== id; });
+    simpanProdukByRole(pemilik.role, pemilik.idUser, produkList);
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idUserAudit,
+            'Hapus Produk',
+            'Menghapus produk: ' + target.nama + ' (ID: ' + id + ')'
+        );
+    }
+
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (65.7) – TOGGLE PUBLIK PRODUK
+// ============================================================
+function toggleProdukPublikUniversal(id) {
+    var idUserAudit = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idUserAudit) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    var pemilik = _getPemilikProduk();
+    if (!pemilik) {
+        return { sukses: false, pesan: 'Pemilik produk tidak ditemukan.' };
+    }
+
+    if (!id) {
+        return { sukses: false, pesan: 'ID produk tidak valid.' };
+    }
+
+    var produkList = loadProdukByRole(pemilik.role, pemilik.idUser);
+    var idx = produkList.findIndex(function(p) { return p.id === id; });
+    if (idx === -1) {
+        return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+    }
+
+    var p = produkList[idx];
+    p.isPublik = !p.isPublik;
+    p.updatedBy = idUserAudit;
+    p.updatedAt = new Date().toISOString();
+
+    simpanProdukByRole(pemilik.role, pemilik.idUser, produkList);
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idUserAudit,
+            'Toggle Publik Produk',
+            p.nama + ' → ' + (p.isPublik ? 'Publik' : 'Privat')
+        );
+    }
+
+    return { sukses: true, isPublik: p.isPublik };
+}
+
+// ============================================================
+// BLOK R 01.0 (65.8) – SELARASKAN STOK PRODUK
+// ============================================================
+function selaraskanStokProdukUniversal(id, stokFisik) {
+    var idUserAudit = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idUserAudit) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    var pemilik = _getPemilikProduk();
+    if (!pemilik) {
+        return { sukses: false, pesan: 'Pemilik produk tidak ditemukan.' };
+    }
+
+    if (!id) {
+        return { sukses: false, pesan: 'ID produk tidak valid.' };
+    }
+
+    stokFisik = parseInt(stokFisik, 10);
+    if (isNaN(stokFisik) || stokFisik < 0) {
+        return { sukses: false, pesan: 'Stok fisik tidak valid (harus ≥ 0).' };
+    }
+
+    var produkList = loadProdukByRole(pemilik.role, pemilik.idUser);
+    var idx = produkList.findIndex(function(p) { return p.id === id; });
+    if (idx === -1) {
+        return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+    }
+
+    var p = produkList[idx];
+    var stokLama = parseInt(p.stok, 10) || 0;
+    var selisih = stokFisik - stokLama;
+
+    p.stok = stokFisik;
+    p.updatedBy = idUserAudit;
+    p.updatedAt = new Date().toISOString();
+
+    simpanProdukByRole(pemilik.role, pemilik.idUser, produkList);
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idUserAudit,
+            'Selaraskan Stok Produk',
+            p.nama + ': ' + stokLama + ' → ' + stokFisik + ' (selisih ' + selisih + ')'
+        );
+    }
+
+    return {
+        sukses: true,
+        selisih: selisih,
+        stokLama: stokLama,
+        stokBaru: stokFisik
+    };
+}
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 
@@ -27350,323 +27747,355 @@ function updateSaldoR2CoinSekarang() {
 			<!-- ===== AKHIR BLOK R 11.4(1) – JAVASCRIPT ===== -->
 			<!-- ============================================================ -->
 			<!-- ============================================================ -->
-			<!-- ===== BLOK R 11.5 – MASTER PRODUK TOKO (HTML) ===== -->
-			<!-- ============================================================ -->
 
-			<div id="manajemenProdukTokoContainer" style="display:none;">
-				<div class="container-fluid px-4 py-4">
-					<div class="d-flex justify-content-between align-items-center mb-4">
-						<h4 class="fw-bold text-white"><i class="fas fa-boxes me-2"></i>Master Produk - Toko</h4>
-						<div>
-							<button class="btn btn-success me-2" onclick="tampilkanFormProdukGlobal(null)">
-								<i class="fas fa-plus me-1"></i> Tambah Produk
-							</button>
-							<button class="btn btn-outline-light me-2" onclick="downloadExcelProduk('Toko', getDataIdUser())">
-								<i class="fas fa-file-excel me-1"></i> Download Excel
-							</button>
-							<button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
-								<i class="fas fa-arrow-left me-1"></i> Kembali
-							</button>
-						</div>
-					</div>
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.5 – MASTER PRODUK TOKO (HTML) ===== -->
+<!-- ============================================================ -->
 
-					<!-- Statistik -->
-					<div class="row mb-3 g-3">
-						<div class="col-md-3">
-							<div class="card border-0 shadow-sm bg-white">
-								<div class="card-body text-center py-2">
-									<h5 class="fw-bold mb-0" id="statTotalProdukToko">0</h5>
-									<small class="text-muted">Total Produk</small>
-								</div>
-							</div>
-						</div>
-						<div class="col-md-3">
-							<div class="card border-0 shadow-sm bg-white">
-								<div class="card-body text-center py-2">
-									<h5 class="fw-bold mb-0" id="statProdukPublikToko">0</h5>
-									<small class="text-muted">Produk Publik</small>
-								</div>
-							</div>
-						</div>
-						<div class="col-md-3">
-							<div class="card border-0 shadow-sm bg-white">
-								<div class="card-body text-center py-2">
-									<h5 class="fw-bold mb-0" id="statStokHabisToko">0</h5>
-									<small class="text-muted">Stok Habis</small>
-								</div>
-							</div>
-						</div>
-						<div class="col-md-3">
-							<div class="card border-0 shadow-sm bg-white">
-								<div class="card-body text-center py-2">
-									<h5 class="fw-bold mb-0" id="statStokKritisToko">0</h5>
-									<small class="text-muted">Stok Kritis (≤5)</small>
-								</div>
-							</div>
-						</div>
-					</div>
+<div id="manajemenProdukTokoContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-boxes me-2"></i>Master Produk - Toko</h4>
+            <div>
+                <button class="btn btn-success me-2" onclick="tampilkanFormProdukGlobal(null)">
+                    <i class="fas fa-plus me-1"></i> Tambah Produk
+                </button>
+                <button class="btn btn-outline-light me-2" onclick="downloadExcelProduk('Toko', getDataIdUser(userAktif.idUser))">
+                    <i class="fas fa-file-excel me-1"></i> Download Excel
+                </button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i> Kembali
+                </button>
+            </div>
+        </div>
 
-					<!-- Filter -->
-					<div class="card border-0 shadow mb-3">
-						<div class="card-body">
-							<div class="row g-3 align-items-end">
-								<div class="col-md-4">
-									<label class="fw-bold"><i class="fas fa-search me-1"></i>Cari Produk</label>
-									<input type="text" id="cariProdukMasterToko" class="form-control" placeholder="Nama/kode..." onkeyup="renderProdukToko()">
-								</div>
-								<div class="col-md-3">
-									<label class="fw-bold"><i class="fas fa-filter me-1"></i>Status Publik</label>
-									<select id="filterPublikMasterToko" class="form-select" onchange="renderProdukToko()">
-										<option value="">Semua</option>
-										<option value="true">Publik</option>
-										<option value="false">Privat</option>
-									</select>
-								</div>
-								<div class="col-md-3">
-									<label class="fw-bold"><i class="fas fa-filter me-1"></i>Stok</label>
-									<select id="filterStokMasterToko" class="form-select" onchange="renderProdukToko()">
-										<option value="">Semua</option>
-										<option value="habis">Habis</option>
-										<option value="kritis">Kritis</option>
-										<option value="normal">Normal</option>
-									</select>
-								</div>
-								<div class="col-md-2 text-end">
-									<button class="btn btn-outline-secondary btn-sm" onclick="resetFilterMasterToko()"><i class="fas fa-undo"></i> Reset</button>
-								</div>
-							</div>
-						</div>
-					</div>
+        <!-- Statistik -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white">
+                    <div class="card-body text-center py-2">
+                        <h5 class="fw-bold mb-0" id="statTotalProdukToko">0</h5>
+                        <small class="text-muted">Total Produk</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white">
+                    <div class="card-body text-center py-2">
+                        <h5 class="fw-bold mb-0" id="statProdukPublikToko">0</h5>
+                        <small class="text-muted">Produk Publik</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white">
+                    <div class="card-body text-center py-2">
+                        <h5 class="fw-bold mb-0" id="statStokHabisToko">0</h5>
+                        <small class="text-muted">Stok Habis</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white">
+                    <div class="card-body text-center py-2">
+                        <h5 class="fw-bold mb-0" id="statStokKritisToko">0</h5>
+                        <small class="text-muted">Stok Kritis (≤5)</small>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-					<!-- Tabel Produk -->
-					<div class="card border-0 shadow">
-						<div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
-							<span><i class="fas fa-list me-2"></i>Daftar Produk</span>
-							<span class="badge bg-light text-dark" id="totalProdukMasterToko">0</span>
-						</div>
-						<div class="card-body p-0">
-							<div class="table-responsive">
-								<table class="table table-hover align-middle mb-0">
-									<thead class="table-light">
-										<tr>
-											<th>#</th>
-											<th>Foto</th>
-											<th>Nama</th>
-											<th>Kode</th>
-											<th>Kategori</th>
-											<th>Harga (Rp)</th>
-											<th>Harga (Coin)</th>
-											<th>Satuan</th>
-											<th>Stok</th>
-											<th>Status Stok</th>
-											<th>Publik</th>
-											<th>Stok Fisik</th>
-											<th>Aksi</th>
-										</tr>
-									</thead>
-									<tbody id="tabelProdukMasterToko">
-										<tr><td colspan="13" class="text-center text-muted py-4">Belum ada produk.</td></tr>
-									</tbody>
-								</table>
-							</div>
-						</div>
-					</div>
-				</div>
-			</div>
-			<!-- ===== AKHIR BLOK R 11.5 (HTML) ===== -->
+        <!-- Filter -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4">
+                        <label class="fw-bold"><i class="fas fa-search me-1"></i>Cari Produk</label>
+                        <input type="text" id="cariProdukMasterToko" class="form-control" placeholder="Nama/merek/kode..." onkeyup="renderProdukToko()">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold"><i class="fas fa-filter me-1"></i>Status Publik</label>
+                        <select id="filterPublikMasterToko" class="form-select" onchange="renderProdukToko()">
+                            <option value="">Semua</option>
+                            <option value="true">Publik</option>
+                            <option value="false">Privat</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold"><i class="fas fa-filter me-1"></i>Stok</label>
+                        <select id="filterStokMasterToko" class="form-select" onchange="renderProdukToko()">
+                            <option value="">Semua</option>
+                            <option value="habis">Habis</option>
+                            <option value="kritis">Kritis</option>
+                            <option value="normal">Normal</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 text-end">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="resetFilterMasterToko()"><i class="fas fa-undo"></i> Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-			<!-- ===== BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO ===== -->
-			<script>
-			// ============================================================
-			// BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO
-			// ------------------------------------------------------------
-			// Fungsi global yang dipakai:
-			//   - getDataIdUser()                 -> BLOK R 01.0
-			//   - generateKodeUnik()              -> BLOK R 01.0
-			//   - loadProdukByRole(role, idUser)  -> BLOK GLOBAL PRODUK
-			//   - simpanProdukByRole(role, idUser, data) -> BLOK GLOBAL PRODUK
-			//   - tambahProdukGlobalUniversal(data)      -> BLOK GLOBAL PRODUK
-			//   - updateProdukGlobalUniversal(id, data)  -> BLOK GLOBAL PRODUK
-			//   - toggleProdukPublikUniversal(id)        -> BLOK GLOBAL PRODUK
-			//   - selaraskanStokProdukUniversal(id, stok)-> BLOK GLOBAL PRODUK
-			//   - hapusProdukUniversal(id)               -> BLOK GLOBAL PRODUK
-			//   - tampilkanFormProdukGlobal(id)          -> BLOK GLOBAL FORM
-			//   - downloadExcelProduk(role, idUser)      -> BLOK GLOBAL EXCEL
-			//   - tutupMenu()                            -> BLOK R 01.0
-			// ============================================================
+        <!-- Tabel Produk -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-list me-2"></i>Daftar Produk</span>
+                <span class="badge bg-light text-dark" id="totalProdukMasterToko">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Foto</th>
+                                <th>Nama</th>
+                                <th>Merek</th>
+                                <th>Kode</th>
+                                <th>Kategori</th>
+                                <th>Harga (Rp)</th>
+                                <th>Harga (Coin)</th>
+                                <th>Satuan</th>
+                                <th>Stok</th>
+                                <th>Status Stok</th>
+                                <th>Publik</th>
+                                <th>Stok Fisik</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelProdukMasterToko">
+                            <tr><td colspan="14" class="text-center text-muted py-4">Belum ada produk.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ===== AKHIR BLOK R 11.5 (HTML) ===== -->
 
-			// --- 1. FUNGSI UTAMA YANG DIPANGGIL HANDLER ---
-			function tampilkanManajemenProdukToko() {
-				return tampilkanManajemenProdukTK();
-			}
+<!-- ===== BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO ===== -->
+<script>
+// ============================================================
+// BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO
+// ------------------------------------------------------------
+// Fungsi global yang dipakai (sudah ada):
+//   - getDataIdUser(idUser)          -> BLOK R 01.0 (2)
+//   - generateKodeUnik()             -> BLOK R 01.0 (1)
+//   - loadProdukByRole(role, idUser) -> BLOK R 01.0 (65) [FASE B]
+//   - simpanProdukByRole()           -> BLOK R 01.0 (65) [FASE B]
+//   - tambahProdukGlobalUniversal()  -> BLOK R 01.0 (65) [FASE B]
+//   - updateProdukGlobalUniversal()  -> BLOK R 01.0 (65) [FASE B]
+//   - toggleProdukPublikUniversal()  -> BLOK R 01.0 (65) [FASE B]
+//   - selaraskanStokProdukUniversal()-> BLOK R 01.0 (65) [FASE B]
+//   - hapusProdukUniversal()         -> BLOK R 01.0 (65) [FASE B]
+//   - tampilkanFormProdukGlobal()    -> BLOK FORM PRODUK (FASE C)
+//   - downloadExcelProduk()          -> BLOK FORM PRODUK (FASE C)
+//   - tutupMenu()                    -> BLOK R 01.0 (5)
+// ============================================================
 
-			// --- 2. FUNGSI INTERNAL YANG MENAMPILKAN HALAMAN ---
-			function tampilkanManajemenProdukTK() {
-				var konten = document.getElementById('kontenDasbor');
-				if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
-				var container = document.getElementById('manajemenProdukTokoContainer');
-				if (container) {
-					konten.innerHTML = container.innerHTML;
-					renderProdukToko();
-					pasangListenerModalProduk();
-					tutupMenu();
-				} else {
-					tampilkanPlaceholderMenu('Master Produk Toko', '11.5');
-				}
-			}
+// --- 1. FUNGSI UTAMA YANG DIPANGGIL HANDLER ---
+function tampilkanManajemenProdukToko() {
+    return tampilkanManajemenProdukTK();
+}
 
-			// --- 3. RENDER TABEL PRODUK ---
-			function renderProdukToko() {
-				var tbody = document.getElementById('tabelProdukMasterToko');
-				if (!tbody) return;
+// --- 2. FUNGSI INTERNAL YANG MENAMPILKAN HALAMAN ---
+function tampilkanManajemenProdukTK() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('manajemenProdukTokoContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderProdukToko();
+        pasangListenerModalProduk();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Master Produk Toko', '11.5');
+    }
+}
 
-				var role = userAktif.role;
-				var idUser = getDataIdUser();
-				var produkList = loadProdukByRole(role, idUser);
+// --- 3. RENDER TABEL PRODUK ---
+function renderProdukToko() {
+    var tbody = document.getElementById('tabelProdukMasterToko');
+    if (!tbody) return;
 
-				// Statistik
-				var total = produkList.length;
-				var publik = 0, habis = 0, kritis = 0;
-				produkList.forEach(function(p) {
-					if (p.isPublik) publik++;
-					var stok = p.stok || 0;
-					if (stok === 0) habis++;
-					else if (stok <= 5) kritis++;
-				});
-				document.getElementById('statTotalProdukToko').textContent = total;
-				document.getElementById('statProdukPublikToko').textContent = publik;
-				document.getElementById('statStokHabisToko').textContent = habis;
-				document.getElementById('statStokKritisToko').textContent = kritis;
-				document.getElementById('totalProdukMasterToko').textContent = total;
+    var role = userAktif.role;
+    var idUser = getDataIdUser(userAktif.idUser);   // ✅ FIX: huruf kecil + parameter
+    var produkList = loadProdukByRole(role, idUser);
 
-				// Filter
-				var cari = (document.getElementById('cariProdukMasterToko')?.value || '').toLowerCase().trim();
-				var filterPublik = (document.getElementById('filterPublikMasterToko')?.value || '');
-				var filterStok = (document.getElementById('filterStokMasterToko')?.value || '');
+    // Statistik
+    var total = produkList.length;
+    var publik = 0, habis = 0, kritis = 0;
+    produkList.forEach(function(p) {
+        if (p.isPublik) publik++;
+        var stok = p.stok || 0;
+        if (stok === 0) habis++;
+        else if (stok <= 5) kritis++;
+    });
 
-				var dataFilter = produkList.filter(function(p) {
-					var matchCari = cari === '' || (p.nama || '').toLowerCase().includes(cari) || (p.kode || '').toLowerCase().includes(cari);
-					var matchPublik = filterPublik === '' || String(p.isPublik) === filterPublik;
-					var stok = p.stok || 0;
-					var matchStok = filterStok === '' ||
-						(filterStok === 'habis' && stok === 0) ||
-						(filterStok === 'kritis' && stok > 0 && stok <= 5) ||
-						(filterStok === 'normal' && stok > 5);
-					return matchCari && matchPublik && matchStok;
-				});
+    var elStatTotal = document.getElementById('statTotalProdukToko');
+    if (elStatTotal) elStatTotal.textContent = total;
 
-				if (dataFilter.length === 0) {
-					tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted py-4">Tidak ada produk ditemukan.</td></tr>';
-					return;
-				}
+    var elStatPublik = document.getElementById('statProdukPublikToko');
+    if (elStatPublik) elStatPublik.textContent = publik;
 
-				var html = '';
-				dataFilter.forEach(function(p, i) {
-					var foto = p.foto ? '<img src="' + p.foto + '" style="width:40px;height:40px;object-fit:cover;border-radius:5px;">' : '<i class="fas fa-box text-muted fa-2x"></i>';
-					var hargaRp = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(p.harga || 0);
-					var hargaCoin = (p.hargaCoin || 0).toLocaleString('id-ID') + ' Coin';
-					var stok = p.stok || 0;
-					var stokBadge = stok === 0 ? '<span class="badge bg-danger">Habis</span>' : (stok <= 5 ? '<span class="badge bg-warning text-dark">Kritis</span>' : '<span class="badge bg-success">Normal</span>');
-					var publikBadge = p.isPublik ? '<span class="badge bg-success">Publik</span>' : '<span class="badge bg-secondary">Privat</span>';
+    var elStatHabis = document.getElementById('statStokHabisToko');
+    if (elStatHabis) elStatHabis.textContent = habis;
 
-					html += '<tr>' +
-						'<td>' + (i + 1) + '</td>' +
-						'<td>' + foto + '</td>' +
-						'<td><strong>' + p.nama + '</strong></td>' +
-						'<td>' + (p.merek || '-') + '</td>' +
-						'<td>' + (p.kode || '-') + '</td>' +
-						'<td>' + (p.kategori || '-') + '</td>' +
-						'<td>' + hargaRp + '</td>' +
-						'<td>' + hargaCoin + '</td>' +
-						'<td>' + (p.satuan || '-') + '</td>' +
-						'<td>' + stok + '</td>' +
-						'<td>' + stokBadge + '</td>' +
-						'<td>' + publikBadge + '</td>' +
-						'<td>' +
-						'<input type="number" class="form-control form-control-sm stokFisikInput" data-produk-id="' + p.id + '" placeholder="Stok Fisik" min="0" style="width:80px;">' +
-						'</td>' +
-						'<td>' +
-						'<button class="btn btn-sm btn-outline-primary me-1" onclick="tampilkanFormProdukGlobal(\'' + p.id + '\')"><i class="fas fa-edit"></i></button>' +
-						'<button class="btn btn-sm btn-outline-success me-1" onclick="toggleProdukPublikToko(\'' + p.id + '\')"><i class="fas fa-eye"></i> ' + (p.isPublik ? 'Sembunyikan' : 'Tampilkan') + '</button>' +
-						'<button class="btn btn-sm btn-outline-warning me-1" onclick="selaraskanStokToko(\'' + p.id + '\')"><i class="fas fa-sync"></i> Selaraskan</button>' +
-						'<button class="btn btn-sm btn-outline-danger" onclick="hapusProdukToko(\'' + p.id + '\')"><i class="fas fa-trash"></i></button>' +
-						'</td>' +
-						'</tr>';
-				});
-				tbody.innerHTML = html;
-			}
+    var elStatKritis = document.getElementById('statStokKritisToko');
+    if (elStatKritis) elStatKritis.textContent = kritis;
 
-			// --- 4. TOGGLE PUBLIK ---
-			function toggleProdukPublikToko(idProduk) {
-				var hasil = toggleProdukPublikUniversal(idProduk);
-				if (hasil.sukses) {
-					renderProdukToko();
-				} else {
-					alert('❌ ' + hasil.pesan);
-				}
-			}
+    var elTotalBadge = document.getElementById('totalProdukMasterToko');
+    if (elTotalBadge) elTotalBadge.textContent = total;
 
-			// --- 5. SELARASKAN STOK ---
-			function selaraskanStokToko(idProduk) {
-				var input = document.querySelector('.stokFisikInput[data-produk-id="' + idProduk + '"]');
-				if (!input) return;
-				var stokFisik = parseInt(input.value);
-				if (isNaN(stokFisik) || stokFisik < 0) {
-					alert('Masukkan stok fisik yang valid!');
-					return;
-				}
+    // Filter
+    var cari = (document.getElementById('cariProdukMasterToko')?.value || '').toLowerCase().trim();
+    var filterPublik = (document.getElementById('filterPublikMasterToko')?.value || '');
+    var filterStok = (document.getElementById('filterStokMasterToko')?.value || '');
 
-				var hasil = selaraskanStokProdukUniversal(idProduk, stokFisik);
-				if (hasil.sukses) {
-					alert('✅ Stok berhasil disesuaikan! Selisih: ' + hasil.selisih);
-					input.value = '';
-					renderProdukToko();
-				} else {
-					alert('❌ ' + hasil.pesan);
-				}
-			}
+    var dataFilter = produkList.filter(function(p) {
+        var matchCari = cari === '' ||
+            (p.nama || '').toLowerCase().includes(cari) ||
+            (p.merek || '').toLowerCase().includes(cari) ||
+            (p.kode || '').toLowerCase().includes(cari);
 
-			// --- 6. HAPUS PRODUK ---
-			function hapusProdukToko(idProduk) {
-				if (!confirm('Yakin ingin menghapus produk ini?')) return;
-				var hasil = hapusProdukUniversal(idProduk);
-				if (hasil.sukses) {
-					renderProdukToko();
-				} else {
-					alert('❌ ' + hasil.pesan);
-				}
-			}
+        var matchPublik = filterPublik === '' || String(p.isPublik) === filterPublik;
 
-			// --- 7. PASANG LISTENER MODAL ---
-			function handlerModalProdukTutup() {
-				if (userAktif && userAktif.role === 'Toko') {
-					renderProdukToko();
-				}
-			}
+        var stok = p.stok || 0;
+        var matchStok = filterStok === '' ||
+            (filterStok === 'habis' && stok === 0) ||
+            (filterStok === 'kritis' && stok > 0 && stok <= 5) ||
+            (filterStok === 'normal' && stok > 5);
 
-			function pasangListenerModalProduk() {
-				var modal = document.getElementById('formProdukModal');
-				if (modal) {
-					modal.removeEventListener('hidden.bs.modal', handlerModalProdukTutup);
-					modal.addEventListener('hidden.bs.modal', handlerModalProdukTutup);
-				}
-			}
+        return matchCari && matchPublik && matchStok;
+    });
 
-			// --- 8. RESET FILTER ---
-			function resetFilterMasterToko() {
-				document.getElementById('cariProdukMasterToko').value = '';
-				document.getElementById('filterPublikMasterToko').value = '';
-				document.getElementById('filterStokMasterToko').value = '';
-				renderProdukToko();
-			}
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted py-4">Tidak ada produk ditemukan.</td></tr>';
+        return;
+    }
 
-			// --- 9. PASTIKAN LISTENER TERPASANG SAAT HALAMAN DIMUAT ---
-			document.addEventListener('DOMContentLoaded', function() {
-				pasangListenerModalProduk();
-			});
-			</script>
-			<!-- ===== AKHIR BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO ===== -->
-			<!-- ============================================================ -->
+    var html = '';
+    dataFilter.forEach(function(p, i) {
+        var foto = p.foto
+            ? '<img src="' + p.foto + '" style="width:40px;height:40px;object-fit:cover;border-radius:5px;">'
+            : '<i class="fas fa-box text-muted fa-2x"></i>';
+
+        var hargaRp = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(p.harga || 0);
+        var hargaCoin = (p.hargaCoin || 0).toLocaleString('id-ID') + ' Coin';
+        var stok = p.stok || 0;
+
+        var stokBadge = stok === 0
+            ? '<span class="badge bg-danger">Habis</span>'
+            : (stok <= 5 ? '<span class="badge bg-warning text-dark">Kritis</span>'
+                         : '<span class="badge bg-success">Normal</span>');
+
+        var publikBadge = p.isPublik
+            ? '<span class="badge bg-success">Publik</span>'
+            : '<span class="badge bg-secondary">Privat</span>';
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + foto + '</td>' +
+            '<td><strong>' + (p.nama || '-') + '</strong></td>' +
+            '<td>' + (p.merek || '-') + '</td>' +
+            '<td>' + (p.kode || '-') + '</td>' +
+            '<td>' + (p.kategori || '-') + '</td>' +
+            '<td>' + hargaRp + '</td>' +
+            '<td>' + hargaCoin + '</td>' +
+            '<td>' + (p.satuan || '-') + '</td>' +
+            '<td>' + stok + '</td>' +
+            '<td>' + stokBadge + '</td>' +
+            '<td>' + publikBadge + '</td>' +
+            '<td>' +
+                '<input type="number" class="form-control form-control-sm stokFisikInput" data-produk-id="' + p.id + '" placeholder="Stok Fisik" min="0" style="width:80px;">' +
+            '</td>' +
+            '<td>' +
+                '<button class="btn btn-sm btn-outline-primary me-1" onclick="tampilkanFormProdukGlobal(\'' + p.id + '\')" title="Edit"><i class="fas fa-edit"></i></button>' +
+                '<button class="btn btn-sm btn-outline-success me-1" onclick="toggleProdukPublikToko(\'' + p.id + '\')" title="' + (p.isPublik ? 'Sembunyikan' : 'Tampilkan') + '"><i class="fas fa-eye"></i></button>' +
+                '<button class="btn btn-sm btn-outline-warning me-1" onclick="selaraskanStokToko(\'' + p.id + '\')" title="Selaraskan Stok"><i class="fas fa-sync"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="hapusProdukToko(\'' + p.id + '\')" title="Hapus"><i class="fas fa-trash"></i></button>' +
+            '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// --- 4. TOGGLE PUBLIK ---
+function toggleProdukPublikToko(idProduk) {
+    var hasil = toggleProdukPublikUniversal(idProduk);
+    if (hasil.sukses) {
+        renderProdukToko();
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// --- 5. SELARASKAN STOK ---
+function selaraskanStokToko(idProduk) {
+    var input = document.querySelector('.stokFisikInput[data-produk-id="' + idProduk + '"]');
+    if (!input) return;
+    var stokFisik = parseInt(input.value);
+    if (isNaN(stokFisik) || stokFisik < 0) {
+        alert('Masukkan stok fisik yang valid!');
+        return;
+    }
+
+    var hasil = selaraskanStokProdukUniversal(idProduk, stokFisik);
+    if (hasil.sukses) {
+        alert('✅ Stok berhasil disesuaikan! Selisih: ' + hasil.selisih);
+        input.value = '';
+        renderProdukToko();
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// --- 6. HAPUS PRODUK ---
+function hapusProdukToko(idProduk) {
+    if (!confirm('Yakin ingin menghapus produk ini?')) return;
+    var hasil = hapusProdukUniversal(idProduk);
+    if (hasil.sukses) {
+        renderProdukToko();
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// --- 7. PASANG LISTENER MODAL (GENERIK) ---
+function handlerModalProdukTutup() {
+    // Refresh tabel jika container Master Produk Toko sedang aktif di DOM
+    if (userAktif && document.getElementById('tabelProdukMasterToko')) {
+        renderProdukToko();
+    }
+}
+
+function pasangListenerModalProduk() {
+    var modal = document.getElementById('formProdukModal');
+    if (modal) {
+        modal.removeEventListener('hidden.bs.modal', handlerModalProdukTutup);
+        modal.addEventListener('hidden.bs.modal', handlerModalProdukTutup);
+    }
+}
+
+// --- 8. RESET FILTER ---
+function resetFilterMasterToko() {
+    var elCari = document.getElementById('cariProdukMasterToko');
+    var elPublik = document.getElementById('filterPublikMasterToko');
+    var elStok = document.getElementById('filterStokMasterToko');
+    if (elCari) elCari.value = '';
+    if (elPublik) elPublik.value = '';
+    if (elStok) elStok.value = '';
+    renderProdukToko();
+}
+
+// --- 9. PASTIKAN LISTENER TERPASANG SAAT HALAMAN DIMUAT ---
+document.addEventListener('DOMContentLoaded', function() {
+    pasangListenerModalProduk();
+});
+</script>
+<!-- ===== AKHIR BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO ===== -->
 
 
 			<!--- ===== BLOK R 9.1 BOOTSTRAP ===== -->
