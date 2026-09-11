@@ -1430,7 +1430,7 @@
 
 				// Aturan khusus: Seller yang belum disetujui hanya dapat 4 menu
 				// (Dasbor, Profil, Pengajuan Verifikasi, Download Form SKU)
-				var sellerRoles = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller', 'Ojek', 'Grosir'];
+				var sellerRoles = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller', 'Ojek', 'Grosir', 'Distributor'];
 				if (sellerRoles.includes(userAktif.role)) {
 					if (statusVerifikasi === 'Aktif') {
 						// Aktif: tampilkan semua KECUALI yang onlyPending
@@ -1438,10 +1438,9 @@
 							return item.onlyPending !== true;
 						});
 					} else {
-						// Pending: HANYA 4 menu ini
-						// 1. Dasbor, 2. Profil, 3. Pengajuan Verifikasi, 4. Download Form SKU
+						// Pending: HANYA 4 menu (Dasbor, Profil, Pengajuan Verifikasi, Download SKU)
 						daftarMenu = daftarMenu.filter(function(item) {
-							return item.onlyPending === true 
+							return item.onlyPending === true
 								|| item.aksi === 'dashboardUtama'
 								|| item.aksi === 'profil';
 						});
@@ -2791,11 +2790,11 @@ function getDefaultSettingEkonomi() {
 // ============================================================
 (function seederAkunDummy65() {
 
-    var FLAG = 'seedingAkunDummy65Lengkap';
-    if (localStorage.getItem(FLAG) === 'true') {
-        console.log('ℹ️ Seeder Akun Dummy 65 sudah pernah jalan, dilewati.');
-        return;
-    }
+    var FLAG = 'seedingAkunDummy65V2Lengkap';
+	if (localStorage.getItem(FLAG) === 'true') {
+    console.log('ℹ️ Seeder Akun Dummy 65 V2 sudah pernah jalan, dilewati.');
+    return;
+	}
 
     // Guard fungsi global wajib
     if (typeof generateKodeUnik !== 'function' ||
@@ -2809,13 +2808,39 @@ function getDefaultSettingEkonomi() {
     // ============================================================
     // 1. HELPER: TAMBAH AKUN DUMMY
     // ============================================================
-    function tambahAkunDummy(opts) {
-        // Cegah duplikasi username
+        function tambahAkunDummy(opts) {
+        // ============================================================
+        // TENTUKAN STATUS AWAL BERDASARKAN ROLE & WILAYAH
+        // - Seller non-Banjarsari → Pending (butuh verifikasi SuperAdmin)
+        // - Seller Banjarsari & non-seller (Customer/Staf) → Aktif
+        // ============================================================
+        var SELLER_ROLES_VERIFIKASI = [
+            'Toko', 'Pedagang Pasar', 'Pedagang Makanan',
+            'COD Seller', 'Ojek', 'Grosir', 'Distributor'
+        ];
+        var usernameLower = (opts.username || '').toLowerCase();
+        var isBanjarsari = usernameLower.indexOf('banjarsari') !== -1;
+        var butuhVerifikasi = SELLER_ROLES_VERIFIKASI.indexOf(opts.role) !== -1;
+        var statusAwal = (butuhVerifikasi && !isBanjarsari) ? 'Pending' : 'Aktif';
+
+        // Cegah duplikasi username + migrasi status untuk akun lama
         var existing = dataLoginUser.find(function(u) {
             return u.username === opts.username;
         });
         if (existing) {
-            console.warn('⚠️ Username "' + opts.username + '" sudah ada, dilewati.');
+            // MIGRASI: update status akun lama yang salah (dari V1 seeder)
+            if (butuhVerifikasi && !isBanjarsari && existing.statusVerifikasi !== 'Pending') {
+                existing.statusVerifikasi = 'Pending';
+                existing.status = 'Pending';
+            }
+            var existingAkun = dataAkunAktif.find(function(a) {
+                return a.username === opts.username;
+            });
+            if (existingAkun && butuhVerifikasi && !isBanjarsari && existingAkun.status !== 'Pending') {
+                existingAkun.statusVerifikasi = 'Pending';
+                existingAkun.status = 'Pending';
+            }
+            console.warn('⚠️ Username "' + opts.username + '" sudah ada, status di-set ke ' + statusAwal + '.');
             return false;
         }
 
@@ -2836,7 +2861,8 @@ function getDefaultSettingEkonomi() {
             alamatKtp: opts.alamatKtp || opts.alamat,
             lat: opts.lat,
             lng: opts.lng,
-            status: 'Aktif',
+            status: statusAwal,
+            statusVerifikasi: statusAwal,
             nik_ktp: opts.nik || null,
             statusLangganan: 'Free',
             fotoUrl: '',
@@ -2853,7 +2879,7 @@ function getDefaultSettingEkonomi() {
             nama: opts.nama,
             role: opts.role,
             kodeRole: opts.kodeRole,
-            statusVerifikasi: 'Aktif',
+            statusVerifikasi: statusAwal,
             hp: opts.hp,
             email: opts.email,
             alamat: opts.alamat,
@@ -3085,25 +3111,25 @@ function getDefaultSettingEkonomi() {
     // ============================================================
     // 6. SIMPAN & CATAT
     // ============================================================
-    var totalBerhasil = jumlahWilayah + jumlahStaf;
+        var totalBerhasil = jumlahWilayah + jumlahStaf;
 
-    if (totalBerhasil > 0) {
-        try {
-            simpanDataKeLocalStorage();
-        } catch (e) {
-            console.warn('simpanDataKeLocalStorage gagal, fallback manual:', e);
-            localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
-            localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
-        }
+    // SELALU simpan — meskipun totalBerhasil = 0, karena seeder ini
+    // juga melakukan migrasi status untuk akun yang sudah ada.
+    try {
+        simpanDataKeLocalStorage();
+    } catch (e) {
+        console.warn('simpanDataKeLocalStorage gagal, fallback manual:', e);
+        localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+        localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+    }
 
-        if (typeof catatAktivitasGlobal === 'function') {
-            catatAktivitasGlobal(
-                'SEEDER_AKUN_DUMMY_65',
-                'Seeder Akun Dummy 65',
-                'Menambahkan ' + jumlahWilayah + ' akun wilayah (7 kecamatan) + ' +
-                jumlahStaf + ' akun staf pusat'
-            );
-        }
+    if (totalBerhasil > 0 && typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            'SEEDER_AKUN_DUMMY_65',
+            'Seeder Akun Dummy 65',
+            'Menambahkan ' + jumlahWilayah + ' akun wilayah (7 kecamatan) + ' +
+            jumlahStaf + ' akun staf pusat'
+        );
     }
 
     // ============================================================
