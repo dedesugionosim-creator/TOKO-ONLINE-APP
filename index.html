@@ -1449,47 +1449,32 @@ function loadMenuNavigasi(kodeRole, statusVerifikasi) {
     }
 
     var sellerRoles = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller', 'Ojek', 'Grosir', 'Distributor'];
-    if (userAktif && sellerRoles.includes(userAktif.role)) {
-        if (statusVerifikasi === 'Aktif') {
-            daftarMenu = daftarMenu.filter(function(item) {
-                return item.onlyPending !== true;
-            });
-        } else {
-            daftarMenu = daftarMenu.filter(function(item) {
-                return item.onlyPending === true
-                    || item.aksi === 'dashboardUtama'
-                    || item.aksi === 'profil';
-            });
-        }
+if (userAktif && sellerRoles.includes(userAktif.role)) {
+    if (statusVerifikasi === 'Aktif') {
+        // Menu lengkap — buang yang onlyPending
+        daftarMenu = daftarMenu.filter(function(item) {
+            return item.onlyPending !== true;
+        });
+    } else if (statusVerifikasi === 'Pending') {
+        // Sudah kirim dokumen — menu terbatas,
+        // sembunyikan Pengajuan Verifikasi & Download SKU
+        daftarMenu = daftarMenu.filter(function(item) {
+            if (item.aksi === 'pengajuanVerifikasi') return false;
+            if (item.aksi === 'downloadSKU')         return false;
+            return item.aksi === 'dashboardUtama'
+                || item.aksi === 'profil'
+                || item.aksi === 'tampilkanHelloFriends';
+        });
+    } else {
+        // 'BelumVerifikasi' atau 'Ditolak' — menu terbatas,
+        // tetap bisa akses Pengajuan Verifikasi & Download SKU
+        daftarMenu = daftarMenu.filter(function(item) {
+            return item.onlyPending === true
+                || item.aksi === 'dashboardUtama'
+                || item.aksi === 'profil'
+                || item.aksi === 'tampilkanHelloFriends';
+        });
     }
-
-    var html = '';
-    daftarMenu.forEach(function(item) {
-        var handler = menuHandlers[item.aksi];
-        var isGlobalFn = (typeof window[item.aksi] === 'function');
-        var onclick;
-
-        if (handler) {
-            onclick = "menuHandlers['" + item.aksi + "'](); tutupMenu();";
-        } else if (isGlobalFn) {
-            onclick = item.aksi + "(); tutupMenu();";
-        } else {
-            onclick = "tampilkanPlaceholderMenu('" + item.nama + "', '" + (item.blok || '0') + "'); tutupMenu();";
-        }
-
-        html += '<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="' + onclick + '">';
-        html += '<i class="' + item.ikon + ' me-2" style="color: var(--primary);"></i>' + item.nama + '</a>';
-    });
-
-    html += '<hr class="border-secondary">';
-    html += '<a href="#" class="list-group-item list-group-item-action bg-dark text-white border-secondary menu-item" onclick="prosesLogout()">';
-    html += '<i class="fas fa-sign-out-alt me-2 text-danger"></i>Logout</a>';
-    menuContainer.innerHTML = html;
-
-    var elNama = document.getElementById('offcanvasNamaUser');
-    var elRole = document.getElementById('offcanvasRoleUser');
-    if (elNama) elNama.textContent = userAktif ? (userAktif.nama || 'User') : 'User';
-    if (elRole) elRole.textContent = userAktif ? (userAktif.role || 'Role') : 'Role';
 }
 
 // ============================================================
@@ -1539,6 +1524,31 @@ function prosesKirimVerifikasiGlobal(userId, nama, role, listDokumen) {
     var data = loadDataVerifikasiGlobal();
     data.push(pengajuanBaru);
     saveDataVerifikasiGlobal(data);
+
+    // ============================================================
+    // BLOK R 01.0 (52) – REVISI: Set status user jadi 'Pending'
+    // ------------------------------------------------------------
+    // Dari 'BelumVerifikasi' → 'Pending'
+    // Baru setelah ini user muncul di Persetujuan Akun SA.
+    // ============================================================
+    var idxUser = (dataLoginUser || []).findIndex(function(u) {
+        return u.idUser === userId;
+    });
+    if (idxUser !== -1) {
+        dataLoginUser[idxUser].statusVerifikasi = 'Pending';
+        dataLoginUser[idxUser].status           = 'Pending';
+        localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    }
+
+    // Sync ke dataAkunAktif kalau user sudah ada di sana
+    var idxAktif = (dataAkunAktif || []).findIndex(function(a) {
+        return a.id === userId;
+    });
+    if (idxAktif !== -1) {
+        dataAkunAktif[idxAktif].statusVerifikasi = 'Pending';
+        dataAkunAktif[idxAktif].status           = 'Pending';
+        localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+    }
 
     if (typeof catatAktivitasGlobal === 'function') {
         catatAktivitasGlobal(userId, 'Pengajuan Verifikasi', 'Dokumen verifikasi dikirim untuk role ' + role);
@@ -2609,22 +2619,21 @@ function getDefaultSettingEkonomi() {
         var usernameLower = (opts.username || '').toLowerCase();
         var isBanjarsari = usernameLower.indexOf('banjarsari') !== -1;
         var butuhVerifikasi = ['TK', 'OJ', 'PP', 'PM', 'COD', 'GR', 'DST'].includes(roleKode);
-		var statusAwal = butuhVerifikasi ? 'BelumVerifikasi' : 'Aktif';
+		var statusAwal = (butuhVerifikasi && !isBanjarsari) ? 'BelumVerifikasi' : 'Aktif';
 
         var existing = dataLoginUser.find(function(u) { return u.username === opts.username; });
         if (existing) {
-            if (butuhVerifikasi && !isBanjarsari && existing.statusVerifikasi !== 'Pending') {
-                existing.statusVerifikasi = 'Pending';
-                existing.status = 'Pending';
-            }
-            var existingAkun = dataAkunAktif.find(function(a) { return a.username === opts.username; });
-            if (existingAkun && butuhVerifikasi && !isBanjarsari && existingAkun.status !== 'Pending') {
-                existingAkun.statusVerifikasi = 'Pending';
-                existingAkun.status = 'Pending';
-            }
-            console.warn('⚠️ Username "' + opts.username + '" sudah ada.');
-            return false;
-        }
+		if (butuhVerifikasi && !isBanjarsari && existing.statusVerifikasi !== 'BelumVerifikasi') {
+        existing.statusVerifikasi = 'BelumVerifikasi';
+        existing.status = 'BelumVerifikasi';
+		}
+		var existingAkun = dataAkunAktif.find(function(a) { return a.username === opts.username; });
+		if (existingAkun && butuhVerifikasi && !isBanjarsari && existingAkun.status !== 'BelumVerifikasi') {
+        existingAkun.statusVerifikasi = 'BelumVerifikasi';
+        existingAkun.status = 'BelumVerifikasi';
+		}
+		...
+		}
 
         var idUser = generateKodeUnik(opts.kodeRole);
         var now = new Date().toISOString();
@@ -4685,6 +4694,108 @@ function tolakAkun(idUser, alasan) {
         user: dataLoginUser[idx]
     };
 }
+
+
+// ============================================================
+// BLOK R 01.0 (76) – MIGRASI STATUS AKUN LAMA
+// ------------------------------------------------------------
+// Data lama (dari seeder / registrasi versi sebelumnya) yang
+// berstatus 'Pending' tapi BELUM pernah kirim dokumen verifikasi
+// → dikonversi jadi 'BelumVerifikasi'.
+//
+// Cek: apakah user ada di dataVerifikasiDokumen?
+//   - ADA    → tetap 'Pending' (sudah kirim, benar)
+//   - TIDAK  → ubah jadi 'BelumVerifikasi' (belum kirim, salah status)
+//
+// Return: { totalDicek, totalDiubah }
+// ============================================================
+function migrasiStatusAkunLama() {
+    var daftarVerif = [];
+    try {
+        daftarVerif = JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
+        if (!Array.isArray(daftarVerif)) daftarVerif = [];
+    } catch (e) { daftarVerif = []; }
+
+    var totalDicek = 0;
+    var totalDiubah = 0;
+    var berubah = false;
+
+    // Cek di dataLoginUser
+    (dataLoginUser || []).forEach(function(u, i) {
+        if (u.statusVerifikasi !== 'Pending' && u.status !== 'Pending') return;
+        totalDicek++;
+
+        var sudahKirim = daftarVerif.some(function(v) {
+            return v.id === u.idUser;
+        });
+
+        if (!sudahKirim) {
+            dataLoginUser[i].statusVerifikasi = 'BelumVerifikasi';
+            dataLoginUser[i].status           = 'BelumVerifikasi';
+            totalDiubah++;
+            berubah = true;
+        }
+    });
+
+    // Cek di dataAkunAktif
+    (dataAkunAktif || []).forEach(function(a, i) {
+        if (a.statusVerifikasi !== 'Pending' && a.status !== 'Pending') return;
+
+        var sudahKirim = daftarVerif.some(function(v) {
+            return v.id === a.id;
+        });
+
+        if (!sudahKirim) {
+            dataAkunAktif[i].statusVerifikasi = 'BelumVerifikasi';
+            dataAkunAktif[i].status           = 'BelumVerifikasi';
+            berubah = true;
+        }
+    });
+
+    if (berubah) {
+        localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+        localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+
+        if (typeof catatAktivitasGlobal === 'function' && userAktif && userAktif.idUser) {
+            catatAktivitasGlobal(
+                userAktif.idUser,
+                'Migrasi Status Akun',
+                'Ubah ' + totalDiubah + ' akun dari Pending → BelumVerifikasi'
+            );
+        }
+    }
+
+    console.log('📊 Migrasi status akun selesai:', {
+        totalDicek: totalDicek,
+        totalDiubah: totalDiubah
+    });
+
+    return { totalDicek: totalDicek, totalDiubah: totalDiubah };
+}
+
+// ============================================================
+// BLOK R 01.0 (77) – AUTO-RUN MIGRASI (SEKALI SAJA)
+// ------------------------------------------------------------
+// Jalankan migrasi otomatis 1x saat aplikasi load, jika flag
+// belum ada. Setelah itu, tidak jalan lagi.
+// ============================================================
+(function autoMigrasiSekali() {
+    var FLAG = 'migrasiStatusAkunV1Done';
+    if (localStorage.getItem(FLAG) === 'true') return;
+
+    // Tunggu data siap (setelah DOM load)
+    window.addEventListener('load', function() {
+        setTimeout(function() {
+            try {
+                var hasil = migrasiStatusAkunLama();
+                localStorage.setItem(FLAG, 'true');
+                console.log('✅ Auto-migrasi status akun selesai. Diubah:', hasil.totalDiubah);
+            } catch (e) {
+                console.warn('⚠️ Auto-migrasi gagal:', e);
+            }
+        }, 1500); // delay supaya data seeder & login selesai load
+    });
+})();
 
 // ============================================================
 // AKHIR BLOK R 01.0
@@ -18748,9 +18859,27 @@ function renderProfilTK() {
         // Status verifikasi
         var elVerif = document.getElementById('profilStatusVerifikasiTK');
         if (elVerif) {
-            elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-            elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
-        }
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
+					}
 
         // Set text view mode
         setTextProfilTK('profilTK_NamaToko', namaToko);
@@ -19271,8 +19400,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiPP');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -19781,8 +19928,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiPM');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -20291,8 +20456,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiCOD');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -20802,8 +20985,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiOJ');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -21274,8 +21475,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiCT');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -21677,8 +21896,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiADM');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -22077,8 +22314,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiMKT');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -22478,8 +22733,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiTGH');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -22878,8 +23151,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiCS');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -23291,8 +23582,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiEO');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -23708,8 +24017,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiORG');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -24113,8 +24440,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiIND');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -24575,8 +24920,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiDST');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -25086,8 +25449,26 @@ function ubahStatusOnlineToko() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiGR');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -27737,8 +28118,26 @@ function hapusFotoProfilKasirGR() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiSOT');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
@@ -28150,8 +28549,26 @@ function hapusFotoProfilKasirGR() {
 					// Status verifikasi
 					var elVerif = document.getElementById('profilStatusVerifikasiSOO');
 					if (elVerif) {
-						elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Terverifikasi' : (statusVerifikasi === 'Pending' ? 'Menunggu' : statusVerifikasi);
-						elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+						var labelVerif = '';
+						var classVerif = 'badge ';
+						if (statusVerifikasi === 'Aktif') {
+							labelVerif = 'Terverifikasi';
+							classVerif += 'bg-success';
+						} else if (statusVerifikasi === 'Pending') {
+							labelVerif = 'Menunggu Verifikasi';
+							classVerif += 'bg-warning text-dark';
+						} else if (statusVerifikasi === 'BelumVerifikasi') {
+							labelVerif = 'Belum Verifikasi';
+							classVerif += 'bg-secondary';
+						} else if (statusVerifikasi === 'Ditolak') {
+							labelVerif = 'Ditolak';
+							classVerif += 'bg-danger';
+						} else {
+							labelVerif = statusVerifikasi;
+							classVerif += 'bg-secondary';
+						}
+						elVerif.textContent = labelVerif;
+						elVerif.className = classVerif;
 					}
 
 					// Set text view mode
