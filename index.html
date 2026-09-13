@@ -4550,6 +4550,226 @@ function getIdUserAktif() {
 }
 
 // ============================================================
+// BLOK R 01.0 (74) – LOAD DATA PENDING AKUN
+// ------------------------------------------------------------
+// Ambil semua user dengan statusVerifikasi === 'Pending'
+// dari dataLoginUser. Fallback ke dataPending bila ada.
+// ============================================================
+function loadDataPendingAkun() {
+    var hasil = [];
+    var sudahAda = {};
+
+    (dataLoginUser || []).forEach(function(u) {
+        if (!u || !u.idUser) return;
+        var status = u.statusVerifikasi || u.status || '';
+        if (status === 'Pending') {
+            hasil.push(u);
+            sudahAda[u.idUser] = true;
+        }
+    });
+
+    (dataPending || []).forEach(function(p) {
+        var idUser = p.idUser || p.id;
+        if (!idUser || sudahAda[idUser]) return;
+        var status = p.statusVerifikasi || p.status || '';
+        if (status === 'Pending') {
+            hasil.push({
+                idUser: idUser,
+                nama: p.nama || '-',
+                role: p.role || '-',
+                username: p.username || '-',
+                hp: p.hp || '-',
+                email: p.email || '-',
+                alamat: p.alamat || '-',
+                alamatKtp: p.alamatKtp || p.alamat || '-',
+                nik_ktp: p.nik_ktp || null,
+                lat: p.lat || null,
+                lng: p.lng || null,
+                statusVerifikasi: 'Pending',
+                createdAt: p.createdAt || p.tgl || null
+            });
+            sudahAda[idUser] = true;
+        }
+    });
+
+    // Urutkan: yang terbaru daftar dulu
+    hasil.sort(function(a, b) {
+        var ta = new Date(a.createdAt || 0).getTime();
+        var tb = new Date(b.createdAt || 0).getTime();
+        return tb - ta;
+    });
+
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (75) – SETUJUI AKUN GLOBAL
+// ============================================================
+function setujuiAkunGlobal(idUser, catatan) {
+    var idAdmin = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idAdmin) return { sukses: false, pesan: 'Admin tidak valid.' };
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var idxLogin = dataLoginUser.findIndex(function(u) { return u.idUser === idUser; });
+    if (idxLogin === -1) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    var user = dataLoginUser[idxLogin];
+    var now = new Date().toISOString();
+    var catatanFinal = (catatan || 'Disetujui via menu Persetujuan Akun').trim();
+
+    user.statusVerifikasi = 'Aktif';
+    user.status = 'Aktif';
+    user.verifiedBy = idAdmin.idUser;
+    user.verifiedAt = now;
+    user.catatanVerifikasi = catatanFinal;
+    user.alasanTolak = '';
+
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === idUser; });
+    if (idxAktif !== -1) {
+        dataAkunAktif[idxAktif].statusVerifikasi = 'Aktif';
+        dataAkunAktif[idxAktif].status = 'Aktif';
+        dataAkunAktif[idxAktif].verifiedBy = idAdmin.idUser;
+        dataAkunAktif[idxAktif].verifiedAt = now;
+    } else {
+        dataAkunAktif.push({
+            id: user.idUser, nama: user.nama, role: user.role,
+            username: user.username, password: user.password,
+            hp: user.hp, email: user.email, alamat: user.alamat,
+            alamatKtp: user.alamatKtp || '', lat: user.lat, lng: user.lng,
+            status: 'Aktif', statusVerifikasi: 'Aktif',
+            nik_ktp: user.nik_ktp, statusLangganan: user.statusLangganan || 'Free',
+            verifiedBy: idAdmin.idUser, verifiedAt: now
+        });
+    }
+
+    dataPending = (dataPending || []).filter(function(p) {
+        return (p.idUser !== idUser) && (p.id !== idUser);
+    });
+
+    try {
+        var pba = JSON.parse(localStorage.getItem('dataPengajuanBukaAkun') || '[]');
+        if (Array.isArray(pba)) {
+            pba.forEach(function(p) {
+                if (p.id === idUser) {
+                    p.status = 'Disetujui';
+                    p.verifiedBy = idAdmin.idUser;
+                    p.verifiedAt = now;
+                }
+            });
+            localStorage.setItem('dataPengajuanBukaAkun', JSON.stringify(pba));
+        }
+    } catch (e) {}
+
+    localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+    localStorage.setItem('dataPending', JSON.stringify(dataPending));
+
+    catatAktivitasGlobal(
+        idAdmin.idUser,
+        'Setujui Akun',
+        'Menyetujui akun ' + (user.nama || idUser) + ' (' + (user.role || '-') + '). Catatan: ' + catatanFinal
+    );
+
+    return { sukses: true, user: user };
+}
+
+// ============================================================
+// BLOK R 01.0 (76) – TOLAK AKUN GLOBAL
+// ============================================================
+function tolakAkunGlobal(idUser, alasan) {
+    var idAdmin = getDataIdUser(userAktif ? userAktif.idUser : null);
+    if (!idAdmin) return { sukses: false, pesan: 'Admin tidak valid.' };
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var alasanTrim = (alasan || '').trim();
+    if (alasanTrim.length < 10) {
+        return { sukses: false, pesan: 'Alasan minimal 10 karakter.' };
+    }
+
+    var idxLogin = dataLoginUser.findIndex(function(u) { return u.idUser === idUser; });
+    if (idxLogin === -1) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    var user = dataLoginUser[idxLogin];
+    var now = new Date().toISOString();
+
+    user.statusVerifikasi = 'Ditolak';
+    user.status = 'Ditolak';
+    user.alasanTolak = alasanTrim;
+    user.verifiedBy = idAdmin.idUser;
+    user.verifiedAt = now;
+
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === idUser; });
+    if (idxAktif !== -1) {
+        dataAkunAktif[idxAktif].statusVerifikasi = 'Ditolak';
+        dataAkunAktif[idxAktif].status = 'Ditolak';
+        dataAkunAktif[idxAktif].alasanTolak = alasanTrim;
+    }
+
+    try {
+        var pba = JSON.parse(localStorage.getItem('dataPengajuanBukaAkun') || '[]');
+        if (Array.isArray(pba)) {
+            pba.forEach(function(p) {
+                if (p.id === idUser) {
+                    p.status = 'Ditolak';
+                    p.alasanTolak = alasanTrim;
+                    p.verifiedBy = idAdmin.idUser;
+                    p.verifiedAt = now;
+                }
+            });
+            localStorage.setItem('dataPengajuanBukaAkun', JSON.stringify(pba));
+        }
+    } catch (e) {}
+
+    localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+
+    catatAktivitasGlobal(
+        idAdmin.idUser,
+        'Tolak Akun',
+        'Menolak akun ' + (user.nama || idUser) + ' (' + (user.role || '-') + '). Alasan: ' + alasanTrim
+    );
+
+    return { sukses: true, user: user };
+}
+
+// ============================================================
+// BLOK R 01.0 (77) – HITUNG STATISTIK PERSETUJUAN
+// ============================================================
+function hitungStatistikPersetujuan() {
+    var pending = 0;
+    var disetujuiHariIni = 0;
+    var ditolakHariIni = 0;
+    var today = new Date().toISOString().split('T')[0];
+
+    (dataLoginUser || []).forEach(function(u) {
+        var status = u.statusVerifikasi || u.status || '';
+        if (status === 'Pending') pending++;
+        if (u.verifiedAt) {
+            var tanggalVerif = (u.verifiedAt || '').split('T')[0];
+            if (tanggalVerif === today) {
+                if (status === 'Aktif') disetujuiHariIni++;
+                else if (status === 'Ditolak') ditolakHariIni++;
+            }
+        }
+    });
+
+    var pengajuanBukaAkun = 0;
+    try {
+        var pba = JSON.parse(localStorage.getItem('dataPengajuanBukaAkun') || '[]');
+        if (Array.isArray(pba)) {
+            pengajuanBukaAkun = pba.filter(function(p) { return p.status === 'Menunggu'; }).length;
+        }
+    } catch (e) {}
+
+    return {
+        pending: pending,
+        disetujuiHariIni: disetujuiHariIni,
+        ditolakHariIni: ditolakHariIni,
+        pengajuanBukaAkun: pengajuanBukaAkun
+    };
+}
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
@@ -7804,6 +8024,671 @@ function gantiPasswordSA(event) {
 			</script>
 			
 			<!-- ===== AKHIR BLOK R 10.3 – KELOLA AKUN SUPERADMIN JS ===== -->
+			
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN SUPERADMIN (HTML) ===== -->
+<!-- ============================================================ -->
+
+<div id="persetujuanAkunContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white mb-0">
+                <i class="fas fa-user-check me-2"></i>Persetujuan Akun Baru
+            </h4>
+            <button class="btn btn-outline-light btn-back-dashboard" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-user-clock fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanPending">0</h4>
+                        <small class="text-muted">Menunggu Persetujuan</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanDisetujui">0</h4>
+                        <small class="text-muted">Disetujui Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-times-circle fa-2x mb-2 text-danger"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanDitolak">0</h4>
+                        <small class="text-muted">Ditolak Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-folder-open fa-2x mb-2 text-info"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanPengajuan">0</h4>
+                        <small class="text-muted">Pengajuan Mandiri</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filter & Pencarian -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4">
+                        <label class="fw-bold"><i class="fas fa-search me-1"></i>Cari Akun</label>
+                        <input type="text" id="cariPersetujuanAkun" class="form-control"
+                               placeholder="Nama / ID / Username / HP / Email..."
+                               onkeyup="renderTabelPersetujuanAkun(1)">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold"><i class="fas fa-filter me-1"></i>Filter Role</label>
+                        <select id="filterRolePersetujuanAkun" class="form-select"
+                                onchange="renderTabelPersetujuanAkun(1)">
+                            <option value="">Semua Role</option>
+                            <option value="Toko">Toko</option>
+                            <option value="Pedagang Pasar">Pedagang Pasar</option>
+                            <option value="Pedagang Makanan">Pedagang Makanan</option>
+                            <option value="COD Seller">COD Seller</option>
+                            <option value="Ojek">Ojek</option>
+                            <option value="Grosir">Grosir</option>
+                            <option value="Distributor">Distributor</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold"><i class="fas fa-calendar me-1"></i>Tanggal Daftar</label>
+                        <input type="date" id="filterTanggalPersetujuanAkun" class="form-control"
+                               onchange="renderTabelPersetujuanAkun(1)">
+                    </div>
+                    <div class="col-md-2 text-end">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="resetFilterPersetujuanAkun()">
+                            <i class="fas fa-undo me-1"></i> Reset
+                        </button>
+                        <br>
+                        <span class="badge bg-dark fs-6 mt-1" id="infoJumlahPersetujuanAkun">0 Data</span>
+                    </div>
+                </div>
+                <div class="mt-3 d-flex justify-content-end gap-2">
+                    <button class="btn btn-sm btn-outline-success" onclick="setujuiSemuaTerfilterPersetujuan()">
+                        <i class="fas fa-check-double me-1"></i> Setujui Semua Terfilter
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabel -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #1976D2;">
+                <span><i class="fas fa-list me-2"></i>Daftar Akun Menunggu Persetujuan</span>
+                <span class="badge bg-light text-dark" id="totalPersetujuanAkun">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>ID User</th>
+                                <th>Nama</th>
+                                <th>Role</th>
+                                <th>Username</th>
+                                <th>No. HP</th>
+                                <th>Tgl Daftar</th>
+                                <th>Durasi Pending</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelPersetujuanAkun">
+                            <tr><td colspan="9" class="text-center text-muted py-4">Belum ada pengajuan.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted" id="infoPaginationPersetujuanAkun">Halaman 1 dari 1</span>
+                </div>
+                <div>
+                    <button class="btn btn-outline-secondary btn-sm me-1" id="btnPrevPersetujuanAkun"
+                            onclick="ubahHalamanPersetujuanAkun('prev')" disabled>
+                        <i class="fas fa-chevron-left"></i> Sebelumnya
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" id="btnNextPersetujuanAkun"
+                            onclick="ubahHalamanPersetujuanAkun('next')">
+                        Selanjutnya <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ===== MODAL DETAIL PERSETUJUAN AKUN ===== -->
+<div class="modal fade" id="modalDetailPersetujuanAkun" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-user-circle me-2"></i>Detail Akun Menunggu Persetujuan
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalDetailPersetujuanBody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-danger" onclick="bukaModalTolakPersetujuanDariDetail()">
+                    <i class="fas fa-times me-1"></i> Tolak
+                </button>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+                    <button type="button" class="btn btn-success" onclick="setujuiAkunDariDetail()">
+                        <i class="fas fa-check me-1"></i> Setujui
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== MODAL ALASAN TOLAK ===== -->
+<div class="modal fade" id="modalAlasanTolakPersetujuan" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title">
+                    <i class="fas fa-times-circle me-2"></i>Alasan Penolakan Akun
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="tolakPersetujuanUserId" value="">
+                <div class="mb-3">
+                    <label class="fw-bold">Nama Pemohon</label>
+                    <input type="text" id="tolakPersetujuanNama" class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold">Alasan Penolakan <span class="text-danger">*</span></label>
+                    <textarea id="tolakPersetujuanAlasan" class="form-control" rows="4"
+                              placeholder="Contoh: Data KTP tidak sesuai / Foto blur / NIK tidak valid..."
+                              minlength="10" required></textarea>
+                    <small class="text-muted">Minimal 10 karakter. Alasan akan disimpan pada audit log.</small>
+                </div>
+                <div class="alert alert-warning small mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Akun yang ditolak <strong>tidak dapat login</strong>. Pemohon dapat mengajukan ulang pendaftaran.
+                </div>
+                <div id="notifTolakPersetujuan" class="alert d-none mt-3"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-danger" onclick="konfirmasiTolakPersetujuan()">
+                    <i class="fas fa-check me-1"></i> Konfirmasi Tolak
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.4 (HTML) ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN SUPERADMIN (JS) ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 10.4 – JS PERSETUJUAN AKUN SUPERADMIN
+// ------------------------------------------------------------
+// Fungsi global yang dipakai (sudah ada di BLOK R 01.0):
+//   - loadDataPendingAkun()        -> (74)
+//   - setujuiAkunGlobal()          -> (75)
+//   - tolakAkunGlobal()            -> (76)
+//   - hitungStatistikPersetujuan() -> (77)
+//   - getDataIdUser()              -> (2)
+//   - getFotoProfilAkun()          -> (16)
+//   - catatAktivitasGlobal()       -> (21)
+//   - tutupMenu()                  -> (5)
+//   - kembaliKeDasbor()            -> (54)
+//   - tampilkanPlaceholderMenu()   -> (11)
+// ============================================================
+
+// Variabel lokal blok (state UI)
+var currentPagePersetujuan = 1;
+var itemsPerPagePersetujuan = 10;
+var currentDetailPersetujuanId = null;
+
+// ------------------------------------------------------------
+// 1. TAMPILKAN HALAMAN
+// ------------------------------------------------------------
+function tampilkanPersetujuanAkun() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('persetujuanAkunContainer');
+
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        currentPagePersetujuan = 1;
+        renderStatistikPersetujuan();
+        renderTabelPersetujuanAkun(1);
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Persetujuan Akun', '10.4');
+    }
+}
+
+// ------------------------------------------------------------
+// 2. RENDER STATISTIK
+// ------------------------------------------------------------
+function renderStatistikPersetujuan() {
+    var stat = hitungStatistikPersetujuan();
+
+    var elPending = document.getElementById('statPersetujuanPending');
+    if (elPending) elPending.textContent = stat.pending;
+
+    var elDisetujui = document.getElementById('statPersetujuanDisetujui');
+    if (elDisetujui) elDisetujui.textContent = stat.disetujuiHariIni;
+
+    var elDitolak = document.getElementById('statPersetujuanDitolak');
+    if (elDitolak) elDitolak.textContent = stat.ditolakHariIni;
+
+    var elPengajuan = document.getElementById('statPersetujuanPengajuan');
+    if (elPengajuan) elPengajuan.textContent = stat.pengajuanBukaAkun;
+}
+
+// ------------------------------------------------------------
+// 3. WARNA BADGE PER ROLE (sesuai konvensi M)
+// ------------------------------------------------------------
+function getWarnaRolePersetujuan(role) {
+    var map = {
+        'Toko':              'bg-warning text-dark',
+        'Pedagang Pasar':    'bg-success',
+        'Pedagang Makanan':  'bg-warning text-dark',
+        'COD Seller':        'bg-info text-dark',
+        'Ojek':              'bg-danger',
+        'Grosir':            'bg-info text-dark',
+        'Distributor':       'bg-primary'
+    };
+    return map[role] || 'bg-secondary';
+}
+
+// ------------------------------------------------------------
+// 4. HELPER – DURASI PENDING
+// ------------------------------------------------------------
+function hitungDurasiPendingPersetujuan(createdAt) {
+    if (!createdAt) return '-';
+    var t = new Date(createdAt).getTime();
+    if (isNaN(t)) return '-';
+    var diff = Date.now() - t;
+    if (diff < 0) return 'Baru saja';
+    var menit = Math.floor(diff / 60000);
+    if (menit < 60) return menit + ' menit lalu';
+    var jam = Math.floor(menit / 60);
+    if (jam < 24) return jam + ' jam lalu';
+    var hari = Math.floor(jam / 24);
+    return hari + ' hari lalu';
+}
+
+// ------------------------------------------------------------
+// 5. RENDER TABEL
+// ------------------------------------------------------------
+function renderTabelPersetujuanAkun(hal) {
+    currentPagePersetujuan = hal || 1;
+    var tbody = document.getElementById('tabelPersetujuanAkun');
+    if (!tbody) return;
+
+    var allData = loadDataPendingAkun();
+
+    var cari = (document.getElementById('cariPersetujuanAkun')?.value || '').toLowerCase().trim();
+    var filterRole = document.getElementById('filterRolePersetujuanAkun')?.value || '';
+    var filterTanggal = document.getElementById('filterTanggalPersetujuanAkun')?.value || '';
+
+    var dataFilter = allData.filter(function(u) {
+        var matchCari = cari === '' ||
+            (u.nama || '').toLowerCase().includes(cari) ||
+            (u.idUser || '').toLowerCase().includes(cari) ||
+            (u.username || '').toLowerCase().includes(cari) ||
+            (u.hp || '').toLowerCase().includes(cari) ||
+            (u.email || '').toLowerCase().includes(cari);
+
+        var matchRole = filterRole === '' || u.role === filterRole;
+
+        var matchTanggal = true;
+        if (filterTanggal) {
+            var tglDaftar = (u.createdAt || '').split('T')[0];
+            matchTanggal = (tglDaftar === filterTanggal);
+        }
+
+        return matchCari && matchRole && matchTanggal;
+    });
+
+    var elInfo = document.getElementById('infoJumlahPersetujuanAkun');
+    if (elInfo) elInfo.textContent = dataFilter.length + ' Data';
+
+    var elTotal = document.getElementById('totalPersetujuanAkun');
+    if (elTotal) elTotal.textContent = dataFilter.length;
+
+    var totalPages = Math.ceil(dataFilter.length / itemsPerPagePersetujuan) || 1;
+    if (currentPagePersetujuan > totalPages) currentPagePersetujuan = totalPages;
+    if (currentPagePersetujuan < 1) currentPagePersetujuan = 1;
+
+    var start = (currentPagePersetujuan - 1) * itemsPerPagePersetujuan;
+    var end = start + itemsPerPagePersetujuan;
+    var dataPaged = dataFilter.slice(start, end);
+
+    var elInfoPage = document.getElementById('infoPaginationPersetujuanAkun');
+    if (elInfoPage) elInfoPage.textContent = 'Halaman ' + currentPagePersetujuan + ' dari ' + totalPages;
+
+    var btnPrev = document.getElementById('btnPrevPersetujuanAkun');
+    if (btnPrev) btnPrev.disabled = (currentPagePersetujuan === 1);
+
+    var btnNext = document.getElementById('btnNextPersetujuanAkun');
+    if (btnNext) btnNext.disabled = (currentPagePersetujuan === totalPages);
+
+    if (dataPaged.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">Tidak ada pengajuan ditemukan.</td></tr>';
+        return;
+    }
+
+    var html = '';
+    dataPaged.forEach(function(u, index) {
+        var nomor = start + index + 1;
+        var warnaRole = getWarnaRolePersetujuan(u.role);
+        var tglDaftar = u.createdAt
+            ? new Date(u.createdAt).toLocaleString('id-ID', { hour12: false })
+            : '-';
+        var durasi = hitungDurasiPendingPersetujuan(u.createdAt);
+
+        html += '<tr>' +
+            '<td>' + nomor + '</td>' +
+            '<td><small>' + (u.idUser || '-') + '</small></td>' +
+            '<td><strong>' + (u.nama || '-') + '</strong></td>' +
+            '<td><span class="badge ' + warnaRole + '">' + (u.role || '-') + '</span></td>' +
+            '<td>' + (u.username || '-') + '</td>' +
+            '<td>' + (u.hp || '-') + '</td>' +
+            '<td><small>' + tglDaftar + '</small></td>' +
+            '<td><small class="text-muted">' + durasi + '</small></td>' +
+            '<td>' +
+                '<button class="btn btn-sm btn-outline-info me-1" onclick="bukaModalDetailPersetujuan(\'' + u.idUser + '\')" title="Detail"><i class="fas fa-eye"></i></button>' +
+                '<button class="btn btn-sm btn-outline-success me-1" onclick="setujuiAkunPersetujuan(\'' + u.idUser + '\')" title="Setujui"><i class="fas fa-check"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="bukaModalTolakPersetujuan(\'' + u.idUser + '\')" title="Tolak"><i class="fas fa-times"></i></button>' +
+            '</td>' +
+        '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// ------------------------------------------------------------
+// 6. NAVIGASI PAGINATION
+// ------------------------------------------------------------
+function ubahHalamanPersetujuanAkun(arah) {
+    if (arah === 'prev' && currentPagePersetujuan > 1) {
+        renderTabelPersetujuanAkun(currentPagePersetujuan - 1);
+    } else if (arah === 'next') {
+        renderTabelPersetujuanAkun(currentPagePersetujuan + 1);
+    }
+}
+
+// ------------------------------------------------------------
+// 7. RESET FILTER
+// ------------------------------------------------------------
+function resetFilterPersetujuanAkun() {
+    var elCari = document.getElementById('cariPersetujuanAkun');
+    var elRole = document.getElementById('filterRolePersetujuanAkun');
+    var elTgl = document.getElementById('filterTanggalPersetujuanAkun');
+    if (elCari) elCari.value = '';
+    if (elRole) elRole.value = '';
+    if (elTgl) elTgl.value = '';
+    renderTabelPersetujuanAkun(1);
+}
+
+// ------------------------------------------------------------
+// 8. MODAL DETAIL
+// ------------------------------------------------------------
+function bukaModalDetailPersetujuan(idUser) {
+    var allData = loadDataPendingAkun();
+    var item = allData.find(function(u) { return u.idUser === idUser; });
+    if (!item) {
+        alert('Data tidak ditemukan.');
+        return;
+    }
+
+    currentDetailPersetujuanId = idUser;
+
+    var fotoUrl = (typeof getFotoProfilAkun === 'function' ? getFotoProfilAkun(idUser) : '') ||
+                  'https://placehold.co/120x120/FF8C00/ffffff?text=' + (item.role || 'U').split(' ')[0];
+
+    var koordinat = '-';
+    if (item.lat && item.lng) {
+        koordinat = '<a href="https://www.google.com/maps?q=' + item.lat + ',' + item.lng + '" target="_blank" rel="noopener">' +
+                    parseFloat(item.lat).toFixed(6) + ', ' + parseFloat(item.lng).toFixed(6) +
+                    ' <i class="fas fa-external-link-alt ms-1"></i></a>';
+    }
+
+    var warnaRole = getWarnaRolePersetujuan(item.role);
+
+    var html =
+        '<div class="row g-3">' +
+            '<div class="col-md-4 text-center">' +
+                '<img src="' + fotoUrl + '" class="rounded-circle mb-2" style="width:120px;height:120px;object-fit:cover;border:4px solid #FF8C00;">' +
+                '<h6 class="fw-bold mb-1">' + (item.nama || '-') + '</h6>' +
+                '<span class="badge ' + warnaRole + '">' + (item.role || '-') + '</span>' +
+            '</div>' +
+            '<div class="col-md-8">' +
+                '<table class="table table-sm table-borderless mb-0">' +
+                    '<tr><td class="fw-bold text-muted" style="width:150px;">ID User</td><td>' + (item.idUser || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Username</td><td>' + (item.username || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">NIK KTP</td><td>' + (item.nik_ktp || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Email</td><td>' + (item.email || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">No. HP</td><td>' + (item.hp || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Alamat</td><td>' + (item.alamat || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Alamat KTP</td><td>' + (item.alamatKtp || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Koordinat</td><td>' + koordinat + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Tanggal Daftar</td><td>' +
+                        (item.createdAt ? new Date(item.createdAt).toLocaleString('id-ID', { hour12: false }) : '-') +
+                    '</td></tr>' +
+                '</table>' +
+            '</div>' +
+        '</div>';
+
+    var body = document.getElementById('modalDetailPersetujuanBody');
+    if (body) body.innerHTML = html;
+
+    var modal = new bootstrap.Modal(document.getElementById('modalDetailPersetujuanAkun'));
+    modal.show();
+}
+
+// ------------------------------------------------------------
+// 9. SETUJUI DARI TABEL
+// ------------------------------------------------------------
+function setujuiAkunPersetujuan(idUser) {
+    var allData = loadDataPendingAkun();
+    var item = allData.find(function(u) { return u.idUser === idUser; });
+    var nama = item ? (item.nama || idUser) : idUser;
+
+    if (!confirm('Setujui akun "' + nama + '"?\n\nAkun ini akan langsung aktif dan bisa login.')) return;
+
+    var hasil = setujuiAkunGlobal(idUser, 'Disetujui via menu Persetujuan Akun');
+    if (hasil.sukses) {
+        renderStatistikPersetujuan();
+        renderTabelPersetujuanAkun(currentPagePersetujuan);
+        alert('✅ Akun "' + nama + '" berhasil disetujui!');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// ------------------------------------------------------------
+// 10. SETUJUI DARI MODAL DETAIL
+// ------------------------------------------------------------
+function setujuiAkunDariDetail() {
+    if (!currentDetailPersetujuanId) return;
+
+    var modalEl = document.getElementById('modalDetailPersetujuanAkun');
+    var modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+
+    setujuiAkunPersetujuan(currentDetailPersetujuanId);
+}
+
+// ------------------------------------------------------------
+// 11. BUKA MODAL TOLAK
+// ------------------------------------------------------------
+function bukaModalTolakPersetujuan(idUser) {
+    var allData = loadDataPendingAkun();
+    var item = allData.find(function(u) { return u.idUser === idUser; });
+    if (!item) {
+        alert('Data tidak ditemukan.');
+        return;
+    }
+
+    currentDetailPersetujuanId = idUser;
+
+    var elId = document.getElementById('tolakPersetujuanUserId');
+    var elNama = document.getElementById('tolakPersetujuanNama');
+    var elAlasan = document.getElementById('tolakPersetujuanAlasan');
+    var notif = document.getElementById('notifTolakPersetujuan');
+
+    if (elId) elId.value = idUser;
+    if (elNama) elNama.value = item.nama || '-';
+    if (elAlasan) elAlasan.value = '';
+    if (notif) notif.classList.add('d-none');
+
+    var modal = new bootstrap.Modal(document.getElementById('modalAlasanTolakPersetujuan'));
+    modal.show();
+}
+
+// ------------------------------------------------------------
+// 12. BUKA MODAL TOLAK DARI DETAIL
+// ------------------------------------------------------------
+function bukaModalTolakPersetujuanDariDetail() {
+    if (!currentDetailPersetujuanId) return;
+
+    var modalEl = document.getElementById('modalDetailPersetujuanAkun');
+    var modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+
+    setTimeout(function() {
+        bukaModalTolakPersetujuan(currentDetailPersetujuanId);
+    }, 300);
+}
+
+// ------------------------------------------------------------
+// 13. KONFIRMASI TOLAK
+// ------------------------------------------------------------
+function konfirmasiTolakPersetujuan() {
+    var idUser = document.getElementById('tolakPersetujuanUserId')?.value;
+    var alasan = document.getElementById('tolakPersetujuanAlasan')?.value || '';
+    var notif = document.getElementById('notifTolakPersetujuan');
+
+    if (!idUser) {
+        if (notif) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = 'ID user tidak valid.';
+            notif.classList.remove('d-none');
+        }
+        return;
+    }
+
+    if (alasan.trim().length < 10) {
+        if (notif) {
+            notif.className = 'alert alert-warning';
+            notif.innerHTML = '⚠️ Alasan minimal 10 karakter.';
+            notif.classList.remove('d-none');
+        }
+        return;
+    }
+
+    var hasil = tolakAkunGlobal(idUser, alasan);
+    if (hasil.sukses) {
+        var modalEl = document.getElementById('modalAlasanTolakPersetujuan');
+        var modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+
+        renderStatistikPersetujuan();
+        renderTabelPersetujuanAkun(currentPagePersetujuan);
+        alert('❌ Akun "' + (hasil.user.nama || idUser) + '" ditolak.');
+    } else {
+        if (notif) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + hasil.pesan;
+            notif.classList.remove('d-none');
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// 14. BULK APPROVE – Setujui Semua yang Terfilter
+// ------------------------------------------------------------
+function setujuiSemuaTerfilterPersetujuan() {
+    var cari = (document.getElementById('cariPersetujuanAkun')?.value || '').toLowerCase().trim();
+    var filterRole = document.getElementById('filterRolePersetujuanAkun')?.value || '';
+    var filterTanggal = document.getElementById('filterTanggalPersetujuanAkun')?.value || '';
+
+    var allData = loadDataPendingAkun();
+
+    var dataFilter = allData.filter(function(u) {
+        var matchCari = cari === '' ||
+            (u.nama || '').toLowerCase().includes(cari) ||
+            (u.idUser || '').toLowerCase().includes(cari) ||
+            (u.username || '').toLowerCase().includes(cari) ||
+            (u.hp || '').toLowerCase().includes(cari) ||
+            (u.email || '').toLowerCase().includes(cari);
+
+        var matchRole = filterRole === '' || u.role === filterRole;
+
+        var matchTanggal = true;
+        if (filterTanggal) {
+            var tglDaftar = (u.createdAt || '').split('T')[0];
+            matchTanggal = (tglDaftar === filterTanggal);
+        }
+
+        return matchCari && matchRole && matchTanggal;
+    });
+
+    if (dataFilter.length === 0) {
+        alert('Tidak ada akun terfilter untuk disetujui.');
+        return;
+    }
+
+    if (!confirm('Setujui SEMUA ' + dataFilter.length + ' akun terfilter?\n\nTindakan ini tidak dapat dibatalkan.')) {
+        return;
+    }
+
+    var sukses = 0;
+    var gagal = 0;
+
+    dataFilter.forEach(function(u) {
+        var hasil = setujuiAkunGlobal(u.idUser, 'Disetujui massal via menu Persetujuan Akun');
+        if (hasil.sukses) sukses++;
+        else gagal++;
+    });
+
+    renderStatistikPersetujuan();
+    renderTabelPersetujuanAkun(1);
+
+    if (gagal === 0) {
+        alert('✅ ' + sukses + ' akun berhasil disetujui!');
+    } else {
+        alert('⚠️ ' + sukses + ' akun disetujui, ' + gagal + ' gagal.');
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.4 (JS) ===== -->
+<!-- ============================================================ -->
 
 			<!-- ===== BLOK R 10.5 – DAFTAR AKUN BARU (SUPERADMIN) HTML ===== -->
 			<div id="formBuatAkunContainer" style="display:none;">
