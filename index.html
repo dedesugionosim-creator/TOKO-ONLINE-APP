@@ -5495,6 +5495,18 @@ function prosesDaftar(event) {
 // ============================================================
 // BLOK 3.1 (7) – AJUKAN PENDAFTARAN KE ADMIN
 // ============================================================
+// ============================================================
+// BLOK 3.1 (7) – AJUKAN PENDAFTARAN KE ADMIN
+// ------------------------------------------------------------
+// Alur:
+//   1. Validasi dasar (role, id, nama)
+//   2. Validasi password (cocok + min 6)
+//   3. Cek duplikat (username → email → hp → nik)
+//   4. Push ke dataLoginUser (Pending) + dataAkunAktif
+//   5. Simpan profil
+//   6. Simpan ke dataPengajuanBukaAkun (log)
+//   7. Catat aktivitas + notif sukses
+// ============================================================
 function ajukanPendaftaran() {
     var roleKode = document.getElementById('roleAkun').value;
     var idOtomatis = document.getElementById('idOtomatis').value;
@@ -5506,14 +5518,32 @@ function ajukanPendaftaran() {
     var lng = document.getElementById('longitude').value;
     var username = document.getElementById('usernameDaftar').value.trim();
     var nik = document.getElementById('nikKtp').value.trim();
+    var password = document.getElementById('passwordDaftar').value;
+    var konfirmasi = document.getElementById('konfirmasiPassword').value;
 
-    if (!roleKode || !idOtomatis || !namaLengkap) {
-        tampilkanNotifDaftar('Lengkapi data minimal (Role, Nama, Koordinat).', 'warning');
+    // --- Validasi dasar ---
+    if (!roleKode)     { tampilkanNotifDaftar('Pilih jenis akun terlebih dahulu!', 'warning'); return; }
+    if (!idOtomatis)   { tampilkanNotifDaftar('ID otomatis belum terbentuk. Pilih ulang role.', 'warning'); return; }
+    if (!namaLengkap)  { tampilkanNotifDaftar('Nama lengkap wajib diisi!', 'warning'); return; }
+    if (!hp)           { tampilkanNotifDaftar('Nomor HP wajib diisi!', 'warning'); return; }
+    if (!email)        { tampilkanNotifDaftar('Email wajib diisi!', 'warning'); return; }
+    if (!alamat)       { tampilkanNotifDaftar('Alamat wajib diisi!', 'warning'); return; }
+    if (!username)     { tampilkanNotifDaftar('Username wajib diisi!', 'warning'); return; }
+    if (!lat || !lng)  { tampilkanNotifDaftar('Ambil titik koordinat lokasi terlebih dahulu!', 'warning'); return; }
+
+    // --- Validasi password ---
+    if (password !== konfirmasi) {
+        tampilkanNotifDaftar('Password dan konfirmasi tidak cocok!', 'warning');
+        return;
+    }
+    if (password.length < 6) {
+        tampilkanNotifDaftar('Password minimal 6 karakter!', 'warning');
         return;
     }
 
     // ============================================================
-    // CEK DUPLIKAT sebelum kirim pengajuan ke admin
+    // CEK DUPLIKAT: Username → Email → HP → NIK
+    // (fungsi global dari BLOK R 01.0 (78))
     // ============================================================
     var hasilCekDup = cekDuplikatAkunGlobal({
         username: username,
@@ -5534,7 +5564,100 @@ function ajukanPendaftaran() {
         return;
     }
 
-    var pengajuan = {
+    // --- Mapping role ---
+    var roleMap = {
+        'TK':  'Toko', 'OJ': 'Ojek', 'PP': 'Pedagang Pasar',
+        'PM':  'Pedagang Makanan', 'COD': 'COD Seller',
+        'CT':  'Customer', 'GR': 'Grosir'
+    };
+    var roleDisplay = roleMap[roleKode] || 'Customer';
+
+    // Customer langsung Aktif, Seller Pending
+    var butuhVerifikasi = ['TK', 'OJ', 'PP', 'PM', 'COD', 'GR'].includes(roleKode);
+    var statusAwal = butuhVerifikasi ? 'Pending' : 'Aktif';
+
+    var now = new Date().toISOString();
+
+    // ============================================================
+    // FIX BUG 2: Push ke dataLoginUser
+    // supaya pengajuan muncul di menu "Persetujuan Akun" SuperAdmin
+    // ============================================================
+    dataLoginUser.push({
+        idUser: idOtomatis,
+        username: username,
+        password: password,
+        nama: namaLengkap,
+        role: roleDisplay,
+        kodeRole: roleKode,
+        statusVerifikasi: statusAwal,
+        hp: hp,
+        email: email,
+        alamat: alamat,
+        alamatKtp: alamat,
+        lat: lat,
+        lng: lng,
+        nik_ktp: nik || null,
+        statusLangganan: 'Free',
+        fotoUrl: '',
+        ownerId: null,
+        createdBy: 'SELF_REGISTER',
+        createdAt: now,
+        tipePendaftaran: 'Pengajuan Mandiri'
+    });
+
+    // ============================================================
+    // FIX BUG 2: Push ke dataAkunAktif juga
+    // ============================================================
+    dataAkunAktif.push({
+        id: idOtomatis,
+        nama: namaLengkap,
+        role: roleDisplay,
+        username: username,
+        password: password,
+        hp: hp,
+        email: email,
+        alamat: alamat,
+        alamatKtp: alamat,
+        lat: lat,
+        lng: lng,
+        status: statusAwal,
+        statusVerifikasi: statusAwal,
+        nik_ktp: nik || null,
+        statusLangganan: 'Free',
+        fotoUrl: '',
+        ownerId: null,
+        createdBy: 'SELF_REGISTER',
+        createdAt: now
+    });
+
+    // --- Simpan profil ---
+    localStorage.setItem('profil_' + idOtomatis, JSON.stringify({
+        namaToko: namaLengkap,
+        namaLengkap: namaLengkap,
+        nikKtp: nik || '',
+        email: email,
+        hp: hp,
+        alamat: alamat,
+        alamatKtp: alamat,
+        fotoUrl: '',
+        lat: lat,
+        lng: lng,
+        dragX: 0,
+        dragY: 0
+    }));
+
+    simpanDataKeLocalStorage();
+
+    // ============================================================
+    // Simpan ke dataPengajuanBukaAkun (sebagai LOG / riwayat)
+    // ============================================================
+    var data = [];
+    try {
+        data = JSON.parse(localStorage.getItem('dataPengajuanBukaAkun') || '[]');
+        if (!Array.isArray(data)) data = [];
+    } catch (e) { data = []; }
+
+    data.push({
         id: idOtomatis,
         idPengajuan: generateKodeUnik('REG'),
         nama: namaLengkap,
@@ -5546,27 +5669,38 @@ function ajukanPendaftaran() {
         alamat: alamat,
         lat: lat,
         lng: lng,
-        tgl: new Date().toISOString().split('T')[0],
-        status: 'Menunggu',
+        tgl: now.split('T')[0],
+        status: statusAwal === 'Aktif' ? 'Disetujui' : 'Menunggu',
         tipe: 'Pendaftaran Mandiri'
-    };
-
-    var data = [];
-    try {
-        data = JSON.parse(localStorage.getItem('dataPengajuanBukaAkun') || '[]');
-        if (!Array.isArray(data)) data = [];
-    } catch (e) { data = []; }
-    data.push(pengajuan);
+    });
     localStorage.setItem('dataPengajuanBukaAkun', JSON.stringify(data));
 
-    catatAktivitasGlobal(idOtomatis, 'Pengajuan Buka Akun', 'Pendaftaran mandiri role ' + roleKode + ' menunggu approval SuperAdmin.');
+    // ✅ SYNC variable global agar cekDuplikatAkunGlobal melihat data terbaru
+    if (typeof dataPengajuanBukaAkun !== 'undefined') {
+        dataPengajuanBukaAkun.length = 0;
+        data.forEach(function(p) { dataPengajuanBukaAkun.push(p); });
+    }
 
+    // --- Catat aktivitas ---
+    catatAktivitasGlobal(
+        idOtomatis,
+        'Ajukan Buka Akun',
+        'Pendaftaran mandiri role ' + roleKode + ' — status: ' + statusAwal
+    );
+
+    // --- Notifikasi sukses ---
     tampilkanNotifDaftar(
-        '✅ Pengajuan berhasil dikirim ke SuperAdmin!<br>' +
-        'ID Pengajuan: <strong>' + pengajuan.idPengajuan + '</strong><br>' +
-        'SuperAdmin akan memproses pengajuan Anda.',
+        '✅ Pengajuan berhasil dikirim!<br>' +
+        'ID Akun: <strong>' + idOtomatis + '</strong><br>' +
+        'Status: <strong>' + statusAwal + '</strong><br>' +
+        (butuhVerifikasi
+            ? 'SuperAdmin akan memproses pengajuan Anda. Silakan cek menu Persetujuan Akun.'
+            : 'Akun Anda langsung aktif. Silakan login.'),
         'success'
     );
+
+    // Redirect ke login setelah 4 detik
+    setTimeout(function() { tampilkanHalaman('login'); }, 4000);
 }
 
 // ============================================================
