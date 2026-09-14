@@ -5125,6 +5125,1134 @@ function cekDuplikatAkunGlobal(data) {
 }
 
 // ============================================================
+// BLOK R 01.0 (79) – SIMPAN SETTING EKONOMI GLOBAL
+// ------------------------------------------------------------
+// Update setting ekonomi R2Coin (dipakai menu SA)
+// ============================================================
+function simpanSettingEkonomiGlobal(data) {
+    var idUser = getIdUserAktif();
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+    data = data || {};
+
+    var settingLama = getSettingEkonomiGlobal();
+    var settingBaru = {
+        minimalBelanja:     parseFloat(data.minimalBelanja) || settingLama.minimalBelanja || 50000,
+        coinWajib:          parseInt(data.coinWajib, 10) || settingLama.coinWajib || 1,
+        hargaJual:          parseFloat(data.hargaJual) || settingLama.hargaJual || 1000,
+        hargaBeli:          parseFloat(data.hargaBeli) || settingLama.hargaBeli || 750,
+        biayaAdminWithdraw: settingLama.biayaAdminWithdraw || 5,
+        minimalWithdraw:    settingLama.minimalWithdraw || 10,
+        updatedBy:          (userAktif && userAktif.nama) || 'SuperAdmin',
+        updatedAt:          new Date().toISOString(),
+        updatedById:        idUser
+    };
+
+    localStorage.setItem('settingEkonomiCoin', JSON.stringify(settingBaru));
+
+    // Log perubahan
+    var log = {
+        id: generateKodeUnik('LOG-ECO'),
+        tanggal: new Date().toISOString(),
+        user: settingBaru.updatedBy,
+        userRole: (userAktif && userAktif.role) || '-',
+        perubahan: {
+            minimalBelanja: { lama: settingLama.minimalBelanja, baru: settingBaru.minimalBelanja },
+            coinWajib:      { lama: settingLama.coinWajib,      baru: settingBaru.coinWajib },
+            hargaJual:      { lama: settingLama.hargaJual,      baru: settingBaru.hargaJual },
+            hargaBeli:      { lama: settingLama.hargaBeli,      baru: settingBaru.hargaBeli }
+        }
+    };
+    var riwayat = [];
+    try {
+        riwayat = JSON.parse(localStorage.getItem('dataRiwayatPerubahanEkonomi') || '[]');
+        if (!Array.isArray(riwayat)) riwayat = [];
+    } catch (e) { riwayat = []; }
+    riwayat.unshift(log);
+    localStorage.setItem('dataRiwayatPerubahanEkonomi', JSON.stringify(riwayat));
+
+    catatAktivitasGlobal(idUser, 'Setting Ekonomi', 'Perubahan setting ekonomi. Log: ' + log.id);
+    return { sukses: true, setting: settingBaru, logId: log.id };
+}
+
+// ============================================================
+// BLOK R 01.0 (80) – HITUNG COIN DARI BELANJA
+// ------------------------------------------------------------
+// Rumus: floor(totalBelanja / minimalBelanja) × coinWajib
+// Return: { coin, kelipatan }  — coin bisa 0 kalau tidak capai minimal
+// ============================================================
+function hitungCoinDariBelanja(totalBelanja) {
+    var setting = getSettingEkonomiGlobal();
+    var minimal = setting.minimalBelanja || 50000;
+    var coinWajib = setting.coinWajib || 1;
+
+    totalBelanja = parseFloat(totalBelanja) || 0;
+    if (totalBelanja < minimal || minimal <= 0) {
+        return { coin: 0, kelipatan: 0 };
+    }
+    var kelipatan = Math.floor(totalBelanja / minimal);
+    return {
+        coin: kelipatan * coinWajib,
+        kelipatan: kelipatan
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (81) – HITUNG BIAYA ADMIN WITHDRAW
+// ------------------------------------------------------------
+// Return: { biayaAdmin, totalDiterima }
+// ============================================================
+function biayaAdminWithdraw(totalRupiah) {
+    var setting = getSettingEkonomiGlobal();
+    var persen = parseFloat(setting.biayaAdminWithdraw) || 5;
+    totalRupiah = parseFloat(totalRupiah) || 0;
+    var biayaAdmin = Math.round(totalRupiah * persen / 100);
+    var totalDiterima = totalRupiah - biayaAdmin;
+    return {
+        persen: persen,
+        biayaAdmin: biayaAdmin,
+        totalDiterima: totalDiterima
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (82) – GET DOMPET USER (auto-init)
+// ------------------------------------------------------------
+// Return referensi objek dompet:
+//   { balance, totalMasuk, totalKeluar, transactions: [] }
+// Auto-sinkron ke dataLoginUser & dataAkunAktif.
+// ============================================================
+function getDompetUser(idUser) {
+    if (!idUser) return null;
+
+    var idxLogin = dataLoginUser.findIndex(function(u) { return u.idUser === idUser; });
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === idUser; });
+
+    if (idxLogin === -1 && idxAktif === -1) return null;
+
+    // Ambil dari salah satu sumber yang ada
+    var dompet = null;
+    if (idxLogin !== -1 && dataLoginUser[idxLogin].r2coin) {
+        dompet = dataLoginUser[idxLogin].r2coin;
+    } else if (idxAktif !== -1 && dataAkunAktif[idxAktif].r2coin) {
+        dompet = dataAkunAktif[idxAktif].r2coin;
+    }
+
+    // Inisialisasi kalau kosong
+    if (!dompet || typeof dompet !== 'object') {
+        dompet = { balance: 0, totalMasuk: 0, totalKeluar: 0, transactions: [] };
+    }
+
+    // Normalisasi field
+    if (typeof dompet.balance !== 'number')     dompet.balance = 0;
+    if (typeof dompet.totalMasuk !== 'number')  dompet.totalMasuk = 0;
+    if (typeof dompet.totalKeluar !== 'number') dompet.totalKeluar = 0;
+    if (!Array.isArray(dompet.transactions))    dompet.transactions = [];
+
+    // Sinkron ke kedua tempat
+    if (idxLogin !== -1) dataLoginUser[idxLogin].r2coin = dompet;
+    if (idxAktif !== -1) dataAkunAktif[idxAktif].r2coin = dompet;
+
+    return dompet;
+}
+
+// ============================================================
+// BLOK R 01.0 (83) – GET SALDO DOMPET
+// ============================================================
+function getSaldoDompet(idUser) {
+    var dompet = getDompetUser(idUser);
+    return dompet ? (dompet.balance || 0) : 0;
+}
+
+// ============================================================
+// BLOK R 01.0 (84) – CATAT TRANSAKSI DOMPET
+// ------------------------------------------------------------
+// tipe: 'credit' | 'debit'
+// meta: { dariRole, dariUser, keRole, keUser, tipeTransaksi, adminId, ... }
+// Simpan juga di dataTransaksiDompetGlobal untuk histori platform.
+// ============================================================
+function catatTransaksiDompet(idUser, tipe, jumlah, keterangan, meta) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var dompet = getDompetUser(idUser);
+    if (!dompet) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    jumlah = parseFloat(jumlah) || 0;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var saldoSebelum = dompet.balance || 0;
+    var saldoSesudah = tipe === 'credit' ? saldoSebelum + jumlah : saldoSebelum - jumlah;
+
+    var trx = {
+        id: generateKodeUnik('TRX'),
+        tipe: tipe,
+        jumlah: jumlah,
+        saldoSebelum: saldoSebelum,
+        saldoSesudah: saldoSesudah,
+        keterangan: keterangan || '-',
+        meta: meta || {},
+        waktu: new Date().toISOString()
+    };
+
+    dompet.transactions.push(trx);
+    dompet.balance = saldoSesudah;
+
+    if (tipe === 'credit') {
+        dompet.totalMasuk = (dompet.totalMasuk || 0) + jumlah;
+    } else {
+        dompet.totalKeluar = (dompet.totalKeluar || 0) + jumlah;
+    }
+
+    // Batasi riwayat transaksi: 200 terbaru
+    if (dompet.transactions.length > 200) {
+        dompet.transactions = dompet.transactions.slice(-200);
+    }
+
+    // Simpan ke kedua sumber
+    var idxLogin = dataLoginUser.findIndex(function(u) { return u.idUser === idUser; });
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === idUser; });
+    if (idxLogin !== -1) dataLoginUser[idxLogin].r2coin = dompet;
+    if (idxAktif !== -1) dataAkunAktif[idxAktif].r2coin = dompet;
+
+    localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+
+    return { sukses: true, transaksi: trx };
+}
+
+// ============================================================
+// BLOK R 01.0 (85) – TAMBAH SALDO DOMPET
+// ============================================================
+function tambahSaldoDompet(idUser, jumlah, keterangan, meta) {
+    return catatTransaksiDompet(idUser, 'credit', jumlah, keterangan, meta);
+}
+
+// ============================================================
+// BLOK R 01.0 (86) – KURANG SALDO DOMPET (dengan validasi)
+// ============================================================
+function kurangSaldoDompet(idUser, jumlah, keterangan, meta) {
+    var saldo = getSaldoDompet(idUser);
+    jumlah = parseFloat(jumlah) || 0;
+
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+    if (saldo < jumlah) {
+        return {
+            sukses: false,
+            pesan: 'Saldo tidak mencukupi. Saldo: ' + saldo + ', dibutuhkan: ' + jumlah
+        };
+    }
+    return catatTransaksiDompet(idUser, 'debit', jumlah, keterangan, meta);
+}
+
+// ============================================================
+// BLOK R 01.0 (87) – TRANSFER COIN ANTAR USER
+// ------------------------------------------------------------
+// Validasi: cek role, saldo cukup. Catat 2 transaksi (debit + credit).
+// ============================================================
+function transferCoin(idPengirim, idPenerima, jumlah, keterangan) {
+    if (!idPengirim || !idPenerima) {
+        return { sukses: false, pesan: 'ID pengirim/penerima tidak valid.' };
+    }
+    if (idPengirim === idPenerima) {
+        return { sukses: false, pesan: 'Tidak bisa transfer ke diri sendiri.' };
+    }
+
+    jumlah = parseFloat(jumlah) || 0;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var pengirim = getDataIdUser(idPengirim);
+    var penerima = getDataIdUser(idPenerima);
+    if (!pengirim) return { sukses: false, pesan: 'Pengirim tidak ditemukan.' };
+    if (!penerima) return { sukses: false, pesan: 'Penerima tidak ditemukan.' };
+
+    if (!bisaKirimCoinRole(pengirim.role)) {
+        return { sukses: false, pesan: 'Role ' + pengirim.role + ' tidak bisa kirim coin.' };
+    }
+
+    var saldo = getSaldoDompet(idPengirim);
+    if (saldo < jumlah) {
+        return { sukses: false, pesan: 'Saldo tidak mencukupi. Saldo: ' + saldo };
+    }
+
+    // Debit pengirim
+    var hasilDebit = kurangSaldoDompet(idPengirim, jumlah, keterangan || 'Transfer ke ' + penerima.nama, {
+        keUser: idPenerima,
+        keRole: penerima.role,
+        tipeTransaksi: 'transfer-keluar'
+    });
+
+    // Credit penerima
+    var hasilCredit = tambahSaldoDompet(idPenerima, jumlah, keterangan || 'Transfer dari ' + pengirim.nama, {
+        dariUser: idPengirim,
+        dariRole: pengirim.role,
+        tipeTransaksi: 'transfer-masuk'
+    });
+
+    var idTransfer = generateKodeUnik('TF');
+    var riwayat = [];
+    try {
+        riwayat = JSON.parse(localStorage.getItem('dataTransferHistory') || '[]');
+        if (!Array.isArray(riwayat)) riwayat = [];
+    } catch (e) { riwayat = []; }
+    riwayat.unshift({
+        id: idTransfer,
+        idPengirim: idPengirim,
+        namaPengirim: pengirim.nama,
+        rolePengirim: pengirim.role,
+        idPenerima: idPenerima,
+        namaPenerima: penerima.nama,
+        rolePenerima: penerima.role,
+        jumlah: jumlah,
+        keterangan: keterangan || '-',
+        tanggal: new Date().toISOString()
+    });
+    localStorage.setItem('dataTransferHistory', JSON.stringify(riwayat.slice(0, 500)));
+
+    catatAktivitasGlobal(idPengirim, 'Transfer Coin',
+        'Transfer ' + jumlah + ' Coin ke ' + penerima.nama + ' (' + idPenerima + ')');
+
+    return { sukses: true, idTransfer: idTransfer };
+}
+
+// ============================================================
+// BLOK R 01.0 (88) – BISA WITHDRAW (business rule)
+// ------------------------------------------------------------
+// Distributor: TIDAK bisa withdraw
+// ============================================================
+function bisaWithdrawRole(role) {
+    var roleTidakBisaWithdraw = ['Distributor', 'SuperAdmin'];
+    return roleTidakBisaWithdraw.indexOf(role) === -1;
+}
+
+// ============================================================
+// BLOK R 01.0 (89) – BISA KIRIM COIN (business rule)
+// ------------------------------------------------------------
+// Distributor: hanya bisa kirim ke Grosir
+// Role lain: bebas
+// ============================================================
+function bisaKirimCoinRole(role) {
+    var roleTidakBisaKirim = ['SuperAdmin'];
+    if (roleTidakBisaKirim.indexOf(role) !== -1) return false;
+    return true;
+}
+
+// ============================================================
+// BLOK R 01.0 (90) – BISA TERIMA ORDER OJEK (business rule)
+// ------------------------------------------------------------
+// Ojek wajib punya saldo R2Coin > 0 untuk terima order
+// ============================================================
+function bisaTerimaOrderOjek(idOjek) {
+    var user = getDataIdUser(idOjek);
+    if (!user || user.role !== 'Ojek') {
+        return { sukses: false, pesan: 'User bukan Ojek.' };
+    }
+    var saldo = getSaldoDompet(idOjek);
+    if (saldo <= 0) {
+        return {
+            sukses: false,
+            pesan: 'Saldo R2Coin habis. Top-up dulu untuk terima order.'
+        };
+    }
+    return { sukses: true, saldo: saldo };
+}
+
+// ============================================================
+// BLOK R 01.0 (91) – POTONG COIN OJEK PER ORDER
+// ------------------------------------------------------------
+// Setiap order yang diterima Ojek, saldo -1 Coin
+// ============================================================
+function potongCoinOjek(idOjek, idOrder) {
+    var user = getDataIdUser(idOjek);
+    if (!user || user.role !== 'Ojek') {
+        return { sukses: false, pesan: 'User bukan Ojek.' };
+    }
+
+    var saldo = getSaldoDompet(idOjek);
+    if (saldo < 1) {
+        return { sukses: false, pesan: 'Saldo R2Coin tidak cukup untuk terima order.' };
+    }
+
+    var hasil = kurangSaldoDompet(idOjek, 1,
+        'Biaya terima order ' + (idOrder || '-'),
+        { tipeTransaksi: 'order-ojek', idOrder: idOrder });
+
+    if (hasil.sukses) {
+        catatAktivitasGlobal(idOjek, 'Ojek Terima Order',
+            'Potong 1 Coin untuk order ' + (idOrder || '-'));
+    }
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (92) – HITUNG STATISTIK DOMPET GLOBAL
+// ============================================================
+function hitungStatistikDompetGlobal() {
+    var totalCoinBeredar = 0;
+    var totalUserDenganCoin = 0;
+
+    (dataAkunAktif || []).forEach(function(a) {
+        var saldo = (a.r2coin && a.r2coin.balance) || 0;
+        if (saldo > 0) {
+            totalCoinBeredar += saldo;
+            totalUserDenganCoin++;
+        }
+    });
+
+    var topUpHistory = [];
+    var withdrawHistory = [];
+    try {
+        topUpHistory = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+        if (!Array.isArray(topUpHistory)) topUpHistory = [];
+    } catch (e) { topUpHistory = []; }
+    try {
+        withdrawHistory = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+        if (!Array.isArray(withdrawHistory)) withdrawHistory = [];
+    } catch (e) { withdrawHistory = []; }
+
+    var totalTopUpRupiah = 0;
+    topUpHistory.forEach(function(t) {
+        if (t.status === 'Lunas') totalTopUpRupiah += (t.totalRupiah || 0);
+    });
+
+    var totalWithdrawRupiah = 0;
+    var totalBiayaAdmin = 0;
+    withdrawHistory.forEach(function(w) {
+        if (w.status === 'Disetujui') {
+            totalWithdrawRupiah += (w.totalRupiah || 0);
+            totalBiayaAdmin += (w.biayaAdmin || 0);
+        }
+    });
+
+    return {
+        totalCoinBeredar: totalCoinBeredar,
+        totalUserDenganCoin: totalUserDenganCoin,
+        totalTopUpRupiah: totalTopUpRupiah,
+        totalWithdrawRupiah: totalWithdrawRupiah,
+        totalBiayaAdmin: totalBiayaAdmin,
+        saldoKasRupiah: totalTopUpRupiah - totalWithdrawRupiah + totalBiayaAdmin,
+        totalTopUpCount: topUpHistory.length,
+        totalWithdrawCount: withdrawHistory.length
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (93) – GET SALDO KAS RUPIAH SA
+// ============================================================
+function getSaldoKasRupiah() {
+    var stat = hitungStatistikDompetGlobal();
+    return stat.saldoKasRupiah;
+}
+
+// ============================================================
+// BLOK R 01.0 (94) – LOAD RIWAYAT DOMPET USER
+// ------------------------------------------------------------
+// Ambil riwayat transaksi dompet user, sortir terbaru dulu.
+// ============================================================
+function loadRiwayatDompetUser(idUser, limit) {
+    var dompet = getDompetUser(idUser);
+    if (!dompet) return [];
+    var list = (dompet.transactions || []).slice();
+    list.sort(function(a, b) {
+        return new Date(b.waktu) - new Date(a.waktu);
+    });
+    if (limit && limit > 0) list = list.slice(0, limit);
+    return list;
+}
+
+// ============================================================
+// BLOK R 01.0 (95) – GENERATE KODE VERIFIKASI
+// ------------------------------------------------------------
+// Default 6 digit angka acak
+// ============================================================
+function generateKodeVerifikasi(panjang) {
+    panjang = parseInt(panjang, 10) || 6;
+    var kode = '';
+    for (var i = 0; i < panjang; i++) {
+        kode += Math.floor(Math.random() * 10);
+    }
+    return kode;
+}
+
+// ============================================================
+// BLOK R 01.0 (96) – KIRIM CHAT OTOMATIS (sistem)
+// ------------------------------------------------------------
+// Kirim pesan chat dengan tipe 'sistem'. Bisa sertakan gambar.
+// Auto-insert kode verifikasi kalau ada di meta.
+// ============================================================
+function kirimChatOtomatis(idPengirim, idPenerima, isiPesan, meta, gambarBase64) {
+    if (!idPengirim || !idPenerima || !isiPesan) {
+        return { sukses: false, pesan: 'Data chat tidak lengkap.' };
+    }
+
+    var pengirim = getDataIdUser(idPengirim);
+    var penerima = getDataIdUser(idPenerima);
+
+    // Kalau idPengirim adalah SA hardcode
+    var namaPengirim = pengirim ? (pengirim.nama || '-') : 'SuperAdmin';
+    if (idPengirim === 'ID_TK2R_SA-0001') namaPengirim = 'SuperAdmin';
+
+    var namaPenerima = penerima ? (penerima.nama || '-') : '-';
+
+    var idPesan = generateKodeUnik('CHAT');
+    var pesanBaru = {
+        id: idPesan,
+        idPengirim: idPengirim,
+        namaPengirim: namaPengirim,
+        idPenerima: idPenerima,
+        namaPenerima: namaPenerima,
+        isi: isiPesan,
+        tipe: 'sistem',
+        meta: meta || {},
+        waktu: new Date().toISOString(),
+        dibaca: false
+    };
+
+    if (gambarBase64) pesanBaru.gambar = gambarBase64;
+
+    simpanPesanAntarUser(idPengirim, idPenerima, pesanBaru);
+    return { sukses: true, id: idPesan, pesan: pesanBaru };
+}
+
+// ============================================================
+// BLOK R 01.0 (97) – NOTIF TOP-UP KE SA (via chat)
+// ------------------------------------------------------------
+// Dipanggil saat user ajukan top-up.
+// ============================================================
+function notifTopUpKeSA(idTopUp) {
+    var topUpList = [];
+    try {
+        topUpList = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+        if (!Array.isArray(topUpList)) topUpList = [];
+    } catch (e) { topUpList = []; }
+
+    var item = topUpList.find(function(t) { return t.id === idTopUp; });
+    if (!item) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+
+    var kodeVerif = item.kodeVerifikasi || generateKodeVerifikasi(6);
+
+    // Simpan kode verifikasi kalau belum ada
+    if (!item.kodeVerifikasi) {
+        item.kodeVerifikasi = kodeVerif;
+        var idx = topUpList.findIndex(function(t) { return t.id === idTopUp; });
+        if (idx !== -1) {
+            topUpList[idx].kodeVerifikasi = kodeVerif;
+            localStorage.setItem('dataTopUpHistory', JSON.stringify(topUpList));
+        }
+    }
+
+    var rek = item.rekeningTujuan || {};
+    var isiPesan =
+        'Halo SuperAdmin, saya *' + (item.namaPembeli || '-') + '* (' + (item.role || '-') + ') mengajukan *Top-Up*.\n\n' +
+        'Detail Pengajuan:\n' +
+        '- ID Pengajuan: ' + (item.id || '-') + '\n' +
+        '- Jumlah Coin: ' + (item.jumlahKoin || 0) + ' Coin\n' +
+        '- Total Bayar: Rp ' + ((item.totalRupiah || 0).toLocaleString('id-ID')) + '\n' +
+        '- Metode: ' + (item.metode || '-') + '\n' +
+        '- Rekening Tujuan: ' + (rek.bank || '-') + ' - ' + (rek.nomor || '-') + '\n\n' +
+        '*Kode Verifikasi: ' + kodeVerif + '*\n' +
+        '(Cocokkan dengan data di menu Verifikasi Top-Up)\n\n' +
+        'Mohon diverifikasi. Terima kasih.';
+
+    var meta = {
+        jenisTransaksi: 'topup',
+        idTransaksi: idTopUp,
+        kodeVerifikasi: kodeVerif,
+        jumlah: item.jumlahKoin || 0,
+        status: 'Menunggu'
+    };
+
+    return kirimChatOtomatis(
+        item.idUser,
+        'ID_TK2R_SA-0001',
+        isiPesan,
+        meta,
+        item.buktiTransfer || null
+    );
+}
+
+// ============================================================
+// BLOK R 01.0 (98) – NOTIF TOP-UP KE USER (setelah verifikasi)
+// ------------------------------------------------------------
+// status: 'Disetujui' | 'Ditolak'
+// ============================================================
+function notifTopUpKeUser(idTopUp, status, alasan) {
+    var topUpList = [];
+    try {
+        topUpList = JSON.parse(localStorage.getItem('dataTopUpHistory') || '[]');
+        if (!Array.isArray(topUpList)) topUpList = [];
+    } catch (e) { topUpList = []; }
+
+    var item = topUpList.find(function(t) { return t.id === idTopUp; });
+    if (!item) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+
+    var saldo = getSaldoDompet(item.idUser);
+
+    var isiPesan = '';
+    if (status === 'Disetujui') {
+        isiPesan =
+            'Halo *' + (item.namaPembeli || '-') + '*,\n\n' +
+            'Top-Up Anda telah *DISETUJUI*.\n\n' +
+            'Detail:\n' +
+            '- ID: ' + (item.id || '-') + '\n' +
+            '- Jumlah: ' + (item.jumlahKoin || 0) + ' Coin\n' +
+            '- Saldo Anda sekarang: ' + saldo + ' Coin\n\n' +
+            'Terima kasih.';
+    } else if (status === 'Ditolak') {
+        isiPesan =
+            'Halo *' + (item.namaPembeli || '-') + '*,\n\n' +
+            'Top-Up Anda *DITOLAK*.\n\n' +
+            'Detail:\n' +
+            '- ID: ' + (item.id || '-') + '\n' +
+            '- Jumlah: ' + (item.jumlahKoin || 0) + ' Coin\n' +
+            '- Alasan: ' + (alasan || '-') + '\n\n' +
+            'Silakan perbaiki dan ajukan ulang.';
+    } else {
+        return { sukses: false, pesan: 'Status tidak dikenal.' };
+    }
+
+    var meta = {
+        jenisTransaksi: 'topup',
+        idTransaksi: idTopUp,
+        status: status,
+        jumlah: item.jumlahKoin || 0
+    };
+
+    return kirimChatOtomatis('ID_TK2R_SA-0001', item.idUser, isiPesan, meta);
+}
+
+// ============================================================
+// BLOK R 01.0 (99) – NOTIF WITHDRAW KE SA (via chat)
+// ============================================================
+function notifWithdrawKeSA(idWithdraw) {
+    var list = [];
+    try {
+        list = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+        if (!Array.isArray(list)) list = [];
+    } catch (e) { list = []; }
+
+    var item = list.find(function(w) { return w.id === idWithdraw; });
+    if (!item) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+
+    var kodeVerif = item.kodeVerifikasi || generateKodeVerifikasi(6);
+
+    if (!item.kodeVerifikasi) {
+        var idx = list.findIndex(function(w) { return w.id === idWithdraw; });
+        if (idx !== -1) {
+            list[idx].kodeVerifikasi = kodeVerif;
+            localStorage.setItem('dataWithdrawalRequests', JSON.stringify(list));
+        }
+    }
+
+    var rek = item.rekeningTujuan || {};
+    var isiPesan =
+        'Halo SuperAdmin, saya *' + (item.namaPemohon || '-') + '* (' + (item.role || '-') + ') mengajukan *Withdraw*.\n\n' +
+        'Detail Pengajuan:\n' +
+        '- ID Pengajuan: ' + (item.id || '-') + '\n' +
+        '- Jumlah Coin: ' + (item.jumlahKoin || 0) + ' Coin\n' +
+        '- Total Rupiah: Rp ' + ((item.totalRupiah || 0).toLocaleString('id-ID')) + '\n' +
+        '- Biaya Admin: Rp ' + ((item.biayaAdmin || 0).toLocaleString('id-ID')) + '\n' +
+        '- Diterima: Rp ' + ((item.totalDiterima || 0).toLocaleString('id-ID')) + '\n' +
+        '- Rekening: ' + (rek.bank || '-') + ' - ' + (rek.nomor || '-') + ' (' + (rek.atasNama || '-') + ')\n\n' +
+        '*Kode Verifikasi: ' + kodeVerif + '*\n' +
+        '(Cocokkan dengan data di menu Verifikasi Withdraw)\n\n' +
+        'Mohon diproses. Terima kasih.';
+
+    var meta = {
+        jenisTransaksi: 'withdraw',
+        idTransaksi: idWithdraw,
+        kodeVerifikasi: kodeVerif,
+        jumlah: item.jumlahKoin || 0,
+        status: 'Menunggu'
+    };
+
+    return kirimChatOtomatis(item.idUser, 'ID_TK2R_SA-0001', isiPesan, meta);
+}
+
+// ============================================================
+// BLOK R 01.0 (100) – NOTIF WITHDRAW KE USER (setelah verifikasi)
+// ============================================================
+function notifWithdrawKeUser(idWithdraw, status, alasan) {
+    var list = [];
+    try {
+        list = JSON.parse(localStorage.getItem('dataWithdrawalRequests') || '[]');
+        if (!Array.isArray(list)) list = [];
+    } catch (e) { list = []; }
+
+    var item = list.find(function(w) { return w.id === idWithdraw; });
+    if (!item) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+
+    var saldo = getSaldoDompet(item.idUser);
+    var rek = item.rekeningTujuan || {};
+
+    var isiPesan = '';
+    if (status === 'Disetujui') {
+        isiPesan =
+            'Halo *' + (item.namaPemohon || '-') + '*,\n\n' +
+            'Withdraw Anda telah *DISETUJUI*.\n\n' +
+            'Detail:\n' +
+            '- ID: ' + (item.id || '-') + '\n' +
+            '- Jumlah: ' + (item.jumlahKoin || 0) + ' Coin\n' +
+            '- Diterima: Rp ' + ((item.totalDiterima || 0).toLocaleString('id-ID')) + '\n' +
+            '- Rekening: ' + (rek.bank || '-') + ' - ' + (rek.nomor || '-') + '\n' +
+            '- Saldo Anda sekarang: ' + saldo + ' Coin\n\n' +
+            'Dana akan ditransfer dalam 1x24 jam. Terima kasih.';
+    } else if (status === 'Ditolak') {
+        isiPesan =
+            'Halo *' + (item.namaPemohon || '-') + '*,\n\n' +
+            'Withdraw Anda *DITOLAK*.\n\n' +
+            'Detail:\n' +
+            '- ID: ' + (item.id || '-') + '\n' +
+            '- Jumlah: ' + (item.jumlahKoin || 0) + ' Coin\n' +
+            '- Alasan: ' + (alasan || '-') + '\n\n' +
+            'Silakan perbaiki dan ajukan ulang.';
+    } else {
+        return { sukses: false, pesan: 'Status tidak dikenal.' };
+    }
+
+    var meta = {
+        jenisTransaksi: 'withdraw',
+        idTransaksi: idWithdraw,
+        status: status,
+        jumlah: item.jumlahKoin || 0
+    };
+
+    return kirimChatOtomatis('ID_TK2R_SA-0001', item.idUser, isiPesan, meta);
+}
+
+// ============================================================
+// BLOK R 01.0 (101) – LOAD TOP-UP HISTORY
+// ============================================================
+function loadTopUpHistory() {
+    try {
+        var stored = localStorage.getItem('dataTopUpHistory');
+        var parsed = stored ? JSON.parse(stored) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (102) – SIMPAN TOP-UP HISTORY
+// ============================================================
+function simpanTopUpHistory(data) {
+    localStorage.setItem('dataTopUpHistory', JSON.stringify(data || []));
+}
+
+// ============================================================
+// BLOK R 01.0 (103) – AJUKAN TOP-UP (oleh user)
+// ------------------------------------------------------------
+// Return: { sukses, idTopUp }
+// Auto-kirim chat ke SA setelah disimpan.
+// ============================================================
+function ajukanTopUp(idUser, jumlahKoin, metode, rekeningTujuan, buktiBase64, keterangan) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var user = getDataIdUser(idUser);
+    if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    jumlahKoin = parseInt(jumlahKoin, 10) || 0;
+    if (jumlahKoin < 10) return { sukses: false, pesan: 'Minimal top-up 10 Coin.' };
+    if (jumlahKoin > 10000) return { sukses: false, pesan: 'Maksimal top-up 10.000 Coin.' };
+
+    var setting = getSettingEkonomiGlobal();
+    var hargaJual = setting.hargaJual || 1000;
+    var totalRupiah = jumlahKoin * hargaJual;
+
+    var idTopUp = generateKodeUnik('TU');
+    var kodeVerif = generateKodeVerifikasi(6);
+
+    var dataBaru = {
+        id: idTopUp,
+        idUser: idUser,
+        namaPembeli: user.nama || '-',
+        role: user.role || '-',
+        jumlahKoin: jumlahKoin,
+        totalRupiah: totalRupiah,
+        metode: metode || 'Transfer Bank',
+        rekeningTujuan: rekeningTujuan || {},
+        buktiTransfer: buktiBase64 || null,
+        keterangan: keterangan || '',
+        kodeVerifikasi: kodeVerif,
+        status: 'Menunggu',
+        tanggal: new Date().toLocaleString('id-ID', { hour12: false }),
+        createdAt: new Date().toISOString(),
+        verifiedBy: null,
+        verifiedAt: null
+    };
+
+    var list = loadTopUpHistory();
+    list.push(dataBaru);
+    simpanTopUpHistory(list);
+
+    // ✅ AUTO-KIRIM CHAT ke SA
+    var chatResult = notifTopUpKeSA(idTopUp);
+
+    catatAktivitasGlobal(idUser, 'Ajukan Top-Up',
+        'Top-Up ' + jumlahKoin + ' Coin (Rp ' + totalRupiah.toLocaleString('id-ID') + '). ID: ' + idTopUp);
+
+    return {
+        sukses: true,
+        idTopUp: idTopUp,
+        kodeVerifikasi: kodeVerif,
+        totalRupiah: totalRupiah,
+        chatTerkirim: chatResult.sukses
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (104) – SETUJUI TOP-UP (oleh SA)
+// ------------------------------------------------------------
+// Update status, tambah saldo user, auto-chat ke user.
+// ============================================================
+function setujuiTopUp(idTopUp, idAdmin) {
+    var list = loadTopUpHistory();
+    var idx = list.findIndex(function(t) { return t.id === idTopUp; });
+    if (idx === -1) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+
+    var item = list[idx];
+    if (item.status !== 'Menunggu') {
+        return { sukses: false, pesan: 'Top-up sudah ' + item.status + '.' };
+    }
+
+    item.status = 'Lunas';
+    item.verifiedBy = idAdmin || getIdUserAktif();
+    item.verifiedAt = new Date().toISOString();
+
+    simpanTopUpHistory(list);
+
+    // Tambah saldo user
+    var hasilSaldo = tambahSaldoDompet(
+        item.idUser,
+        item.jumlahKoin,
+        'Top-Up disetujui',
+        { tipeTransaksi: 'topup', idTransaksi: idTopUp, adminId: idAdmin }
+    );
+
+    if (!hasilSaldo.sukses) {
+        // Rollback kalau gagal tambah saldo
+        list[idx].status = 'Menunggu';
+        list[idx].verifiedBy = null;
+        list[idx].verifiedAt = null;
+        simpanTopUpHistory(list);
+        return { sukses: false, pesan: 'Gagal menambah saldo: ' + hasilSaldo.pesan };
+    }
+
+    // ✅ AUTO-KIRIM CHAT ke user
+    notifTopUpKeUser(idTopUp, 'Disetujui', null);
+
+    catatAktivitasGlobal(idAdmin || getIdUserAktif(), 'Setujui Top-Up',
+        item.jumlahKoin + ' Coin untuk ' + item.namaPembeli + '. ID: ' + idTopUp);
+
+    return { sukses: true, item: item };
+}
+
+// ============================================================
+// BLOK R 01.0 (105) – TOLAK TOP-UP (oleh SA)
+// ============================================================
+function tolakTopUp(idTopUp, idAdmin, alasan) {
+    var list = loadTopUpHistory();
+    var idx = list.findIndex(function(t) { return t.id === idTopUp; });
+    if (idx === -1) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+
+    var item = list[idx];
+    if (item.status !== 'Menunggu') {
+        return { sukses: false, pesan: 'Top-up sudah ' + item.status + '.' };
+    }
+
+    item.status = 'Ditolak';
+    item.alasanTolak = alasan || '-';
+    item.verifiedBy = idAdmin || getIdUserAktif();
+    item.verifiedAt = new Date().toISOString();
+
+    simpanTopUpHistory(list);
+
+    // ✅ AUTO-KIRIM CHAT ke user
+    notifTopUpKeUser(idTopUp, 'Ditolak', alasan);
+
+    catatAktivitasGlobal(idAdmin || getIdUserAktif(), 'Tolak Top-Up',
+        'Tolak ' + item.jumlahKoin + ' Coin dari ' + item.namaPembeli + '. Alasan: ' + (alasan || '-'));
+
+    return { sukses: true, item: item };
+}
+
+// ============================================================
+// BLOK R 01.0 (106) – HITUNG TOTAL RUPIAH TOP-UP
+// ============================================================
+function hitungTotalRupiahTopUp(jumlahKoin) {
+    var setting = getSettingEkonomiGlobal();
+    var hargaJual = setting.hargaJual || 1000;
+    return (parseInt(jumlahKoin, 10) || 0) * hargaJual;
+}
+
+// ============================================================
+// BLOK R 01.0 (107) – GET RIWAYAT TOP-UP USER
+// ============================================================
+function getRiwayatTopUpUser(idUser, limit) {
+    var list = loadTopUpHistory();
+    var hasil = list.filter(function(t) { return t.idUser === idUser; });
+    hasil.sort(function(a, b) {
+        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
+    if (limit && limit > 0) hasil = hasil.slice(0, limit);
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (108) – LOAD WITHDRAWAL REQUESTS
+// ============================================================
+function loadWithdrawalRequests() {
+    try {
+        var stored = localStorage.getItem('dataWithdrawalRequests');
+        var parsed = stored ? JSON.parse(stored) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (109) – SIMPAN WITHDRAWAL REQUESTS
+// ============================================================
+function simpanWithdrawalRequests(data) {
+    localStorage.setItem('dataWithdrawalRequests', JSON.stringify(data || []));
+}
+
+// ============================================================
+// BLOK R 01.0 (110) – AJUKAN WITHDRAW (oleh user)
+// ------------------------------------------------------------
+// Validasi: role bisa withdraw, saldo cukup, minimal withdraw.
+// Auto-kirim chat ke SA.
+// ============================================================
+function ajukanWithdraw(idUser, jumlahKoin, rekeningTujuan, keterangan) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var user = getDataIdUser(idUser);
+    if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    if (!bisaWithdrawRole(user.role)) {
+        return { sukses: false, pesan: 'Role ' + user.role + ' tidak bisa withdraw.' };
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    var minimalWithdraw = setting.minimalWithdraw || 10;
+
+    jumlahKoin = parseInt(jumlahKoin, 10) || 0;
+    if (jumlahKoin < minimalWithdraw) {
+        return { sukses: false, pesan: 'Minimal withdraw ' + minimalWithdraw + ' Coin.' };
+    }
+
+    var saldo = getSaldoDompet(idUser);
+    if (saldo < jumlahKoin) {
+        return { sukses: false, pesan: 'Saldo tidak mencukupi. Saldo: ' + saldo };
+    }
+
+    // Kurangi saldo user SEKARANG (hold)
+    var hasilKurang = kurangSaldoDompet(idUser, jumlahKoin,
+        'Withdraw diajukan (hold)',
+        { tipeTransaksi: 'withdraw-hold' });
+
+    if (!hasilKurang.sukses) {
+        return { sukses: false, pesan: hasilKurang.pesan };
+    }
+
+    var settingBeli = setting.hargaBeli || 750;
+    var totalRupiah = jumlahKoin * settingBeli;
+    var hitungBiaya = biayaAdminWithdraw(totalRupiah);
+
+    var idWithdraw = generateKodeUnik('WD');
+    var kodeVerif = generateKodeVerifikasi(6);
+
+    var dataBaru = {
+        id: idWithdraw,
+        idUser: idUser,
+        namaPemohon: user.nama || '-',
+        role: user.role || '-',
+        jumlahKoin: jumlahKoin,
+        totalRupiah: totalRupiah,
+        biayaAdmin: hitungBiaya.biayaAdmin,
+        totalDiterima: hitungBiaya.totalDiterima,
+        rekeningTujuan: rekeningTujuan || {},
+        keterangan: keterangan || '',
+        kodeVerifikasi: kodeVerif,
+        status: 'Menunggu',
+        tanggal: new Date().toLocaleString('id-ID', { hour12: false }),
+        createdAt: new Date().toISOString(),
+        verifiedBy: null,
+        verifiedAt: null,
+        alasanTolak: null
+    };
+
+    var list = loadWithdrawalRequests();
+    list.push(dataBaru);
+    simpanWithdrawalRequests(list);
+
+    // ✅ AUTO-KIRIM CHAT ke SA
+    var chatResult = notifWithdrawKeSA(idWithdraw);
+
+    catatAktivitasGlobal(idUser, 'Ajukan Withdraw',
+        'Withdraw ' + jumlahKoin + ' Coin (Rp ' + totalRupiah.toLocaleString('id-ID') + '). ID: ' + idWithdraw);
+
+    return {
+        sukses: true,
+        idWithdraw: idWithdraw,
+        kodeVerifikasi: kodeVerif,
+        totalRupiah: totalRupiah,
+        biayaAdmin: hitungBiaya.biayaAdmin,
+        totalDiterima: hitungBiaya.totalDiterima,
+        chatTerkirim: chatResult.sukses
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (111) – SETUJUI WITHDRAW (oleh SA)
+// ------------------------------------------------------------
+// Saldo sudah dipotong saat pengajuan. Hanya update status.
+// ============================================================
+function setujuiWithdraw(idWithdraw, idAdmin) {
+    var list = loadWithdrawalRequests();
+    var idx = list.findIndex(function(w) { return w.id === idWithdraw; });
+    if (idx === -1) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+
+    var item = list[idx];
+    if (item.status !== 'Menunggu') {
+        return { sukses: false, pesan: 'Withdraw sudah ' + item.status + '.' };
+    }
+
+    item.status = 'Disetujui';
+    item.verifiedBy = idAdmin || getIdUserAktif();
+    item.verifiedAt = new Date().toISOString();
+
+    simpanWithdrawalRequests(list);
+
+    // Update keterangan transaksi hold jadi 'Withdraw disetujui'
+    catatAktivitasGlobal(idAdmin || getIdUserAktif(), 'Setujui Withdraw',
+        item.jumlahKoin + ' Coin untuk ' + item.namaPemohon + '. ID: ' + idWithdraw);
+
+    // ✅ AUTO-KIRIM CHAT ke user
+    notifWithdrawKeUser(idWithdraw, 'Disetujui', null);
+
+    return { sukses: true, item: item };
+}
+
+// ============================================================
+// BLOK R 01.0 (112) – TOLAK WITHDRAW (oleh SA)
+// ------------------------------------------------------------
+// Kembalikan saldo user yang sudah di-hold.
+// ============================================================
+function tolakWithdraw(idWithdraw, idAdmin, alasan) {
+    var list = loadWithdrawalRequests();
+    var idx = list.findIndex(function(w) { return w.id === idWithdraw; });
+    if (idx === -1) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+
+    var item = list[idx];
+    if (item.status !== 'Menunggu') {
+        return { sukses: false, pesan: 'Withdraw sudah ' + item.status + '.' };
+    }
+
+    item.status = 'Ditolak';
+    item.alasanTolak = alasan || '-';
+    item.verifiedBy = idAdmin || getIdUserAktif();
+    item.verifiedAt = new Date().toISOString();
+
+    simpanWithdrawalRequests(list);
+
+    // ✅ Kembalikan saldo yang di-hold
+    tambahSaldoDompet(item.idUser, item.jumlahKoin,
+        'Withdraw ditolak - saldo dikembalikan',
+        { tipeTransaksi: 'withdraw-refund', idTransaksi: idWithdraw });
+
+    catatAktivitasGlobal(idAdmin || getIdUserAktif(), 'Tolak Withdraw',
+        'Tolak ' + item.jumlahKoin + ' Coin dari ' + item.namaPemohon + '. Alasan: ' + (alasan || '-'));
+
+    // ✅ AUTO-KIRIM CHAT ke user
+    notifWithdrawKeUser(idWithdraw, 'Ditolak', alasan);
+
+    return { sukses: true, item: item };
+}
+
+// ============================================================
+// BLOK R 01.0 (113) – GET RIWAYAT WITHDRAW USER
+// ============================================================
+function getRiwayatWithdrawUser(idUser, limit) {
+    var list = loadWithdrawalRequests();
+    var hasil = list.filter(function(w) { return w.idUser === idUser; });
+    hasil.sort(function(a, b) {
+        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
+    if (limit && limit > 0) hasil = hasil.slice(0, limit);
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (114) – INTERVENSI COIN OLEH SA
+// ------------------------------------------------------------
+// Tambah/kurangi coin user manual + catat riwayat.
+// ============================================================
+function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
+    var idAdmin = getIdUserAktif();
+    if (!idAdmin) return { sukses: false, pesan: 'Admin tidak valid.' };
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+
+    jumlah = parseFloat(jumlah) || 0;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var user = getDataIdUser(idUser);
+    if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    var hasil;
+    if (aksi === 'tambah') {
+        hasil = tambahSaldoDompet(idUser, jumlah,
+            'Intervensi SA: ' + (keterangan || '-'),
+            { tipeTransaksi: 'intervensi', adminId: idAdmin });
+    } else if (aksi === 'kurang') {
+        hasil = kurangSaldoDompet(idUser, jumlah,
+            'Intervensi SA: ' + (keterangan || '-'),
+            { tipeTransaksi: 'intervensi', adminId: idAdmin });
+    } else {
+        return { sukses: false, pesan: 'Aksi tidak dikenal.' };
+    }
+
+    if (!hasil.sukses) return hasil;
+
+    // Simpan riwayat intervensi
+    var riwayat = [];
+    try {
+        riwayat = JSON.parse(localStorage.getItem('dataRiwayatIntervensi') || '[]');
+        if (!Array.isArray(riwayat)) riwayat = [];
+    } catch (e) { riwayat = []; }
+
+    var logId = (hasil.transaksi && hasil.transaksi.id) || generateKodeUnik('INT-');
+    riwayat.unshift({
+        idTransaksi: logId,
+        waktu: new Date().toLocaleString('id-ID', { hour12: false }),
+        adminId: idAdmin,
+        adminNama: (userAktif && userAktif.nama) || 'SuperAdmin',
+        userId: idUser,
+        userNama: user.nama || '-',
+        aksi: aksi,
+        jumlah: jumlah,
+        keterangan: keterangan || '-'
+    });
+    localStorage.setItem('dataRiwayatIntervensi', JSON.stringify(riwayat.slice(0, 500)));
+
+    catatAktivitasGlobal(idAdmin, 'Intervensi Coin',
+        aksi.toUpperCase() + ' ' + jumlah + ' Coin ke ' + (user.nama || idUser) + '. Log: ' + logId);
+
+    return { sukses: true, idTransaksi: logId, saldo: getSaldoDompet(idUser) };
+}
+
+// ============================================================
+// BLOK R 01.0 (115) – LOAD & SIMPAN RIWAYAT INTERVENSI
+// ============================================================
+function loadRiwayatIntervensi() {
+    try {
+        var stored = localStorage.getItem('dataRiwayatIntervensi');
+        var parsed = stored ? JSON.parse(stored) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+}
+
+function simpanRiwayatIntervensi(data) {
+    localStorage.setItem('dataRiwayatIntervensi', JSON.stringify(data || []));
+}
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
