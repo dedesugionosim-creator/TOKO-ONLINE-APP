@@ -4770,6 +4770,168 @@ function hitungStatistikPersetujuan() {
 }
 
 // ============================================================
+// BLOK R 01.0 (78) – CEK DUPLIKAT AKUN GLOBAL
+// ------------------------------------------------------------
+// Cek duplikat username, email, hp, nik di dataLoginUser,
+// dataAkunAktif, dan dataPengajuanBukaAkun
+// (termasuk akun Pending/Ditolak).
+//
+// Prioritas cek: Username → Email → HP → NIK
+//
+// Parameter `data`:
+//   { username, email, hp, nik, excludeIdUser? }
+//
+// Return:
+//   { sukses: true }
+//   { sukses: false, field: 'username'|'email'|'hp'|'nik', pesan }
+// ============================================================
+function cekDuplikatAkunGlobal(data) {
+    data = data || {};
+    var excludeIdUser = data.excludeIdUser || null;
+
+    // --- Normalisasi input ---
+    function normUsername(v) { return (v || '').toString().trim().toLowerCase(); }
+    function normEmail(v)    { return (v || '').toString().trim().toLowerCase(); }
+    function normHp(v) {
+        var s = (v || '').toString().replace(/\D/g, '');
+        if (!s) return '';
+        if (s.indexOf('62') === 0 && s.length > 10) {
+            s = '0' + s.substring(2);
+        } else if (s.indexOf('0') !== 0 && s.indexOf('8') === 0) {
+            s = '0' + s;
+        }
+        return s;
+    }
+    function normNik(v) { return (v || '').toString().replace(/\D/g, ''); }
+
+    var inputUsername = normUsername(data.username);
+    var inputEmail    = normEmail(data.email);
+    var inputHp       = normHp(data.hp);
+    var inputNik      = normNik(data.nik);
+
+    // --- Kumpulkan semua sumber data ---
+    var sumber = [];
+    var sudahAda = {};
+
+    function tambahSumber(rec) {
+        if (!rec || !rec.idUser) return;
+        if (sudahAda[rec.idUser]) return;
+        sudahAda[rec.idUser] = true;
+        sumber.push(rec);
+    }
+
+    // 1. dataLoginUser
+    (dataLoginUser || []).forEach(function(u) {
+        if (!u || !u.idUser) return;
+        tambahSumber({
+            idUser:   u.idUser,
+            username: u.username,
+            email:    u.email,
+            hp:       u.hp,
+            nik:      u.nik_ktp || u.nik || ''
+        });
+    });
+
+    // 2. dataAkunAktif
+    (dataAkunAktif || []).forEach(function(a) {
+        if (!a || !a.id) return;
+        tambahSumber({
+            idUser:   a.id,
+            username: a.username,
+            email:    a.email,
+            hp:       a.hp,
+            nik:      a.nik_ktp || a.nik || ''
+        });
+    });
+
+    // 3. dataPengajuanBukaAkun (pengajuan mandiri ke admin)
+    (dataPengajuanBukaAkun || []).forEach(function(p) {
+        if (!p || !p.id) return;
+        tambahSumber({
+            idUser:   p.id,
+            username: p.username || '',
+            email:    p.email    || '',
+            hp:       p.hp       || '',
+            nik:      p.nik      || ''
+        });
+    });
+
+    // ============================================
+    // CEK 1: USERNAME
+    // ============================================
+    if (inputUsername) {
+        var dupU = sumber.find(function(s) {
+            return s.idUser !== excludeIdUser &&
+                   normUsername(s.username) === inputUsername;
+        });
+        if (dupU) {
+            return {
+                sukses: false,
+                field: 'username',
+                pesan: 'Username sudah terdaftar. Silakan pilih username lain.'
+            };
+        }
+    }
+
+    // ============================================
+    // CEK 2: EMAIL
+    // ============================================
+    if (inputEmail) {
+        var dupE = sumber.find(function(s) {
+            return s.idUser !== excludeIdUser &&
+                   normEmail(s.email) === inputEmail;
+        });
+        if (dupE) {
+            return {
+                sukses: false,
+                field: 'email',
+                pesan: 'Email sudah terdaftar. Gunakan email lain atau login ke akun Anda.'
+            };
+        }
+    }
+
+    // ============================================
+    // CEK 3: NOMOR HP
+    // ============================================
+    if (inputHp) {
+        var dupH = sumber.find(function(s) {
+            if (s.idUser === excludeIdUser) return false;
+            var hpRec = normHp(s.hp);
+            if (!hpRec) return false;
+            return hpRec === inputHp;
+        });
+        if (dupH) {
+            return {
+                sukses: false,
+                field: 'hp',
+                pesan: 'Nomor HP sudah terdaftar. Gunakan nomor lain atau login ke akun Anda.'
+            };
+        }
+    }
+
+    // ============================================
+    // CEK 4: NIK KTP (hanya jika 16 digit)
+    // ============================================
+    if (inputNik && inputNik.length >= 16) {
+        var dupN = sumber.find(function(s) {
+            if (s.idUser === excludeIdUser) return false;
+            var nikRec = normNik(s.nik);
+            if (!nikRec) return false;
+            return nikRec === inputNik;
+        });
+        if (dupN) {
+            return {
+                sukses: false,
+                field: 'nik',
+                pesan: 'NIK KTP sudah terdaftar. Satu NIK hanya untuk satu akun.'
+            };
+        }
+    }
+
+    return { sukses: true };
+}
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
@@ -5242,10 +5404,6 @@ function prosesDaftar(event) {
     if (password !== konfirmasi) { tampilkanNotifDaftar('Password dan konfirmasi tidak cocok!', 'warning'); return false; }
     if (password.length < 6) { tampilkanNotifDaftar('Password minimal 6 karakter!', 'warning'); return false; }
 
-    // Cek duplikat username
-    var usernameExists = dataLoginUser.some(function(u) { return u.username === username; });
-    if (usernameExists) { tampilkanNotifDaftar('Username sudah dipakai. Pilih yang lain.', 'warning'); return false; }
-
     // Mapping role
     var roleMap = {
         'TK':  'Toko', 'OJ': 'Ojek', 'PP': 'Pedagang Pasar',
@@ -5303,6 +5461,33 @@ function prosesDaftar(event) {
     return false;
 }
 
+    // ============================================================
+    // CEK DUPLIKAT: Username → Email → HP → NIK
+    // (memakai fungsi global cekDuplikatAkunGlobal dari BLOK R 01.0 (78))
+    // ============================================================
+    var hasilCekDup = cekDuplikatAkunGlobal({
+        username: username,
+        email:    email,
+        hp:       hp,
+        nik:      nik
+    });
+
+    if (!hasilCekDup.sukses) {
+        tampilkanNotifDaftar('⚠️ ' + hasilCekDup.pesan, 'warning');
+
+        // Fokuskan input yang bentrok agar user langsung memperbaiki
+        var fokusMap = {
+            username: 'usernameDaftar',
+            email:    'email',
+            hp:       'nomorHp',
+            nik:      'nikKtp'
+        };
+        var elFokus = document.getElementById(fokusMap[hasilCekDup.field]);
+        if (elFokus) elFokus.focus();
+
+        return false;
+    }
+	
 // ============================================================
 // BLOK 3.1 (7) – AJUKAN PENDAFTARAN KE ADMIN
 // ============================================================
@@ -5316,9 +5501,33 @@ function ajukanPendaftaran() {
     var alamat = document.getElementById('alamat').value.trim();
     var lat = document.getElementById('latitude').value;
     var lng = document.getElementById('longitude').value;
+    var username = document.getElementById('usernameDaftar').value.trim();
+    var nik = document.getElementById('nikKtp').value.trim();
 
     if (!roleKode || !idOtomatis || !namaLengkap) {
         tampilkanNotifDaftar('Lengkapi data minimal (Role, Nama, Koordinat).', 'warning');
+        return;
+    }
+
+    // ============================================================
+    // CEK DUPLIKAT sebelum kirim pengajuan ke admin
+    // ============================================================
+    var hasilCekDup = cekDuplikatAkunGlobal({
+        username: username,
+        email:    email,
+        hp:       hp,
+        nik:      nik
+    });
+    if (!hasilCekDup.sukses) {
+        tampilkanNotifDaftar('⚠️ ' + hasilCekDup.pesan, 'warning');
+        var fokusMap = {
+            username: 'usernameDaftar',
+            email:    'email',
+            hp:       'nomorHp',
+            nik:      'nikKtp'
+        };
+        var elFokus = document.getElementById(fokusMap[hasilCekDup.field]);
+        if (elFokus) elFokus.focus();
         return;
     }
 
@@ -5327,7 +5536,13 @@ function ajukanPendaftaran() {
         idPengajuan: generateKodeUnik('REG'),
         nama: namaLengkap,
         roleKode: roleKode,
-        hp: hp, email: email, alamat: alamat, lat: lat, lng: lng,
+        username: username,      // tambahan agar bisa dicek di masa depan
+        nik: nik,                // tambahan agar bisa dicek di masa depan
+        hp: hp,
+        email: email,
+        alamat: alamat,
+        lat: lat,
+        lng: lng,
         tgl: new Date().toISOString().split('T')[0],
         status: 'Menunggu',
         tipe: 'Pendaftaran Mandiri'
@@ -8992,14 +9207,44 @@ function setujuiSemuaTerfilterPersetujuan() {
 				var lng = document.getElementById('longitudeBuat').value;
 				var nik = document.getElementById('nikKtpBuat').value.trim();
 
-				// --- VALIDASI PASSWORD ---
-				if (pass !== konf) {
-					notif.className = 'alert alert-warning';
-					notif.innerHTML = 'Password tidak cocok!';
-					notif.classList.remove('d-none');
-					return false;
-				}
+				    // --- VALIDASI PASSWORD ---
+    if (pass !== konf) {
+        notif.className = 'alert alert-warning';
+        notif.innerHTML = 'Password tidak cocok!';
+        notif.classList.remove('d-none');
+        return false;
+    }
 
+    // ============================================================
+    // CEK DUPLIKAT: Username → Email → HP → NIK
+    // NIK hanya dicek kalau role memang butuh NIK
+    // ============================================================
+    var nikRoles = ['TK', 'OJ', 'PP', 'PM', 'COD', 'GR', 'DST'];
+    var nikUntukCek = nikRoles.includes(role) ? nik : '';
+
+    var hasilCekDup = cekDuplikatAkunGlobal({
+        username: user,
+        email:    email,
+        hp:       hp,
+        nik:      nikUntukCek
+    });
+
+    if (!hasilCekDup.sukses) {
+        notif.className = 'alert alert-danger';
+        notif.innerHTML = '❌ ' + hasilCekDup.pesan;
+        notif.classList.remove('d-none');
+
+        var fokusMap = {
+            username: 'usernameBuat',
+            email:    'emailBuat',
+            hp:       'nomorHpBuat',
+            nik:      'nikKtpBuat'
+        };
+        var elFokus = document.getElementById(fokusMap[hasilCekDup.field]);
+        if (elFokus) elFokus.focus();
+
+        return false;
+    }
 				// --- TENTUKAN ROLE DISPLAY ---
 				var roleDisplay = '';
 				var kodeRole = '';
