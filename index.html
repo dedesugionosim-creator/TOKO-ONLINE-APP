@@ -6257,6 +6257,446 @@ function simpanRiwayatIntervensi(data) {
 }
 
 // ============================================================
+// BLOK R 01.0 (116) – HITUNG COIN DARI RUPIAH (KONVERSI)
+// ------------------------------------------------------------
+// Rumus: floor(totalRupiah ÷ hargaBeli)
+// Default hargaBeli = 750 → Rp 7.500 = 10 Coin
+// ============================================================
+function hitungCoinDariRupiah(totalRupiah) {
+    var setting = getSettingEkonomiGlobal();
+    var hargaBeli = parseFloat(setting.hargaBeli) || 750;
+    if (hargaBeli <= 0) return 0;
+
+    totalRupiah = parseFloat(totalRupiah) || 0;
+    if (totalRupiah <= 0) return 0;
+
+    return Math.floor(totalRupiah / hargaBeli);
+}
+
+// ============================================================
+// BLOK R 01.0 (117) – HITUNG RUPIAH DARI COIN (KONVERSI BALIK)
+// ------------------------------------------------------------
+// Rumus: jumlahCoin × hargaBeli
+// Rp default: 10 Coin × 750 = Rp 7.500
+// ============================================================
+function hitungRupiahDariCoin(jumlahCoin) {
+    var setting = getSettingEkonomiGlobal();
+    var hargaBeli = parseFloat(setting.hargaBeli) || 750;
+
+    jumlahCoin = parseInt(jumlahCoin, 10) || 0;
+    if (jumlahCoin <= 0) return 0;
+
+    return Math.floor(jumlahCoin * hargaBeli);
+}
+
+// ============================================================
+// BLOK R 01.0 (118) – HITUNG COIN DARI BELANJA (REWARD)
+// ------------------------------------------------------------
+// Rumus: floor(totalBelanja ÷ minimalBelanja) × coinWajib
+// Beda dengan (80) yang sudah ada: fungsi ini otomatis pakai
+// setting TERBARU (retroaktif). Berguna saat SA ubah setting.
+// ============================================================
+function hitungCoinRewardTerbaru(totalBelanja) {
+    var setting = getSettingEkonomiGlobal();
+    var minimal = parseFloat(setting.minimalBelanja) || 50000;
+    var coinWajib = parseInt(setting.coinWajib, 10) || 1;
+
+    totalBelanja = parseFloat(totalBelanja) || 0;
+    if (totalBelanja < minimal || minimal <= 0) {
+        return { coin: 0, kelipatan: 0 };
+    }
+
+    var kelipatan = Math.floor(totalBelanja / minimal);
+    return {
+        coin: kelipatan * coinWajib,
+        kelipatan: kelipatan
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (119) – CEK SALDO CUKUP UNTUK BAYAR COIN
+// ------------------------------------------------------------
+// Dipakai saat customer bayar pakai coin
+// ============================================================
+function cekSaldoUntukBayarCoin(idUser, jumlahCoin) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    jumlahCoin = parseInt(jumlahCoin, 10) || 0;
+    if (jumlahCoin <= 0) return { sukses: false, pesan: 'Jumlah coin tidak valid.' };
+
+    var saldo = getSaldoDompet(idUser);
+    if (saldo < jumlahCoin) {
+        return {
+            sukses: false,
+            pesan: 'Saldo R2Coin tidak cukup. Saldo Anda: ' + saldo +
+                   ' Coin, dibutuhkan: ' + jumlahCoin + ' Coin.',
+            saldo: saldo,
+            kurang: jumlahCoin - saldo
+        };
+    }
+    return { sukses: true, saldo: saldo };
+}
+
+// ============================================================
+// BLOK R 01.0 (120) – MINIMAL SALDO UNTUK JUALAN
+// ------------------------------------------------------------
+// Seller wajib punya minimal 1 coin untuk bisa jualan
+// ============================================================
+function getMinimalSaldoJualan() {
+    return 1;
+}
+
+// ============================================================
+// BLOK R 01.0 (121) – CEK APAKAH SELLER BISA JUALAN
+// ------------------------------------------------------------
+// Seller wajib punya saldo coin >= minimal (default 1)
+// Kalau saldo 0 → tidak bisa jualan (produk tidak tampil)
+// ============================================================
+function bisaJualanSeller(idUser) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var user = getDataIdUser(idUser);
+    if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    // Role yang WAJIB punya coin untuk jualan
+    var sellerRoles = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan',
+                       'COD Seller', 'Grosir', 'Distributor'];
+
+    if (sellerRoles.indexOf(user.role) === -1) {
+        // Bukan seller → tidak wajib coin
+        return { sukses: true, wajibCoin: false, saldo: 0 };
+    }
+
+    var saldo = getSaldoDompet(idUser);
+    var minimal = getMinimalSaldoJualan();
+
+    if (saldo < minimal) {
+        return {
+            sukses: false,
+            wajibCoin: true,
+            pesan: 'Saldo R2Coin Anda habis. Top-up untuk bisa jualan kembali.',
+            saldo: saldo,
+            minimal: minimal
+        };
+    }
+
+    return { sukses: true, wajibCoin: true, saldo: saldo };
+}
+
+// ============================================================
+// BLOK R 01.0 (122) – TRANSFER COIN REWARD (PENJUAL → PEMBELI)
+// ------------------------------------------------------------
+// Dipicu saat transaksi selesai & pembeli bayar pakai RUPIAH
+// (kalau bayar pakai coin, tidak ada reward — lihat fungsi 125)
+//
+// Validasi:
+//   - Saldo penjual harus cukup (>= jumlahReward)
+//   - Kalau kurang → return gagal (transaksi tidak boleh dilanjut)
+// ============================================================
+function transferCoinReward(idPenjual, idPembeli, jumlahCoin, idTransaksi, keterangan) {
+    if (!idPenjual || !idPembeli) {
+        return { sukses: false, pesan: 'ID penjual/pembeli tidak valid.' };
+    }
+    if (idPenjual === idPembeli) {
+        return { sukses: false, pesan: 'Tidak bisa reward ke diri sendiri.' };
+    }
+
+    jumlahCoin = parseInt(jumlahCoin, 10) || 0;
+    if (jumlahCoin <= 0) {
+        return { sukses: false, pesan: 'Jumlah reward harus > 0.' };
+    }
+
+    var penjual = getDataIdUser(idPenjual);
+    var pembeli = getDataIdUser(idPembeli);
+    if (!penjual) return { sukses: false, pesan: 'Penjual tidak ditemukan.' };
+    if (!pembeli) return { sukses: false, pesan: 'Pembeli tidak ditemukan.' };
+
+    // Cek saldo penjual cukup
+    var saldoPenjual = getSaldoDompet(idPenjual);
+    if (saldoPenjual < jumlahCoin) {
+        return {
+            sukses: false,
+            pesan: 'Saldo R2Coin penjual tidak cukup untuk reward. ' +
+                   'Saldo: ' + saldoPenjual + ', dibutuhkan: ' + jumlahCoin,
+            saldoPenjual: saldoPenjual
+        };
+    }
+
+    var ketFinal = (keterangan || 'Reward belanja') +
+                   (idTransaksi ? ' (ID: ' + idTransaksi + ')' : '');
+
+    // Debit penjual
+    var hasilDebit = kurangSaldoDompet(
+        idPenjual, jumlahCoin,
+        'Reward ke ' + (pembeli.nama || idPembeli) + ' — ' + ketFinal,
+        {
+            keUser: idPembeli,
+            keRole: pembeli.role,
+            tipeTransaksi: 'reward-keluar',
+            idTransaksi: idTransaksi
+        }
+    );
+
+    if (!hasilDebit.sukses) {
+        return { sukses: false, pesan: 'Gagal debit penjual: ' + hasilDebit.pesan };
+    }
+
+    // Credit pembeli
+    var hasilCredit = tambahSaldoDompet(
+        idPembeli, jumlahCoin,
+        'Reward dari ' + (penjual.nama || idPenjual) + ' — ' + ketFinal,
+        {
+            dariUser: idPenjual,
+            dariRole: penjual.role,
+            tipeTransaksi: 'reward-masuk',
+            idTransaksi: idTransaksi
+        }
+    );
+
+    if (!hasilCredit.sukses) {
+        // Rollback debit penjual
+        tambahSaldoDompet(idPenjual, jumlahCoin,
+            'Rollback: gagal credit pembeli',
+            { tipeTransaksi: 'rollback' });
+        return { sukses: false, pesan: 'Gagal credit pembeli: ' + hasilCredit.pesan };
+    }
+
+    catatAktivitasGlobal(idPenjual, 'Transfer Reward Coin',
+        jumlahCoin + ' coin dari ' + penjual.nama + ' ke ' + pembeli.nama +
+        (idTransaksi ? ' (Transaksi: ' + idTransaksi + ')' : ''));
+
+    return {
+        sukses: true,
+        jumlahCoin: jumlahCoin,
+        saldoPenjualSetelah: getSaldoDompet(idPenjual),
+        saldoPembeliSetelah: getSaldoDompet(idPembeli)
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (123) – PROSES BELANJA PAKAI RUPIAH (+ REWARD)
+// ------------------------------------------------------------
+// Alur:
+//   1. Cek penjual bisa jualan (saldo >= 1)
+//   2. Hitung reward dari totalBelanja
+//   3. Cek saldo penjual cukup untuk reward
+//   4. Transfer reward: penjual -coin, pembeli +coin
+//   5. Return sukses
+// ============================================================
+function prosesBelanjaDenganRupiah(idPembeli, idPenjual, totalRupiah, idTransaksi, keterangan) {
+    if (!idPembeli || !idPenjual) {
+        return { sukses: false, pesan: 'ID pembeli/penjual tidak valid.' };
+    }
+
+    totalRupiah = parseFloat(totalRupiah) || 0;
+    if (totalRupiah <= 0) return { sukses: false, pesan: 'Total belanja tidak valid.' };
+
+    // 1. Cek penjual bisa jualan
+    var cekJualan = bisaJualanSeller(idPenjual);
+    if (!cekJualan.sukses) {
+        return { sukses: false, pesan: cekJualan.pesan };
+    }
+
+    // 2. Hitung reward
+    var hitung = hitungCoinRewardTerbaru(totalRupiah);
+    var jumlahReward = hitung.coin;
+
+    // 3. Kalau reward 0 → tidak ada transfer
+    if (jumlahReward === 0) {
+        catatAktivitasGlobal(idPembeli, 'Belanja (Rupiah)',
+            'Rp ' + totalRupiah.toLocaleString('id-ID') + ' ke penjual ' + idPenjual +
+            ' — tanpa reward (belum capai minimal belanja)' +
+            (idTransaksi ? ' (ID: ' + idTransaksi + ')' : ''));
+        return {
+            sukses: true,
+            mode: 'rupiah',
+            totalRupiah: totalRupiah,
+            rewardCoin: 0,
+            kelipatan: 0,
+            keterangan: 'Belum capai minimal belanja, tidak ada reward coin.'
+        };
+    }
+
+    // 4. Transfer reward
+    var hasilReward = transferCoinReward(idPenjual, idPembeli, jumlahReward,
+        idTransaksi, 'Reward belanja Rp ' + totalRupiah.toLocaleString('id-ID'));
+
+    if (!hasilReward.sukses) {
+        return {
+            sukses: false,
+            pesan: hasilReward.pesan,
+            kode: 'SALDO_PENJUAL_KURANG'
+        };
+    }
+
+    return {
+        sukses: true,
+        mode: 'rupiah',
+        totalRupiah: totalRupiah,
+        rewardCoin: jumlahReward,
+        kelipatan: hitung.kelipatan,
+        saldoPenjualSetelah: hasilReward.saldoPenjualSetelah,
+        saldoPembeliSetelah: hasilReward.saldoPembeliSetelah
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (124) – PROSES BELANJA PAKAI COIN
+// ------------------------------------------------------------
+// Alur:
+//   1. Cek saldo pembeli cukup
+//   2. Transfer coin: pembeli -coin, penjual +coin
+//   3. TIDAK ADA reward (karena sudah bayar pakai coin)
+//   4. Penjual TIDAK wajib punya saldo (menerima, bukan bayar)
+// ============================================================
+function prosesBelanjaDenganCoin(idPembeli, idPenjual, jumlahCoin, idTransaksi, keterangan) {
+    if (!idPembeli || !idPenjual) {
+        return { sukses: false, pesan: 'ID pembeli/penjual tidak valid.' };
+    }
+    if (idPembeli === idPenjual) {
+        return { sukses: false, pesan: 'Tidak bisa belanja ke diri sendiri.' };
+    }
+
+    jumlahCoin = parseInt(jumlahCoin, 10) || 0;
+    if (jumlahCoin <= 0) return { sukses: false, pesan: 'Jumlah coin tidak valid.' };
+
+    var pembeli = getDataIdUser(idPembeli);
+    var penjual = getDataIdUser(idPenjual);
+    if (!pembeli) return { sukses: false, pesan: 'Pembeli tidak ditemukan.' };
+    if (!penjual) return { sukses: false, pesan: 'Penjual tidak ditemukan.' };
+
+    // 1. Cek saldo pembeli cukup
+    var cekSaldo = cekSaldoUntukBayarCoin(idPembeli, jumlahCoin);
+    if (!cekSaldo.sukses) return cekSaldo;
+
+    var ketFinal = (keterangan || 'Bayar dengan R2Coin') +
+                   (idTransaksi ? ' (ID: ' + idTransaksi + ')' : '');
+
+    // 2. Debit pembeli
+    var hasilDebit = kurangSaldoDompet(
+        idPembeli, jumlahCoin,
+        'Belanja ke ' + (penjual.nama || idPenjual) + ' — ' + ketFinal,
+        {
+            keUser: idPenjual,
+            keRole: penjual.role,
+            tipeTransaksi: 'belanja-coin-keluar',
+            idTransaksi: idTransaksi
+        }
+    );
+
+    if (!hasilDebit.sukses) {
+        return { sukses: false, pesan: 'Gagal potong saldo pembeli: ' + hasilDebit.pesan };
+    }
+
+    // 3. Credit penjual
+    var hasilCredit = tambahSaldoDompet(
+        idPenjual, jumlahCoin,
+        'Penjualan ke ' + (pembeli.nama || idPembeli) + ' — ' + ketFinal,
+        {
+            dariUser: idPembeli,
+            dariRole: pembeli.role,
+            tipeTransaksi: 'belanja-coin-masuk',
+            idTransaksi: idTransaksi
+        }
+    );
+
+    if (!hasilCredit.sukses) {
+        // Rollback debit pembeli
+        tambahSaldoDompet(idPembeli, jumlahCoin,
+            'Rollback: gagal credit penjual',
+            { tipeTransaksi: 'rollback' });
+        return { sukses: false, pesan: 'Gagal credit penjual: ' + hasilCredit.pesan };
+    }
+
+    catatAktivitasGlobal(idPembeli, 'Belanja dengan Coin',
+        jumlahCoin + ' coin dari ' + pembeli.nama + ' ke ' + penjual.nama +
+        (idTransaksi ? ' (Transaksi: ' + idTransaksi + ')' : ''));
+
+    return {
+        sukses: true,
+        mode: 'coin',
+        jumlahCoin: jumlahCoin,
+        rupiahEkuivalen: hitungRupiahDariCoin(jumlahCoin),
+        saldoPembeliSetelah: getSaldoDompet(idPembeli),
+        saldoPenjualSetelah: getSaldoDompet(idPenjual)
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (125) – RENDER INFO SETTING EKONOMI KE ELEMEN
+// ------------------------------------------------------------
+// Dipakai untuk isi semua teks "min. Rp X" di 8 blok dompet
+// secara dinamis mengikuti setting terbaru SA.
+//
+// Cara pakai:
+//   renderInfoSettingEkonomiDinamis({
+//       prefix: 'tk',  // untuk id: tkRingkasanMinimal, dll
+//   });
+// ============================================================
+function renderInfoSettingEkonomiDinamis(opts) {
+    opts = opts || {};
+    var prefix = opts.prefix || '';
+    var setting = getSettingEkonomiGlobal();
+
+    var minimal = (setting.minimalBelanja || 50000);
+    var hargaJual = (setting.hargaJual || 1000);
+    var hargaBeli = (setting.hargaBeli || 750);
+    var minWithdraw = setting.minimalWithdraw || 10;
+    var biayaAdmin = setting.biayaAdminWithdraw || 5;
+
+    var mapIds = {
+        '#PREFIX#RingkasanHargaJual': 'Rp ' + hargaJual.toLocaleString('id-ID'),
+        '#PREFIX#RingkasanHargaBeli': 'Rp ' + hargaBeli.toLocaleString('id-ID'),
+        '#PREFIX#RingkasanMinimal': 'Rp ' + minimal.toLocaleString('id-ID'),
+        '#PREFIX#RingkasanMinWithdraw': minWithdraw,
+        '#PREFIX#RingkasanBiayaAdmin': biayaAdmin + '%',
+        '#PREFIX#TopUpHargaCoin': 'Rp ' + hargaJual.toLocaleString('id-ID'),
+        '#PREFIX#WithdrawMinimal': minWithdraw,
+        '#PREFIX#WithdrawBiayaAdmin': biayaAdmin + '%'
+    };
+
+    Object.keys(mapIds).forEach(function(kunciTemplate) {
+        var key = kunciTemplate.replace('#PREFIX#', prefix);
+        var el = document.getElementById(key);
+        if (el) el.textContent = mapIds[kunciTemplate];
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (126) – NOTIFIKASI SALDO TIPIS SELLER
+// ------------------------------------------------------------
+// Dipicu oleh sistem saat saldo seller < minimal jualan
+// (dipanggil dari render dasbor atau auto-cek berkala)
+// ============================================================
+function cekNotifSaldoTipisSeller(idUser) {
+    if (!idUser) return null;
+
+    var cek = bisaJualanSeller(idUser);
+    if (cek.sukses && cek.wajibCoin) {
+        var saldo = cek.saldo;
+        // Kalau saldo <= 5 → warning
+        if (saldo > 0 && saldo <= 5) {
+            return {
+                status: 'kuning',
+                pesan: 'Saldo R2Coin Anda tinggal ' + saldo + ' Coin. ' +
+                       'Segera top-up untuk tetap bisa jualan.'
+            };
+        }
+        return { status: 'hijau', pesan: 'Saldo aman.' };
+    }
+
+    if (!cek.sukses && cek.wajibCoin) {
+        return {
+            status: 'merah',
+            pesan: 'Saldo R2Coin habis! Anda TIDAK BISA jualan. ' +
+                   'Top-up sekarang untuk mengaktifkan kembali toko Anda.'
+        };
+    }
+
+    return { status: 'bukan-seller', pesan: '' };
+}
+
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
@@ -34315,10 +34755,15 @@ document.addEventListener('DOMContentLoaded', function() {
 									<i class="fas fa-lightbulb me-1 text-warning"></i>
 									<strong>Cara dapat R2Coin:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Grosir/Toko lain (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li><strong>Belanja</strong> ke Grosir / Toko lain (min. Rp X) → dapat reward</li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									<strong>Wajib punya saldo coin untuk jualan.</strong>
+									Kalau saldo 0, produk tidak tampil di katalog.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -35367,10 +35812,15 @@ document.addEventListener('change', function(e) {
 									<i class="fas fa-lightbulb me-1 text-warning"></i>
 									<strong>Cara dapat R2Coin:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Grosir/Toko lain (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li><strong>Belanja</strong> ke Grosir / Toko (min. Rp X) → dapat reward</li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									<strong>Wajib punya saldo coin untuk jualan.</strong>
+									Kalau saldo 0, produk tidak tampil di katalog.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -36309,10 +36759,15 @@ document.addEventListener('change', function(e) {
 									<i class="fas fa-lightbulb me-1 text-warning"></i>
 									<strong>Cara dapat R2Coin:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Grosir/Toko lain (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li><strong>Belanja</strong> ke Grosir / Toko (min. Rp X) → dapat reward</li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									<strong>Wajib punya saldo coin untuk jualan.</strong>
+									Kalau saldo 0, produk tidak tampil di katalog.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -37119,10 +37574,15 @@ document.addEventListener('change', function(e) {
 									<i class="fas fa-lightbulb me-1 text-warning"></i>
 									<strong>Cara dapat R2Coin:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Grosir/Toko lain (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li><strong>Belanja</strong> ke Grosir / Toko (min. Rp X) → dapat reward</li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									<strong>Wajib punya saldo coin untuk jualan.</strong>
+									Kalau saldo 0, produk tidak tampil di katalog.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -37968,13 +38428,18 @@ document.addEventListener('change', function(e) {
                                 </table>
                                 <hr>
                                 <p class="small text-muted mb-1">
-									<i class="fas fa-lightbulb me-1 text-warning"></i>
-									<strong>Cara dapat R2Coin:</strong>
+									<i class="fas fa-info-circle me-1 text-primary"></i>
+									<strong>Info Khusus Ojek:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Grosir/Toko lain (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li>Setiap order yang Anda terima → <strong>-1 Coin</strong></li>
+									<li>Saldo 0 → <strong>TIDAK BISA terima order</strong></li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									Ojek <strong>tidak bisa belanja</strong> — hanya top-up dan terima order.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -38863,10 +39328,15 @@ document.addEventListener('change', function(e) {
 									<i class="fas fa-lightbulb me-1 text-warning"></i>
 									<strong>Cara dapat R2Coin:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Grosir/Toko lain (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li><strong>Belanja</strong> ke Toko/PP/PM/COD (min. Rp X) → dapat reward</li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-coins me-1 text-success"></i>
+									<strong>Alternatif bayar:</strong> Belanja bisa juga dibayar dengan R2Coin
+									(konversi Rp ÷ 750). Contoh: produk Rp 7.500 = 10 Coin.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -39547,7 +40017,8 @@ document.addEventListener('change', function(e) {
                     <ul class="mb-0 mt-1 small">
                         <li>Anda <strong>TIDAK DAPAT WITHDRAW</strong> R2Coin (kebijakan platform).</li>
                         <li>Saldo Anda bisa dipakai untuk <strong>kirim ke user lain</strong> atau <strong>top-up</strong>.</li>
-                        <li>Anda menerima R2Coin dari <strong>Grosir</strong> yang belanja produk Anda.</li>
+                        <li>Distributor <strong>wajib top-up coin</strong> untuk bisa jualan. Kalau saldo 0, tidak bisa jualan.</li>
+						<li>Coin Anda <strong>ditransfer otomatis</strong> ke Grosir yang belanja (sebagai reward).</li>
                     </ul>
                 </div>
             </div>
@@ -39677,11 +40148,18 @@ document.addEventListener('change', function(e) {
                                     </tr>
                                 </table>
                                 <hr>
-                                <p class="small text-muted mb-0">
-                                    <i class="fas fa-lightbulb me-1 text-warning"></i>
-                                    <strong>Info:</strong> Anda menerima R2Coin secara otomatis
-                                    setiap Grosir belanja produk Anda.
-                                </p>
+                                <p class="small text-muted mb-1">
+									<i class="fas fa-lightbulb me-1 text-warning"></i>
+									<strong>Cara dapat R2Coin:</strong>
+								</p>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									<strong>Wajib punya saldo coin untuk jualan.</strong>
+									Coin Anda ditransfer otomatis ke Grosir yang belanja.
+								</p>
                             </div>
                         </div>
                     </div>
@@ -40366,10 +40844,15 @@ document.addEventListener('change', function(e) {
 									<i class="fas fa-lightbulb me-1 text-warning"></i>
 									<strong>Cara dapat R2Coin:</strong>
 								</p>
-								<ol class="small text-muted mb-0" style="padding-left:20px;">
-									<li><strong>Belanja</strong> ke Distributor (min. <span id="tkRingkasanMinimal2">Rp 50.000</span>) → otomatis dapat coin</li>
-									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin" di atas</li>
+								<ol class="small text-muted mb-2" style="padding-left:20px;">
+									<li><strong>Top-Up</strong> ke SuperAdmin via tab "Beli Coin"</li>
+									<li><strong>Belanja</strong> ke Distributor (min. Rp X) → dapat reward</li>
 								</ol>
+								<p class="small text-muted mb-0">
+									<i class="fas fa-exclamation-triangle me-1 text-danger"></i>
+									<strong>Wajib punya saldo coin untuk jualan.</strong>
+									Kalau saldo 0, produk tidak tampil di katalog.
+								</p>
                             </div>
                         </div>
                     </div>
