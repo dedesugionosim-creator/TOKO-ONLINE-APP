@@ -9159,6 +9159,598 @@ function getAkunKasirById(idKasir) {
 }
 
 // ============================================================
+// BLOK R 01.0 (207) – GET MANAJEMEN PRODUK CONTEXT
+// ------------------------------------------------------------
+// Return context produk berdasarkan user aktif:
+//   - Kasir → pakai ownerId & role owner
+//   - Role lain → pakai idUser & role sendiri
+// ============================================================
+function getManajemenProdukContext() {
+    if (!userAktif || !userAktif.idUser) return null;
+
+    var idUser = userAktif.idUser;
+    var role = userAktif.role;
+
+    // Kasir → pakai owner
+    if (role === 'Kasir' && userAktif.ownerId) {
+        var owner = getDataIdUser(userAktif.ownerId);
+        if (owner) {
+            idUser = userAktif.ownerId;
+            role = owner.role;
+        }
+    }
+
+    var userData = getDataIdUser(idUser);
+    var produkList = loadProdukByRole(role, idUser);
+    var statistik = hitungStatistikProduk(produkList);
+
+    return {
+        idUser: idUser,
+        role: role,
+        userData: userData,
+        produkList: produkList,
+        statistik: statistik,
+        namaOwner: userData ? (userData.nama || 'Owner') : 'Owner'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (208) – RENDER TABEL PRODUK UNIVERSAL
+// ------------------------------------------------------------
+// Dipakai semua role seller. Baca filter dari elemen ID
+// spesifik kalau ada (cariProdukMasterToko, dll).
+// ============================================================
+function renderTabelProdukUniversal(idTabel, ctx) {
+    if (!ctx) ctx = getManajemenProdukContext();
+    if (!ctx) return;
+
+    var tbody = document.getElementById(idTabel);
+    if (!tbody) return;
+
+    var produkList = ctx.produkList || [];
+
+    // ── Filter (baca dari elemen kalau ada) ──
+    var elCari = document.getElementById('cariProdukMasterToko');
+    var cari = elCari ? (elCari.value || '').toLowerCase().trim() : '';
+
+    var elPub = document.getElementById('filterPublikMasterToko');
+    var filterPublik = elPub ? (elPub.value || '') : '';
+
+    var elStok = document.getElementById('filterStokMasterToko');
+    var filterStok = elStok ? (elStok.value || '') : '';
+
+    var dataFilter = produkList.filter(function(p) {
+        var matchCari = cari === '' ||
+            (p.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+            (p.merek || '').toLowerCase().indexOf(cari) !== -1 ||
+            (p.kode || '').toLowerCase().indexOf(cari) !== -1;
+
+        var matchPublik = filterPublik === '' ||
+            String(!!p.isPublik) === filterPublik;
+
+        var stok = parseInt(p.stok, 10) || 0;
+        var matchStok = filterStok === '' ||
+            (filterStok === 'habis'  && stok === 0) ||
+            (filterStok === 'kritis' && stok > 0 && stok <= 5) ||
+            (filterStok === 'normal' && stok > 5);
+
+        return matchCari && matchPublik && matchStok;
+    });
+
+    // Update statistik UI & badge total
+    updateStatistikUIProduk(ctx.statistik);
+
+    var totalBadge = document.getElementById('totalProdukMasterToko');
+    if (totalBadge) totalBadge.textContent = dataFilter.length;
+
+    // ── Kosong ──
+    if (dataFilter.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-muted py-4">' +
+            '<i class="fas fa-box-open fa-2x d-block mb-2 opacity-50"></i>' +
+            'Tidak ada produk ditemukan.</td></tr>';
+        return;
+    }
+
+    // ── Render baris ──
+    var html = '';
+    dataFilter.forEach(function(p, i) {
+        var foto = p.foto
+            ? '<img src="' + p.foto + '" style="width:40px;height:40px;object-fit:cover;border-radius:5px;">'
+            : '<i class="fas fa-box text-muted fa-2x"></i>';
+
+        var hargaRp = (parseFloat(p.harga) || 0).toLocaleString('id-ID');
+        var hargaCoin = (parseInt(p.hargaCoin, 10) || 0).toLocaleString('id-ID');
+        var stok = parseInt(p.stok, 10) || 0;
+
+        var stokBadge = stok === 0
+            ? '<span class="badge bg-danger">Habis</span>'
+            : (stok <= 5
+                ? '<span class="badge bg-warning text-dark">Kritis</span>'
+                : '<span class="badge bg-success">Normal</span>');
+
+        var publikBadge = p.isPublik
+            ? '<span class="badge bg-success">Publik</span>'
+            : '<span class="badge bg-secondary">Privat</span>';
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + foto + '</td>' +
+            '<td><strong>' + (p.nama || '-') + '</strong></td>' +
+            '<td>' + (p.merek || '-') + '</td>' +
+            '<td>' + (p.kode || '-') + '</td>' +
+            '<td>' + (p.kategori || '-') + '</td>' +
+            '<td>Rp ' + hargaRp + '</td>' +
+            '<td>' + hargaCoin + ' Coin</td>' +
+            '<td>' + (p.satuan || '-') + '</td>' +
+            '<td>' + stok + '</td>' +
+            '<td>' + stokBadge + '</td>' +
+            '<td>' + publikBadge + '</td>' +
+            '<td>' +
+                '<input type="number" class="form-control form-control-sm stokFisikInput" ' +
+                    'data-produk-id="' + p.id + '" placeholder="Fisik" min="0" style="width:70px;">' +
+            '</td>' +
+            '<td>' +
+                '<button class="btn btn-sm btn-outline-primary me-1" ' +
+                    'onclick="tampilkanFormProdukGlobal(\'' + p.id + '\')" title="Edit">' +
+                    '<i class="fas fa-edit"></i></button>' +
+                '<button class="btn btn-sm btn-outline-success me-1" ' +
+                    'onclick="toggleProdukPublikUniversal(\'' + p.id + '\'); renderTabelProdukUniversal(\'' + idTabel + '\');" title="Toggle Publik">' +
+                    '<i class="fas fa-eye"></i></button>' +
+                '<button class="btn btn-sm btn-outline-warning me-1" ' +
+                    'onclick="selaraskanStokUniversalUI(\'' + idTabel + '\', \'' + p.id + '\')" title="Selaraskan Stok">' +
+                    '<i class="fas fa-sync"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" ' +
+                    'onclick="hapusProdukUniversal(\'' + p.id + '\'); renderTabelProdukUniversal(\'' + idTabel + '\');" title="Hapus">' +
+                    '<i class="fas fa-trash"></i></button>' +
+            '</td>' +
+        '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// ============================================================
+// BLOK R 01.0 (209) – TAMPILKAN FORM PRODUK GLOBAL (MODAL)
+// ------------------------------------------------------------
+// Buka modal add/edit produk. Modal HTML ada di BLOK R 10.90.
+// ============================================================
+function tampilkanFormProdukGlobal(idProduk) {
+    var modal = document.getElementById('modalFormProdukGlobal');
+    if (!modal) {
+        alert('Modal form produk tidak ditemukan. Pastikan BLOK R 10.90 terpasang.');
+        return;
+    }
+
+    var ctx = getManajemenProdukContext();
+    if (!ctx) {
+        alert('User context tidak valid.');
+        return;
+    }
+
+    // Reset form
+    var formEl = document.getElementById('formProdukGlobal');
+    if (formEl) formEl.reset();
+
+    // Reset file input manual (beberapa browser tidak reset file via form.reset)
+    var fileInput = document.getElementById('formProdukFotoFile');
+    if (fileInput) fileInput.value = '';
+
+    // Reset preview foto
+    var preview = document.getElementById('formProdukPreviewFoto');
+    if (preview) preview.innerHTML = '';
+
+    // Reset hidden fields
+    setValProdukGlobal('formProdukGlobalId', '');
+    setValProdukGlobal('formProdukFotoUrl', '');
+
+    // Isi dropdown kategori & satuan sesuai role
+    isiDropdownKategoriProduk('formProdukKategori', ctx.role);
+    isiDropdownSatuanProduk('formProdukSatuan', ctx.role);
+
+    if (idProduk) {
+        // ── EDIT MODE ──
+        var produk = ctx.produkList.find(function(p) { return p.id === idProduk; });
+        if (!produk) {
+            alert('Produk tidak ditemukan.');
+            return;
+        }
+
+        setTextProdukGlobal('formProdukGlobalLabel', 'Edit Produk');
+        setValProdukGlobal('formProdukGlobalId', produk.id);
+        setValProdukGlobal('formProdukNama', produk.nama || '');
+        setValProdukGlobal('formProdukMerek', produk.merek || '');
+        setValProdukGlobal('formProdukKode', produk.kode || '');
+        setValProdukGlobal('formProdukKategori', produk.kategori || '');
+        setValProdukGlobal('formProdukSatuan', produk.satuan || '');
+        setValProdukGlobal('formProdukHarga', produk.harga || 0);
+        setValProdukGlobal('formProdukHargaCoin', produk.hargaCoin || 0);
+        setValProdukGlobal('formProdukStok', produk.stok || 0);
+        setValProdukGlobal('formProdukFotoUrl', produk.foto || '');
+
+        var chk = document.getElementById('formProdukIsPublik');
+        if (chk) chk.checked = !!produk.isPublik;
+
+        if (preview && produk.foto) {
+            preview.innerHTML = '<img src="' + produk.foto +
+                '" style="max-height:100px;border-radius:8px;">';
+        }
+    } else {
+        // ── ADD MODE ──
+        setTextProdukGlobal('formProdukGlobalLabel', 'Tambah Produk');
+        setValProdukGlobal('formProdukKode', generateKodeProduk(ctx.role));
+
+        var chkAdd = document.getElementById('formProdukIsPublik');
+        if (chkAdd) chkAdd.checked = true;
+    }
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// Helper internal (209) – set value elemen
+function setValProdukGlobal(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.value = value;
+}
+
+// Helper internal (209) – set text elemen
+function setTextProdukGlobal(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+// ============================================================
+// BLOK R 01.0 (210) – SIMPAN FORM PRODUK GLOBAL
+// ------------------------------------------------------------
+// Handle submit add/edit produk. Return false untuk cegah reload.
+// ============================================================
+function simpanFormProdukGlobal(event) {
+    if (event) event.preventDefault();
+
+    var ctx = getManajemenProdukContext();
+    if (!ctx) {
+        alert('Context tidak valid.');
+        return false;
+    }
+
+    var id       = (document.getElementById('formProdukGlobalId') || {}).value || '';
+    var nama     = ((document.getElementById('formProdukNama')      || {}).value || '').trim();
+    var merek    = ((document.getElementById('formProdukMerek')     || {}).value || '').trim();
+    var kode     = ((document.getElementById('formProdukKode')      || {}).value || '').trim();
+    var kategori = (document.getElementById('formProdukKategori')  || {}).value || '';
+    var satuan   = (document.getElementById('formProdukSatuan')    || {}).value || '';
+    var harga    = parseFloat((document.getElementById('formProdukHarga')     || {}).value) || 0;
+    var hargaCoin= parseInt((document.getElementById('formProdukHargaCoin')   || {}).value, 10) || 0;
+    var stok     = parseInt((document.getElementById('formProdukStok')        || {}).value, 10) || 0;
+    var isPublik = (document.getElementById('formProdukIsPublik')  || {}).checked || false;
+    var foto     = (document.getElementById('formProdukFotoUrl')   || {}).value || '';
+
+    // ── Validasi ──
+    if (!nama || nama.length < 2) {
+        alert('Nama produk minimal 2 karakter!');
+        return false;
+    }
+    if (harga <= 0) {
+        alert('Harga (Rp) harus lebih dari 0!');
+        return false;
+    }
+    if (stok < 0) {
+        alert('Stok tidak boleh negatif!');
+        return false;
+    }
+    if (!kategori) {
+        alert('Pilih kategori terlebih dahulu!');
+        return false;
+    }
+    if (!satuan) {
+        alert('Pilih satuan terlebih dahulu!');
+        return false;
+    }
+
+    // Validasi satuan sesuai role
+    var validasi = validasiSatuanRole(ctx.role, satuan);
+    if (!validasi.sukses) {
+        alert(validasi.pesan);
+        return false;
+    }
+
+    // ── Cek duplikat nama produk (hanya saat ADD) ──
+    if (!id) {
+        var dup = ctx.produkList.some(function(p) {
+            return (p.nama || '').toLowerCase() === nama.toLowerCase();
+        });
+        if (dup) {
+            alert('Produk dengan nama "' + nama + '" sudah ada!');
+            return false;
+        }
+    }
+
+    // ── Proses simpan ──
+    var payload = {
+        nama: nama, merek: merek, kode: kode,
+        kategori: kategori, satuan: satuan,
+        harga: harga, hargaCoin: hargaCoin, stok: stok,
+        isPublik: isPublik, foto: foto
+    };
+
+    var hasil;
+    if (id) {
+        hasil = updateProdukGlobalUniversal(id, payload);
+    } else {
+        hasil = tambahProdukGlobalUniversal(payload);
+    }
+
+    if (!hasil.sukses) {
+        alert('❌ ' + hasil.pesan);
+        return false;
+    }
+
+    // Tutup modal
+    var modalEl = document.getElementById('modalFormProdukGlobal');
+    var modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+
+    // Refresh tabel manajemen produk (kalau sedang tampil)
+    refreshTabelManajemenProdukAktif();
+
+    // Notif sukses
+    tampilkanToastManajemenProduk(
+        id ? '✅ Produk "' + nama + '" berhasil diperbarui!'
+           : '✅ Produk "' + nama + '" berhasil ditambahkan!',
+        'success'
+    );
+
+    return false;
+}
+
+// Helper internal (210) – refresh tabel manajemen produk yang sedang aktif
+function refreshTabelManajemenProdukAktif() {
+    if (document.getElementById('tabelProdukMasterToko')) {
+        renderTabelProdukUniversal('tabelProdukMasterToko');
+    }
+    if (document.getElementById('tabelProdukGlobal')) {
+        renderTabelProdukUniversal('tabelProdukGlobal');
+    }
+    if (document.getElementById('tabelProdukGlobalUtama')) {
+        renderTabelProdukUniversal('tabelProdukGlobalUtama');
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (211) – DOWNLOAD EXCEL PRODUK (CSV)
+// ------------------------------------------------------------
+// Export daftar produk ke CSV. Kalau role/idUser kosong, pakai context.
+// ============================================================
+function downloadExcelProduk(role, idUser) {
+    if (!role || !idUser) {
+        var ctx = getManajemenProdukContext();
+        if (!ctx) { alert('Context tidak valid.'); return; }
+        role = ctx.role;
+        idUser = ctx.idUser;
+    }
+
+    var produkList = loadProdukByRole(role, idUser);
+    if (produkList.length === 0) {
+        alert('Tidak ada produk untuk di-download.');
+        return;
+    }
+
+    var data = produkList.map(function(p, i) {
+        return {
+            No: i + 1,
+            Kode: p.kode || '',
+            Nama: p.nama || '',
+            Merek: p.merek || '',
+            Kategori: p.kategori || '',
+            Satuan: p.satuan || '',
+            Harga_Rp: parseFloat(p.harga) || 0,
+            Harga_Coin: parseInt(p.hargaCoin, 10) || 0,
+            Stok: parseInt(p.stok, 10) || 0,
+            Status_Publik: p.isPublik ? 'Publik' : 'Privat',
+            Dibuat: p.createdAt ? new Date(p.createdAt).toLocaleDateString('id-ID') : ''
+        };
+    });
+
+    var slug = role.toLowerCase().replace(/\s+/g, '_');
+    var tgl = new Date().toISOString().split('T')[0];
+    exportExcelLaporan('produk_' + slug, data, 'produk_' + slug + '_' + tgl);
+}
+
+// ============================================================
+// BLOK R 01.0 (212) – SELARASKAN STOK PRODUK UNIVERSAL
+// ------------------------------------------------------------
+// Update stok sistem sesuai stok fisik. Return selisih.
+// ============================================================
+function selaraskanStokProdukUniversal(idProduk, stokFisikBaru) {
+    if (!idProduk) return { sukses: false, pesan: 'ID produk tidak valid.' };
+
+    stokFisikBaru = parseInt(stokFisikBaru, 10);
+    if (isNaN(stokFisikBaru) || stokFisikBaru < 0) {
+        return { sukses: false, pesan: 'Stok fisik tidak valid (harus ≥ 0).' };
+    }
+
+    var ctx = getManajemenProdukContext();
+    if (!ctx) return { sukses: false, pesan: 'Context tidak valid.' };
+
+    // Cari produk dulu (untuk dapat stok lama)
+    var produk = ctx.produkList.find(function(p) { return p.id === idProduk; });
+    if (!produk) return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+
+    var stokLama = parseInt(produk.stok, 10) || 0;
+    var selisih = stokFisikBaru - stokLama;
+
+    // Update
+    var hasil = updateProdukGlobalUniversal(idProduk, { stok: stokFisikBaru });
+    if (!hasil.sukses) return hasil;
+
+    catatAktivitasGlobal(
+        ctx.idUser,
+        'Selaraskan Stok',
+        'Produk "' + produk.nama + '": ' + stokLama +
+        ' → ' + stokFisikBaru + ' (selisih: ' + (selisih >= 0 ? '+' : '') + selisih + ')'
+    );
+
+    return {
+        sukses: true,
+        selisih: selisih,
+        stokLama: stokLama,
+        stokBaru: stokFisikBaru
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (213) – SELARASKAN STOK UI HELPER
+// ------------------------------------------------------------
+// Baca input .stokFisikInput[data-produk-id=...], panggil (212),
+// refresh tabel, tampilkan hasil.
+// ============================================================
+function selaraskanStokUniversalUI(idTabel, idProduk) {
+    var input = document.querySelector('.stokFisikInput[data-produk-id="' + idProduk + '"]');
+    if (!input) return;
+
+    var stokFisik = parseInt(input.value, 10);
+    if (isNaN(stokFisik) || stokFisik < 0) {
+        alert('Masukkan stok fisik yang valid (≥ 0)!');
+        return;
+    }
+
+    var hasil = selaraskanStokProdukUniversal(idProduk, stokFisik);
+
+    if (hasil.sukses) {
+        alert('✅ Stok disesuaikan!\n\n' +
+              'Stok Lama: ' + hasil.stokLama + '\n' +
+              'Stok Baru: ' + hasil.stokBaru + '\n' +
+              'Selisih: ' + (hasil.selisih >= 0 ? '+' : '') + hasil.selisih);
+        input.value = '';
+        renderTabelProdukUniversal(idTabel);
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (214) – ISI DROPDOWN KATEGORI PRODUK
+// ============================================================
+function isiDropdownKategoriProduk(idSelect, role) {
+    var sel = document.getElementById(idSelect);
+    if (!sel) return;
+
+    if (!role) {
+        var ctx = getManajemenProdukContext();
+        role = ctx ? ctx.role : 'Toko';
+    }
+
+    var list = getKategoriByRole(role);
+    var html = '<option value="">-- Pilih Kategori --</option>';
+    list.forEach(function(k) {
+        html += '<option value="' + k + '">' + k + '</option>';
+    });
+    sel.innerHTML = html;
+}
+
+// ============================================================
+// BLOK R 01.0 (215) – ISI DROPDOWN SATUAN PRODUK
+// ============================================================
+function isiDropdownSatuanProduk(idSelect, role) {
+    var sel = document.getElementById(idSelect);
+    if (!sel) return;
+
+    if (!role) {
+        var ctx = getManajemenProdukContext();
+        role = ctx ? ctx.role : 'Toko';
+    }
+
+    var list = getSatuanByRole(role);
+    var html = '<option value="">-- Pilih Satuan --</option>';
+    list.forEach(function(s) {
+        html += '<option value="' + s + '">' + s + '</option>';
+    });
+    sel.innerHTML = html;
+}
+
+// ============================================================
+// BLOK R 01.0 (216) – TOAST MANAJEMEN PRODUK
+// ============================================================
+function tampilkanToastManajemenProduk(pesan, tipe) {
+    var warna = {
+        success: '#28A745',
+        danger:  '#DC3545',
+        warning: '#FFC107',
+        info:    '#17A2B8'
+    }[tipe] || '#28A745';
+
+    var toast = document.createElement('div');
+    toast.textContent = pesan;
+    toast.style.cssText =
+        'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+        'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+        'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);max-width:400px;' +
+        'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
+    document.body.appendChild(toast);
+
+    setTimeout(function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        setTimeout(function() {
+            if (toast.parentNode) document.body.removeChild(toast);
+        }, 300);
+    }, 2500);
+}
+
+// ============================================================
+// BLOK R 01.0 (217) – UPDATE STATISTIK UI PRODUK
+// ------------------------------------------------------------
+// Dipakai dalam renderTabelProdukUniversal()
+// ============================================================
+function updateStatistikUIProduk(stat) {
+    if (!stat) return;
+
+    var elTotal = document.getElementById('statTotalProdukToko');
+    if (elTotal) elTotal.textContent = stat.totalProduk;
+
+    var elPublik = document.getElementById('statProdukPublikToko');
+    if (elPublik) elPublik.textContent = stat.totalPublik;
+
+    var elHabis = document.getElementById('statStokHabisToko');
+    if (elHabis) elHabis.textContent = stat.stokHabis;
+
+    var elKritis = document.getElementById('statStokKritisToko');
+    if (elKritis) elKritis.textContent = stat.stokKritis;
+}
+
+// ============================================================
+// BLOK R 01.0 (218) – PREVIEW FOTO PRODUK GLOBAL
+// ------------------------------------------------------------
+// Handler upload foto produk. Simpan base64 ke hidden field.
+// ============================================================
+function previewFotoProdukGlobal(input) {
+    var file = input.files[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+        alert('Ukuran gambar maksimal 2MB!');
+        input.value = '';
+        return;
+    }
+
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var hiddenUrl = document.getElementById('formProdukFotoUrl');
+        if (hiddenUrl) hiddenUrl.value = e.target.result;
+
+        var preview = document.getElementById('formProdukPreviewFoto');
+        if (preview) {
+            preview.innerHTML = '<img src="' + e.target.result +
+                '" style="max-height:100px;border-radius:8px;border:1px solid #ddd;padding:2px;">';
+        }
+    };
+    reader.readAsDataURL(file);
+}
+
+// ============================================================
+// AKHIR FASE 2 – FUNGSI GLOBAL MANAJEMEN PRODUK
+// ============================================================
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
