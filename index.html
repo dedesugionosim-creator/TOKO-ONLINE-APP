@@ -11298,6 +11298,154 @@ function formatOngkosOjek(jarakKm) {
 // ============================================================
 
 // ============================================================
+// FASE T2 — BIAYA JASA OJEK (BLOK R 01.0 252–255)
+// ============================================================
+function hitungBiayaJasaOjekCoin(ongkosRp) {
+    var sT = getTarifOjekGlobal();
+    var sE = getSettingEkonomiGlobal();
+    var persen = parseFloat(sT.biayaJasaPersen) || 0;
+    var hargaBeli = parseFloat(sE.hargaBeli) || 750;
+    ongkosRp = parseFloat(ongkosRp) || 0;
+    if (persen <= 0 || ongkosRp <= 0 || hargaBeli <= 0) {
+        return { sukses: true, ongkosRp: ongkosRp, persen: persen,
+                 nominalJasaRp: 0, coin: 0, hargaBeli: hargaBeli };
+    }
+    var nominalJasaRp = Math.ceil(ongkosRp * persen / 100);
+    var coin = Math.ceil(nominalJasaRp / hargaBeli);
+    return { sukses: true, ongkosRp: ongkosRp, persen: persen,
+             nominalJasaRp: nominalJasaRp, coin: coin, hargaBeli: hargaBeli };
+}
+
+function bisaSelesaikanOrderOjek(idOjek, ongkosRp) {
+    if (!idOjek) return { sukses: false, pesan: 'ID ojek tidak valid.' };
+    var ojek = getDataIdUser(idOjek);
+    if (!ojek) return { sukses: false, pesan: 'Ojek tidak ditemukan.' };
+    if (ojek.role !== 'Ojek') return { sukses: false, pesan: 'User bukan Ojek.' };
+    var h = hitungBiayaJasaOjekCoin(ongkosRp);
+    if (h.coin <= 0) {
+        return { sukses: true, biayaCoin: 0, saldo: getSaldoDompet(idOjek),
+                 nominalJasaRp: 0, pesan: 'Tidak ada biaya jasa.' };
+    }
+    var saldo = getSaldoDompet(idOjek);
+    if (saldo < h.coin) {
+        return {
+            sukses: false,
+            pesan: 'Saldo R2Coin ojek tidak cukup.\nSaldo: ' + saldo +
+                   ' Coin\nDibutuhkan: ' + h.coin + ' Coin\nKurang: ' +
+                   (h.coin - saldo) + ' Coin\n\nOjek wajib TOP-UP dulu.',
+            biayaCoin: h.coin, saldo: saldo, kurang: h.coin - saldo,
+            nominalJasaRp: h.nominalJasaRp, persen: h.persen
+        };
+    }
+    return { sukses: true, biayaCoin: h.coin, saldo: saldo,
+             nominalJasaRp: h.nominalJasaRp, persen: h.persen };
+}
+
+function potongBiayaJasaOjek(idOjek, idOrder, ongkosRp) {
+    if (!idOjek) return { sukses: false, pesan: 'ID ojek tidak valid.' };
+    var h = hitungBiayaJasaOjekCoin(ongkosRp);
+    if (h.coin <= 0) {
+        return { sukses: true, biayaCoin: 0, nominalJasaRp: 0,
+                 persen: 0, saldoSetelah: getSaldoDompet(idOjek) };
+    }
+    var cek = bisaSelesaikanOrderOjek(idOjek, ongkosRp);
+    if (!cek.sukses) return cek;
+    var ojek = getDataIdUser(idOjek);
+    var hasil = kurangSaldoDompet(idOjek, h.coin,
+        'Biaya jasa platform — order ' + (idOrder || '-') +
+        ' (' + h.persen + '% × Rp ' + h.ongkosRp.toLocaleString('id-ID') + ')',
+        { tipeTransaksi: 'biaya-jasa-ojek', idOrder: idOrder || null,
+          ongkosRp: h.ongkosRp, persen: h.persen,
+          nominalJasaRp: h.nominalJasaRp });
+    if (!hasil.sukses) return { sukses: false, pesan: 'Gagal potong saldo: ' + hasil.pesan };
+    try {
+        var log = [];
+        var st = localStorage.getItem('dataPendapatanPlatform');
+        if (st) { var p = JSON.parse(st); if (Array.isArray(p)) log = p; }
+        log.push({
+            id: generateKodeUnik('INC'), sumber: 'ojek',
+            idOjek: idOjek, namaOjek: ojek ? (ojek.nama || '-') : '-',
+            idOrder: idOrder || '-', ongkosRp: h.ongkosRp, persen: h.persen,
+            nominalJasaRp: h.nominalJasaRp, coin: h.coin,
+            tanggal: new Date().toISOString()
+        });
+        if (log.length > 5000) log = log.slice(-5000);
+        localStorage.setItem('dataPendapatanPlatform', JSON.stringify(log));
+    } catch (e) { console.warn('potongBiayaJasaOjek log error:', e); }
+    catatAktivitasGlobal(idOjek, 'Biaya Jasa Ojek',
+        'Potong ' + h.coin + ' Coin dari ' + (ojek ? ojek.nama : idOjek) +
+        ' untuk order ' + (idOrder || '-') +
+        ' (ongkos Rp ' + h.ongkosRp.toLocaleString('id-ID') +
+        ', jasa ' + h.persen + '%)');
+    return { sukses: true, biayaCoin: h.coin, nominalJasaRp: h.nominalJasaRp,
+             persen: h.persen, saldoSetelah: getSaldoDompet(idOjek) };
+}
+
+function selesaikanOrderOjek(idOrder, idOjek, ongkosRp, idCustomer) {
+    if (!idOrder) return { sukses: false, pesan: 'ID order tidak valid.' };
+    if (!idOjek)  return { sukses: false, pesan: 'ID ojek tidak valid.' };
+    var ojek = getDataIdUser(idOjek);
+    if (!ojek) return { sukses: false, pesan: 'Ojek tidak ditemukan.' };
+    if (ojek.role !== 'Ojek') return { sukses: false, pesan: 'User ini bukan Ojek.' };
+
+    var cek = bisaSelesaikanOrderOjek(idOjek, ongkosRp);
+    if (!cek.sukses) {
+        return { sukses: false, pesan: cek.pesan, kode: 'SALDO_OJEK_KURANG',
+                 kurang: cek.kurang, biayaCoin: cek.biayaCoin, saldo: cek.saldo };
+    }
+
+    var hasil = potongBiayaJasaOjek(idOjek, idOrder, ongkosRp);
+    if (!hasil.sukses) {
+        return { sukses: false, pesan: 'Gagal potong biaya jasa: ' + hasil.pesan,
+                 kode: 'GAGAL_POTONG' };
+    }
+
+    try {
+        if (typeof updateStatusPesanan === 'function') {
+            updateStatusPesanan(idOrder, 'Selesai',
+                'Order ojek selesai — biaya jasa ' + hasil.biayaCoin + ' Coin');
+        }
+    } catch (e) { console.warn('selesaikanOrderOjek: update status gagal', e); }
+
+    if (idCustomer) {
+        try {
+            var isiC = '✅ Order *' + idOrder + '* SELESAI.\n\nOngkos: Rp ' +
+                (parseFloat(ongkosRp) || 0).toLocaleString('id-ID') +
+                '\n\nTerima kasih sudah menggunakan layanan Ojek Toko Online 2R.';
+            kirimChatOtomatis(idOjek, idCustomer, isiC,
+                { jenisTransaksi: 'order-ojek-selesai',
+                  idTransaksi: idOrder, status: 'Selesai' });
+        } catch (e) {}
+    }
+
+    try {
+        var isiO = '✅ Order *' + idOrder + '* SELESAI.\n\n' +
+            'Ongkos diterima: Rp ' + (parseFloat(ongkosRp) || 0).toLocaleString('id-ID') +
+            '\nBiaya jasa platform (' + hasil.persen + '%): Rp ' +
+            hasil.nominalJasaRp.toLocaleString('id-ID') +
+            ' = *' + hasil.biayaCoin + ' Coin*\n\n' +
+            'Saldo R2Coin Anda sekarang: *' + hasil.saldoSetelah + ' Coin*';
+        kirimChatOtomatis('ID_TK2R_SA-0001', idOjek, isiO,
+            { jenisTransaksi: 'biaya-jasa-ojek',
+              idTransaksi: idOrder, biayaCoin: hasil.biayaCoin });
+    } catch (e) {}
+
+    catatAktivitasGlobal(idOjek, 'Selesaikan Order Ojek',
+        'Order ' + idOrder + ' selesai. Biaya jasa ' + hasil.biayaCoin +
+        ' Coin dipotong (sisa ' + hasil.saldoSetelah + ' Coin).');
+
+    return { sukses: true, idOrder: idOrder,
+             ongkosRp: parseFloat(ongkosRp) || 0,
+             biayaCoin: hasil.biayaCoin,
+             nominalJasaRp: hasil.nominalJasaRp,
+             persen: hasil.persen,
+             saldoOjekSetelah: hasil.saldoSetelah };
+}
+// ============================================================
+// AKHIR FASE T2 — BIAYA JASA OJEK
+// ============================================================
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
