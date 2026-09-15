@@ -9834,7 +9834,799 @@ function previewFotoProdukGlobal(input) {
 }
 
 // ============================================================
-// AKHIR FASE 2 – FUNGSI GLOBAL MANAJEMEN PRODUK
+// FASE G1 – FUNGSI GLOBAL GIF SAWERAN (BLOK R 01.0 219-237)
+// ------------------------------------------------------------
+// Katalog gift master, stok GIF per user, kirim GIF, konversi.
+// Fee platform default 25% (bisa diubah SA).
+// Penerima dapat 75% saat konversi.
+//
+// Struktur data localStorage:
+//   katalogGiftSawer              : master katalog (array)
+//   stokGif_<idUser>              : stok GIF per user
+//   riwayatGif_<idUser>           : riwayat sawer masuk/keluar
+//   riwayatKonversiGif_<idUser>   : riwayat konversi
+// ============================================================
+
+
+// ============================================================
+// BLOK R 01.0 (219) – GET FEE PLATFORM GIFT SAWERAN
+// ------------------------------------------------------------
+// Ambil persentase fee dari settingEkonomiCoin.feePlatformGift
+// Default 25%. Dibatasi 0-100.
+// ============================================================
+function getFeePlatformGift() {
+    var setting = getSettingEkonomiGlobal();
+    var fee = parseFloat(setting.feePlatformGift);
+    if (isNaN(fee) || fee < 0) fee = 25;
+    if (fee > 100) fee = 100;
+    return fee;
+}
+
+
+// ============================================================
+// BLOK R 01.0 (220) – LOAD KATALOG GIFT SAWERAN
+// ============================================================
+function loadKatalogGiftSawer() {
+    try {
+        var stored = localStorage.getItem('katalogGiftSawer');
+        if (!stored) return [];
+        var data = JSON.parse(stored);
+        return Array.isArray(data) ? data : [];
+    } catch (e) {
+        console.warn('loadKatalogGiftSawer parse error:', e);
+        return [];
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (221) – SIMPAN KATALOG GIFT SAWERAN
+// ============================================================
+function simpanKatalogGiftSawer(data) {
+    try {
+        localStorage.setItem('katalogGiftSawer', JSON.stringify(data || []));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (222) – GET GIFT SAWERAN BY ID
+// ============================================================
+function getGiftSawerById(giftId) {
+    if (!giftId) return null;
+    var katalog = loadKatalogGiftSawer();
+    return katalog.find(function(g) { return g.id === giftId; }) || null;
+}
+
+
+// ============================================================
+// BLOK R 01.0 (223) – TAMBAH GIFT SAWERAN (SUPERADMIN)
+// ------------------------------------------------------------
+// rasioTukar: butuh berapa item untuk dapat 1 R2Coin
+// Contoh: rasioTukar=3 -> 3 Mawar = 1 R2Coin
+// ============================================================
+function tambahGiftSawer(data) {
+    var idUser = getIdUserAktif();
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+    data = data || {};
+
+    var nama = (data.nama || '').trim();
+    if (!nama) return { sukses: false, pesan: 'Nama gift wajib diisi.' };
+
+    var rasioTukar = parseInt(data.rasioTukar, 10);
+    if (!rasioTukar || rasioTukar <= 0) {
+        return { sukses: false, pesan: 'Rasio tukar harus > 0.' };
+    }
+
+    var katalog = loadKatalogGiftSawer();
+    var dup = katalog.some(function(g) {
+        return (g.nama || '').toLowerCase() === nama.toLowerCase();
+    });
+    if (dup) return { sukses: false, pesan: 'Nama gift sudah ada.' };
+
+    var idBaru = generateKodeUnik('GIFT');
+    var now = new Date().toISOString();
+
+    var giftBaru = {
+        id:          idBaru,
+        icon:        data.icon || '🎁',
+        nama:        nama,
+        videoUrl:    data.videoUrl || '',
+        kategori:    data.kategori || 'Lainnya',
+        rasioTukar:  rasioTukar,
+        status:      data.status || 'Aktif',
+        createdBy:   idUser,
+        createdAt:   now,
+        updatedBy:   null,
+        updatedAt:   null
+    };
+
+    katalog.push(giftBaru);
+    simpanKatalogGiftSawer(katalog);
+
+    catatAktivitasGlobal(idUser, 'Tambah Gift Saweran',
+        'Gift: ' + nama + ' (ID: ' + idBaru + ')');
+
+    return { sukses: true, id: idBaru, gift: giftBaru };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (224) – UPDATE GIFT SAWERAN (SUPERADMIN)
+// ------------------------------------------------------------
+// Bisa edit: nama, icon, videoUrl, kategori, rasioTukar, status
+// ============================================================
+function updateGiftSawer(id, data) {
+    var idUser = getIdUserAktif();
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+    if (!id) return { sukses: false, pesan: 'ID gift tidak valid.' };
+    data = data || {};
+
+    var katalog = loadKatalogGiftSawer();
+    var idx = katalog.findIndex(function(g) { return g.id === id; });
+    if (idx === -1) return { sukses: false, pesan: 'Gift tidak ditemukan.' };
+
+    var g = katalog[idx];
+
+    if (data.nama !== undefined) {
+        var namaBaru = String(data.nama).trim();
+        if (!namaBaru) return { sukses: false, pesan: 'Nama tidak boleh kosong.' };
+        var dup = katalog.some(function(x) {
+            return x.id !== id && (x.nama || '').toLowerCase() === namaBaru.toLowerCase();
+        });
+        if (dup) return { sukses: false, pesan: 'Nama gift sudah ada.' };
+        g.nama = namaBaru;
+    }
+
+    if (data.rasioTukar !== undefined) {
+        var rasioBaru = parseInt(data.rasioTukar, 10);
+        if (!rasioBaru || rasioBaru <= 0) {
+            return { sukses: false, pesan: 'Rasio tukar harus > 0.' };
+        }
+        g.rasioTukar = rasioBaru;
+    }
+
+    if (data.icon !== undefined)     g.icon     = data.icon || '🎁';
+    if (data.videoUrl !== undefined) g.videoUrl = data.videoUrl || '';
+    if (data.kategori !== undefined) g.kategori = data.kategori || 'Lainnya';
+    if (data.status !== undefined)   g.status   = data.status || 'Aktif';
+
+    g.updatedBy = idUser;
+    g.updatedAt = new Date().toISOString();
+
+    simpanKatalogGiftSawer(katalog);
+
+    catatAktivitasGlobal(idUser, 'Edit Gift Saweran',
+        'Gift: ' + g.nama + ' (ID: ' + id + ')');
+
+    return { sukses: true, gift: g };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (225) – HAPUS GIFT SAWERAN (SUPERADMIN)
+// ============================================================
+function hapusGiftSawer(id) {
+    var idUser = getIdUserAktif();
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+    if (!id) return { sukses: false, pesan: 'ID gift tidak valid.' };
+
+    var katalog = loadKatalogGiftSawer();
+    var target = katalog.find(function(g) { return g.id === id; });
+    if (!target) return { sukses: false, pesan: 'Gift tidak ditemukan.' };
+
+    katalog = katalog.filter(function(g) { return g.id !== id; });
+    simpanKatalogGiftSawer(katalog);
+
+    catatAktivitasGlobal(idUser, 'Hapus Gift Saweran',
+        'Gift: ' + target.nama + ' (ID: ' + id + ')');
+
+    return { sukses: true };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (226) – LOAD STOK GIF USER
+// ============================================================
+function loadStokGifUser(idUser) {
+    if (!idUser) return [];
+    try {
+        var stored = localStorage.getItem('stokGif_' + idUser);
+        if (!stored) return [];
+        var data = JSON.parse(stored);
+        return Array.isArray(data) ? data : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (227) – SIMPAN STOK GIF USER
+// ============================================================
+function simpanStokGifUser(idUser, data) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    try {
+        localStorage.setItem('stokGif_' + idUser, JSON.stringify(data || []));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (228) – GET JUMLAH STOK GIF USER PER GIFT
+// ============================================================
+function getStokGifUser(idUser, giftId) {
+    if (!idUser || !giftId) return 0;
+    var list = loadStokGifUser(idUser);
+    var item = list.find(function(s) { return s.giftId === giftId; });
+    return item ? (parseInt(item.jumlah, 10) || 0) : 0;
+}
+
+
+// ============================================================
+// BLOK R 01.0 (229) – TAMBAH STOK GIF USER
+// ============================================================
+function tambahStokGif(idUser, giftId, jumlah, meta) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (!giftId) return { sukses: false, pesan: 'ID gift tidak valid.' };
+
+    jumlah = parseInt(jumlah, 10) || 0;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var gift = getGiftSawerById(giftId);
+    if (!gift) return { sukses: false, pesan: 'Gift tidak ditemukan di katalog.' };
+
+    var list = loadStokGifUser(idUser);
+    var idx = list.findIndex(function(s) { return s.giftId === giftId; });
+
+    if (idx !== -1) {
+        list[idx].jumlah = (parseInt(list[idx].jumlah, 10) || 0) + jumlah;
+        list[idx].updatedAt = new Date().toISOString();
+    } else {
+        list.push({
+            giftId:    giftId,
+            namaGift:  gift.nama,
+            icon:      gift.icon,
+            jumlah:    jumlah,
+            createdAt: new Date().toISOString(),
+            updatedAt: null,
+            meta:      meta || {}
+        });
+    }
+
+    simpanStokGifUser(idUser, list);
+    return { sukses: true, stokSekarang: getStokGifUser(idUser, giftId) };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (230) – KURANGI STOK GIF USER
+// ============================================================
+function kurangiStokGif(idUser, giftId, jumlah) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (!giftId) return { sukses: false, pesan: 'ID gift tidak valid.' };
+
+    jumlah = parseInt(jumlah, 10) || 0;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var list = loadStokGifUser(idUser);
+    var idx = list.findIndex(function(s) { return s.giftId === giftId; });
+    if (idx === -1) return { sukses: false, pesan: 'Gift tidak ada di stok.' };
+
+    var stokSekarang = parseInt(list[idx].jumlah, 10) || 0;
+    if (stokSekarang < jumlah) {
+        return {
+            sukses: false,
+            pesan: 'Stok tidak cukup. Tersedia: ' + stokSekarang + ', diminta: ' + jumlah
+        };
+    }
+
+    list[idx].jumlah = stokSekarang - jumlah;
+    list[idx].updatedAt = new Date().toISOString();
+
+    if (list[idx].jumlah === 0) {
+        list.splice(idx, 1);
+    }
+
+    simpanStokGifUser(idUser, list);
+    return { sukses: true, stokSekarang: getStokGifUser(idUser, giftId) };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (231) – HITUNG R2COIN KOTOR DARI GIF
+// ------------------------------------------------------------
+// Rumus: floor(jumlahGif / rasioTukar)
+// Contoh: 10 Mawar (rasio 3) -> floor(10/3) = 3 R2Coin
+// ============================================================
+function hitungR2CoinKotorDariGif(giftId, jumlahGif) {
+    var gift = getGiftSawerById(giftId);
+    if (!gift) return 0;
+
+    var rasio = parseInt(gift.rasioTukar, 10) || 1;
+    if (rasio <= 0) return 0;
+
+    jumlahGif = parseInt(jumlahGif, 10) || 0;
+    if (jumlahGif <= 0) return 0;
+
+    return Math.floor(jumlahGif / rasio);
+}
+
+
+// ============================================================
+// BLOK R 01.0 (232) – HITUNG R2COIN NET (SETELAH FEE)
+// ------------------------------------------------------------
+// Fee default 25% -> penerima dapat 75%
+// ============================================================
+function hitungR2CoinNetDariGif(giftId, jumlahGif) {
+    var kotor = hitungR2CoinKotorDariGif(giftId, jumlahGif);
+    if (kotor <= 0) return 0;
+
+    var fee = getFeePlatformGift();
+    var net = kotor * (100 - fee) / 100;
+    return Math.round(net * 100) / 100;
+}
+
+
+// ============================================================
+// BLOK R 01.0 (233) – KIRIM GIF SAWERAN
+// ------------------------------------------------------------
+// Alur:
+//   1. Validasi semua input
+//   2. Hitung kotor = floor(jumlah / rasio)
+//   3. Cek saldo pengirim
+//   4. Potong saldo pengirim
+//   5. Tambah stok GIF ke penerima
+//   6. Catat riwayat (keluar & masuk)
+//   7. Kirim chat otomatis
+//   8. Rollback kalau ada yang gagal
+// ============================================================
+function kirimGiftSawer(idPengirim, idPenerima, giftId, jumlahGif, catatan) {
+    if (!idPengirim || !idPenerima) {
+        return { sukses: false, pesan: 'ID pengirim/penerima tidak valid.' };
+    }
+    if (idPengirim === idPenerima) {
+        return { sukses: false, pesan: 'Tidak bisa kirim gift ke diri sendiri.' };
+    }
+
+    var gift = getGiftSawerById(giftId);
+    if (!gift) return { sukses: false, pesan: 'Gift tidak ditemukan.' };
+    if (gift.status !== 'Aktif') return { sukses: false, pesan: 'Gift sedang tidak aktif.' };
+
+    jumlahGif = parseInt(jumlahGif, 10) || 0;
+    if (jumlahGif <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var pengirim = getDataIdUser(idPengirim);
+    var penerima = getDataIdUser(idPenerima);
+    if (!pengirim) return { sukses: false, pesan: 'Pengirim tidak ditemukan.' };
+    if (!penerima) return { sukses: false, pesan: 'Penerima tidak ditemukan.' };
+
+    var kotor = hitungR2CoinKotorDariGif(giftId, jumlahGif);
+    if (kotor <= 0) {
+        return {
+            sukses: false,
+            pesan: 'Jumlah tidak cukup. Minimal ' + gift.rasioTukar +
+                   ' ' + gift.nama + ' untuk 1 R2Coin.'
+        };
+    }
+
+    var saldoPengirim = getSaldoDompet(idPengirim);
+    if (saldoPengirim < kotor) {
+        return {
+            sukses: false,
+            pesan: 'Saldo tidak cukup. Butuh ' + kotor + ' R2Coin, ' +
+                   'saldo: ' + saldoPengirim + ' R2Coin.'
+        };
+    }
+
+    var rasio = parseInt(gift.rasioTukar, 10) || 1;
+    var jumlahTerpakai = kotor * rasio;
+    var sisaTidakTerpakai = jumlahGif - jumlahTerpakai;
+
+    // 1. Potong saldo pengirim
+    var hasilDebit = kurangSaldoDompet(
+        idPengirim, kotor,
+        'Kirim gift ' + jumlahTerpakai + ' ' + gift.nama + ' ke ' +
+        (penerima.nama || idPenerima),
+        {
+            tipeTransaksi: 'gift-sawer-keluar',
+            giftId:        giftId,
+            giftNama:      gift.nama,
+            jumlahGif:     jumlahTerpakai,
+            keUser:        idPenerima,
+            keRole:        penerima.role
+        }
+    );
+    if (!hasilDebit.sukses) {
+        return { sukses: false, pesan: 'Gagal potong saldo: ' + hasilDebit.pesan };
+    }
+
+    // 2. Tambah stok GIF ke penerima
+    var hasilStok = tambahStokGif(
+        idPenerima, giftId, jumlahTerpakai,
+        { dariUser: idPengirim, dariNama: pengirim.nama }
+    );
+    if (!hasilStok.sukses) {
+        tambahSaldoDompet(idPengirim, kotor,
+            'Rollback: gagal tambah stok penerima',
+            { tipeTransaksi: 'rollback' });
+        return { sukses: false, pesan: 'Gagal tambah stok: ' + hasilStok.pesan };
+    }
+
+    // 3. Catat riwayat
+    var now = new Date().toISOString();
+    var idRiwayat = generateKodeUnik('GIFLOG');
+
+    _catatRiwayatGif(idPengirim, {
+        id:         idRiwayat + '-OUT',
+        tipe:       'keluar',
+        giftId:     giftId,
+        namaGift:   gift.nama,
+        icon:       gift.icon,
+        jumlah:     jumlahTerpakai,
+        r2coin:     kotor,
+        dariUser:   idPengirim,
+        dariNama:   pengirim.nama || '-',
+        keUser:     idPenerima,
+        keNama:     penerima.nama || '-',
+        catatan:    catatan || '',
+        tanggal:    now
+    });
+
+    _catatRiwayatGif(idPenerima, {
+        id:         idRiwayat + '-IN',
+        tipe:       'masuk',
+        giftId:     giftId,
+        namaGift:   gift.nama,
+        icon:       gift.icon,
+        jumlah:     jumlahTerpakai,
+        r2coin:     kotor,
+        dariUser:   idPengirim,
+        dariNama:   pengirim.nama || '-',
+        keUser:     idPenerima,
+        keNama:     penerima.nama || '-',
+        catatan:    catatan || '',
+        tanggal:    now
+    });
+
+    // 4. Kirim chat otomatis ke penerima
+    try {
+        var isiChat = '🎁 *' + (pengirim.nama || 'User') + '* mengirim ' +
+                      gift.icon + ' *' + gift.nama + '* x' + jumlahTerpakai +
+                      (catatan ? '\n\n"' + catatan + '"' : '') +
+                      '\n\nNilai: ' + kotor + ' R2Coin' +
+                      '\nCek di Dompet R2Coin untuk konversi.';
+
+        kirimChatOtomatis(
+            idPengirim, idPenerima, isiChat,
+            {
+                jenisTransaksi: 'gift-sawer',
+                giftId:         giftId,
+                giftNama:       gift.nama,
+                giftIcon:       gift.icon,
+                jumlahGif:      jumlahTerpakai,
+                r2coin:         kotor
+            }
+        );
+    } catch (e) {
+        console.warn('kirimGiftSawer: gagal kirim chat notif', e);
+    }
+
+    catatAktivitasGlobal(idPengirim, 'Kirim Gift Saweran',
+        'Kirim ' + jumlahTerpakai + ' ' + gift.nama + ' (' + kotor +
+        ' R2Coin) ke ' + (penerima.nama || idPenerima));
+
+    return {
+        sukses: true,
+        idRiwayat: idRiwayat,
+        giftId: giftId,
+        jumlahTerkirim: jumlahTerpakai,
+        r2coinDibayar: kotor,
+        sisaTidakTerpakai: sisaTidakTerpakai,
+        saldoPengirimSetelah: getSaldoDompet(idPengirim)
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (233b) – HELPER: CATAT RIWAYAT GIF
+// ============================================================
+function _catatRiwayatGif(idUser, entri) {
+    if (!idUser) return;
+    try {
+        var list = [];
+        var stored = localStorage.getItem('riwayatGif_' + idUser);
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+        list.unshift(entri);
+        if (list.length > 500) list = list.slice(0, 500);
+        localStorage.setItem('riwayatGif_' + idUser, JSON.stringify(list));
+    } catch (e) {
+        console.warn('_catatRiwayatGif error:', e);
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (234) – KONVERSI GIF KE R2COIN
+// ------------------------------------------------------------
+// Alur:
+//   1. Validasi stok
+//   2. Hitung kotor = floor(jumlah / rasio)
+//   3. Hitung net = kotor * (100 - fee) / 100
+//   4. Kurangi stok GIF
+//   5. Tambah saldo R2Coin (net)
+//   6. Catat riwayat
+// ============================================================
+function konversiGifKeR2Coin(idUser, giftId, jumlahGif) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (!giftId) return { sukses: false, pesan: 'ID gift tidak valid.' };
+
+    var gift = getGiftSawerById(giftId);
+    if (!gift) return { sukses: false, pesan: 'Gift tidak ditemukan.' };
+
+    jumlahGif = parseInt(jumlahGif, 10) || 0;
+    if (jumlahGif <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var stokTersedia = getStokGifUser(idUser, giftId);
+    if (stokTersedia < jumlahGif) {
+        return {
+            sukses: false,
+            pesan: 'Stok tidak cukup. Tersedia: ' + stokTersedia + ', diminta: ' + jumlahGif
+        };
+    }
+
+    var kotor = hitungR2CoinKotorDariGif(giftId, jumlahGif);
+    if (kotor <= 0) {
+        return {
+            sukses: false,
+            pesan: 'Jumlah tidak cukup. Minimal ' + gift.rasioTukar +
+                   ' ' + gift.nama + ' untuk 1 R2Coin.'
+        };
+    }
+
+    var rasio = parseInt(gift.rasioTukar, 10) || 1;
+    var jumlahTerpakai = kotor * rasio;
+    var fee = getFeePlatformGift();
+    var net = Math.round(kotor * (100 - fee) / 100 * 100) / 100;
+
+    var hasilKurang = kurangiStokGif(idUser, giftId, jumlahTerpakai);
+    if (!hasilKurang.sukses) return hasilKurang;
+
+    var hasilSaldo = tambahSaldoDompet(
+        idUser, net,
+        'Konversi ' + jumlahTerpakai + ' ' + gift.nama + ' ke R2Coin (fee ' + fee + '%)',
+        {
+            tipeTransaksi: 'konversi-gif',
+            giftId:        giftId,
+            giftNama:      gift.nama,
+            jumlahGif:     jumlahTerpakai,
+            r2coinKotor:   kotor,
+            fee:           fee
+        }
+    );
+
+    if (!hasilSaldo.sukses) {
+        tambahStokGif(idUser, giftId, jumlahTerpakai, { rollback: true });
+        return { sukses: false, pesan: 'Gagal tambah saldo: ' + hasilSaldo.pesan };
+    }
+
+    var now = new Date().toISOString();
+    var idKonversi = generateKodeUnik('KONV');
+
+    _catatRiwayatKonversiGif(idUser, {
+        id:             idKonversi,
+        giftId:         giftId,
+        namaGift:       gift.nama,
+        icon:           gift.icon,
+        jumlahGif:      jumlahTerpakai,
+        r2coinKotor:    kotor,
+        fee:            fee,
+        r2coinDiterima: net,
+        tanggal:        now
+    });
+
+    _catatRiwayatGif(idUser, {
+        id:         idKonversi + '-KONV',
+        tipe:       'konversi',
+        giftId:     giftId,
+        namaGift:   gift.nama,
+        icon:       gift.icon,
+        jumlah:     jumlahTerpakai,
+        r2coin:     net,
+        catatan:    'Konversi ke R2Coin (fee ' + fee + '%)',
+        tanggal:    now
+    });
+
+    catatAktivitasGlobal(idUser, 'Konversi GIF',
+        'Konversi ' + jumlahTerpakai + ' ' + gift.nama + ' -> ' + net +
+        ' R2Coin (fee ' + fee + '%)');
+
+    return {
+        sukses:         true,
+        idKonversi:     idKonversi,
+        jumlahTerpakai: jumlahTerpakai,
+        r2coinKotor:    kotor,
+        fee:            fee,
+        r2coinDiterima: net,
+        saldoSetelah:   getSaldoDompet(idUser)
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (234b) – HELPER: CATAT RIWAYAT KONVERSI
+// ============================================================
+function _catatRiwayatKonversiGif(idUser, entri) {
+    if (!idUser) return;
+    try {
+        var list = [];
+        var stored = localStorage.getItem('riwayatKonversiGif_' + idUser);
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+        list.unshift(entri);
+        if (list.length > 500) list = list.slice(0, 500);
+        localStorage.setItem('riwayatKonversiGif_' + idUser, JSON.stringify(list));
+    } catch (e) {
+        console.warn('_catatRiwayatKonversiGif error:', e);
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (235) – GET RIWAYAT GIF USER
+// ============================================================
+function getRiwayatGifUser(idUser, limit) {
+    if (!idUser) return [];
+    try {
+        var stored = localStorage.getItem('riwayatGif_' + idUser);
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        if (!Array.isArray(list)) return [];
+        if (limit && limit > 0) list = list.slice(0, limit);
+        return list;
+    } catch (e) { return []; }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (236) – GET RIWAYAT KONVERSI GIF USER
+// ============================================================
+function getRiwayatKonversiGif(idUser, limit) {
+    if (!idUser) return [];
+    try {
+        var stored = localStorage.getItem('riwayatKonversiGif_' + idUser);
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        if (!Array.isArray(list)) return [];
+        if (limit && limit > 0) list = list.slice(0, limit);
+        return list;
+    } catch (e) { return []; }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (237) – SEEDER KATALOG GIFT DEFAULT (MANUAL)
+// ------------------------------------------------------------
+// ⚠️ TIDAK AUTO-JALAN. Panggil manual dari Console kalau butuh.
+//
+// Cara pakai:
+//   seedKatalogGiftSawerDefault();
+//
+// Setelah dipanggil:
+//   - 40 gift default masuk ke katalogGiftSawer
+//   - Flag 'seedingKatalogGiftSawerV1' diset true
+//   - Panggilan berikutnya tidak akan duplicate
+//
+// Untuk re-seed (kalau katalog ingin reset):
+//   localStorage.removeItem('seedingKatalogGiftSawerV1');
+//   seedKatalogGiftSawerDefault();
+// ============================================================
+function seedKatalogGiftSawerDefault() {
+    var FLAG = 'seedingKatalogGiftSawerV1';
+    if (localStorage.getItem(FLAG) === 'true') {
+        return { sukses: false, pesan: 'Seeder sudah pernah dijalankan.' };
+    }
+
+    var existing = loadKatalogGiftSawer();
+    if (existing.length > 0) {
+        localStorage.setItem(FLAG, 'true');
+        return { sukses: false, pesan: 'Katalog sudah ada isinya (' + existing.length + ' gift).' };
+    }
+
+    var DEFAULTS = [
+        // ── Emosi ──
+        { icon: '❤️', nama: 'Hati',              kategori: 'Emosi',     rasioTukar: 5 },
+        { icon: '💖', nama: 'Love',              kategori: 'Emosi',     rasioTukar: 1 },
+        { icon: '💕', nama: 'Love Berpasangan',  kategori: 'Emosi',     rasioTukar: 2 },
+        { icon: '💘', nama: 'Love Arrow',        kategori: 'Emosi',     rasioTukar: 3 },
+        { icon: '😍', nama: 'Sayang',            kategori: 'Emosi',     rasioTukar: 4 },
+        { icon: '🥰', nama: 'Cinta Banget',      kategori: 'Emosi',     rasioTukar: 5 },
+        { icon: '👍', nama: 'Jempol',            kategori: 'Emosi',     rasioTukar: 10 },
+        { icon: '🔥', nama: 'Keren',             kategori: 'Emosi',     rasioTukar: 10 },
+        { icon: '⭐', nama: 'Bintang',           kategori: 'Emosi',     rasioTukar: 20 },
+        { icon: '💯', nama: 'Sempurna',          kategori: 'Emosi',     rasioTukar: 25 },
+
+        // ── Bunga ──
+        { icon: '🌷', nama: 'Tulip',             kategori: 'Bunga',     rasioTukar: 15 },
+        { icon: '🌹', nama: 'Mawar',             kategori: 'Bunga',     rasioTukar: 3 },
+        { icon: '🌺', nama: 'Bunga Kamboja',     kategori: 'Bunga',     rasioTukar: 25 },
+        { icon: '🌻', nama: 'Bunga Matahari',    kategori: 'Bunga',     rasioTukar: 30 },
+        { icon: '💐', nama: 'Buket Bunga',       kategori: 'Bunga',     rasioTukar: 50 },
+        { icon: '🌸', nama: 'Sakura',            kategori: 'Bunga',     rasioTukar: 70 },
+        { icon: '🏵️', nama: 'Bunga Emas',        kategori: 'Bunga',     rasioTukar: 100 },
+
+        // ── Makanan ──
+        { icon: '☕', nama: 'Kopi',              kategori: 'Makanan',   rasioTukar: 10 },
+        { icon: '🍵', nama: 'Teh',               kategori: 'Makanan',   rasioTukar: 12 },
+        { icon: '🍰', nama: 'Kue',               kategori: 'Makanan',   rasioTukar: 20 },
+        { icon: '🍕', nama: 'Pizza',             kategori: 'Makanan',   rasioTukar: 30 },
+        { icon: '🍔', nama: 'Burger',            kategori: 'Makanan',   rasioTukar: 40 },
+        { icon: '🎂', nama: 'Kue Ulang Tahun',   kategori: 'Makanan',   rasioTukar: 80 },
+        { icon: '🥂', nama: 'Toast',             kategori: 'Makanan',   rasioTukar: 120 },
+        { icon: '🍾', nama: 'Sampanye',          kategori: 'Makanan',   rasioTukar: 200 },
+
+        // ── Gaming ──
+        { icon: '🎮', nama: 'Game Pad',          kategori: 'Gaming',    rasioTukar: 40 },
+        { icon: '🎯', nama: 'Target',            kategori: 'Gaming',    rasioTukar: 60 },
+        { icon: '🏆', nama: 'Trofi',             kategori: 'Gaming',    rasioTukar: 120 },
+        { icon: '🎁', nama: 'Kado',              kategori: 'Gaming',    rasioTukar: 160 },
+        { icon: '🎰', nama: 'Jackpot',           kategori: 'Gaming',    rasioTukar: 200 },
+
+        // ── Kendaraan ──
+        { icon: '🛵', nama: 'Motor',             kategori: 'Kendaraan', rasioTukar: 200 },
+        { icon: '🚗', nama: 'Mobil',             kategori: 'Kendaraan', rasioTukar: 400 },
+        { icon: '🚚', nama: 'Truk',              kategori: 'Kendaraan', rasioTukar: 800 },
+        { icon: '✈️', nama: 'Pesawat',           kategori: 'Kendaraan', rasioTukar: 2000 },
+        { icon: '🚀', nama: 'Roket',             kategori: 'Kendaraan', rasioTukar: 4000 },
+
+        // ── Fashion ──
+        { icon: '💍', nama: 'Cincin',            kategori: 'Fashion',   rasioTukar: 200 },
+        { icon: '💎', nama: 'Berlian',           kategori: 'Fashion',   rasioTukar: 400 },
+        { icon: '👑', nama: 'Mahkota',           kategori: 'Fashion',   rasioTukar: 1000 },
+        { icon: '⌚', nama: 'Jam Tangan',        kategori: 'Fashion',   rasioTukar: 600 },
+
+        // ── VIP ──
+        { icon: '🏰', nama: 'Kastil',            kategori: 'VIP',       rasioTukar: 10000 },
+        { icon: '🏝️', nama: 'Pulau Pribadi',     kategori: 'VIP',       rasioTukar: 20000 }
+    ];
+
+    var now = new Date().toISOString();
+    var katalog = DEFAULTS.map(function(d, i) {
+        var nomor = String(i + 1).padStart(4, '0');
+        return {
+            id:         'GIFT-' + nomor,
+            icon:       d.icon,
+            nama:       d.nama,
+            videoUrl:   '',
+            kategori:   d.kategori,
+            rasioTukar: d.rasioTukar,
+            status:     'Aktif',
+            createdBy:  'SEEDER_GIFT_V1',
+            createdAt:  now,
+            updatedBy:  null,
+            updatedAt:  null
+        };
+    });
+
+    simpanKatalogGiftSawer(katalog);
+    localStorage.setItem(FLAG, 'true');
+
+    return { sukses: true, jumlah: katalog.length };
+}
+
+// ============================================================
+// AKHIR FASE G1 – FUNGSI GLOBAL GIF SAWERAN
 // ============================================================
 
 // ============================================================
@@ -10782,103 +11574,365 @@ function tampilkanNotifDaftar(pesan, tipe) {
 			</div>
 			<!-- ===== AKHIR BLOK 5 ===== -->
 			
-			<!-- ============================================================ -->
+<!-- ============================================================ -->
 <!-- ===== BLOK R 10.45 – SETTING EKONOMI R2COIN (HTML) ===== -->
+<!-- ============================================================ -->
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.45 – SETTING EKONOMI R2COIN (HTML) ===== -->
+<!-- ===== REVISI: Tabs (Setting Ekonomi + Katalog Gift) ===== -->
 <!-- ============================================================ -->
 <template id="settingEkonomiCoinContainer">
     <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ HEADER ══════════ -->
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h4 class="fw-bold text-white"><i class="fas fa-sliders-h me-2"></i>Setting Ekonomi R2Coin</h4>
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-sliders-h me-2"></i>Setting Ekonomi R2Coin
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Pengaturan ekonomi, harga coin, katalog gift & fee platform.
+                </small>
+            </div>
             <button class="btn btn-outline-light btn-back-dashboard" onclick="kembaliKeDasbor()">
                 <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
             </button>
         </div>
 
-        <!-- Kartu Informasi -->
-        <div class="card border-0 shadow mb-4">
-            <div class="card-header text-white" style="background-color: #17a2b8;">
-                <i class="fas fa-info-circle me-2"></i>Informasi Ekonomi Coin
-            </div>
-            <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <div class="alert alert-light border">
-                            <strong>Minimal Belanja untuk Mendapat 1 Coin</strong><br>
-                            Rp <span id="infoMinBelanja" class="fw-bold">50.000</span>
-                        </div>
+        <!-- ══════════ TAB NAVIGASI ══════════ -->
+        <ul class="nav nav-tabs mb-3" id="tabsSettingEkonomi" role="tablist">
+            <li class="nav-item" role="presentation">
+                <a class="nav-link active" data-bs-toggle="tab"
+                   href="#tabEkonomiUtama" role="tab"
+                   onclick="renderSettingEkonomiCoin()">
+                    <i class="fas fa-coins me-1"></i> Ekonomi Utama
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" data-bs-toggle="tab"
+                   href="#tabKatalogGift" role="tab"
+                   onclick="renderKatalogGiftSawerSA()">
+                    <i class="fas fa-gift me-1"></i> Katalog Gift & Fee
+                    <span class="badge bg-warning text-dark ms-1" id="badgeJumlahGiftSA">0</span>
+                </a>
+            </li>
+        </ul>
+
+        <!-- ══════════ KONTEN TAB ══════════ -->
+        <div class="tab-content">
+
+            <!-- ── TAB 1: EKONOMI UTAMA (EXISTING) ── -->
+            <div class="tab-pane fade show active" id="tabEkonomiUtama" role="tabpanel">
+
+                <!-- Kartu Informasi -->
+                <div class="card border-0 shadow mb-4">
+                    <div class="card-header text-white" style="background-color: #17a2b8;">
+                        <i class="fas fa-info-circle me-2"></i>Informasi Ekonomi Coin
                     </div>
-                    <div class="col-md-6">
-                        <div class="alert alert-light border">
-                            <strong>Coin Wajib per Transaksi</strong><br>
-                            <span id="infoCoinWajib" class="fw-bold">1</span> Coin
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="alert alert-light border">
-                            <strong>Harga Jual Coin ke User</strong><br>
-                            Rp <span id="infoHargaJual" class="fw-bold">1.000</span> / Coin
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="alert alert-light border">
-                            <strong>Harga Beli Coin dari User</strong><br>
-                            Rp <span id="infoHargaBeli" class="fw-bold">750</span> / Coin
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <div class="alert alert-light border">
+                                    <strong>Minimal Belanja untuk Mendapat 1 Coin</strong><br>
+                                    Rp <span id="infoMinBelanja" class="fw-bold">50.000</span>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="alert alert-light border">
+                                    <strong>Coin Wajib per Transaksi</strong><br>
+                                    <span id="infoCoinWajib" class="fw-bold">1</span> Coin
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="alert alert-light border">
+                                    <strong>Harga Jual Coin ke User</strong><br>
+                                    Rp <span id="infoHargaJual" class="fw-bold">1.000</span> / Coin
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="alert alert-light border">
+                                    <strong>Harga Beli Coin dari User</strong><br>
+                                    Rp <span id="infoHargaBeli" class="fw-bold">750</span> / Coin
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
+
+                <!-- Kartu Pengaturan -->
+                <div class="card border-0 shadow" id="kartuEditSettingEkonomi">
+                    <div class="card-header text-white" style="background-color: #FF8C00;">
+                        <i class="fas fa-edit me-2"></i>Pengaturan Ekonomi (Khusus SuperAdmin)
+                    </div>
+                    <div class="card-body">
+                        <form id="formSettingEkonomiCoin" onsubmit="return simpanSettingEkonomiCoin(event)">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="fw-bold">Minimal Belanja untuk Mendapat 1 Coin (Rp)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">Rp</span>
+                                        <input type="number" id="inputMinBelanja" class="form-control" value="50000" min="1" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="fw-bold">Coin Wajib per Transaksi</label>
+                                    <div class="input-group">
+                                        <input type="number" id="inputCoinWajib" class="form-control" value="1" min="1" required>
+                                        <span class="input-group-text">Coin</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="fw-bold">Harga Jual Coin ke User (Rp/Coin)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">Rp</span>
+                                        <input type="number" id="inputHargaJual" class="form-control" value="1000" min="1" required>
+                                        <span class="input-group-text">/ Coin</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="fw-bold">Harga Beli Coin dari User (Rp/Coin)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">Rp</span>
+                                        <input type="number" id="inputHargaBeli" class="form-control" value="750" min="1" required>
+                                        <span class="input-group-text">/ Coin</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-4 d-grid">
+                                <button type="submit" class="btn btn-lg text-white fw-bold" style="background-color: #4CAF50;">
+                                    <i class="fas fa-save me-2"></i> Simpan Pengaturan
+                                </button>
+                            </div>
+                            <div id="notifSettingEkonomiCoin" class="alert d-none mt-3"></div>
+                        </form>
+                    </div>
+                </div>
+
             </div>
+
+            <!-- ── TAB 2: KATALOG GIFT & FEE (BARU) ── -->
+            <div class="tab-pane fade" id="tabKatalogGift" role="tabpanel">
+
+                <!-- Kartu Setting Fee -->
+                <div class="card border-0 shadow mb-4">
+                    <div class="card-header text-white" style="background-color: #6F42C1;">
+                        <i class="fas fa-percent me-2"></i>Fee Platform Gift Saweran
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-4">
+                                <label class="fw-bold">Fee Platform (%)</label>
+                                <div class="input-group">
+                                    <input type="number" id="inputFeePlatformGift" class="form-control"
+                                           value="25" min="0" max="100" step="1" required>
+                                    <span class="input-group-text">%</span>
+                                </div>
+                                <small class="text-muted">
+                                    Penerima dapat <span id="infoPenerimaDapatGift">75</span>% dari nilai konversi.
+                                </small>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="alert alert-light border mb-0 small">
+                                    <strong>Contoh:</strong><br>
+                                    Gift 10 R2Coin (kotor) → Penerima dapat
+                                    <strong id="infoContohNetGift">7,5</strong> R2Coin.
+                                </div>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                <button class="btn btn-purple text-white fw-bold w-100"
+                                        style="background-color:#6F42C1;"
+                                        onclick="simpanFeePlatformGift()">
+                                    <i class="fas fa-save me-1"></i> Simpan Fee
+                                </button>
+                            </div>
+                        </div>
+                        <div id="notifFeePlatform" class="alert d-none mt-3"></div>
+                    </div>
+                </div>
+
+                <!-- Kartu Katalog Gift -->
+                <div class="card border-0 shadow">
+                    <div class="card-header text-white d-flex justify-content-between align-items-center"
+                         style="background-color: #FF8C00;">
+                        <span>
+                            <i class="fas fa-gift me-2"></i>Katalog Gift Saweran
+                        </span>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-light btn-sm" onclick="jalankanSeederGiftSA()"
+                                    title="Isi 40 gift default (hanya jika katalog kosong)">
+                                <i class="fas fa-magic me-1"></i> Seed Default
+                            </button>
+                            <button class="btn btn-success btn-sm" onclick="bukaModalTambahGiftSA()">
+                                <i class="fas fa-plus me-1"></i> Tambah Gift
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+
+                        <!-- Filter & Pencarian -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-6">
+                                <input type="text" id="cariGiftSA" class="form-control"
+                                       placeholder="Cari nama gift / kategori..."
+                                       onkeyup="renderKatalogGiftSawerSA()">
+                            </div>
+                            <div class="col-md-3">
+                                <select id="filterKategoriGiftSA" class="form-select"
+                                        onchange="renderKatalogGiftSawerSA()">
+                                    <option value="">Semua Kategori</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3 text-end">
+                                <span class="badge bg-dark w-100 py-2" id="jumlahGiftSA">0 Gift</span>
+                            </div>
+                        </div>
+
+                        <!-- Tabel -->
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width:40px;">#</th>
+                                        <th style="width:70px;">Icon</th>
+                                        <th>Nama Gift</th>
+                                        <th>Kategori</th>
+                                        <th style="width:80px;">Video</th>
+                                        <th>Rasio Tukar</th>
+                                        <th style="width:100px;">Status</th>
+                                        <th style="width:180px;">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tabelKatalogGiftSA">
+                                    <tr>
+                                        <td colspan="8" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>
+                                            Memuat katalog...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                    </div>
+                </div>
+
+            </div>
+
         </div>
 
-        <!-- Kartu Pengaturan -->
-        <div class="card border-0 shadow" id="kartuEditSettingEkonomi">
-            <div class="card-header text-white" style="background-color: #FF8C00;">
-                <i class="fas fa-edit me-2"></i>Pengaturan Ekonomi (Khusus SuperAdmin)
+    </div>
+</template>
+
+<!-- ══════════ MODAL FORM GIFT (Tambah/Edit) ══════════ -->
+<div class="modal fade" id="modalFormGiftSA" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color:#FF8C00;">
+                <h5 class="modal-title" id="modalFormGiftSALabel">
+                    <i class="fas fa-gift me-2"></i>Tambah Gift Saweran
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
-            <div class="card-body">
-                <form id="formSettingEkonomiCoin" onsubmit="return simpanSettingEkonomiCoin(event)">
+            <div class="modal-body">
+                <form id="formGiftSA" onsubmit="return simpanFormGiftSA(event)">
+                    <input type="hidden" id="giftSAId" value="">
+                    <input type="hidden" id="giftSAVideoUrl" value="">
+
                     <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="fw-bold">Minimal Belanja untuk Mendapat 1 Coin (Rp)</label>
-                            <div class="input-group">
-                                <span class="input-group-text">Rp</span>
-                                <input type="number" id="inputMinBelanja" class="form-control" value="50000" min="1" required>
-                            </div>
+
+                        <div class="col-md-3">
+                            <label class="fw-bold">Icon <span class="text-danger">*</span></label>
+                            <input type="text" id="giftSAIcon" class="form-control text-center"
+                                   value="🎁" maxlength="8" required
+                                   style="font-size:24px;">
+                            <small class="text-muted">Emoji, contoh: ❤️ 🌹 🚀</small>
                         </div>
-                        <div class="col-md-6">
-                            <label class="fw-bold">Coin Wajib per Transaksi</label>
-                            <div class="input-group">
-                                <input type="number" id="inputCoinWajib" class="form-control" value="1" min="1" required>
-                                <span class="input-group-text">Coin</span>
-                            </div>
+
+                        <div class="col-md-5">
+                            <label class="fw-bold">Nama Gift <span class="text-danger">*</span></label>
+                            <input type="text" id="giftSANama" class="form-control"
+                                   placeholder="Contoh: Mawar, Love, Roket"
+                                   maxlength="50" required>
                         </div>
-                        <div class="col-md-6">
-                            <label class="fw-bold">Harga Jual Coin ke User (Rp/Coin)</label>
-                            <div class="input-group">
-                                <span class="input-group-text">Rp</span>
-                                <input type="number" id="inputHargaJual" class="form-control" value="1000" min="1" required>
-                                <span class="input-group-text">/ Coin</span>
-                            </div>
+
+                        <div class="col-md-4">
+                            <label class="fw-bold">Kategori</label>
+                            <select id="giftSAKategori" class="form-select">
+                                <option value="Emosi">Emosi</option>
+                                <option value="Bunga">Bunga</option>
+                                <option value="Makanan">Makanan</option>
+                                <option value="Gaming">Gaming</option>
+                                <option value="Kendaraan">Kendaraan</option>
+                                <option value="Fashion">Fashion</option>
+                                <option value="VIP">VIP</option>
+                                <option value="Lainnya">Lainnya</option>
+                            </select>
                         </div>
+
                         <div class="col-md-6">
-                            <label class="fw-bold">Harga Beli Coin dari User (Rp/Coin)</label>
+                            <label class="fw-bold">Rasio Tukar <span class="text-danger">*</span></label>
                             <div class="input-group">
-                                <span class="input-group-text">Rp</span>
-                                <input type="number" id="inputHargaBeli" class="form-control" value="750" min="1" required>
-                                <span class="input-group-text">/ Coin</span>
+                                <input type="number" id="giftSARasioTukar" class="form-control"
+                                       value="1" min="1" step="1" required>
+                                <span class="input-group-text">= 1 R2Coin</span>
                             </div>
+                            <small class="text-muted">
+                                Contoh: <strong>3</strong> → 3 <em>item</em> = 1 R2Coin
+                            </small>
                         </div>
+
+                        <div class="col-md-6">
+                            <label class="fw-bold">Status</label>
+                            <select id="giftSAStatus" class="form-select">
+                                <option value="Aktif">Aktif</option>
+                                <option value="Nonaktif">Nonaktif</option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-12">
+                            <label class="fw-bold">Video GIF (Opsional)</label>
+                            <input type="file" id="giftSAVideoFile" class="form-control"
+                                   accept="video/*" onchange="previewVideoGiftSA(this)">
+                            <small class="text-muted">
+                                Format MP4/WebM/GIF, maks 2MB. Kosongkan jika tidak ada.
+                            </small>
+                            <div id="giftSAPreviewVideo" class="mt-2"></div>
+                        </div>
+
                     </div>
 
-                    <div class="mt-4 d-grid">
-                        <button type="submit" class="btn btn-lg text-white fw-bold" style="background-color: #4CAF50;">
-                            <i class="fas fa-save me-2"></i> Simpan Pengaturan
-                        </button>
-                    </div>
-                    <div id="notifSettingEkonomiCoin" class="alert d-none mt-3"></div>
+                    <div id="notifFormGiftSA" class="alert d-none mt-3"></div>
                 </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="fas fa-times me-1"></i> Batal
+                </button>
+                <button type="button" class="btn btn-success" onclick="simpanFormGiftSA()">
+                    <i class="fas fa-save me-1"></i> Simpan Gift
+                </button>
             </div>
         </div>
     </div>
+</div>
+
+<!-- ══════════ MODAL PREVIEW VIDEO GIF ══════════ -->
+<div class="modal fade" id="modalPreviewVideoGiftSA" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color:#1976D2;">
+                <h5 class="modal-title" id="previewVideoGiftSATitle">
+                    <i class="fas fa-video me-2"></i>Preview Video Gift
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center" id="previewVideoGiftSABody">
+                <p class="text-muted">Memuat...</p>
+            </div>
+        </div>
+    </div>
+</div>
 </template>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 10.45 (HTML) ===== -->
@@ -10905,12 +11959,424 @@ function tampilkanSettingEkonomiCoin() {
     var container = document.getElementById('settingEkonomiCoinContainer');
     if (container) {
         konten.innerHTML = container.innerHTML;
-        renderSettingEkonomiCoin();  // global (68)
-        tutupMenu();                  // global (5)
+        renderSettingEkonomiCoin();
+        renderKatalogGiftSawerSA();
+        tutupMenu();
     } else {
         tampilkanPlaceholderMenu('Setting Ekonomi R2Coin', '10.45');
     }
 }
+
+// ============================================================
+// BLOK R 10.45.1 – JS KATALOG GIFT SAWERAN (SUPERADMIN)
+// ------------------------------------------------------------
+// UI wrapper untuk fungsi global FASE G1 (BLOK R 01.0 219-237)
+// ============================================================
+
+
+// ============================================================
+// BLOK R 10.45.1 (1) – RENDER KATALOG GIFT SAWERAN
+// ============================================================
+function renderKatalogGiftSawerSA() {
+    var tbody = document.getElementById('tabelKatalogGiftSA');
+    var badge = document.getElementById('badgeJumlahGiftSA');
+    var jumlah = document.getElementById('jumlahGiftSA');
+    if (!tbody) return;
+
+    var katalog = loadKatalogGiftSawer();
+
+    // Update badge sidebar & header
+    if (badge) badge.textContent = katalog.length;
+    if (jumlah) jumlah.textContent = katalog.length + ' Gift';
+
+    // Update info fee
+    var fee = getFeePlatformGift();
+    var elFeeInput = document.getElementById('inputFeePlatformGift');
+    if (elFeeInput) elFeeInput.value = fee;
+    var elPenerima = document.getElementById('infoPenerimaDapatGift');
+    if (elPenerima) elPenerima.textContent = (100 - fee);
+    var elContoh = document.getElementById('infoContohNetGift');
+    if (elContoh) elContoh.textContent = (10 * (100 - fee) / 100).toLocaleString('id-ID');
+
+    // Isi dropdown kategori
+    var kategoriSet = {};
+    katalog.forEach(function(g) {
+        if (g.kategori) kategoriSet[g.kategori] = true;
+    });
+    var elKategori = document.getElementById('filterKategoriGiftSA');
+    if (elKategori) {
+        var currentVal = elKategori.value;
+        var html = '<option value="">Semua Kategori</option>';
+        Object.keys(kategoriSet).sort().forEach(function(k) {
+            html += '<option value="' + k + '">' + k + '</option>';
+        });
+        elKategori.innerHTML = html;
+        elKategori.value = currentVal;
+    }
+
+    // Filter
+    var cari = (document.getElementById('cariGiftSA')?.value || '').toLowerCase().trim();
+    var filterKat = document.getElementById('filterKategoriGiftSA')?.value || '';
+
+    var dataFilter = katalog.filter(function(g) {
+        var matchCari = cari === '' ||
+            (g.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+            (g.kategori || '').toLowerCase().indexOf(cari) !== -1;
+        var matchKat = filterKat === '' || g.kategori === filterKat;
+        return matchCari && matchKat;
+    });
+
+    // Kosong
+    if (dataFilter.length === 0) {
+        tbody.innerHTML =
+            '<tr><td colspan="8" class="text-center text-muted py-4">' +
+            '<i class="fas fa-gift fa-2x d-block mb-2 opacity-50"></i>' +
+            (katalog.length === 0
+                ? 'Katalog kosong. Klik "Seed Default" untuk isi 40 gift bawaan, atau "Tambah Gift".'
+                : 'Tidak ada gift cocok dengan filter.') +
+            '</td></tr>';
+        return;
+    }
+
+    // Render baris
+    var html = '';
+    dataFilter.forEach(function(g, i) {
+        var statusBadge = g.status === 'Aktif'
+            ? '<span class="badge bg-success">Aktif</span>'
+            : '<span class="badge bg-secondary">Nonaktif</span>';
+
+        var videoBtn = g.videoUrl
+            ? '<button class="btn btn-sm btn-outline-info" ' +
+                'onclick="previewVideoGiftFull(\'' + g.id + '\')" title="Preview Video">' +
+                '<i class="fas fa-play"></i></button>'
+            : '<span class="text-muted small">-</span>';
+
+        var rasioText = g.rasioTukar + ' item = 1 R2Coin';
+
+        html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td class="text-center" style="font-size:24px;">' + (g.icon || '🎁') + '</td>' +
+            '<td><strong>' + (g.nama || '-') + '</strong></td>' +
+            '<td><span class="badge bg-secondary">' + (g.kategori || '-') + '</span></td>' +
+            '<td class="text-center">' + videoBtn + '</td>' +
+            '<td>' + rasioText + '</td>' +
+            '<td>' + statusBadge + '</td>' +
+            '<td>' +
+                '<button class="btn btn-sm btn-outline-primary me-1" ' +
+                    'onclick="bukaModalEditGiftSA(\'' + g.id + '\')" title="Edit">' +
+                    '<i class="fas fa-edit"></i></button>' +
+                '<button class="btn btn-sm btn-outline-warning me-1" ' +
+                    'onclick="toggleStatusGiftSA(\'' + g.id + '\')" title="Toggle Status">' +
+                    '<i class="fas fa-power-off"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger" ' +
+                    'onclick="hapusGiftSA(\'' + g.id + '\')" title="Hapus">' +
+                    '<i class="fas fa-trash"></i></button>' +
+            '</td>' +
+        '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (2) – SIMPAN FEE PLATFORM GIFT
+// ============================================================
+function simpanFeePlatformGift() {
+    var input = document.getElementById('inputFeePlatformGift');
+    var notif = document.getElementById('notifFeePlatform');
+    if (!input) return;
+
+    var feeBaru = parseFloat(input.value);
+    if (isNaN(feeBaru) || feeBaru < 0 || feeBaru > 100) {
+        if (notif) {
+            notif.className = 'alert alert-warning';
+            notif.innerHTML = 'Fee harus antara 0 - 100%.';
+            notif.classList.remove('d-none');
+            setTimeout(function() { notif.classList.add('d-none'); }, 3000);
+        }
+        return;
+    }
+
+    var setting = getSettingEkonomiGlobal();
+    setting.feePlatformGift = feeBaru;
+    setting.updatedAt = new Date().toISOString();
+    setting.updatedBy = (userAktif && userAktif.nama) || 'SuperAdmin';
+    localStorage.setItem('settingEkonomiCoin', JSON.stringify(setting));
+
+    var idUser = getIdUserAktif();
+    if (idUser && typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idUser, 'Setting Fee Gift',
+            'Fee platform gift saweran -> ' + feeBaru + '%');
+    }
+
+    if (notif) {
+        notif.className = 'alert alert-success';
+        notif.innerHTML = '✅ Fee platform berhasil disimpan: ' + feeBaru + '%';
+        notif.classList.remove('d-none');
+        setTimeout(function() { notif.classList.add('d-none'); }, 3000);
+    }
+
+    renderKatalogGiftSawerSA();
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (3) – BUKA MODAL TAMBAH GIFT
+// ============================================================
+function bukaModalTambahGiftSA() {
+    var modal = document.getElementById('modalFormGiftSA');
+    if (!modal) return;
+
+    document.getElementById('formGiftSA').reset();
+    document.getElementById('giftSAId').value = '';
+    document.getElementById('giftSAVideoUrl').value = '';
+    document.getElementById('giftSAIcon').value = '🎁';
+    document.getElementById('giftSARasioTukar').value = 1;
+    document.getElementById('giftSAStatus').value = 'Aktif';
+    document.getElementById('giftSAPreviewVideo').innerHTML = '';
+    document.getElementById('notifFormGiftSA').classList.add('d-none');
+
+    document.getElementById('modalFormGiftSALabel').innerHTML =
+        '<i class="fas fa-gift me-2"></i>Tambah Gift Saweran';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (4) – BUKA MODAL EDIT GIFT
+// ============================================================
+function bukaModalEditGiftSA(id) {
+    var gift = getGiftSawerById(id);
+    if (!gift) {
+        alert('Gift tidak ditemukan.');
+        return;
+    }
+
+    var modal = document.getElementById('modalFormGiftSA');
+    if (!modal) return;
+
+    document.getElementById('giftSAId').value = gift.id;
+    document.getElementById('giftSAIcon').value = gift.icon || '🎁';
+    document.getElementById('giftSANama').value = gift.nama || '';
+    document.getElementById('giftSAKategori').value = gift.kategori || 'Lainnya';
+    document.getElementById('giftSARasioTukar').value = gift.rasioTukar || 1;
+    document.getElementById('giftSAStatus').value = gift.status || 'Aktif';
+    document.getElementById('giftSAVideoUrl').value = gift.videoUrl || '';
+    document.getElementById('notifFormGiftSA').classList.add('d-none');
+
+    // Preview video kalau ada
+    var previewEl = document.getElementById('giftSAPreviewVideo');
+    if (previewEl) {
+        if (gift.videoUrl) {
+            previewEl.innerHTML =
+                '<video src="' + gift.videoUrl + '" controls ' +
+                'style="max-height:150px;border-radius:8px;border:2px solid #FF8C00;"></video>';
+        } else {
+            previewEl.innerHTML = '';
+        }
+    }
+
+    document.getElementById('modalFormGiftSALabel').innerHTML =
+        '<i class="fas fa-edit me-2"></i>Edit Gift Saweran';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (5) – PREVIEW VIDEO GIF (UPLOAD)
+// ============================================================
+function previewVideoGiftSA(input) {
+    var file = input.files[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+        alert('Ukuran video maksimal 2MB.');
+        input.value = '';
+        return;
+    }
+
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('giftSAVideoUrl').value = e.target.result;
+        var previewEl = document.getElementById('giftSAPreviewVideo');
+        if (previewEl) {
+            previewEl.innerHTML =
+                '<video src="' + e.target.result + '" controls ' +
+                'style="max-height:150px;border-radius:8px;border:2px solid #FF8C00;"></video>';
+        }
+    };
+    reader.readAsDataURL(file);
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (6) – PREVIEW VIDEO FULL (MODAL)
+// ============================================================
+function previewVideoGiftFull(giftId) {
+    var gift = getGiftSawerById(giftId);
+    if (!gift || !gift.videoUrl) return;
+
+    var title = document.getElementById('previewVideoGiftSATitle');
+    var body = document.getElementById('previewVideoGiftSABody');
+
+    if (title) {
+        title.innerHTML = '<i class="fas fa-video me-2"></i>Preview: ' +
+                          gift.icon + ' ' + gift.nama;
+    }
+    if (body) {
+        body.innerHTML = '<video src="' + gift.videoUrl + '" controls ' +
+                         'style="max-width:100%;max-height:70vh;border-radius:8px;"></video>';
+    }
+
+    var modal = new bootstrap.Modal(document.getElementById('modalPreviewVideoGiftSA'));
+    modal.show();
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (7) – SIMPAN FORM GIFT (TAMBAH / EDIT)
+// ============================================================
+function simpanFormGiftSA(event) {
+    if (event) event.preventDefault();
+
+    var id       = document.getElementById('giftSAId').value.trim();
+    var icon     = (document.getElementById('giftSAIcon').value || '🎁').trim();
+    var nama     = (document.getElementById('giftSANama').value || '').trim();
+    var kategori = document.getElementById('giftSAKategori').value;
+    var rasio    = parseInt(document.getElementById('giftSARasioTukar').value, 10) || 1;
+    var status   = document.getElementById('giftSAStatus').value;
+    var videoUrl = document.getElementById('giftSAVideoUrl').value;
+    var notif    = document.getElementById('notifFormGiftSA');
+
+    if (!nama) {
+        notif.className = 'alert alert-warning';
+        notif.innerHTML = 'Nama gift wajib diisi.';
+        notif.classList.remove('d-none');
+        return false;
+    }
+    if (rasio < 1) {
+        notif.className = 'alert alert-warning';
+        notif.innerHTML = 'Rasio tukar minimal 1.';
+        notif.classList.remove('d-none');
+        return false;
+    }
+
+    var payload = {
+        icon:       icon,
+        nama:       nama,
+        kategori:   kategori,
+        rasioTukar: rasio,
+        status:     status,
+        videoUrl:   videoUrl
+    };
+
+    var hasil;
+    if (id) {
+        hasil = updateGiftSawer(id, payload);
+    } else {
+        hasil = tambahGiftSawer(payload);
+    }
+
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(document.getElementById('modalFormGiftSA'));
+        if (modal) modal.hide();
+
+        renderKatalogGiftSawerSA();
+
+        if (typeof tampilkanToastManajemenProduk === 'function') {
+            tampilkanToastManajemenProduk(
+                id ? '✅ Gift "' + nama + '" berhasil diperbarui!'
+                   : '✅ Gift "' + nama + '" berhasil ditambahkan!',
+                'success'
+            );
+        }
+    } else {
+        notif.className = 'alert alert-danger';
+        notif.innerHTML = '❌ ' + hasil.pesan;
+        notif.classList.remove('d-none');
+    }
+
+    return false;
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (8) – TOGGLE STATUS GIFT
+// ============================================================
+function toggleStatusGiftSA(id) {
+    var gift = getGiftSawerById(id);
+    if (!gift) return;
+
+    var statusBaru = gift.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+    var hasil = updateGiftSawer(id, { status: statusBaru });
+
+    if (hasil.sukses) {
+        renderKatalogGiftSawerSA();
+        if (typeof tampilkanToastManajemenProduk === 'function') {
+            tampilkanToastManajemenProduk(
+                '✅ Status "' + gift.nama + '" -> ' + statusBaru, 'success'
+            );
+        }
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (9) – HAPUS GIFT
+// ============================================================
+function hapusGiftSA(id) {
+    var gift = getGiftSawerById(id);
+    if (!gift) return;
+
+    if (!confirm('Hapus gift "' + gift.icon + ' ' + gift.nama + '"?\n\n' +
+                 'Gift yang sudah dikirim ke user tetap ada di stok mereka, ' +
+                 'tapi tidak bisa dikirim lagi.')) {
+        return;
+    }
+
+    var hasil = hapusGiftSawer(id);
+    if (hasil.sukses) {
+        renderKatalogGiftSawerSA();
+        if (typeof tampilkanToastManajemenProduk === 'function') {
+            tampilkanToastManajemenProduk(
+                '✅ Gift "' + gift.nama + '" dihapus.', 'success'
+            );
+        }
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+
+// ============================================================
+// BLOK R 10.45.1 (10) – SEEDER MANUAL (TOMBOL SEED DEFAULT)
+// ============================================================
+function jalankanSeederGiftSA() {
+    if (!confirm('Isi katalog dengan 40 gift default?\n\n' +
+                 'Hanya bisa dijalankan kalau katalog kosong.')) {
+        return;
+    }
+
+    var hasil = seedKatalogGiftSawerDefault();
+
+    if (hasil.sukses) {
+        renderKatalogGiftSawerSA();
+        if (typeof tampilkanToastManajemenProduk === 'function') {
+            tampilkanToastManajemenProduk(
+                '✅ Berhasil seed ' + hasil.jumlah + ' gift default!', 'success'
+            );
+        }
+    } else {
+        alert('⚠️ ' + hasil.pesan);
+    }
+}
+
 </script>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 10.45 (JS) ===== -->
