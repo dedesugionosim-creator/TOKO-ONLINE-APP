@@ -10672,6 +10672,364 @@ function formatOngkosOjek(jarakKm) {
 }
 
 // ============================================================
+// FASE T2 — BIAYA JASA OJEK (BLOK R 01.0 252–255)
+// ------------------------------------------------------------
+// Fitur: potong otomatis biaya jasa platform dari saldo R2Coin
+// ojek saat order DISELESAIKAN (bukan saat terima order).
+//
+// Alur:
+//   1. Ojek terima order  → -1 Coin (bisaTerimaOrderOjek, sudah ada)
+//   2. Ojek antar barang  → customer bayar ongkos CASH ke ojek
+//   3. Order SELESAI      → -N Coin (biaya jasa platform, BARU)
+//   4. Kalau saldo kurang → TOLAK selesaikan order
+//
+// Rumus:
+//   nominalJasaRp = ceil(ongkosRp × biayaJasaPersen / 100)
+//   coin          = ceil(nominalJasaRp / hargaBeli)
+//
+// Contoh:
+//   Ongkos Rp 10.000, jasa 10%, hargaBeli Rp 750
+//   → nominalJasaRp = Rp 1.000
+//   → coin = ceil(1000/750) = 2 Coin
+// ============================================================
+
+
+// ============================================================
+// BLOK R 01.0 (252) – HITUNG BIAYA JASA OJEK (Rp → Coin)
+// ------------------------------------------------------------
+// Return: {
+//   sukses, ongkosRp, persen, nominalJasaRp, coin, hargaBeli
+// }
+// ============================================================
+function hitungBiayaJasaOjekCoin(ongkosRp) {
+    var settingTarif = getTarifOjekGlobal();
+    var persen = parseFloat(settingTarif.biayaJasaPersen) || 0;
+
+    var settingEko = getSettingEkonomiGlobal();
+    var hargaBeli = parseFloat(settingEko.hargaBeli) || 750;
+
+    ongkosRp = parseFloat(ongkosRp) || 0;
+
+    // Kalau persen 0 / ongkos 0 / hargaBeli 0 → tidak ada biaya
+    if (persen <= 0 || ongkosRp <= 0 || hargaBeli <= 0) {
+        return {
+            sukses: true,
+            ongkosRp: ongkosRp,
+            persen: persen,
+            nominalJasaRp: 0,
+            coin: 0,
+            hargaBeli: hargaBeli
+        };
+    }
+
+    // Nominal jasa dalam Rp (ceil dulu biar tidak ada pecahan)
+    var nominalJasaRp = Math.ceil(ongkosRp * persen / 100);
+
+    // Konversi Rp → Coin (ceil, sesuai pilihan Q1 = A)
+    var coin = Math.ceil(nominalJasaRp / hargaBeli);
+
+    return {
+        sukses: true,
+        ongkosRp: ongkosRp,
+        persen: persen,
+        nominalJasaRp: nominalJasaRp,
+        coin: coin,
+        hargaBeli: hargaBeli
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (253) – CEK SALDO OJEK CUKUP UNTUK SELESAI ORDER
+// ------------------------------------------------------------
+// Return sukses: { sukses: true, biayaCoin, saldo, nominalJasaRp }
+// Return gagal : { sukses: false, pesan, biayaCoin, saldo, kurang }
+// ============================================================
+function bisaSelesaikanOrderOjek(idOjek, ongkosRp) {
+    if (!idOjek) return { sukses: false, pesan: 'ID ojek tidak valid.' };
+
+    var ojek = getDataIdUser(idOjek);
+    if (!ojek) return { sukses: false, pesan: 'Ojek tidak ditemukan.' };
+    if (ojek.role !== 'Ojek') return { sukses: false, pesan: 'User bukan Ojek.' };
+
+    var hitung = hitungBiayaJasaOjekCoin(ongkosRp);
+
+    // Kalau biaya 0 → langsung boleh selesai
+    if (hitung.coin <= 0) {
+        return {
+            sukses: true,
+            biayaCoin: 0,
+            saldo: getSaldoDompet(idOjek),
+            nominalJasaRp: 0,
+            pesan: 'Tidak ada biaya jasa (persen 0 atau ongkos 0).'
+        };
+    }
+
+    var saldo = getSaldoDompet(idOjek);
+
+    if (saldo < hitung.coin) {
+        return {
+            sukses: false,
+            pesan: 'Saldo R2Coin ojek tidak cukup untuk biaya jasa platform.\n' +
+                   'Saldo saat ini: ' + saldo + ' Coin\n' +
+                   'Dibutuhkan: ' + hitung.coin + ' Coin\n' +
+                   'Kurang: ' + (hitung.coin - saldo) + ' Coin\n\n' +
+                   'Ojek wajib TOP-UP dulu sebelum menyelesaikan order.',
+            biayaCoin: hitung.coin,
+            saldo: saldo,
+            kurang: hitung.coin - saldo,
+            nominalJasaRp: hitung.nominalJasaRp,
+            persen: hitung.persen
+        };
+    }
+
+    return {
+        sukses: true,
+        biayaCoin: hitung.coin,
+        saldo: saldo,
+        nominalJasaRp: hitung.nominalJasaRp,
+        persen: hitung.persen
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (254) – POTONG BIAYA JASA OJEK
+// ------------------------------------------------------------
+// Alur:
+//   1. Hitung biaya jasa
+//   2. Cek saldo cukup (via bisaSelesaikanOrderOjek)
+//   3. Potong saldo ojek via kurangSaldoDompet
+//   4. Catat ke log dataPendapatanPlatform
+//   5. Catat aktivitas global
+// ============================================================
+function potongBiayaJasaOjek(idOjek, idOrder, ongkosRp) {
+    if (!idOjek) return { sukses: false, pesan: 'ID ojek tidak valid.' };
+
+    var hitung = hitungBiayaJasaOjekCoin(ongkosRp);
+
+    // Biaya 0 → skip
+    if (hitung.coin <= 0) {
+        return {
+            sukses: true,
+            biayaCoin: 0,
+            nominalJasaRp: 0,
+            persen: 0,
+            saldoSetelah: getSaldoDompet(idOjek)
+        };
+    }
+
+    // Cek saldo cukup (juga validasi role Ojek)
+    var cek = bisaSelesaikanOrderOjek(idOjek, ongkosRp);
+    if (!cek.sukses) return cek;
+
+    var ojek = getDataIdUser(idOjek);
+
+    // ── Potong saldo ojek ──
+    var hasil = kurangSaldoDompet(
+        idOjek,
+        hitung.coin,
+        'Biaya jasa platform — order ' + (idOrder || '-') +
+        ' (' + hitung.persen + '% × Rp ' +
+        hitung.ongkosRp.toLocaleString('id-ID') + ')',
+        {
+            tipeTransaksi: 'biaya-jasa-ojek',
+            idOrder:       idOrder || null,
+            ongkosRp:      hitung.ongkosRp,
+            persen:        hitung.persen,
+            nominalJasaRp: hitung.nominalJasaRp
+        }
+    );
+
+    if (!hasil.sukses) {
+        return {
+            sukses: false,
+            pesan: 'Gagal potong saldo ojek: ' + hasil.pesan
+        };
+    }
+
+    // ── Catat ke log pendapatan platform ──
+    try {
+        var log = [];
+        var stored = localStorage.getItem('dataPendapatanPlatform');
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) log = parsed;
+        }
+
+        log.push({
+            id:            generateKodeUnik('INC'),
+            sumber:        'ojek',
+            idOjek:        idOjek,
+            namaOjek:      ojek ? (ojek.nama || '-') : '-',
+            idOrder:       idOrder || '-',
+            ongkosRp:      hitung.ongkosRp,
+            persen:        hitung.persen,
+            nominalJasaRp: hitung.nominalJasaRp,
+            coin:          hitung.coin,
+            tanggal:       new Date().toISOString()
+        });
+
+        if (log.length > 5000) log = log.slice(-5000);
+        localStorage.setItem('dataPendapatanPlatform', JSON.stringify(log));
+    } catch (e) {
+        console.warn('potongBiayaJasaOjek: gagal simpan log pendapatan', e);
+    }
+
+    // ── Catat aktivitas ──
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idOjek,
+            'Biaya Jasa Ojek',
+            'Potong ' + hitung.coin + ' Coin dari ojek ' +
+            (ojek ? ojek.nama : idOjek) +
+            ' untuk order ' + (idOrder || '-') +
+            ' (ongkos Rp ' + hitung.ongkosRp.toLocaleString('id-ID') +
+            ', jasa ' + hitung.persen + '% = Rp ' +
+            hitung.nominalJasaRp.toLocaleString('id-ID') + ')'
+        );
+    }
+
+    return {
+        sukses:        true,
+        biayaCoin:     hitung.coin,
+        nominalJasaRp: hitung.nominalJasaRp,
+        persen:        hitung.persen,
+        saldoSetelah:  getSaldoDompet(idOjek)
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (255) – SELESAIKAN ORDER OJEK (WRAPPER)
+// ------------------------------------------------------------
+// Alur lengkap:
+//   1. Validasi ojek & biaya jasa
+//   2. Cek saldo cukup → kalau kurang, TOLAK (kode SALDO_OJEK_KURANG)
+//   3. Potong biaya jasa
+//   4. Update status order (kalau ada di dataPesananKatalog)
+//   5. Chat notif ke customer (kalau ada idCustomer)
+//   6. Chat notif ke ojek
+//   7. Catat aktivitas global
+//
+// Return sukses: { sukses: true, biayaCoin, nominalJasaRp, ... }
+// Return gagal : { sukses: false, pesan, kode, kurang, ... }
+// ============================================================
+function selesaikanOrderOjek(idOrder, idOjek, ongkosRp, idCustomer) {
+    if (!idOrder) return { sukses: false, pesan: 'ID order tidak valid.' };
+    if (!idOjek)  return { sukses: false, pesan: 'ID ojek tidak valid.' };
+
+    var ojek = getDataIdUser(idOjek);
+    if (!ojek) return { sukses: false, pesan: 'Ojek tidak ditemukan.' };
+    if (ojek.role !== 'Ojek') {
+        return { sukses: false, pesan: 'User ini bukan Ojek.' };
+    }
+
+    // ── 1. Cek biaya jasa & saldo dulu (SEBELUM potong apapun) ──
+    var cek = bisaSelesaikanOrderOjek(idOjek, ongkosRp);
+    if (!cek.sukses) {
+        return {
+            sukses:    false,
+            pesan:     cek.pesan,
+            kode:      'SALDO_OJEK_KURANG',
+            kurang:    cek.kurang,
+            biayaCoin: cek.biayaCoin,
+            saldo:     cek.saldo
+        };
+    }
+
+    // ── 2. Potong biaya jasa ──
+    var hasilPotong = potongBiayaJasaOjek(idOjek, idOrder, ongkosRp);
+    if (!hasilPotong.sukses) {
+        return {
+            sukses: false,
+            pesan:  'Gagal potong biaya jasa: ' + hasilPotong.pesan,
+            kode:   'GAGAL_POTONG'
+        };
+    }
+
+    // ── 3. Update status order (kalau ada di dataPesananKatalog) ──
+    try {
+        if (typeof updateStatusPesanan === 'function') {
+            updateStatusPesanan(idOrder, 'Selesai',
+                'Order ojek selesai — biaya jasa ' + hasilPotong.biayaCoin + ' Coin');
+        }
+    } catch (e) {
+        console.warn('selesaikanOrderOjek: update status order gagal', e);
+    }
+
+    // ── 4. Chat notif ke customer (kalau ada) ──
+    if (idCustomer) {
+        try {
+            var ongkosFinal = parseFloat(ongkosRp) || 0;
+            var isiChatCust =
+                '✅ Order *' + idOrder + '* telah SELESAI.\n\n' +
+                'Ongkos: Rp ' + ongkosFinal.toLocaleString('id-ID') + '\n\n' +
+                'Terima kasih sudah menggunakan layanan Ojek Toko Online 2R.';
+
+            kirimChatOtomatis(
+                idOjek, idCustomer, isiChatCust,
+                {
+                    jenisTransaksi: 'order-ojek-selesai',
+                    idTransaksi:    idOrder,
+                    status:         'Selesai'
+                }
+            );
+        } catch (e) {
+            console.warn('selesaikanOrderOjek: chat ke customer gagal', e);
+        }
+    }
+
+    // ── 5. Chat notif ke ojek (rincian biaya jasa) ──
+    try {
+        var ongkosOjek = parseFloat(ongkosRp) || 0;
+        var isiChatOjek =
+            '✅ Order *' + idOrder + '* SELESAI.\n\n' +
+            'Ongkos diterima: Rp ' + ongkosOjek.toLocaleString('id-ID') + '\n' +
+            'Biaya jasa platform (' + hasilPotong.persen + '%): Rp ' +
+            hasilPotong.nominalJasaRp.toLocaleString('id-ID') +
+            ' = *' + hasilPotong.biayaCoin + ' Coin*\n\n' +
+            'Saldo R2Coin Anda sekarang: *' + hasilPotong.saldoSetelah + ' Coin*';
+
+        kirimChatOtomatis(
+            'ID_TK2R_SA-0001', idOjek, isiChatOjek,
+            {
+                jenisTransaksi: 'biaya-jasa-ojek',
+                idTransaksi:    idOrder,
+                biayaCoin:      hasilPotong.biayaCoin
+            }
+        );
+    } catch (e) {
+        console.warn('selesaikanOrderOjek: chat ke ojek gagal', e);
+    }
+
+    // ── 6. Catat aktivitas ──
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(
+            idOjek,
+            'Selesaikan Order Ojek',
+            'Order ' + idOrder + ' selesai. ' +
+            'Biaya jasa ' + hasilPotong.biayaCoin + ' Coin dipotong ' +
+            '(sisa saldo ' + hasilPotong.saldoSetelah + ' Coin).'
+        );
+    }
+
+    return {
+        sukses:          true,
+        idOrder:         idOrder,
+        ongkosRp:        parseFloat(ongkosRp) || 0,
+        biayaCoin:       hasilPotong.biayaCoin,
+        nominalJasaRp:   hasilPotong.nominalJasaRp,
+        persen:          hasilPotong.persen,
+        saldoOjekSetelah: hasilPotong.saldoSetelah
+    };
+}
+
+// ============================================================
+// AKHIR FASE T2 — BIAYA JASA OJEK
+// ============================================================
+
+// ============================================================
 // AKHIR FASE T1
 // ============================================================
 
@@ -12357,7 +12715,18 @@ function tampilkanNotifDaftar(pesan, tipe) {
                             <li>Setiap order diterima → <strong>saldo ojek -1 Coin</strong> (dipotong saat seller kirim order).</li>
                             <li>Kalau order dibatalkan → <strong>saldo +1 Coin dikembalikan</strong>.</li>
                             <li>Ongkos ojek dibayar <strong>langsung oleh customer</strong> (cash/transfer saat antar).</li>
-                            <li>Biaya Jasa Platform dipotong dari saldo pendapatan ojek (opsional).</li>
+                            <li>
+								<strong>Biaya Jasa Platform</strong> dipotong <strong>otomatis</strong>
+								dari saldo R2Coin ojek saat order <strong>SELESAI</strong>.
+								Ojek <strong>wajib punya saldo cukup</strong> sebelum menyelesaikan order.
+								Kalau saldo kurang → order <strong>tidak bisa diselesaikan</strong>,
+								ojek harus top-up dulu.
+								<br>
+								<small class="text-muted">
+									Rumus: <code>ceil(ongkos × %jasa ÷ hargaBeliCoin)</code> —
+									contoh: ongkos Rp 10.000, jasa 10% → <strong>2 Coin</strong>.
+								</small>
+							</li>
                         </ul>
                     </div>
                 </div>
