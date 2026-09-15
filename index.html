@@ -8179,6 +8179,305 @@ function bulkSortProdukUser(idUser, role, mode) {
 }
 
 // ============================================================
+// BLOK R 01.0 (181) – LOAD ORDER MASUK SELLER
+// ------------------------------------------------------------
+// filter: 'Baru' | 'Diproses' | 'Selesai' | 'Dibatalkan' | 'Semua'
+// ============================================================
+function loadOrderMasukSeller(idSeller, filter) {
+    if (!idSeller) return [];
+    try {
+        var stored = localStorage.getItem('dataPesananKatalog');
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        if (!Array.isArray(list)) return [];
+
+        var hasil = list.filter(function(p) { return p.idSeller === idSeller; });
+
+        if (filter && filter !== 'Semua') {
+            if (filter === 'Baru') {
+                hasil = hasil.filter(function(p) {
+                    return p.status === 'Menunggu' || !p.status;
+                });
+            } else {
+                hasil = hasil.filter(function(p) { return p.status === filter; });
+            }
+        }
+
+        hasil.sort(function(a, b) {
+            return new Date(b.tanggal) - new Date(a.tanggal);
+        });
+
+        return hasil;
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (182) – UPDATE STATUS PESANAN
+// ============================================================
+function updateStatusPesanan(idPesanan, statusBaru, catatan) {
+    if (!idPesanan || !statusBaru) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    try {
+        var stored = localStorage.getItem('dataPesananKatalog');
+        if (!stored) return { sukses: false, pesan: 'Data pesanan kosong.' };
+        var list = JSON.parse(stored);
+        if (!Array.isArray(list)) return { sukses: false, pesan: 'Data rusak.' };
+
+        var idx = list.findIndex(function(p) { return p.id === idPesanan; });
+        if (idx === -1) return { sukses: false, pesan: 'Pesanan tidak ditemukan.' };
+
+        list[idx].status = statusBaru;
+        list[idx].statusUpdatedAt = new Date().toISOString();
+        if (catatan) list[idx].catatanStatus = catatan;
+
+        localStorage.setItem('dataPesananKatalog', JSON.stringify(list));
+        return { sukses: true, pesanan: list[idx] };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (183) – KONFIRMASI PESANAN (SELLER)
+// ------------------------------------------------------------
+// Baru → Diproses + chat auto ke customer
+// ============================================================
+function konfirmasiPesananSeller(idPesanan, idSeller) {
+    if (!idPesanan || !idSeller) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+
+    var list = loadOrderMasukSeller(idSeller, 'Semua');
+    var pesanan = list.find(function(p) { return p.id === idPesanan; });
+    if (!pesanan) return { sukses: false, pesan: 'Pesanan tidak ditemukan.' };
+
+    if (pesanan.status !== 'Menunggu' && pesanan.status) {
+        return { sukses: false, pesan: 'Pesanan sudah diproses (status: ' + pesanan.status + ').' };
+    }
+
+    var hasil = updateStatusPesanan(idPesanan, 'Diproses', 'Dikonfirmasi seller');
+    if (!hasil.sukses) return hasil;
+
+    // Chat auto ke customer
+    var seller = getDataIdUser(idSeller);
+    var isiPesan =
+        'Pesanan ' + idPesanan + ' Anda telah *DIKONFIRMASI*.\n\n' +
+        'Seller: ' + (seller ? seller.nama : '-') + '\n' +
+        'Total: Rp ' + (pesanan.totalRp || 0).toLocaleString('id-ID') + '\n' +
+        'Metode: ' + (pesanan.metode || '-') + '\n\n' +
+        'Mohon tunggu proses selanjutnya. Terima kasih.';
+
+    try {
+        kirimChatOtomatis(idSeller, pesanan.idPembeli, isiPesan, {
+            jenisTransaksi: 'order-konfirmasi',
+            idTransaksi: idPesanan,
+            status: 'Diproses'
+        });
+    } catch (e) {}
+
+    catatAktivitasGlobal(idSeller, 'Konfirmasi Pesanan',
+        idPesanan + ' dikonfirmasi');
+
+    return { sukses: true, pesanan: hasil.pesanan };
+}
+
+// ============================================================
+// BLOK R 01.0 (184) – TOLAK PESANAN (SELLER)
+// ============================================================
+function tolakPesananSeller(idPesanan, idSeller, alasan) {
+    if (!idPesanan || !idSeller) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    alasan = (alasan || '').trim();
+    if (alasan.length < 5) {
+        return { sukses: false, pesan: 'Alasan minimal 5 karakter.' };
+    }
+
+    var list = loadOrderMasukSeller(idSeller, 'Semua');
+    var pesanan = list.find(function(p) { return p.id === idPesanan; });
+    if (!pesanan) return { sukses: false, pesan: 'Pesanan tidak ditemukan.' };
+
+    var hasil = updateStatusPesanan(idPesanan, 'Dibatalkan', alasan);
+    if (!hasil.sukses) return hasil;
+
+    // Chat auto ke customer
+    var isiPesan =
+        'Pesanan ' + idPesanan + ' *DITOLAK*.\n\n' +
+        'Alasan: ' + alasan + '\n\n' +
+        'Mohon maaf atas ketidaknyamanan ini.';
+
+    try {
+        kirimChatOtomatis(idSeller, pesanan.idPembeli, isiPesan, {
+            jenisTransaksi: 'order-tolak',
+            idTransaksi: idPesanan,
+            status: 'Dibatalkan',
+            alasan: alasan
+        });
+    } catch (e) {}
+
+    catatAktivitasGlobal(idSeller, 'Tolak Pesanan',
+        idPesanan + ' ditolak. Alasan: ' + alasan);
+
+    return { sukses: true, pesanan: hasil.pesanan };
+}
+
+// ============================================================
+// BLOK R 01.0 (185) – SELESAIKAN PESANAN (SELLER)
+// ------------------------------------------------------------
+// Diproses → Selesai + reward coin + kurangi stok + chat auto
+// ============================================================
+function selesaikanPesananSeller(idPesanan, idSeller) {
+    if (!idPesanan || !idSeller) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+
+    var list = loadOrderMasukSeller(idSeller, 'Semua');
+    var pesanan = list.find(function(p) { return p.id === idPesanan; });
+    if (!pesanan) return { sukses: false, pesan: 'Pesanan tidak ditemukan.' };
+
+    if (pesanan.status !== 'Diproses') {
+        return { sukses: false, pesan: 'Pesanan harus dalam status Diproses dulu.' };
+    }
+
+    var idPembeli = pesanan.idPembeli;
+    var items = pesanan.items || [];
+    var metode = pesanan.metode || 'Chat - Transfer';
+
+    // Cek stok masih cukup
+    var cekStok = cekStokCukup(idSeller, items);
+    if (!cekStok.sukses) {
+        return { sukses: false, pesan: 'Stok tidak cukup: ' + cekStok.pesan };
+    }
+
+    var hasilBayar;
+    var detailCoin = '';
+
+    // Proses transfer coin
+    if (metode === 'R2Coin') {
+        // Customer bayar pakai coin → customer -coin, seller +coin
+        hasilBayar = prosesBelanjaDenganCoin(idPembeli, idSeller,
+            pesanan.totalCoin || 0, idPesanan, 'Bayar order R2Coin');
+
+        if (!hasilBayar.sukses) return hasilBayar;
+        detailCoin = 'Customer bayar ' + (pesanan.totalCoin || 0) + ' Coin';
+    } else {
+        // Customer bayar Rupiah → seller transfer reward ke customer
+        hasilBayar = prosesBelanjaDenganRupiah(idPembeli, idSeller,
+            pesanan.totalRp || 0, idPesanan, 'Reward belanja');
+
+        if (!hasilBayar.sukses) return hasilBayar;
+        detailCoin = 'Reward ' + (hasilBayar.rewardCoin || 0) + ' Coin ke customer';
+    }
+
+    // Kurangi stok
+    kurangiStokProduk(idSeller, items);
+
+    // Update status
+    var hasil = updateStatusPesanan(idPesanan, 'Selesai', detailCoin);
+    if (!hasil.sukses) return hasil;
+
+    // Chat auto ke customer
+    var isiPesan =
+        'Pesanan ' + idPesanan + ' telah *SELESAI*.\n\n' +
+        'Total: Rp ' + (pesanan.totalRp || 0).toLocaleString('id-ID') + '\n' +
+        detailCoin + '\n\n' +
+        'Terima kasih sudah berbelanja!';
+
+    try {
+        kirimChatOtomatis(idSeller, idPembeli, isiPesan, {
+            jenisTransaksi: 'order-selesai',
+            idTransaksi: idPesanan,
+            status: 'Selesai'
+        });
+    } catch (e) {}
+
+    catatAktivitasGlobal(idSeller, 'Selesaikan Pesanan',
+        idPesanan + ' selesai. ' + detailCoin);
+
+    return {
+        sukses: true,
+        pesanan: hasil.pesanan,
+        detailCoin: detailCoin
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (186) – BATALKAN PESANAN (dari status Diproses)
+// ============================================================
+function batalkanPesananSeller(idPesanan, idSeller, alasan) {
+    if (!idPesanan || !idSeller) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    alasan = (alasan || '').trim();
+    if (alasan.length < 5) {
+        return { sukses: false, pesan: 'Alasan minimal 5 karakter.' };
+    }
+
+    var list = loadOrderMasukSeller(idSeller, 'Semua');
+    var pesanan = list.find(function(p) { return p.id === idPesanan; });
+    if (!pesanan) return { sukses: false, pesan: 'Pesanan tidak ditemukan.' };
+
+    if (pesanan.status !== 'Diproses') {
+        return { sukses: false, pesan: 'Hanya pesanan Diproses yang bisa dibatalkan.' };
+    }
+
+    var hasil = updateStatusPesanan(idPesanan, 'Dibatalkan', alasan);
+    if (!hasil.sukses) return hasil;
+
+    // Chat auto ke customer
+    var isiPesan =
+        'Pesanan ' + idPesanan + ' *DIBATALKAN*.\n\n' +
+        'Alasan: ' + alasan + '\n\n' +
+        'Mohon maaf atas ketidaknyamanan ini.';
+
+    try {
+        kirimChatOtomatis(idSeller, pesanan.idPembeli, isiPesan, {
+            jenisTransaksi: 'order-batal',
+            idTransaksi: idPesanan,
+            status: 'Dibatalkan',
+            alasan: alasan
+        });
+    } catch (e) {}
+
+    catatAktivitasGlobal(idSeller, 'Batalkan Pesanan',
+        idPesanan + ' dibatalkan. Alasan: ' + alasan);
+
+    return { sukses: true, pesanan: hasil.pesanan };
+}
+
+// ============================================================
+// BLOK R 01.0 (187) – STATISTIK PESANAN SELLER
+// ============================================================
+function hitungStatistikPesananSeller(idSeller) {
+    var semua = loadOrderMasukSeller(idSeller, 'Semua');
+
+    var baru = 0, diproses = 0, selesai = 0, dibatalkan = 0;
+
+    semua.forEach(function(p) {
+        var st = p.status || 'Menunggu';
+        if (st === 'Menunggu') baru++;
+        else if (st === 'Diproses') diproses++;
+        else if (st === 'Selesai') selesai++;
+        else if (st === 'Dibatalkan') dibatalkan++;
+    });
+
+    var totalPendapatan = 0;
+    semua.forEach(function(p) {
+        if (p.status === 'Selesai') totalPendapatan += (p.totalRp || 0);
+    });
+
+    return {
+        baru: baru,
+        diproses: diproses,
+        selesai: selesai,
+        dibatalkan: dibatalkan,
+        total: semua.length,
+        totalPendapatan: totalPendapatan
+    };
+}
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
@@ -36074,6 +36373,654 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== AKHIR BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO ===== -->
 
 <!-- ============================================================ -->
+<!-- ===== BLOK R 11.7 – ORDER MASUK SELLER (HTML) ===== -->
+<!-- ============================================================ -->
+
+<div id="orderMasukContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- HEADER -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-shopping-cart me-2"></i>Order Masuk
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Kelola pesanan dari customer.
+                </small>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-light" onclick="refreshOrderMasuk()">
+                    <i class="fas fa-sync me-1"></i> Refresh
+                </button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i> Kembali
+                </button>
+            </div>
+        </div>
+
+        <!-- STATISTIK -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-bell fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="omStatBaru">0</h4>
+                        <small class="text-muted">Order Baru</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-hourglass-half fa-2x mb-2 text-info"></i>
+                        <h4 class="fw-bold mb-0" id="omStatDiproses">0</h4>
+                        <small class="text-muted">Diproses</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="omStatSelesai">0</h4>
+                        <small class="text-muted">Selesai</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-coins fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="omStatPendapatan">Rp 0</h4>
+                        <small class="text-muted">Total Pendapatan</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB NAVIGASI -->
+        <ul class="nav nav-tabs mb-3" id="tabsOrderMasuk" role="tablist">
+            <li class="nav-item" role="presentation">
+                <a class="nav-link active" data-bs-toggle="tab"
+                   href="#omTabBaru" role="tab"
+                   onclick="renderOrderMasuk('Baru')">
+                    <i class="fas fa-bell me-1"></i> Order Baru
+                    <span class="badge bg-warning text-dark ms-1" id="omBadgeBaru">0</span>
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" data-bs-toggle="tab"
+                   href="#omTabDiproses" role="tab"
+                   onclick="renderOrderMasuk('Diproses')">
+                    <i class="fas fa-hourglass-half me-1"></i> Diproses
+                    <span class="badge bg-info ms-1" id="omBadgeDiproses">0</span>
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" data-bs-toggle="tab"
+                   href="#omTabSelesai" role="tab"
+                   onclick="renderOrderMasuk('Selesai')">
+                    <i class="fas fa-check-circle me-1"></i> Selesai
+                    <span class="badge bg-success ms-1" id="omBadgeSelesai">0</span>
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" data-bs-toggle="tab"
+                   href="#omTabSemua" role="tab"
+                   onclick="renderOrderMasuk('Semua')">
+                    <i class="fas fa-list me-1"></i> Semua
+                </a>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+
+            <div class="tab-pane fade show active" id="omTabBaru" role="tabpanel">
+                <div class="row g-3" id="omListBaru">
+                    <div class="col-12 text-center text-muted py-4">Memuat...</div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="omTabDiproses" role="tabpanel">
+                <div class="row g-3" id="omListDiproses"></div>
+            </div>
+
+            <div class="tab-pane fade" id="omTabSelesai" role="tabpanel">
+                <div class="row g-3" id="omListSelesai"></div>
+            </div>
+
+            <div class="tab-pane fade" id="omTabSemua" role="tabpanel">
+                <div class="row g-3" id="omListSemua"></div>
+            </div>
+
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ MODAL TOLAK / BATALKAN ══════════ -->
+<div class="modal fade" id="modalTolakOrder" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white bg-danger">
+                <h5 class="modal-title" id="modalTolakOrderTitle">
+                    <i class="fas fa-times-circle me-2"></i>Tolak Pesanan
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="omTolakIdPesanan">
+                <input type="hidden" id="omTolakAksi" value="tolak">
+
+                <div class="mb-3">
+                    <label class="fw-bold">Nama Customer</label>
+                    <input type="text" id="omTolakNama" class="form-control bg-light" readonly>
+                </div>
+
+                <div class="mb-3">
+                    <label class="fw-bold">Alasan <span class="text-danger">*</span></label>
+                    <textarea id="omTolakAlasan" class="form-control" rows="3"
+                              placeholder="Minimal 5 karakter..." minlength="5" required></textarea>
+                    <small class="text-muted">Alasan dikirim ke customer via chat otomatis.</small>
+                </div>
+
+                <div id="omNotifTolak" class="alert d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-danger"
+                        onclick="konfirmasiTolakOrder()">
+                    <i class="fas fa-check me-1"></i> Konfirmasi
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ MODAL DETAIL PESANAN ══════════ -->
+<div class="modal fade" id="modalDetailOrder" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-receipt me-2"></i>Detail Pesanan
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="omDetailBody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.7 (HTML) ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.7 – ORDER MASUK SELLER (JS) ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.7 – JS ORDER MASUK
+// ============================================================
+
+var omState = {
+    filterAktif: 'Baru'
+};
+
+// ── 1. TAMPILKAN HALAMAN ──
+function tampilkanOrderMasuk() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('orderMasukContainer');
+    if (!container) {
+        tampilkanPlaceholderMenu('Order Masuk', '11.7');
+        return;
+    }
+
+    konten.innerHTML = container.innerHTML;
+
+    renderStatistikOrderMasuk();
+    renderOrderMasuk('Baru');
+
+    tutupMenu();
+}
+
+// ── 2. GET OWNER (untuk kasir) ──
+function omGetIdOwner() {
+    if (typeof getOwnerIdProduk === 'function') {
+        var id = getOwnerIdProduk();
+        if (id) return id;
+    }
+    return userAktif ? userAktif.idUser : null;
+}
+
+// ── 3. REFRESH ──
+function refreshOrderMasuk() {
+    renderStatistikOrderMasuk();
+    renderOrderMasuk(omState.filterAktif);
+    tampilkanToastOM('✅ Data di-refresh', 'info');
+}
+
+// ── 4. RENDER STATISTIK ──
+function renderStatistikOrderMasuk() {
+    var idSeller = omGetIdOwner();
+    if (!idSeller) return;
+
+    var stat = hitungStatistikPesananSeller(idSeller);
+
+    setTextOM('omStatBaru', stat.baru);
+    setTextOM('omStatDiproses', stat.diproses);
+    setTextOM('omStatSelesai', stat.selesai);
+    setTextOM('omStatPendapatan', 'Rp ' + stat.totalPendapatan.toLocaleString('id-ID'));
+
+    setTextOM('omBadgeBaru', stat.baru);
+    setTextOM('omBadgeDiproses', stat.diproses);
+    setTextOM('omBadgeSelesai', stat.selesai);
+}
+
+function setTextOM(id, val) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = val;
+}
+
+// ── 5. RENDER LIST ORDER ──
+function renderOrderMasuk(filter) {
+    omState.filterAktif = filter || 'Baru';
+
+    var idSeller = omGetIdOwner();
+    if (!idSeller) return;
+
+    var list = loadOrderMasukSeller(idSeller, filter);
+
+    var containerId = 'omList' + filter;
+    var container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (list.length === 0) {
+        container.innerHTML =
+            '<div class="col-12 text-center text-muted py-5">' +
+            '<i class="fas fa-inbox fa-3x d-block mb-3 opacity-50"></i>' +
+            'Belum ada order ' + filter.toLowerCase() + '.' +
+            '</div>';
+        return;
+    }
+
+    var html = '';
+    list.forEach(function(p) {
+        html += '<div class="col-md-6 col-lg-4">' + renderKartuOrder(p) + '</div>';
+    });
+
+    container.innerHTML = html;
+}
+
+// ── 6. RENDER KARTU ORDER ──
+function renderKartuOrder(p) {
+    var status = p.status || 'Menunggu';
+
+    // Badge status
+    var statusBadge = '';
+    var statusColor = '#6C757D';
+    if (status === 'Menunggu') {
+        statusBadge = '🆕 BARU';
+        statusColor = '#FFC107';
+    } else if (status === 'Diproses') {
+        statusBadge = '⏳ DIPROSES';
+        statusColor = '#17A2B8';
+    } else if (status === 'Selesai') {
+        statusBadge = '✅ SELESAI';
+        statusColor = '#28A745';
+    } else if (status === 'Dibatalkan') {
+        statusBadge = '❌ DIBATALKAN';
+        statusColor = '#DC3545';
+    }
+
+    // Tanggal
+    var tgl = p.tanggal
+        ? new Date(p.tanggal).toLocaleString('id-ID', { hour12: false })
+        : '-';
+
+    // Items
+    var itemsHtml = '';
+    (p.items || []).forEach(function(it) {
+        var sub = (it.hargaRp || 0) * (it.jumlah || 0);
+        itemsHtml +=
+            '<div class="d-flex justify-content-between small">' +
+                '<span>' + (it.nama || '-') + ' <span class="text-muted">x' +
+                    (it.jumlah || 0) + '</span></span>' +
+                '<span>Rp ' + sub.toLocaleString('id-ID') + '</span>' +
+            '</div>';
+    });
+
+    // Tombol aksi
+    var aksiHtml = '';
+    if (status === 'Menunggu') {
+        aksiHtml =
+            '<button class="btn btn-sm btn-outline-primary" ' +
+                'onclick="chatKeCustomerOrder(\'' + p.idPembeli + '\')">' +
+                '<i class="fas fa-comments"></i></button>' +
+            '<button class="btn btn-sm btn-success flex-grow-1" ' +
+                'onclick="prosesKonfirmasiOrder(\'' + p.id + '\')">' +
+                '<i class="fas fa-check me-1"></i> Konfirmasi</button>' +
+            '<button class="btn btn-sm btn-danger" ' +
+                'onclick="bukaModalTolakOrder(\'' + p.id + '\', \'tolak\')">' +
+                '<i class="fas fa-times"></i></button>';
+    } else if (status === 'Diproses') {
+        aksiHtml =
+            '<button class="btn btn-sm btn-outline-primary" ' +
+                'onclick="chatKeCustomerOrder(\'' + p.idPembeli + '\')">' +
+                '<i class="fas fa-comments"></i></button>' +
+            '<button class="btn btn-sm btn-success flex-grow-1" ' +
+                'onclick="prosesSelesaiOrder(\'' + p.id + '\')">' +
+                '<i class="fas fa-check-circle me-1"></i> Selesai</button>' +
+            '<button class="btn btn-sm btn-outline-danger" ' +
+                'onclick="bukaModalTolakOrder(\'' + p.id + '\', \'batal\')">' +
+                '<i class="fas fa-ban"></i></button>';
+    } else if (status === 'Selesai') {
+        aksiHtml =
+            '<button class="btn btn-sm btn-outline-primary" ' +
+                'onclick="chatKeCustomerOrder(\'' + p.idPembeli + '\')">' +
+                '<i class="fas fa-comments"></i></button>' +
+            '<button class="btn btn-sm btn-outline-secondary flex-grow-1" ' +
+                'onclick="lihatDetailOrder(\'' + p.id + '\')">' +
+                '<i class="fas fa-receipt me-1"></i> Struk</button>';
+    } else {
+        aksiHtml =
+            '<button class="btn btn-sm btn-outline-secondary flex-grow-1" ' +
+                'onclick="lihatDetailOrder(\'' + p.id + '\')">' +
+                '<i class="fas fa-eye me-1"></i> Lihat</button>';
+    }
+
+    return '' +
+        '<div class="card border-0 shadow-sm h-100">' +
+            '<div class="card-header text-white d-flex justify-content-between align-items-center" ' +
+                 'style="background:' + statusColor + ';">' +
+                '<small class="fw-bold">' + p.id + '</small>' +
+                '<span class="badge bg-light text-dark">' + statusBadge + '</span>' +
+            '</div>' +
+
+            '<div class="card-body">' +
+                '<div class="mb-2">' +
+                    '<div class="fw-bold">' + (p.namaPembeli || '-') + '</div>' +
+                    '<small class="text-muted">' +
+                        '<i class="fas fa-clock me-1"></i>' + tgl +
+                    '</small>' +
+                '</div>' +
+
+                '<hr class="my-2">' +
+
+                '<div class="mb-2">' + itemsHtml + '</div>' +
+
+                '<hr class="my-2">' +
+
+                '<div class="d-flex justify-content-between fw-bold">' +
+                    '<span>Total:</span>' +
+                    '<span class="text-success">Rp ' +
+                        (p.totalRp || 0).toLocaleString('id-ID') + '</span>' +
+                '</div>' +
+
+                '<div class="small text-muted mt-1">' +
+                    '<i class="fas fa-money-check-alt me-1"></i>' +
+                    (p.metode || 'Belum dipilih') +
+                '</div>' +
+
+                (p.catatan ?
+                    '<div class="small text-muted mt-1">' +
+                        '<i class="fas fa-sticky-note me-1"></i>' +
+                        p.catatan +
+                    '</div>' : '') +
+            '</div>' +
+
+            '<div class="card-footer bg-white">' +
+                '<div class="d-flex gap-1">' + aksiHtml + '</div>' +
+            '</div>' +
+        '</div>';
+}
+
+// ── 7. KONFIRMASI ORDER ──
+function prosesKonfirmasiOrder(idPesanan) {
+    if (!confirm('Konfirmasi pesanan ini?\n\nStatus akan berubah menjadi DIPROSES ' +
+                 'dan customer menerima notifikasi.')) return;
+
+    var idSeller = omGetIdOwner();
+    var hasil = konfirmasiPesananSeller(idPesanan, idSeller);
+
+    if (hasil.sukses) {
+        tampilkanToastOM('✅ Pesanan dikonfirmasi!', 'success');
+        renderStatistikOrderMasuk();
+        renderOrderMasuk(omState.filterAktif);
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// ── 8. SELESAIKAN ORDER ──
+function prosesSelesaiOrder(idPesanan) {
+    var konfirm = confirm('Tandai pesanan SELESAI?\n\n' +
+        'Akan otomatis:\n' +
+        '• Transfer reward coin ke customer\n' +
+        '• Kurangi stok produk\n' +
+        '• Kirim notifikasi ke customer');
+
+    if (!konfirm) return;
+
+    var idSeller = omGetIdOwner();
+    var hasil = selesaikanPesananSeller(idPesanan, idSeller);
+
+    if (hasil.sukses) {
+        tampilkanToastOM('✅ Pesanan selesai! ' + hasil.detailCoin, 'success');
+        renderStatistikOrderMasuk();
+        renderOrderMasuk(omState.filterAktif);
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// ── 9. BUKA MODAL TOLAK / BATAL ──
+function bukaModalTolakOrder(idPesanan, aksi) {
+    var modal = document.getElementById('modalTolakOrder');
+    if (!modal) return;
+
+    var idSeller = omGetIdOwner();
+    var list = loadOrderMasukSeller(idSeller, 'Semua');
+    var pesanan = list.find(function(p) { return p.id === idPesanan; });
+    if (!pesanan) return;
+
+    document.getElementById('omTolakIdPesanan').value = idPesanan;
+    document.getElementById('omTolakAksi').value = aksi;
+    document.getElementById('omTolakNama').value = pesanan.namaPembeli || '-';
+    document.getElementById('omTolakAlasan').value = '';
+    document.getElementById('omNotifTolak').classList.add('d-none');
+
+    document.getElementById('modalTolakOrderTitle').innerHTML = aksi === 'tolak'
+        ? '<i class="fas fa-times-circle me-2"></i>Tolak Pesanan'
+        : '<i class="fas fa-ban me-2"></i>Batalkan Pesanan';
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
+// ── 10. KONFIRMASI TOLAK / BATAL ──
+function konfirmasiTolakOrder() {
+    var idPesanan = document.getElementById('omTolakIdPesanan').value;
+    var aksi = document.getElementById('omTolakAksi').value;
+    var alasan = (document.getElementById('omTolakAlasan').value || '').trim();
+    var notif = document.getElementById('omNotifTolak');
+
+    if (alasan.length < 5) {
+        notif.className = 'alert alert-warning';
+        notif.innerHTML = '⚠️ Alasan minimal 5 karakter!';
+        notif.classList.remove('d-none');
+        return;
+    }
+
+    var idSeller = omGetIdOwner();
+    var hasil = aksi === 'tolak'
+        ? tolakPesananSeller(idPesanan, idSeller, alasan)
+        : batalkanPesananSeller(idPesanan, idSeller, alasan);
+
+    if (hasil.sukses) {
+        var modal = bootstrap.Modal.getInstance(
+            document.getElementById('modalTolakOrder')
+        );
+        if (modal) modal.hide();
+
+        tampilkanToastOM(
+            aksi === 'tolak' ? '❌ Pesanan ditolak.' : '❌ Pesanan dibatalkan.',
+            'warning'
+        );
+        renderStatistikOrderMasuk();
+        renderOrderMasuk(omState.filterAktif);
+    } else {
+        notif.className = 'alert alert-danger';
+        notif.innerHTML = '❌ ' + hasil.pesan;
+        notif.classList.remove('d-none');
+    }
+}
+
+// ── 11. LIHAT DETAIL ORDER ──
+function lihatDetailOrder(idPesanan) {
+    var idSeller = omGetIdOwner();
+    var list = loadOrderMasukSeller(idSeller, 'Semua');
+    var p = list.find(function(x) { return x.id === idPesanan; });
+    if (!p) return;
+
+    var tgl = p.tanggal
+        ? new Date(p.tanggal).toLocaleString('id-ID', { hour12: false })
+        : '-';
+
+    var itemsHtml = '';
+    (p.items || []).forEach(function(it) {
+        var sub = (it.hargaRp || 0) * (it.jumlah || 0);
+        itemsHtml +=
+            '<tr>' +
+                '<td>' + (it.nama || '-') + '</td>' +
+                '<td class="text-center">' + (it.jumlah || 0) + '</td>' +
+                '<td class="text-end">Rp ' + sub.toLocaleString('id-ID') + '</td>' +
+            '</tr>';
+    });
+
+    var html =
+        '<div class="row g-3 mb-3">' +
+            '<div class="col-md-6">' +
+                '<div class="fw-bold mb-1">Pembeli</div>' +
+                '<div>' + (p.namaPembeli || '-') + '</div>' +
+                '<small class="text-muted">ID: ' + (p.idPembeli || '-') + '</small>' +
+            '</div>' +
+            '<div class="col-md-6 text-md-end">' +
+                '<div class="fw-bold mb-1">Status</div>' +
+                '<span class="badge bg-' +
+                    (p.status === 'Selesai' ? 'success' :
+                     p.status === 'Diproses' ? 'info' :
+                     p.status === 'Dibatalkan' ? 'danger' : 'warning') +
+                '">' + (p.status || 'Menunggu') + '</span>' +
+                '<div class="small text-muted mt-1">' + tgl + '</div>' +
+            '</div>' +
+        '</div>' +
+
+        '<hr>' +
+
+        '<div class="table-responsive">' +
+            '<table class="table table-sm table-hover">' +
+                '<thead class="table-light"><tr>' +
+                    '<th>Produk</th><th class="text-center">Qty</th>' +
+                    '<th class="text-end">Subtotal</th>' +
+                '</tr></thead>' +
+                '<tbody>' + itemsHtml + '</tbody>' +
+                '<tfoot>' +
+                    '<tr class="fw-bold">' +
+                        '<td colspan="2" class="text-end">TOTAL</td>' +
+                        '<td class="text-end text-success">Rp ' +
+                            (p.totalRp || 0).toLocaleString('id-ID') + '</td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td colspan="2" class="text-end small">Total Coin</td>' +
+                        '<td class="text-end small text-warning">' +
+                            (p.totalCoin || 0) + ' Coin</td>' +
+                    '</tr>' +
+                '</tfoot>' +
+            '</table>' +
+        '</div>' +
+
+        '<hr>' +
+        '<div class="row small">' +
+            '<div class="col-md-6">' +
+                '<strong>Metode:</strong> ' + (p.metode || '-') + '<br>' +
+                '<strong>Catatan:</strong> ' + (p.catatan || '-') +
+            '</div>' +
+            '<div class="col-md-6 text-md-end">' +
+                (p.catatanStatus ? '<strong>Catatan Status:</strong> ' +
+                    p.catatanStatus : '') +
+            '</div>' +
+        '</div>';
+
+    document.getElementById('omDetailBody').innerHTML = html;
+
+    var modal = new bootstrap.Modal(document.getElementById('modalDetailOrder'));
+    modal.show();
+}
+
+// ── 12. CHAT KE CUSTOMER ──
+function chatKeCustomerOrder(idPembeli) {
+    // Arahkan ke menu chat user
+    if (typeof tampilkanMenuChatToko === 'function') {
+        try {
+            tampilkanMenuChatToko();
+            setTimeout(function() {
+                var sel = document.getElementById('pilihUserChatToko');
+                if (sel) {
+                    sel.value = idPembeli;
+                    var evt = new Event('change');
+                    sel.dispatchEvent(evt);
+                }
+            }, 500);
+        } catch (e) {
+            alert('Chat tidak tersedia.');
+        }
+    } else {
+        alert('Fitur chat belum tersedia untuk role Anda.');
+    }
+}
+
+// ── 13. TOAST ──
+function tampilkanToastOM(pesan, tipe) {
+    var warna = {
+        success: '#28A745',
+        danger: '#DC3545',
+        warning: '#FFC107',
+        info: '#17A2B8'
+    }[tipe] || '#28A745';
+
+    var toast = document.createElement('div');
+    toast.textContent = pesan;
+    toast.style.cssText =
+        'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+        'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+        'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+        'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
+    document.body.appendChild(toast);
+
+    setTimeout(function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        setTimeout(function() {
+            if (toast.parentNode) document.body.removeChild(toast);
+        }, 300);
+    }, 2500);
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.7 (JS) ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
 <!-- ===== BLOK R 11.14 – KATALOG PRODUK (HTML) ===== -->
 <!-- ============================================================ -->
 
@@ -38205,6 +39152,7 @@ function tampilkanToastPP(pesan, tipe) {
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 11.16 (JS) ===== -->
 <!-- ============================================================ -->
+
 
 <!-- ============================================================ -->
 <!-- ===== BLOK R 11.31 – DOMPET R2COIN TOKO (HTML) ===== -->
@@ -46221,8 +47169,16 @@ menuHandlers['pengecualianMinimal'] = function() {
 };
 
 // ============================================================
-// HANDLER: Katalog Produk
+// HANDLER: MENU TOKO 
 // ============================================================
+menuHandlers['orderMasuk'] = function() {
+    if (typeof tampilkanOrderMasuk === 'function') {
+        tampilkanOrderMasuk();
+    } else {
+        tampilkanPlaceholderMenu('Order Masuk', '11.7');
+    }
+};
+
 menuHandlers['katalogProduk'] = function() {
     if (typeof tampilkanKatalogProduk === 'function') {
         tampilkanKatalogProduk();
