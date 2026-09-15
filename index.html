@@ -8478,6 +8478,159 @@ function hitungStatistikPesananSeller(idSeller) {
 }
 
 // ============================================================
+// BLOK R 01.0 (188) – KERANJANG POS (TERPISAH dari keranjang katalog)
+// ============================================================
+var KERANJANG_POS = { items: [], idCustomer: null, namaCustomer: null };
+
+function initKeranjangPOS() {
+    KERANJANG_POS = { items: [], idCustomer: null, namaCustomer: null };
+    return KERANJANG_POS;
+}
+
+function getKeranjangPOS() {
+    return KERANJANG_POS;
+}
+
+// ============================================================
+// BLOK R 01.0 (189) – TAMBAH ITEM KE KERANJANG POS
+// ============================================================
+function tambahItemKeranjangPOS(idSeller, idProduk, jumlah) {
+    if (!idSeller || !idProduk) return { sukses: false, pesan: 'Data tidak valid.' };
+    jumlah = parseInt(jumlah, 10) || 1;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    var produkList = loadProdukByRole(seller.role, idSeller);
+    var produk = produkList.find(function(p) { return p.id === idProduk; });
+    if (!produk) return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+
+    var stok = parseInt(produk.stok, 10) || 0;
+    var idx = KERANJANG_POS.items.findIndex(function(it) {
+        return it.idProduk === idProduk;
+    });
+
+    var totalBaru = jumlah;
+    if (idx !== -1) totalBaru = KERANJANG_POS.items[idx].jumlah + jumlah;
+
+    if (totalBaru > stok) {
+        return { sukses: false, pesan: 'Stok tidak cukup. Sisa: ' + stok };
+    }
+
+    if (idx !== -1) {
+        KERANJANG_POS.items[idx].jumlah = totalBaru;
+    } else {
+        KERANJANG_POS.items.push({
+            idProduk: idProduk,
+            nama: produk.nama,
+            hargaRp: parseFloat(produk.harga) || 0,
+            satuan: produk.satuan || '',
+            stok: stok,
+            jumlah: jumlah
+        });
+    }
+    return { sukses: true, keranjang: KERANJANG_POS };
+}
+
+// ============================================================
+// BLOK R 01.0 (190) – HAPUS / UPDATE ITEM KERANJANG POS
+// ============================================================
+function hapusItemKeranjangPOS(idProduk) {
+    KERANJANG_POS.items = KERANJANG_POS.items.filter(function(it) {
+        return it.idProduk !== idProduk;
+    });
+    return { sukses: true };
+}
+
+function updateQtyKeranjangPOS(idProduk, jumlahBaru) {
+    jumlahBaru = parseInt(jumlahBaru, 10) || 0;
+    if (jumlahBaru <= 0) return hapusItemKeranjangPOS(idProduk);
+
+    var idx = KERANJANG_POS.items.findIndex(function(it) {
+        return it.idProduk === idProduk;
+    });
+    if (idx === -1) return { sukses: false, pesan: 'Item tidak ada.' };
+
+    if (jumlahBaru > KERANJANG_POS.items[idx].stok) {
+        return { sukses: false, pesan: 'Melebihi stok.' };
+    }
+    KERANJANG_POS.items[idx].jumlah = jumlahBaru;
+    return { sukses: true };
+}
+
+function hitungTotalKeranjangPOS() {
+    var totalRp = 0, totalItem = 0;
+    KERANJANG_POS.items.forEach(function(it) {
+        totalRp += (it.hargaRp || 0) * (it.jumlah || 0);
+        totalItem += (it.jumlah || 0);
+    });
+    return {
+        totalRp: Math.floor(totalRp),
+        totalItem: totalItem,
+        jumlahProduk: KERANJANG_POS.items.length
+    };
+}
+
+function kosongkanKeranjangPOS() {
+    initKeranjangPOS();
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (191) – PROSES TRANSAKSI OFFLINE (dari POS)
+// ------------------------------------------------------------
+// Wrapper untuk prosesTransaksiOffline + set customer
+// ============================================================
+function prosesTransaksiOfflinePOS(idPenjual, bayar, idCustomer, namaCustomer) {
+    var keranjang = getKeranjangPOS();
+    if (keranjang.items.length === 0) {
+        return { sukses: false, pesan: 'Keranjang masih kosong.' };
+    }
+
+    // Susun items
+    var items = keranjang.items.map(function(it) {
+        return {
+            id: it.idProduk,
+            nama: it.nama,
+            jumlah: it.jumlah,
+            hargaRp: it.hargaRp,
+            satuan: it.satuan
+        };
+    });
+
+    var hasil = prosesTransaksiOffline(idPenjual, items, bayar, '');
+
+    if (hasil.sukses) {
+        // Simpan info customer di transaksi
+        try {
+            var list = JSON.parse(localStorage.getItem('dataTransaksiKatalog') || '[]');
+            if (Array.isArray(list) && list.length > 0) {
+                var trx = list[list.length - 1];
+                if (trx.id === hasil.idTransaksi) {
+                    trx.idCustomer = idCustomer || null;
+                    trx.namaCustomer = namaCustomer || null;
+                    localStorage.setItem('dataTransaksiKatalog', JSON.stringify(list));
+                }
+            }
+        } catch (e) {}
+    }
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (192) – HITUNG KEMBALIAN
+// ============================================================
+function hitungKembalianPOS(bayar, total) {
+    bayar = parseFloat(bayar) || 0;
+    total = parseFloat(total) || 0;
+    if (bayar < total) {
+        return { sukses: false, kurang: total - bayar, kembalian: 0 };
+    }
+    return { sukses: true, kembalian: bayar - total, kurang: 0 };
+}
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
@@ -36373,6 +36526,760 @@ document.addEventListener('DOMContentLoaded', function() {
 <!-- ===== AKHIR BLOK R 11.5 – JAVASCRIPT MASTER PRODUK TOKO ===== -->
 
 <!-- ============================================================ -->
+<!-- ===== BLOK R 11.6 – TRANSAKSI OFFLINE POS (HTML) ===== -->
+<!-- ============================================================ -->
+
+<div id="transaksiOfflineContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- HEADER -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-cash-register me-2"></i>Transaksi Offline (POS)
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Penjualan langsung — tidak perlu R2Coin.
+                </small>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-light" onclick="refreshProdukPOS()">
+                    <i class="fas fa-sync me-1"></i> Refresh
+                </button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i> Kembali
+                </button>
+            </div>
+        </div>
+
+        <div class="row g-3">
+
+            <!-- ══════════ KOLOM KIRI: PRODUK & KERANJANG ══════════ -->
+            <div class="col-lg-8">
+
+                <!-- Pencarian & Scan -->
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body py-2">
+                        <div class="row g-2">
+                            <div class="col-md-8">
+                                <div class="input-group">
+                                    <span class="input-group-text">
+                                        <i class="fas fa-search"></i>
+                                    </span>
+                                    <input type="text" id="posCariProduk"
+                                           class="form-control"
+                                           placeholder="Cari nama/kode produk... (Enter untuk cari cepat)"
+                                           onkeyup="renderGridProdukPOS(event)">
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <button class="btn btn-primary w-100"
+                                        onclick="bukaScanKameraPOS()">
+                                    <i class="fas fa-camera me-1"></i> Scan Barcode
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Grid Produk -->
+                <div class="card border-0 shadow mb-3">
+                    <div class="card-header text-white d-flex justify-content-between align-items-center"
+                         style="background:#FF8C00;">
+                        <span><i class="fas fa-boxes me-2"></i>Pilih Produk</span>
+                        <span class="badge bg-light text-dark" id="posJumlahProduk">0</span>
+                    </div>
+                    <div class="card-body" style="max-height:400px;overflow-y:auto;">
+                        <div class="row g-2" id="posGridProduk">
+                            <div class="col-12 text-center text-muted py-4">
+                                Memuat produk...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Keranjang -->
+                <div class="card border-0 shadow">
+                    <div class="card-header text-white d-flex justify-content-between align-items-center"
+                         style="background:#1976D2;">
+                        <span>
+                            <i class="fas fa-shopping-cart me-2"></i>Keranjang
+                        </span>
+                        <div>
+                            <span class="badge bg-light text-dark me-2"
+                                  id="posJumlahItem">0</span>
+                            <button class="btn btn-sm btn-outline-light"
+                                    onclick="kosongkanKeranjangPOSUIPemicu()">
+                                <i class="fas fa-trash me-1"></i> Kosongkan
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width:40px;">#</th>
+                                        <th>Produk</th>
+                                        <th style="width:140px;">Jumlah</th>
+                                        <th style="width:120px;" class="text-end">Subtotal</th>
+                                        <th style="width:60px;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="posKeranjangBody">
+                                    <tr>
+                                        <td colspan="5" class="text-center text-muted py-4">
+                                            Belum ada item. Klik produk di atas untuk menambah.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ══════════ KOLOM KANAN: PEMBAYARAN ══════════ -->
+            <div class="col-lg-4">
+
+                <div class="card border-0 shadow sticky-top" style="top:80px;">
+                    <div class="card-header text-white" style="background:#28A745;">
+                        <i class="fas fa-money-bill-wave me-2"></i>Pembayaran
+                    </div>
+                    <div class="card-body">
+
+                        <!-- Customer (opsional) -->
+                        <div class="mb-3">
+                            <label class="fw-bold small">Customer (Opsional)</label>
+                            <input type="text" id="posNamaCustomer"
+                                   class="form-control form-control-sm"
+                                   placeholder="Nama customer walk-in"
+                                   maxlength="50">
+                            <small class="text-muted">Kosongkan untuk walk-in</small>
+                        </div>
+
+                        <hr>
+
+                        <!-- Ringkasan -->
+                        <div class="mb-2 d-flex justify-content-between">
+                            <span>Total Item:</span>
+                            <strong id="posTotalItem">0</strong>
+                        </div>
+                        <div class="mb-3 d-flex justify-content-between">
+                            <span>Total Bayar:</span>
+                            <strong class="text-success fs-5" id="posTotalRp">Rp 0</strong>
+                        </div>
+
+                        <hr>
+
+                        <!-- Input Bayar -->
+                        <label class="fw-bold">Uang Diterima</label>
+                        <div class="input-group mb-2">
+                            <span class="input-group-text">Rp</span>
+                            <input type="number" id="posBayar" class="form-control form-control-lg text-end fw-bold"
+                                   placeholder="0" min="0"
+                                   oninput="updateKembalianPOS()">
+                        </div>
+
+                        <!-- Tombol Cepat -->
+                        <div class="d-flex gap-1 mb-3 flex-wrap">
+                            <button class="btn btn-sm btn-outline-secondary flex-fill"
+                                    onclick="setBayarCepat(5000)">5rb</button>
+                            <button class="btn btn-sm btn-outline-secondary flex-fill"
+                                    onclick="setBayarCepat(10000)">10rb</button>
+                            <button class="btn btn-sm btn-outline-secondary flex-fill"
+                                    onclick="setBayarCepat(20000)">20rb</button>
+                            <button class="btn btn-sm btn-outline-secondary flex-fill"
+                                    onclick="setBayarCepat(50000)">50rb</button>
+                            <button class="btn btn-sm btn-outline-secondary flex-fill"
+                                    onclick="setBayarCepat(100000)">100rb</button>
+                            <button class="btn btn-sm btn-outline-primary flex-fill"
+                                    onclick="setBayarPas()">Pas</button>
+                        </div>
+
+                        <!-- Kembalian -->
+                        <div class="alert alert-info py-2 mb-3 d-flex justify-content-between">
+                            <span class="fw-bold">Kembalian:</span>
+                            <strong id="posKembalian">Rp 0</strong>
+                        </div>
+
+                        <!-- Tombol Aksi -->
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-success btn-lg fw-bold"
+                                    id="posBtnSimpan"
+                                    onclick="simpanTransaksiPOS()">
+                                <i class="fas fa-save me-2"></i> Simpan & Cetak Struk
+                            </button>
+                            <button class="btn btn-outline-secondary"
+                                    onclick="kosongkanKeranjangPOSUIPemicu()">
+                                <i class="fas fa-times me-1"></i> Batal
+                            </button>
+                        </div>
+
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ MODAL SCAN KAMERA POS ══════════ -->
+<div class="modal fade" id="modalScanPOS" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-camera me-2"></i>Scan Barcode Produk
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal" onclick="stopScanPOS()"></button>
+            </div>
+            <div class="modal-body">
+                <div id="readerPOS" style="width:100%;"></div>
+                <div id="scanPOSStatus" class="alert alert-info mt-3 mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Arahkan kamera ke barcode produk...
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ MODAL STRUK ══════════ -->
+<div class="modal fade" id="modalStrukPOS" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title">
+                    <i class="fas fa-receipt me-2"></i>Struk Transaksi
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="posStrukPreview"
+                     style="background:#fff;padding:15px;border:1px dashed #999;
+                            border-radius:5px;font-family:monospace;font-size:12px;">
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Tutup</button>
+                <div>
+                    <button class="btn btn-outline-primary" onclick="cetakStrukPOS()">
+                        <i class="fas fa-print me-1"></i> Cetak
+                    </button>
+                    <button class="btn btn-success" onclick="mulaiTransaksiBaruPOS()">
+                        <i class="fas fa-plus me-1"></i> Transaksi Baru
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.6 (HTML) ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 11.6 – TRANSAKSI OFFLINE POS (JS) ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 11.6 – JS TRANSAKSI OFFLINE POS
+// ============================================================
+
+var scanPOSInstance = null;
+var posState = { lastIdTransaksi: null };
+
+// ── 1. TAMPILKAN HALAMAN ──
+function tampilkanTransaksiOffline() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('transaksiOfflineContainer');
+    if (!container) {
+        tampilkanPlaceholderMenu('Transaksi Offline', '11.6');
+        return;
+    }
+
+    konten.innerHTML = container.innerHTML;
+
+    initKeranjangPOS();
+    renderGridProdukPOS();
+    renderKeranjangPOS();
+    resetFormBayarPOS();
+
+    // Focus ke search
+    setTimeout(function() {
+        var inp = document.getElementById('posCariProduk');
+        if (inp) inp.focus();
+    }, 300);
+
+    tutupMenu();
+}
+
+// ── 2. GET OWNER ──
+function posGetIdOwner() {
+    if (typeof getOwnerIdProduk === 'function') {
+        var id = getOwnerIdProduk();
+        if (id) return id;
+    }
+    return userAktif ? userAktif.idUser : null;
+}
+
+function posGetRoleOwner() {
+    var owner = (typeof getDataOwnerProduk === 'function')
+        ? getDataOwnerProduk() : null;
+    if (owner) return owner.role;
+    return userAktif ? userAktif.role : null;
+}
+
+// ── 3. REFRESH PRODUK ──
+function refreshProdukPOS() {
+    renderGridProdukPOS();
+    renderKeranjangPOS();
+    tampilkanToastPOS('✅ Data di-refresh', 'info');
+}
+
+// ── 4. RENDER GRID PRODUK ──
+function renderGridProdukPOS(event) {
+    var grid = document.getElementById('posGridProduk');
+    var badge = document.getElementById('posJumlahProduk');
+    if (!grid) return;
+
+    var idSeller = posGetIdOwner();
+    var role = posGetRoleOwner();
+    if (!idSeller || !role) {
+        grid.innerHTML = '<div class="col-12 text-center text-muted">User tidak valid.</div>';
+        return;
+    }
+
+    var produkList = loadProdukByRole(role, idSeller);
+    produkList = produkList.filter(function(p) { return !!p.isPublik; });
+
+    // Cari
+    var cari = (document.getElementById('posCariProduk')?.value || '').toLowerCase().trim();
+    if (cari) {
+        produkList = produkList.filter(function(p) {
+            return (p.nama || '').toLowerCase().includes(cari) ||
+                   (p.kode || '').toLowerCase().includes(cari) ||
+                   (p.merek || '').toLowerCase().includes(cari);
+        });
+    }
+
+    // Enter cepat: kalau 1 hasil & user tekan Enter
+    if (event && event.key === 'Enter' && produkList.length === 1) {
+        tambahProdukKePOS(produkList[0].id, 1);
+        document.getElementById('posCariProduk').value = '';
+        renderGridProdukPOS();
+        return;
+    }
+
+    if (badge) badge.textContent = produkList.length + ' produk';
+
+    if (produkList.length === 0) {
+        grid.innerHTML = '<div class="col-12 text-center text-muted py-4">' +
+            '<i class="fas fa-box-open fa-2x d-block mb-2 opacity-50"></i>' +
+            'Tidak ada produk.</div>';
+        return;
+    }
+
+    var html = '';
+    produkList.slice(0, 60).forEach(function(p) {
+        var stok = parseInt(p.stok, 10) || 0;
+        var disabled = stok === 0;
+        var hargaRp = (parseFloat(p.harga) || 0).toLocaleString('id-ID');
+
+        var foto = p.foto || 'https://placehold.co/80x80/FF8C00/ffffff?text=' +
+                   encodeURIComponent((p.nama || 'P').substring(0, 2));
+
+        html +=
+            '<div class="col-6 col-md-4 col-lg-3">' +
+                '<div class="card border-0 shadow-sm h-100 hover-card" ' +
+                     'style="cursor:' + (disabled ? 'not-allowed' : 'pointer') + ';' +
+                     'opacity:' + (disabled ? '0.5' : '1') + ';" ' +
+                     (disabled ? '' :
+                        'onclick="tambahProdukKePOS(\'' + p.id + '\', 1)"') + '>' +
+                    '<img src="' + foto + '" class="card-img-top" ' +
+                         'style="height:70px;object-fit:cover;">' +
+                    '<div class="card-body p-2 text-center">' +
+                        '<div class="fw-bold small" style="font-size:11px;line-height:1.2;">' +
+                            (p.nama || '-') + '</div>' +
+                        '<div class="text-success fw-bold mt-1" style="font-size:13px;">' +
+                            'Rp ' + hargaRp + '</div>' +
+                        '<div class="small text-muted" style="font-size:10px;">' +
+                            'Stok: ' + stok + ' ' + (p.satuan || '') + '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+    });
+
+    grid.innerHTML = html;
+}
+
+// ── 5. TAMBAH PRODUK KE KERANJANG POS ──
+function tambahProdukKePOS(idProduk, jumlah) {
+    var idSeller = posGetIdOwner();
+    if (!idSeller) return;
+
+    var hasil = tambahItemKeranjangPOS(idSeller, idProduk, jumlah || 1);
+    if (hasil.sukses) {
+        renderKeranjangPOS();
+        tampilkanToastPOS('✅ Ditambahkan', 'success');
+    } else {
+        tampilkanToastPOS('⚠️ ' + hasil.pesan, 'warning');
+    }
+}
+
+// ── 6. RENDER KERANJANG ──
+function renderKeranjangPOS() {
+    var tbody = document.getElementById('posKeranjangBody');
+    if (!tbody) return;
+
+    var keranjang = getKeranjangPOS();
+    var total = hitungTotalKeranjangPOS();
+
+    document.getElementById('posTotalItem').textContent = total.totalItem;
+    document.getElementById('posTotalRp').textContent =
+        'Rp ' + total.totalRp.toLocaleString('id-ID');
+    document.getElementById('posJumlahItem').textContent = total.totalItem + ' item';
+
+    if (keranjang.items.length === 0) {
+        tbody.innerHTML =
+            '<tr><td colspan="5" class="text-center text-muted py-4">' +
+            'Belum ada item. Klik produk di atas untuk menambah.</td></tr>';
+        updateKembalianPOS();
+        return;
+    }
+
+    var html = '';
+    keranjang.items.forEach(function(it, idx) {
+        var sub = (it.hargaRp || 0) * (it.jumlah || 0);
+
+        html +=
+            '<tr>' +
+                '<td>' + (idx + 1) + '</td>' +
+                '<td>' +
+                    '<strong>' + it.nama + '</strong><br>' +
+                    '<small class="text-muted">Rp ' +
+                        (it.hargaRp || 0).toLocaleString('id-ID') +
+                        ' / ' + (it.satuan || 'unit') + '</small>' +
+                '</td>' +
+                '<td>' +
+                    '<div class="input-group input-group-sm">' +
+                        '<button class="btn btn-outline-secondary" ' +
+                            'onclick="ubahQtyKeranjangPOSUI(\'' + it.idProduk + '\', ' +
+                            (it.jumlah - 1) + ')">' +
+                            '<i class="fas fa-minus"></i></button>' +
+                        '<input type="text" class="form-control text-center" ' +
+                            'value="' + it.jumlah + '" readonly>' +
+                        '<button class="btn btn-outline-secondary" ' +
+                            'onclick="ubahQtyKeranjangPOSUI(\'' + it.idProduk + '\', ' +
+                            (it.jumlah + 1) + ')">' +
+                            '<i class="fas fa-plus"></i></button>' +
+                    '</div>' +
+                '</td>' +
+                '<td class="text-end fw-bold">' +
+                    'Rp ' + sub.toLocaleString('id-ID') +
+                '</td>' +
+                '<td>' +
+                    '<button class="btn btn-sm btn-outline-danger" ' +
+                        'onclick="hapusItemKeranjangPOSUI(\'' + it.idProduk + '\')">' +
+                        '<i class="fas fa-trash"></i>' +
+                    '</button>' +
+                '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+
+    updateKembalianPOS();
+}
+
+function ubahQtyKeranjangPOSUI(idProduk, qtyBaru) {
+    var hasil = updateQtyKeranjangPOS(idProduk, qtyBaru);
+    if (hasil.sukses) {
+        renderKeranjangPOS();
+    } else {
+        tampilkanToastPOS('⚠️ ' + hasil.pesan, 'warning');
+    }
+}
+
+function hapusItemKeranjangPOSUI(idProduk) {
+    hapusItemKeranjangPOS(idProduk);
+    renderKeranjangPOS();
+}
+
+function kosongkanKeranjangPOSUIPemicu() {
+    if (getKeranjangPOS().items.length === 0) return;
+    if (!confirm('Kosongkan keranjang?')) return;
+
+    kosongkanKeranjangPOS();
+    renderKeranjangPOS();
+    resetFormBayarPOS();
+    tampilkanToastPOS('🗑️ Keranjang dikosongkan', 'info');
+}
+
+// ── 7. FORM BAYAR ──
+function resetFormBayarPOS() {
+    var inp = document.getElementById('posBayar');
+    if (inp) inp.value = '';
+    var inpCust = document.getElementById('posNamaCustomer');
+    if (inpCust) inpCust.value = '';
+    updateKembalianPOS();
+}
+
+function updateKembalianPOS() {
+    var total = hitungTotalKeranjangPOS();
+    var bayar = parseFloat(document.getElementById('posBayar')?.value) || 0;
+    var elKembali = document.getElementById('posKembalian');
+
+    if (!elKembali) return;
+
+    var hasil = hitungKembalianPOS(bayar, total.totalRp);
+
+    if (total.totalRp === 0) {
+        elKembali.textContent = 'Rp 0';
+        elKembali.className = 'text-dark';
+    } else if (hasil.sukses) {
+        elKembali.textContent = 'Rp ' + hasil.kembalian.toLocaleString('id-ID');
+        elKembali.className = 'text-success fw-bold';
+    } else {
+        elKembali.textContent = 'Kurang: Rp ' + hasil.kurang.toLocaleString('id-ID');
+        elKembali.className = 'text-danger fw-bold';
+    }
+}
+
+function setBayarCepat(angka) {
+    var inp = document.getElementById('posBayar');
+    if (inp) {
+        inp.value = angka;
+        updateKembalianPOS();
+    }
+}
+
+function setBayarPas() {
+    var total = hitungTotalKeranjangPOS();
+    var inp = document.getElementById('posBayar');
+    if (inp) {
+        inp.value = total.totalRp;
+        updateKembalianPOS();
+    }
+}
+
+// ── 8. SIMPAN TRANSAKSI POS ──
+function simpanTransaksiPOS() {
+    var idSeller = posGetIdOwner();
+    if (!idSeller) { alert('User tidak valid.'); return; }
+
+    var keranjang = getKeranjangPOS();
+    if (keranjang.items.length === 0) {
+        tampilkanToastPOS('⚠️ Keranjang masih kosong!', 'warning');
+        return;
+    }
+
+    var total = hitungTotalKeranjangPOS();
+    var bayar = parseFloat(document.getElementById('posBayar')?.value) || 0;
+    var namaCustomer = (document.getElementById('posNamaCustomer')?.value || '').trim();
+
+    if (bayar < total.totalRp) {
+        tampilkanToastPOS('❌ Uang bayar kurang dari total!', 'danger');
+        return;
+    }
+
+    if (!confirm('Simpan transaksi ini?\n\n' +
+                 'Total: Rp ' + total.totalRp.toLocaleString('id-ID') +
+                 '\nBayar: Rp ' + bayar.toLocaleString('id-ID') +
+                 '\nKembali: Rp ' + (bayar - total.totalRp).toLocaleString('id-ID') +
+                 (namaCustomer ? '\n\nCustomer: ' + namaCustomer : ''))) {
+        return;
+    }
+
+    var hasil = prosesTransaksiOfflinePOS(idSeller, bayar, null, namaCustomer || null);
+
+    if (hasil.sukses) {
+        posState.lastIdTransaksi = hasil.idTransaksi;
+
+        // Tampilkan struk
+        tampilkanStrukPOS(hasil.idTransaksi);
+
+        // Reset keranjang & form
+        kosongkanKeranjangPOS();
+        renderKeranjangPOS();
+        resetFormBayarPOS();
+        renderGridProdukPOS();
+
+        tampilkanToastPOS('✅ Transaksi berhasil disimpan!', 'success');
+    } else {
+        alert('❌ ' + hasil.pesan);
+    }
+}
+
+// ── 9. TAMPILKAN STRUK ──
+function tampilkanStrukPOS(idTransaksi) {
+    var list = loadTransaksiKatalog();
+    var trx = list.find(function(t) { return t.id === idTransaksi; });
+    if (!trx) return;
+
+    var config = getConfigStruk();
+    var html = generateStrukHTML(trx, config);
+
+    var preview = document.getElementById('posStrukPreview');
+    if (preview) preview.innerHTML = html;
+
+    var modal = new bootstrap.Modal(document.getElementById('modalStrukPOS'));
+    modal.show();
+}
+
+// ── 10. CETAK STRUK ──
+function cetakStrukPOS() {
+    if (!posState.lastIdTransaksi) return;
+    if (typeof cetakStruk === 'function') {
+        cetakStruk(posState.lastIdTransaksi);
+    } else {
+        alert('Fitur cetak belum tersedia.');
+    }
+}
+
+// ── 11. MULAI TRANSAKSI BARU ──
+function mulaiTransaksiBaruPOS() {
+    var modal = bootstrap.Modal.getInstance(
+        document.getElementById('modalStrukPOS')
+    );
+    if (modal) modal.hide();
+
+    initKeranjangPOS();
+    renderKeranjangPOS();
+    resetFormBayarPOS();
+
+    setTimeout(function() {
+        var inp = document.getElementById('posCariProduk');
+        if (inp) { inp.value = ''; inp.focus(); }
+    }, 300);
+}
+
+// ── 12. SCAN KAMERA POS ──
+function bukaScanKameraPOS() {
+    var modal = document.getElementById('modalScanPOS');
+    if (!modal) return;
+
+    var bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+
+    setTimeout(function() { mulaiScanPOS(); }, 300);
+}
+
+function mulaiScanPOS() {
+    var status = document.getElementById('scanPOSStatus');
+    if (!status) return;
+
+    if (typeof Html5Qrcode === 'undefined') {
+        status.className = 'alert alert-danger';
+        status.innerHTML = '❌ Library scanner tidak tersedia.';
+        return;
+    }
+
+    scanPOSInstance = new Html5Qrcode('readerPOS');
+
+    scanPOSInstance.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 150 }, aspectRatio: 1.777 },
+        function(decodedText) {
+            // Cari produk by kode
+            var idSeller = posGetIdOwner();
+            var role = posGetRoleOwner();
+            var produkList = loadProdukByRole(role, idSeller);
+            var produk = produkList.find(function(p) {
+                return p.kode === decodedText;
+            });
+
+            if (produk) {
+                // Tambah otomatis
+                tambahProdukKePOS(produk.id, 1);
+                status.className = 'alert alert-success';
+                status.innerHTML = '<i class="fas fa-check-circle me-1"></i>' +
+                    'Produk: <strong>' + produk.nama + '</strong> ditambahkan!';
+
+                setTimeout(function() {
+                    stopScanPOS();
+                    var modal = bootstrap.Modal.getInstance(
+                        document.getElementById('modalScanPOS')
+                    );
+                    if (modal) modal.hide();
+                    var inp = document.getElementById('posCariProduk');
+                    if (inp) inp.focus();
+                }, 1000);
+            } else {
+                status.className = 'alert alert-warning';
+                status.innerHTML = '⚠️ Barcode <strong>' + decodedText +
+                    '</strong> tidak ditemukan di produk Anda.';
+            }
+        },
+        function() {}
+    ).catch(function(err) {
+        status.className = 'alert alert-warning';
+        status.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>' +
+            'Gagal akses kamera: ' + err.message;
+    });
+}
+
+function stopScanPOS() {
+    if (scanPOSInstance) {
+        try {
+            scanPOSInstance.stop().then(function() {
+                scanPOSInstance.clear();
+                scanPOSInstance = null;
+            }).catch(function() { scanPOSInstance = null; });
+        } catch (e) { scanPOSInstance = null; }
+    }
+}
+
+// Cleanup saat modal scan ditutup
+document.addEventListener('hidden.bs.modal', function(e) {
+    if (e.target && e.target.id === 'modalScanPOS') {
+        stopScanPOS();
+    }
+});
+
+// ── 13. TOAST ──
+function tampilkanToastPOS(pesan, tipe) {
+    var warna = {
+        success: '#28A745',
+        danger: '#DC3545',
+        warning: '#FFC107',
+        info: '#17A2B8'
+    }[tipe] || '#28A745';
+
+    var toast = document.createElement('div');
+    toast.textContent = pesan;
+    toast.style.cssText =
+        'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+        'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+        'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+        'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
+    document.body.appendChild(toast);
+
+    setTimeout(function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        setTimeout(function() {
+            if (toast.parentNode) document.body.removeChild(toast);
+        }, 300);
+    }, 2500);
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 11.6 (JS) ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
 <!-- ===== BLOK R 11.7 – ORDER MASUK SELLER (HTML) ===== -->
 <!-- ============================================================ -->
 
@@ -47171,6 +48078,14 @@ menuHandlers['pengecualianMinimal'] = function() {
 // ============================================================
 // HANDLER: MENU TOKO 
 // ============================================================
+menuHandlers['transaksiKasir'] = function() {
+    if (typeof tampilkanTransaksiOffline === 'function') {
+        tampilkanTransaksiOffline();
+    } else {
+        tampilkanPlaceholderMenu('Transaksi & Kasir', '11.6');
+    }
+};
+
 menuHandlers['orderMasuk'] = function() {
     if (typeof tampilkanOrderMasuk === 'function') {
         tampilkanOrderMasuk();
