@@ -6786,43 +6786,86 @@ function validasiSatuanRole(role, satuan) {
 }
 
 // ============================================================
-// BLOK R 01.0 (130) – GENERATE KODE PRODUK OTOMATIS
+// BLOK R 01.0 (130) – GENERATE KODE PRODUK OTOMATIS (REVISI V2)
 // ------------------------------------------------------------
-// Format: PRD-[KODE_ROLE]-[URUT]
+// Format: PRD-[ROLE]-[ID_SEQ_USER]-[URUT_PRODUK]
+// Contoh:
+//   Toko ID_TK2R_TK-0042, produk ke-1  → PRD-TK-0042-0001
+//   Toko ID_TK2R_TK-0042, produk ke-99 → PRD-TK-0042-0099
+//   Grosir ID_TK2R_GR-0007, produk ke-5 → PRD-GR-0007-0005
+//
+// KEUNGGULAN:
+//   - Unik global: kombinasi [ID_USER]-[URUT] tidak mungkin duplikat
+//   - Scan HANYA produk toko sendiri (bukan 50.000 produk semua toko)
+//   - Support jutaan produk (4 digit urut, 4 digit ID user)
+//   - Anti race-condition antar toko
+//
+// FALLBACK: parameter idUser opsional. Kalau kosong, pakai
+// getOwnerIdProduk() (sudah handle Kasir → owner).
 // ============================================================
-function generateKodeProduk(role) {
-    var prefix = kodeRoleToPrefix(role) || 'USR';
-    var kode = 'PRD-' + prefix + '-';
-    var counter = 0;
-    var maxLoop = 9999;
-
-    var existingIds = [];
-    try {
-        var keys = Object.keys(localStorage).filter(function(k) {
-            return k.indexOf('dataProduk') === 0;
-        });
-        keys.forEach(function(k) {
-            try {
-                var list = JSON.parse(localStorage.getItem(k) || '[]');
-                if (Array.isArray(list)) {
-                    list.forEach(function(p) {
-                        if (p.kode) existingIds.push(p.kode);
-                    });
-                }
-            } catch (e) {}
-        });
-    } catch (e) {}
-
-    do {
-        counter++;
-        var urut = String(counter).padStart(4, '0');
-        var kandidat = kode + urut;
-        if (existingIds.indexOf(kandidat) === -1) {
-            return kandidat;
+function generateKodeProduk(role, idUser) {
+    // ── 1. Resolve role & idUser ──
+    if (!role || !idUser) {
+        var ctx = (typeof getManajemenProdukContext === 'function')
+            ? getManajemenProdukContext() : null;
+        if (ctx) {
+            role = role || ctx.role;
+            idUser = idUser || ctx.idUser;
+        } else if (typeof getOwnerIdProduk === 'function') {
+            idUser = idUser || getOwnerIdProduk();
+            if (!role && userAktif) {
+                var owner = (typeof getDataOwnerProduk === 'function')
+                    ? getDataOwnerProduk() : null;
+                role = owner ? owner.role : userAktif.role;
+            }
         }
-    } while (counter < maxLoop);
+    }
 
-    return kode + Date.now().toString().slice(-4);
+    if (!role) role = 'Toko';
+    if (!idUser) {
+        console.warn('generateKodeProduk: idUser kosong, pakai fallback timestamp.');
+        return 'PRD-' + (kodeRoleToPrefix(role) || 'USR') +
+               '-' + Date.now().toString().slice(-8);
+    }
+
+    // ── 2. Komponen kode ──
+    var kodeRole = kodeRoleToPrefix(role) || 'USR';
+
+    // Ambil ID sequence dari ID user (4 digit terakhir setelah '-')
+    // Contoh: ID_TK2R_TK-0042 → "0042"
+    var idSeq = '0000';
+    var matchId = String(idUser).match(/-(\d+)$/);
+    if (matchId) {
+        idSeq = String(parseInt(matchId[1], 10)).padStart(4, '0');
+    }
+
+    // ── 3. Scan HANYA produk milik toko ini ──
+    var produkList = [];
+    try {
+        if (typeof loadProdukByRole === 'function') {
+            produkList = loadProdukByRole(role, idUser) || [];
+        }
+    } catch (e) {
+        produkList = [];
+    }
+
+    // ── 4. Cari nomor urut terbesar dari kode format baru ──
+    var prefix = 'PRD-' + kodeRole + '-' + idSeq + '-';
+    var regexKode = new RegExp('^' + prefix.replace(/-/g, '\\-') + '(\\d{4})$');
+    var maxUrut = 0;
+
+    produkList.forEach(function(p) {
+        if (!p || !p.kode) return;
+        var m = String(p.kode).match(regexKode);
+        if (m) {
+            var u = parseInt(m[1], 10);
+            if (u > maxUrut) maxUrut = u;
+        }
+    });
+
+    // ── 5. Increment & gabung ──
+    var urutBaru = String(maxUrut + 1).padStart(4, '0');
+    return prefix + urutBaru;
 }
 
 // ============================================================
@@ -9376,7 +9419,7 @@ function tampilkanFormProdukGlobal(idProduk) {
     } else {
         // ── ADD MODE ──
         setTextProdukGlobal('formProdukGlobalLabel', 'Tambah Produk');
-        setValProdukGlobal('formProdukKode', generateKodeProduk(ctx.role));
+        setValProdukGlobal('formProdukKode', generateKodeProduk(ctx.role, ctx.idUser));
 
         var chkAdd = document.getElementById('formProdukIsPublik');
         if (chkAdd) chkAdd.checked = true;
@@ -50467,7 +50510,7 @@ function regenerateKodeProdukForm() {
     var ctx = getManajemenProdukContext();
     if (!ctx) return;
 
-    var kodeBaru = generateKodeProduk(ctx.role);  // BLOK R 01.0 (130)
+    var kodeBaru = generateKodeProduk(ctx.role, ctx.idUser);  // BLOK R 01.0 (130)
     var elKode = document.getElementById('formProdukKode');
     if (elKode) elKode.value = kodeBaru;
 
