@@ -10630,6 +10630,171 @@ function seedKatalogGiftSawerDefault() {
 // ============================================================
 
 // ============================================================
+// FASE T1 – FUNGSI GLOBAL TARIF OJEK (BLOK R 01.0 248-251)
+// ------------------------------------------------------------
+// Master tarif ojek dikelola SuperAdmin di Setting Ekonomi.
+// Dipakai saat seller kirim order via ojek.
+//
+// Struktur data localStorage key: 'settingTarifOjek'
+//   {
+//     tarifPerKm: 3000,
+//     biayaBase: 2000,
+//     tarifMinimum: 5000,
+//     biayaJasaPersen: 10,
+//     radiusDefaultKm: 5,
+//     maksimalJarakOjekKm: 30,
+//     updatedBy, updatedAt
+//   }
+//
+// Rumus:
+//   Ongkos = Biaya Base + (Jarak × Tarif/KM)
+//   Kalau < Tarif Minimum → pakai Tarif Minimum
+// ============================================================
+
+
+// ============================================================
+// BLOK R 01.0 (248) – GET TARIF OJEK GLOBAL
+// ------------------------------------------------------------
+// Ambil setting tarif ojek. Kalau tidak ada → default.
+// ============================================================
+function getTarifOjekGlobal() {
+    var defaults = {
+        tarifPerKm:          3000,
+        biayaBase:           2000,
+        tarifMinimum:        5000,
+        biayaJasaPersen:     10,
+        radiusDefaultKm:     5,
+        maksimalJarakOjekKm: 30,
+        updatedBy:           null,
+        updatedAt:           null
+    };
+
+    try {
+        var stored = localStorage.getItem('settingTarifOjek');
+        if (!stored) return defaults;
+
+        var data = JSON.parse(stored);
+        if (!data || typeof data !== 'object') return defaults;
+
+        // Merge dengan default (biar aman kalau ada field baru)
+        Object.keys(defaults).forEach(function(k) {
+            if (typeof data[k] === 'undefined') data[k] = defaults[k];
+        });
+
+        return data;
+    } catch (e) {
+        console.warn('getTarifOjekGlobal parse error:', e);
+        return defaults;
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (249) – SIMPAN TARIF OJEK GLOBAL
+// ------------------------------------------------------------
+// Hanya SuperAdmin yang boleh panggil (cek di UI, bukan di sini).
+// Validasi: semua angka harus >= 0.
+// ============================================================
+function simpanTarifOjekGlobal(data) {
+    var idUser = getIdUserAktif();
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+
+    data = data || {};
+
+    // Validasi angka
+    var angkaFields = ['tarifPerKm', 'biayaBase', 'tarifMinimum',
+                       'biayaJasaPersen', 'radiusDefaultKm', 'maksimalJarakOjekKm'];
+    for (var i = 0; i < angkaFields.length; i++) {
+        var f = angkaFields[i];
+        var v = parseFloat(data[f]);
+        if (isNaN(v) || v < 0) {
+            return { sukses: false, pesan: 'Field ' + f + ' harus angka >= 0.' };
+        }
+    }
+
+    var setting = {
+        tarifPerKm:          parseFloat(data.tarifPerKm)          || 3000,
+        biayaBase:           parseFloat(data.biayaBase)           || 2000,
+        tarifMinimum:        parseFloat(data.tarifMinimum)        || 5000,
+        biayaJasaPersen:     parseFloat(data.biayaJasaPersen)     || 0,
+        radiusDefaultKm:     parseFloat(data.radiusDefaultKm)     || 5,
+        maksimalJarakOjekKm: parseFloat(data.maksimalJarakOjekKm) || 30,
+        updatedBy:           idUser,
+        updatedAt:           new Date().toISOString()
+    };
+
+    try {
+        localStorage.setItem('settingTarifOjek', JSON.stringify(setting));
+
+        catatAktivitasGlobal(idUser, 'Setting Tarif Ojek',
+            'Update tarif ojek: Rp ' + setting.tarifPerKm + '/km, ' +
+            'base Rp ' + setting.biayaBase + ', min Rp ' + setting.tarifMinimum);
+
+        return { sukses: true, setting: setting };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+
+// ============================================================
+// BLOK R 01.0 (250) – HITUNG ONGKOS OJEK DARI JARAK
+// ------------------------------------------------------------
+// Rumus:
+//   ongkosKotor = biayaBase + (jarakKm × tarifPerKm)
+//   ongkosFinal = max(ongkosKotor, tarifMinimum)
+// Return angka (Rp).
+// ============================================================
+function hitungOngkosOjek(jarakKm) {
+    var setting = getTarifOjekGlobal();
+
+    jarakKm = parseFloat(jarakKm) || 0;
+    if (jarakKm < 0) jarakKm = 0;
+
+    var ongkosKotor = setting.biayaBase + (jarakKm * setting.tarifPerKm);
+    var ongkosFinal = Math.max(ongkosKotor, setting.tarifMinimum);
+
+    return Math.round(ongkosFinal);
+}
+
+
+// ============================================================
+// BLOK R 01.0 (251) – FORMAT ONGKOS OJEK (DETAIL)
+// ------------------------------------------------------------
+// Return objek dengan rincian untuk ditampilkan di chat / UI.
+// ============================================================
+function formatOngkosOjek(jarakKm) {
+    var setting = getTarifOjekGlobal();
+    jarakKm = parseFloat(jarakKm) || 0;
+
+    var kotor = setting.biayaBase + (jarakKm * setting.tarifPerKm);
+    var final = Math.max(kotor, setting.tarifMinimum);
+    var pakaiMinimum = (kotor < setting.tarifMinimum);
+
+    return {
+        jarakKm:        Math.round(jarakKm * 100) / 100,
+        biayaBase:      setting.biayaBase,
+        tarifPerKm:     setting.tarifPerKm,
+        ongkosKotor:    Math.round(kotor),
+        tarifMinimum:   setting.tarifMinimum,
+        ongkosFinal:    Math.round(final),
+        pakaiMinimum:   pakaiMinimum,
+        // Untuk ditampilkan
+        teksRingkas:    'Rp ' + Math.round(final).toLocaleString('id-ID') +
+                        ' (' + (Math.round(jarakKm * 100) / 100) + ' km)',
+        teksDetail:     'Rp ' + setting.biayaBase.toLocaleString('id-ID') +
+                        ' + (' + (Math.round(jarakKm * 100) / 100) + ' km × Rp ' +
+                        setting.tarifPerKm.toLocaleString('id-ID') + ') = Rp ' +
+                        Math.round(final).toLocaleString('id-ID') +
+                        (pakaiMinimum ? ' (kena tarif minimum)' : '')
+    };
+}
+
+// ============================================================
+// AKHIR FASE T1
+// ============================================================
+
+// ============================================================
 // AKHIR BLOK R 01.0
 // ============================================================
 </script>
@@ -11609,12 +11774,19 @@ function tampilkanNotifDaftar(pesan, tipe) {
                     <i class="fas fa-coins me-1"></i> Ekonomi Utama
                 </a>
             </li>
-            <li class="nav-item" role="presentation">
+                        <li class="nav-item" role="presentation">
                 <a class="nav-link" data-bs-toggle="tab"
                    href="#tabKatalogGift" role="tab"
                    onclick="renderKatalogGiftSawerSA()">
                     <i class="fas fa-gift me-1"></i> Katalog Gift & Fee
                     <span class="badge bg-warning text-dark ms-1" id="badgeJumlahGiftSA">0</span>
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" data-bs-toggle="tab"
+                   href="#tabTarifOjek" role="tab"
+                   onclick="renderTabTarifOjek()">
+                    <i class="fas fa-motorcycle me-1"></i> Tarif Ojek
                 </a>
             </li>
         </ul>
@@ -11928,10 +12100,138 @@ function tampilkanNotifDaftar(pesan, tipe) {
             </div>
             <div class="modal-body text-center" id="previewVideoGiftSABody">
                 <p class="text-muted">Memuat...</p>
+                                </div>
+                </div>
+
             </div>
+
+            <!-- ── TAB 3: TARIF OJEK (BARU) ── -->
+            <div class="tab-pane fade" id="tabTarifOjek" role="tabpanel">
+
+                <!-- Kartu Master Tarif -->
+                <div class="card border-0 shadow mb-4">
+                    <div class="card-header text-white" style="background:#DC3545;">
+                        <i class="fas fa-motorcycle me-2"></i>Master Tarif Ojek
+                    </div>
+                    <div class="card-body">
+                        <div id="notifTarifOjek" class="alert d-none"></div>
+
+                        <div class="alert alert-light border small mb-3">
+                            <i class="fas fa-info-circle me-1 text-primary"></i>
+                            Tarif ini dipakai otomatis saat seller kirim order via ojek.
+                            Total ongkos = <strong>Biaya Base + (Jarak × Tarif/KM)</strong>,
+                            minimal <strong>Tarif Minimum</strong>.
+                        </div>
+
+                        <form id="formTarifOjek" onsubmit="return simpanFormTarifOjek(event)">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="fw-bold">Tarif per KM <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">Rp</span>
+                                        <input type="number" id="inputTarifPerKm" class="form-control"
+                                               value="3000" min="0" step="500" required
+                                               oninput="updatePreviewTarifOjek()">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="fw-bold">Biaya Base (Jarak 0) <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">Rp</span>
+                                        <input type="number" id="inputBiayaBase" class="form-control"
+                                               value="2000" min="0" step="500" required
+                                               oninput="updatePreviewTarifOjek()">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="fw-bold">Tarif Minimum <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">Rp</span>
+                                        <input type="number" id="inputTarifMinimum" class="form-control"
+                                               value="5000" min="0" step="500" required
+                                               oninput="updatePreviewTarifOjek()">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="fw-bold">Biaya Jasa Platform (%)</label>
+                                    <div class="input-group">
+                                        <input type="number" id="inputBiayaJasaPersen" class="form-control"
+                                               value="10" min="0" max="100" step="1">
+                                        <span class="input-group-text">%</span>
+                                    </div>
+                                    <small class="text-muted">0 = tidak ada biaya jasa</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="fw-bold">Radius Cari Ojek Default <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <input type="number" id="inputRadiusDefault" class="form-control"
+                                               value="5" min="1" max="100" step="1" required>
+                                        <span class="input-group-text">km</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="fw-bold">Maksimal Jarak Ojek <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <input type="number" id="inputMaksimalJarak" class="form-control"
+                                               value="30" min="1" max="999" step="1" required>
+                                        <span class="input-group-text">km</span>
+                                    </div>
+                                    <small class="text-muted">Kalau lebih → peringatan</small>
+                                </div>
+                            </div>
+
+                            <!-- Preview Kalkulator -->
+                            <div class="mt-4">
+                                <label class="fw-bold">
+                                    <i class="fas fa-calculator me-1"></i>Preview Perhitungan
+                                </label>
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-bordered mb-0" style="background:#f8f9fa;">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Jarak</th>
+                                                <th class="text-end">Ongkos</th>
+                                                <th class="text-muted small">Rincian</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="previewTarifOjekBody">
+                                            <!-- diisi JS -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div class="mt-3 d-grid">
+                                <button type="submit" class="btn btn-lg text-white fw-bold"
+                                        style="background:#DC3545;">
+                                    <i class="fas fa-save me-2"></i> Simpan Tarif Ojek
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Kartu Info -->
+                <div class="card border-0 shadow">
+                    <div class="card-header text-white" style="background:#6C757D;">
+                        <i class="fas fa-info-circle me-2"></i>Catatan Aturan Ojek
+                    </div>
+                    <div class="card-body">
+                        <ul class="mb-0 small">
+                            <li>Ojek <strong>wajib punya saldo R2Coin ≥ 1</strong> untuk terima order.</li>
+                            <li>Setiap order diterima → <strong>saldo ojek -1 Coin</strong> (dipotong saat seller kirim order).</li>
+                            <li>Kalau order dibatalkan → <strong>saldo +1 Coin dikembalikan</strong>.</li>
+                            <li>Ongkos ojek dibayar <strong>langsung oleh customer</strong> (cash/transfer saat antar).</li>
+                            <li>Biaya Jasa Platform dipotong dari saldo pendapatan ojek (opsional).</li>
+                        </ul>
+                    </div>
+                </div>
+
+            </div>
+
         </div>
+
     </div>
-</div>
 </template>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 10.45 (HTML) ===== -->
@@ -12375,6 +12675,117 @@ function jalankanSeederGiftSA() {
         alert('⚠️ ' + hasil.pesan);
     }
 }
+
+// ============================================================
+// BLOK R 10.45.2 – JS TAB TARIF OJEK
+// ------------------------------------------------------------
+// UI wrapper untuk fungsi global F1 (BLOK R 01.0 248-251)
+// ============================================================
+
+
+// ============================================================
+// BLOK R 10.45.2 (1) – RENDER TAB TARIF OJEK
+// ============================================================
+function renderTabTarifOjek() {
+    var setting = getTarifOjekGlobal();
+
+    setValTarif('inputTarifPerKm',     setting.tarifPerKm);
+    setValTarif('inputBiayaBase',      setting.biayaBase);
+    setValTarif('inputTarifMinimum',   setting.tarifMinimum);
+    setValTarif('inputBiayaJasaPersen', setting.biayaJasaPersen);
+    setValTarif('inputRadiusDefault',  setting.radiusDefaultKm);
+    setValTarif('inputMaksimalJarak',  setting.maksimalJarakOjekKm);
+
+    updatePreviewTarifOjek();
+}
+
+function setValTarif(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.value = value;
+}
+
+
+// ============================================================
+// BLOK R 10.45.2 (2) – UPDATE PREVIEW KALKULATOR
+// ============================================================
+function updatePreviewTarifOjek() {
+    var tbody = document.getElementById('previewTarifOjekBody');
+    if (!tbody) return;
+
+    // Ambil nilai dari input (live, belum disimpan)
+    var tarifPerKm = parseFloat(document.getElementById('inputTarifPerKm')?.value) || 0;
+    var biayaBase  = parseFloat(document.getElementById('inputBiayaBase')?.value) || 0;
+    var tarifMin   = parseFloat(document.getElementById('inputTarifMinimum')?.value) || 0;
+
+    var jarakList = [1, 3, 5, 10, 20, 30];
+    var html = '';
+
+    jarakList.forEach(function(km) {
+        var kotor = biayaBase + (km * tarifPerKm);
+        var final = Math.max(kotor, tarifMin);
+        var pakaiMin = (kotor < tarifMin);
+
+        var rincian = 'Rp ' + biayaBase.toLocaleString('id-ID') +
+                      ' + (' + km + ' km × Rp ' + tarifPerKm.toLocaleString('id-ID') + ')';
+        if (pakaiMin) {
+            rincian += ' → <em>kena tarif minimum</em>';
+        }
+
+        html += '<tr>' +
+            '<td><strong>' + km + ' km</strong></td>' +
+            '<td class="text-end fw-bold text-success">Rp ' +
+                Math.round(final).toLocaleString('id-ID') + '</td>' +
+            '<td class="text-muted small">' + rincian + '</td>' +
+            '</tr>';
+    });
+
+    tbody.innerHTML = html;
+}
+
+
+// ============================================================
+// BLOK R 10.45.2 (3) – SIMPAN FORM TARIF OJEK
+// ============================================================
+function simpanFormTarifOjek(event) {
+    if (event) event.preventDefault();
+
+    var notif = document.getElementById('notifTarifOjek');
+
+    var data = {
+        tarifPerKm:          parseFloat(document.getElementById('inputTarifPerKm')?.value),
+        biayaBase:           parseFloat(document.getElementById('inputBiayaBase')?.value),
+        tarifMinimum:        parseFloat(document.getElementById('inputTarifMinimum')?.value),
+        biayaJasaPersen:     parseFloat(document.getElementById('inputBiayaJasaPersen')?.value) || 0,
+        radiusDefaultKm:     parseFloat(document.getElementById('inputRadiusDefault')?.value),
+        maksimalJarakOjekKm: parseFloat(document.getElementById('inputMaksimalJarak')?.value)
+    };
+
+    var hasil = simpanTarifOjekGlobal(data);
+
+    if (hasil.sukses) {
+        if (notif) {
+            notif.className = 'alert alert-success';
+            notif.innerHTML = '✅ Tarif ojek berhasil disimpan!<br>' +
+                '<small>Rp ' + hasil.setting.tarifPerKm.toLocaleString('id-ID') + '/km • ' +
+                'Base Rp ' + hasil.setting.biayaBase.toLocaleString('id-ID') + ' • ' +
+                'Min Rp ' + hasil.setting.tarifMinimum.toLocaleString('id-ID') + '</small>';
+            notif.classList.remove('d-none');
+            setTimeout(function() { notif.classList.add('d-none'); }, 4000);
+        }
+    } else {
+        if (notif) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + hasil.pesan;
+            notif.classList.remove('d-none');
+        }
+    }
+
+    return false;
+}
+
+// ============================================================
+// AKHIR BLOK R 10.45.2
+// ============================================================
 
 </script>
 <!-- ============================================================ -->
