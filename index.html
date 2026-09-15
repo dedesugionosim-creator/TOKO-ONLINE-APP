@@ -6695,6 +6695,1167 @@ function cekNotifSaldoTipisSeller(idUser) {
     return { status: 'bukan-seller', pesan: '' };
 }
 
+// ============================================================
+// BLOK R 01.0 (127) – GET KATEGORI BY ROLE
+// ------------------------------------------------------------
+// Kategori produk lengkap per role
+// ============================================================
+function getKategoriByRole(role) {
+    var map = {
+        'Distributor': [
+            'Makanan Kemasan', 'Minuman', 'Sembako',
+            'Rokok & Tembakau', 'Alat Tulis', 'Kebersihan',
+            'Elektronik', 'Perlengkapan Rumah', 'Lainnya'
+        ],
+        'Grosir': [
+            'Makanan Kemasan', 'Minuman', 'Sembako',
+            'Kebersihan', 'Alat Tulis', 'Perlengkapan Rumah',
+            'Pakaian', 'Elektronik Kecil', 'Lainnya'
+        ],
+        'Toko': [
+            'Makanan', 'Minuman', 'Sembako', 'Kebersihan',
+            'Perlengkapan Bayi & Anak', 'Alat Tulis & Kantor',
+            'Pakaian & Aksesoris', 'Elektronik Kecil',
+            'Obat & Vitamin', 'Lainnya'
+        ],
+        'Pedagang Pasar': [
+            'Sayuran', 'Buah-buahan', 'Daging & Ikan',
+            'Bumbu Dapur', 'Sembako', 'Kue & Jajanan Pasar',
+            'Pakaian', 'Peralatan Rumah', 'Mainan Anak', 'Lainnya'
+        ],
+        'Pedagang Makanan': [
+            'Makanan Berat', 'Makanan Ringan', 'Minuman Panas',
+            'Minuman Dingin', 'Dessert', 'Paket Hemat', 'Lainnya'
+        ],
+        'COD Seller': [
+            'Makanan', 'Minuman', 'Sembako',
+            'Kebutuhan Harian', 'Lainnya'
+        ],
+        'Ojek': [
+            'Antar Jemput Penumpang', 'Antar Barang / Paket',
+            'Antar Makanan', 'COD Bantu Seller',
+            'Belanja Titip', 'Kurir Sameday'
+        ],
+        'Customer': ['Makanan', 'Minuman', 'Sembako', 'Lainnya']
+    };
+    return map[role] || ['Makanan', 'Minuman', 'Lainnya'];
+}
+
+// ============================================================
+// BLOK R 01.0 (128) – GET SATUAN BY ROLE
+// ------------------------------------------------------------
+// GR/DST: TIDAK ADA pcs / unit / biji (partai besar)
+// ============================================================
+function getSatuanByRole(role) {
+    var map = {
+        'Distributor': ['dus', 'karton', 'bal', 'pallet', 'rim', 'karung', 'box'],
+        'Grosir':      ['dus', 'karton', 'pack', 'bal', 'lusinan', 'kodi', 'rim'],
+        'Toko':        ['pcs', 'bks', 'botol', 'pack', 'kg', 'liter', 'unit', 'dus'],
+        'Pedagang Pasar': ['ikat', 'kg', 'ons', 'sisir', 'ekor', 'pcs', 'kodi', 'lusinan'],
+        'Pedagang Makanan': ['Porsi', 'Kotak', 'Mangkok', 'Gelas', 'Cup', 'Botol', 'Bungkus', 'Pcs'],
+        'COD Seller':  ['pcs', 'bks', 'pack', 'botol', 'unit', 'dus'],
+        'Ojek':        ['trip', 'km', 'jam', 'sekali jalan', 'paket'],
+        'Customer':    ['pcs', 'unit', 'pack']
+    };
+    return map[role] || ['pcs', 'unit', 'pack'];
+}
+
+// ============================================================
+// BLOK R 01.0 (129) – VALIDASI SATUAN SESUAI ROLE
+// ============================================================
+function validasiSatuanRole(role, satuan) {
+    if (!role || !satuan) {
+        return { sukses: false, pesan: 'Role dan satuan wajib diisi.' };
+    }
+    var daftar = getSatuanByRole(role);
+    var cocok = daftar.some(function(s) {
+        return s.toLowerCase() === satuan.toLowerCase();
+    });
+    if (!cocok) {
+        return {
+            sukses: false,
+            pesan: 'Satuan "' + satuan + '" tidak valid untuk role ' + role +
+                   '. Pilihan: ' + daftar.join(', ')
+        };
+    }
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (130) – GENERATE KODE PRODUK OTOMATIS
+// ------------------------------------------------------------
+// Format: PRD-[KODE_ROLE]-[URUT]
+// ============================================================
+function generateKodeProduk(role) {
+    var prefix = kodeRoleToPrefix(role) || 'USR';
+    var kode = 'PRD-' + prefix + '-';
+    var counter = 0;
+    var maxLoop = 9999;
+
+    var existingIds = [];
+    try {
+        var keys = Object.keys(localStorage).filter(function(k) {
+            return k.indexOf('dataProduk') === 0;
+        });
+        keys.forEach(function(k) {
+            try {
+                var list = JSON.parse(localStorage.getItem(k) || '[]');
+                if (Array.isArray(list)) {
+                    list.forEach(function(p) {
+                        if (p.kode) existingIds.push(p.kode);
+                    });
+                }
+            } catch (e) {}
+        });
+    } catch (e) {}
+
+    do {
+        counter++;
+        var urut = String(counter).padStart(4, '0');
+        var kandidat = kode + urut;
+        if (existingIds.indexOf(kandidat) === -1) {
+            return kandidat;
+        }
+    } while (counter < maxLoop);
+
+    return kode + Date.now().toString().slice(-4);
+}
+
+// ============================================================
+// BLOK R 01.0 (131) – HITUNG HARGA COIN OTOMATIS
+// ------------------------------------------------------------
+// Rumus: floor(hargaRp / hargaBeli)
+// ============================================================
+function hitungHargaCoinOtomatis(hargaRp) {
+    var setting = getSettingEkonomiGlobal();
+    var hargaBeli = parseFloat(setting.hargaBeli) || 750;
+    if (hargaBeli <= 0) return 0;
+    hargaRp = parseFloat(hargaRp) || 0;
+    if (hargaRp <= 0) return 0;
+    return Math.floor(hargaRp / hargaBeli);
+}
+
+// ============================================================
+// BLOK R 01.0 (132) – HITUNG TOTAL PRODUK (HARGA × STOK)
+// ============================================================
+function hitungTotalProduk(hargaRp, stok) {
+    hargaRp = parseFloat(hargaRp) || 0;
+    stok = parseInt(stok, 10) || 0;
+    return {
+        totalRp: Math.floor(hargaRp * stok),
+        totalCoin: Math.floor(hitungHargaCoinOtomatis(hargaRp) * stok)
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (133) – DAFTAR SELLER YANG BISA DILIHAT
+// ------------------------------------------------------------
+// Aturan:
+//   - Customer       → lihat TK, PP, PM, COD
+//   - TK/PP/PM/COD   → lihat GROSIR saja
+//   - Grosir         → lihat DISTRIBUTOR
+//   - Distributor    → tidak lihat siapa-siapa
+// ============================================================
+function getDaftarSellerYangBisaDilihat(rolePembeli, idPembeli) {
+    if (!rolePembeli) return [];
+
+    var allowedRoles = [];
+    if (rolePembeli === 'Customer') {
+        allowedRoles = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller'];
+    } else if (['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller'].indexOf(rolePembeli) !== -1) {
+        allowedRoles = ['Grosir'];
+    } else if (rolePembeli === 'Grosir') {
+        allowedRoles = ['Distributor'];
+    } else if (rolePembeli === 'SuperAdmin') {
+        allowedRoles = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller', 'Grosir', 'Distributor'];
+    } else {
+        return [];
+    }
+
+    var hasil = (dataAkunAktif || []).filter(function(a) {
+        if (!a || a.id === idPembeli) return false;
+        if (allowedRoles.indexOf(a.role) === -1) return false;
+        var st = a.statusVerifikasi || a.status || 'Aktif';
+        return st === 'Aktif';
+    });
+
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (134) – SIMPAN POSISI CUSTOMER TERAKHIR
+// ============================================================
+function simpanPosisiCustomerTerakhir(lat, lng) {
+    if (!lat || !lng) return { sukses: false, pesan: 'Koordinat tidak valid.' };
+    try {
+        var data = {
+            lat: parseFloat(lat),
+            lng: parseFloat(lng),
+            timestamp: new Date().toISOString()
+        };
+        localStorage.setItem('posisiCustomerTerakhir', JSON.stringify(data));
+        return { sukses: true, data: data };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (135) – GET POSISI CUSTOMER SEKARANG (CACHE)
+// ------------------------------------------------------------
+// Cache valid 5 menit. Kalau lewat, return null.
+// ============================================================
+function getPosisiCustomerSekarang() {
+    try {
+        var stored = localStorage.getItem('posisiCustomerTerakhir');
+        if (!stored) return null;
+        var data = JSON.parse(stored);
+        if (!data || !data.lat || !data.lng) return null;
+
+        if (data.timestamp) {
+            var elapsed = Date.now() - new Date(data.timestamp).getTime();
+            if (elapsed > 5 * 60 * 1000) return null;  // cache > 5 menit
+        }
+        return data;
+    } catch (e) { return null; }
+}
+
+// ============================================================
+// BLOK R 01.0 (136) – MINTA IZIN LOKASI CUSTOMER (REAL-TIME)
+// ------------------------------------------------------------
+// Pakai Promise, dipanggil dari UI
+// ============================================================
+function mintaIzinLokasiCustomer() {
+    return new Promise(function(resolve, reject) {
+        if (!navigator.geolocation) {
+            reject({ sukses: false, pesan: 'Browser tidak mendukung geolocation.' });
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            function(pos) {
+                var lat = pos.coords.latitude;
+                var lng = pos.coords.longitude;
+                simpanPosisiCustomerTerakhir(lat, lng);
+                resolve({
+                    sukses: true,
+                    lat: lat,
+                    lng: lng,
+                    accuracy: pos.coords.accuracy || 0
+                });
+            },
+            function(err) {
+                reject({
+                    sukses: false,
+                    pesan: 'Gagal ambil lokasi: ' + (err.message || 'Unknown error'),
+                    kode: err.code
+                });
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (137) – HITUNG JARAK REAL-TIME (CUSTOMER → SELLER)
+// ------------------------------------------------------------
+// Kalau posisi customer tidak ada → return 999999
+// ============================================================
+function hitungJarakRealTime(idSeller) {
+    var pos = getPosisiCustomerSekarang();
+    if (!pos) return 999999;
+
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return 999999;
+
+    var sellerLat = parseFloat(seller.lat) || 0;
+    var sellerLng = parseFloat(seller.lng) || 0;
+    if (!sellerLat || !sellerLng) return 999999;
+
+    return hitungJarak(pos.lat, pos.lng, sellerLat, sellerLng);
+}
+
+// ============================================================
+// BLOK R 01.0 (138) – SORTIR SELLER BY JARAK
+// ============================================================
+function sortirSellerByJarak(sellerList) {
+    if (!Array.isArray(sellerList)) return [];
+    sellerList.forEach(function(s) {
+        s._jarak = hitungJarakRealTime(s.id);
+    });
+    sellerList.sort(function(a, b) {
+        return a._jarak - b._jarak;
+    });
+    return sellerList;
+}
+
+// ============================================================
+// BLOK R 01.0 (139) – FILTER SELLER BY RADIUS
+// ============================================================
+function filterSellerByRadius(sellerList, radiusKm) {
+    if (!Array.isArray(sellerList)) return [];
+    radiusKm = parseFloat(radiusKm) || 0;
+    if (radiusKm <= 0) return sellerList;
+    return sellerList.filter(function(s) {
+        return s._jarak <= radiusKm;
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (140) – CEK STOK CUKUP
+// ------------------------------------------------------------
+// items = [{ id, jumlah }]
+// ============================================================
+function cekStokCukup(idSeller, items) {
+    if (!idSeller || !Array.isArray(items)) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    var produkList = loadProdukByRole(seller.role, idSeller);
+    var kurang = [];
+
+    items.forEach(function(it) {
+        var p = produkList.find(function(x) { return x.id === it.id; });
+        if (!p) {
+            kurang.push({ id: it.id, nama: '(tidak ditemukan)', diminta: it.jumlah, tersedia: 0 });
+            return;
+        }
+        var stok = parseInt(p.stok, 10) || 0;
+        if (stok < it.jumlah) {
+            kurang.push({
+                id: it.id,
+                nama: p.nama,
+                diminta: it.jumlah,
+                tersedia: stok
+            });
+        }
+    });
+
+    if (kurang.length > 0) {
+        return {
+            sukses: false,
+            pesan: 'Stok tidak cukup untuk beberapa produk.',
+            detail: kurang
+        };
+    }
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (141) – KURANGI STOK PRODUK
+// ------------------------------------------------------------
+// items = [{ id, jumlah }]
+// ============================================================
+function kurangiStokProduk(idSeller, items) {
+    if (!idSeller || !Array.isArray(items)) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    var produkList = loadProdukByRole(seller.role, idSeller);
+    var updated = 0;
+
+    items.forEach(function(it) {
+        var p = produkList.find(function(x) { return x.id === it.id; });
+        if (!p) return;
+        var stok = parseInt(p.stok, 10) || 0;
+        var baru = stok - (parseInt(it.jumlah, 10) || 0);
+        if (baru < 0) baru = 0;
+        p.stok = baru;
+        updated++;
+    });
+
+    simpanProdukByRole(seller.role, idSeller, produkList);
+    return { sukses: true, updated: updated };
+}
+
+// ============================================================
+// BLOK R 01.0 (142) – INIT KERANJANG PESANAN
+// ============================================================
+var KERANJANG_PESANAN = { idSeller: null, items: [], catatan: '' };
+
+function initKeranjangPesanan(idSeller) {
+    KERANJANG_PESANAN = { idSeller: idSeller || null, items: [], catatan: '' };
+    return KERANJANG_PESANAN;
+}
+
+// ============================================================
+// BLOK R 01.0 (143) – GET KERANJANG PESANAN
+// ============================================================
+function getKeranjangPesanan() {
+    return KERANJANG_PESANAN;
+}
+
+// ============================================================
+// BLOK R 01.0 (144) – TAMBAH ITEM KE KERANJANG
+// ------------------------------------------------------------
+// Aturan: 1 keranjang = 1 seller. Kalau beda seller → reset.
+// ============================================================
+function tambahItemKeranjang(idSeller, idProduk, jumlah) {
+    if (!idSeller || !idProduk) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    jumlah = parseInt(jumlah, 10) || 0;
+    if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0.' };
+
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    var produkList = loadProdukByRole(seller.role, idSeller);
+    var produk = produkList.find(function(p) { return p.id === idProduk; });
+    if (!produk) return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+
+    var stok = parseInt(produk.stok, 10) || 0;
+    if (stok < jumlah) {
+        return { sukses: false, pesan: 'Stok tidak cukup. Sisa: ' + stok };
+    }
+
+    // Kalau keranjang beda seller → reset
+    if (KERANJANG_PESANAN.idSeller && KERANJANG_PESANAN.idSeller !== idSeller) {
+        initKeranjangPesanan(idSeller);
+    }
+    if (!KERANJANG_PESANAN.idSeller) {
+        KERANJANG_PESANAN.idSeller = idSeller;
+    }
+
+    // Cek kalau produk sudah ada di keranjang → tambahkan qty
+    var idx = KERANJANG_PESANAN.items.findIndex(function(it) {
+        return it.idProduk === idProduk;
+    });
+
+    if (idx !== -1) {
+        var totalBaru = KERANJANG_PESANAN.items[idx].jumlah + jumlah;
+        if (totalBaru > stok) {
+            return { sukses: false, pesan: 'Total melebihi stok. Sisa: ' + stok };
+        }
+        KERANJANG_PESANAN.items[idx].jumlah = totalBaru;
+    } else {
+        KERANJANG_PESANAN.items.push({
+            idProduk: idProduk,
+            nama: produk.nama,
+            hargaRp: parseFloat(produk.harga) || 0,
+            hargaCoin: parseInt(produk.hargaCoin, 10) || 0,
+            satuan: produk.satuan || '',
+            jumlah: jumlah,
+            foto: produk.foto || ''
+        });
+    }
+
+    return { sukses: true, keranjang: KERANJANG_PESANAN };
+}
+
+// ============================================================
+// BLOK R 01.0 (145) – UPDATE QTY DI KERANJANG
+// ============================================================
+function updateQtyKeranjang(idProduk, jumlahBaru) {
+    jumlahBaru = parseInt(jumlahBaru, 10) || 0;
+    if (jumlahBaru <= 0) return hapusItemKeranjang(idProduk);
+
+    var idx = KERANJANG_PESANAN.items.findIndex(function(it) {
+        return it.idProduk === idProduk;
+    });
+    if (idx === -1) return { sukses: false, pesan: 'Item tidak ada di keranjang.' };
+
+    KERANJANG_PESANAN.items[idx].jumlah = jumlahBaru;
+    return { sukses: true, keranjang: KERANJANG_PESANAN };
+}
+
+// ============================================================
+// BLOK R 01.0 (146) – HAPUS ITEM DARI KERANJANG
+// ============================================================
+function hapusItemKeranjang(idProduk) {
+    KERANJANG_PESANAN.items = KERANJANG_PESANAN.items.filter(function(it) {
+        return it.idProduk !== idProduk;
+    });
+    if (KERANJANG_PESANAN.items.length === 0) {
+        KERANJANG_PESANAN.idSeller = null;
+    }
+    return { sukses: true, keranjang: KERANJANG_PESANAN };
+}
+
+// ============================================================
+// BLOK R 01.0 (147) – HITUNG TOTAL KERANJANG
+// ============================================================
+function hitungTotalKeranjang() {
+    var totalRp = 0;
+    var totalCoin = 0;
+    var totalItem = 0;
+
+    KERANJANG_PESANAN.items.forEach(function(it) {
+        totalRp += (it.hargaRp || 0) * (it.jumlah || 0);
+        totalCoin += (it.hargaCoin || 0) * (it.jumlah || 0);
+        totalItem += (it.jumlah || 0);
+    });
+
+    return {
+        totalRp: Math.floor(totalRp),
+        totalCoin: Math.floor(totalCoin),
+        totalItem: totalItem,
+        jumlahProduk: KERANJANG_PESANAN.items.length
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (148) – KOSONGKAN KERANJANG
+// ============================================================
+function kosongkanKeranjang() {
+    initKeranjangPesanan(null);
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (149) – FORMAT PESAN PESANAN (untuk chat)
+// ============================================================
+function formatPesanPesanan(daftarItem, catatan, idPesanan, metode, totalRp, totalCoin) {
+    if (!Array.isArray(daftarItem)) return '';
+
+    var pembeli = userAktif ? (userAktif.nama || 'Customer') : 'Customer';
+    var lines = [];
+
+    lines.push('PESANAN BARU ' + (idPesanan || '#ORD-' + Date.now().toString().slice(-6)));
+    lines.push('');
+    lines.push('Dari: ' + pembeli);
+    lines.push('');
+    lines.push('Detail Pesanan:');
+
+    daftarItem.forEach(function(it, i) {
+        var sub = (it.hargaRp || 0) * (it.jumlah || 0);
+        lines.push('  ' + (i + 1) + '. ' + it.nama + ' x' + it.jumlah +
+                   ' = Rp ' + sub.toLocaleString('id-ID'));
+    });
+
+    lines.push('');
+    lines.push('--------------------------------');
+
+    if (typeof totalRp === 'undefined') {
+        totalRp = daftarItem.reduce(function(s, it) {
+            return s + ((it.hargaRp || 0) * (it.jumlah || 0));
+        }, 0);
+    }
+    if (typeof totalCoin === 'undefined') {
+        totalCoin = daftarItem.reduce(function(s, it) {
+            return s + ((it.hargaCoin || 0) * (it.jumlah || 0));
+        }, 0);
+    }
+
+    lines.push('Total: Rp ' + totalRp.toLocaleString('id-ID'));
+    lines.push('Total Coin: ' + totalCoin + ' Coin');
+    lines.push('');
+    lines.push('Metode: ' + (metode || 'Belum dipilih'));
+
+    if (catatan) {
+        lines.push('');
+        lines.push('Catatan: ' + catatan);
+    }
+
+    lines.push('');
+    lines.push('Mohon konfirmasi. Terima kasih.');
+
+    return lines.join('\n');
+}
+
+// ============================================================
+// BLOK R 01.0 (150) – KIRIM CHAT PESANAN
+// ============================================================
+function kirimChatPesanan(idPembeli, idSeller, daftarItem, catatan, metode) {
+    if (!idPembeli || !idSeller) {
+        return { sukses: false, pesan: 'ID pembeli/seller tidak valid.' };
+    }
+
+    var idPesanan = 'ORD-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') +
+                    '-' + Date.now().toString().slice(-4);
+
+    var hitung = {
+        totalRp: 0,
+        totalCoin: 0
+    };
+    (daftarItem || []).forEach(function(it) {
+        hitung.totalRp += (it.hargaRp || 0) * (it.jumlah || 0);
+        hitung.totalCoin += (it.hargaCoin || 0) * (it.jumlah || 0);
+    });
+
+    var isiPesan = formatPesanPesanan(daftarItem, catatan, idPesanan, metode,
+                                     hitung.totalRp, hitung.totalCoin);
+
+    var meta = {
+        tipe: 'pesanan',
+        idPesanan: idPesanan,
+        daftarItem: daftarItem,
+        totalRp: hitung.totalRp,
+        totalCoin: hitung.totalCoin,
+        metode: metode || 'Belum dipilih',
+        catatan: catatan || ''
+    };
+
+    // Simpan sebagai pesan chat dengan tipe khusus
+    var pengirim = getDataIdUser(idPembeli);
+    var penerima = getDataIdUser(idSeller);
+    if (!pengirim || !penerima) {
+        return { sukses: false, pesan: 'User tidak ditemukan.' };
+    }
+
+    var pesanBaru = {
+        id: generateKodeUnik('CHAT'),
+        idPengirim: idPembeli,
+        namaPengirim: pengirim.nama || '-',
+        idPenerima: idSeller,
+        namaPenerima: penerima.nama || '-',
+        isi: isiPesan,
+        tipe: 'pesanan',
+        meta: meta,
+        waktu: new Date().toISOString(),
+        dibaca: false
+    };
+
+    simpanPesanAntarUser(idPembeli, idSeller, pesanBaru);
+
+    // Simpan record pesanan
+    simpanPesananUser(idPembeli, idSeller, daftarItem, metode, idPesanan);
+
+    catatAktivitasGlobal(idPembeli, 'Kirim Pesanan',
+        idPesanan + ' ke ' + penerima.nama + ' (' + hitung.totalRp.toLocaleString('id-ID') + ')');
+
+    return {
+        sukses: true,
+        idPesanan: idPesanan,
+        totalRp: hitung.totalRp,
+        totalCoin: hitung.totalCoin,
+        pesan: pesanBaru
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (151) – SIMPAN PESANAN USER
+// ============================================================
+function simpanPesananUser(idPembeli, idSeller, daftarItem, metode, idPesanan) {
+    try {
+        var list = [];
+        var stored = localStorage.getItem('dataPesananKatalog');
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+
+        var pembeli = getDataIdUser(idPembeli);
+        var seller = getDataIdUser(idSeller);
+
+        list.push({
+            id: idPesanan || generateKodeUnik('ORD'),
+            idPembeli: idPembeli,
+            namaPembeli: pembeli ? pembeli.nama : '-',
+            rolePembeli: pembeli ? pembeli.role : '-',
+            idSeller: idSeller,
+            namaSeller: seller ? seller.nama : '-',
+            roleSeller: seller ? seller.role : '-',
+            items: daftarItem,
+            metode: metode || 'Belum dipilih',
+            status: 'Menunggu',
+            tanggal: new Date().toISOString()
+        });
+
+        if (list.length > 500) list = list.slice(-500);
+        localStorage.setItem('dataPesananKatalog', JSON.stringify(list));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (152) – LOAD PESANAN USER
+// ============================================================
+function loadPesananUser(idUser, mode) {
+    mode = mode || 'pembeli';
+    try {
+        var stored = localStorage.getItem('dataPesananKatalog');
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        if (!Array.isArray(list)) return [];
+        if (!idUser) return list;
+        if (mode === 'pembeli') {
+            return list.filter(function(p) { return p.idPembeli === idUser; });
+        } else if (mode === 'seller') {
+            return list.filter(function(p) { return p.idSeller === idUser; });
+        }
+        return list;
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (153) – PROSES TRANSAKSI ONLINE
+// ------------------------------------------------------------
+// Wajib: saldo coin cukup (kalau bayar coin), aturan minimal
+// ============================================================
+function prosesTransaksiOnline(idPembeli, idPenjual, items, metodePembayaran, catatan) {
+    if (!idPembeli || !idPenjual || !Array.isArray(items) || items.length === 0) {
+        return { sukses: false, pesan: 'Data transaksi tidak valid.' };
+    }
+
+    // 1. Cek stok
+    var cekStok = cekStokCukup(idPenjual, items);
+    if (!cekStok.sukses) return cekStok;
+
+    // 2. Hitung total
+    var penjual = getDataIdUser(idPenjual);
+    var produkList = loadProdukByRole(penjual.role, idPenjual);
+    var totalRp = 0;
+    var totalCoin = 0;
+
+    items.forEach(function(it) {
+        var p = produkList.find(function(x) { return x.id === it.id; });
+        if (p) {
+            totalRp += (parseFloat(p.harga) || 0) * (parseInt(it.jumlah, 10) || 0);
+            totalCoin += (parseInt(p.hargaCoin, 10) || 0) * (parseInt(it.jumlah, 10) || 0);
+        }
+    });
+
+    var idTransaksi = 'TRX-' + Date.now().toString().slice(-8);
+
+    // 3. Kalau metode = coin → cek saldo & proses
+    if (metodePembayaran === 'R2Coin') {
+        var hasilCoin = prosesBelanjaDenganCoin(idPembeli, idPenjual, totalCoin,
+                                               idTransaksi, catatan);
+        if (!hasilCoin.sukses) return hasilCoin;
+    } else {
+        // Rupiah / Transfer / COD → reward coin dari penjual
+        var hasilRp = prosesBelanjaDenganRupiah(idPembeli, idPenjual, totalRp,
+                                               idTransaksi, catatan);
+        if (!hasilRp.sukses) return hasilRp;
+    }
+
+    // 4. Kurangi stok
+    kurangiStokProduk(idPenjual, items);
+
+    // 5. Simpan transaksi
+    simpanTransaksiKatalog({
+        id: idTransaksi,
+        idPembeli: idPembeli,
+        idPenjual: idPenjual,
+        items: items,
+        totalRp: totalRp,
+        totalCoin: totalCoin,
+        metode: metodePembayaran,
+        catatan: catatan,
+        tipe: 'online',
+        status: 'Selesai',
+        tanggal: new Date().toISOString()
+    });
+
+    catatAktivitasGlobal(idPembeli, 'Transaksi Online',
+        idTransaksi + ' - Rp ' + totalRp.toLocaleString('id-ID'));
+
+    return {
+        sukses: true,
+        idTransaksi: idTransaksi,
+        totalRp: totalRp,
+        totalCoin: totalCoin,
+        metode: metodePembayaran
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (154) – PROSES TRANSAKSI OFFLINE (KASIR)
+// ------------------------------------------------------------
+// Tidak perlu coin, tidak ada reward
+// ============================================================
+function prosesTransaksiOffline(idPenjual, items, bayar, catatan) {
+    if (!idPenjual || !Array.isArray(items) || items.length === 0) {
+        return { sukses: false, pesan: 'Data transaksi tidak valid.' };
+    }
+    bayar = parseFloat(bayar) || 0;
+
+    // 1. Cek stok
+    var cekStok = cekStokCukup(idPenjual, items);
+    if (!cekStok.sukses) return cekStok;
+
+    // 2. Hitung total
+    var penjual = getDataIdUser(idPenjual);
+    var produkList = loadProdukByRole(penjual.role, idPenjual);
+    var totalRp = 0;
+
+    items.forEach(function(it) {
+        var p = produkList.find(function(x) { return x.id === it.id; });
+        if (p) {
+            totalRp += (parseFloat(p.harga) || 0) * (parseInt(it.jumlah, 10) || 0);
+        }
+    });
+
+    if (bayar < totalRp) {
+        return { sukses: false, pesan: 'Pembayaran kurang. Total: Rp ' +
+                   totalRp.toLocaleString('id-ID') + ', bayar: Rp ' +
+                   bayar.toLocaleString('id-ID') };
+    }
+
+    var kembalian = bayar - totalRp;
+    var idTransaksi = 'OFF-' + Date.now().toString().slice(-8);
+
+    // 3. Kurangi stok
+    kurangiStokProduk(idPenjual, items);
+
+    // 4. Simpan transaksi
+    simpanTransaksiKatalog({
+        id: idTransaksi,
+        idPenjual: idPenjual,
+        items: items,
+        totalRp: totalRp,
+        bayar: bayar,
+        kembalian: kembalian,
+        catatan: catatan,
+        tipe: 'offline',
+        status: 'Selesai',
+        tanggal: new Date().toISOString()
+    });
+
+    catatAktivitasGlobal(idPenjual, 'Transaksi Offline',
+        idTransaksi + ' - Rp ' + totalRp.toLocaleString('id-ID'));
+
+    return {
+        sukses: true,
+        idTransaksi: idTransaksi,
+        totalRp: totalRp,
+        bayar: bayar,
+        kembalian: kembalian
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (155) – SIMPAN TRANSAKSI KATALOG
+// ============================================================
+function simpanTransaksiKatalog(transaksi) {
+    try {
+        var list = [];
+        var stored = localStorage.getItem('dataTransaksiKatalog');
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+        list.push(transaksi);
+        if (list.length > 2000) list = list.slice(-2000);
+        localStorage.setItem('dataTransaksiKatalog', JSON.stringify(list));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (156) – LOAD TRANSAKSI KATALOG
+// ============================================================
+function loadTransaksiKatalog(idSeller, filter) {
+    try {
+        var stored = localStorage.getItem('dataTransaksiKatalog');
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        if (!Array.isArray(list)) return [];
+        if (idSeller) {
+            list = list.filter(function(t) { return t.idPenjual === idSeller; });
+        }
+        filter = filter || {};
+        if (filter.tipe) {
+            list = list.filter(function(t) { return t.tipe === filter.tipe; });
+        }
+        if (filter.dariTanggal) {
+            list = list.filter(function(t) {
+                return new Date(t.tanggal) >= new Date(filter.dariTanggal);
+            });
+        }
+        if (filter.sampaiTanggal) {
+            list = list.filter(function(t) {
+                return new Date(t.tanggal) <= new Date(filter.sampaiTanggal);
+            });
+        }
+        return list;
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (157) – HISTORY PENJUALAN
+// ============================================================
+function getHistoryPenjualan(idSeller) {
+    var list = loadTransaksiKatalog(idSeller);
+    list.sort(function(a, b) {
+        return new Date(b.tanggal) - new Date(a.tanggal);
+    });
+    return list;
+}
+
+// ============================================================
+// BLOK R 01.0 (158) – HITUNG KEUNTUNGAN SELLER
+// ------------------------------------------------------------
+// Keuntungan = SUM((hargaJual - HPP) × qty)
+// ============================================================
+function hitungKeuntungan(idSeller, periode) {
+    var list = loadTransaksiKatalog(idSeller, periode);
+    var penjual = getDataIdUser(idSeller);
+    if (!penjual) return { totalPendapatan: 0, totalKeuntungan: 0, totalTransaksi: 0 };
+
+    var produkList = loadProdukByRole(penjual.role, idSeller);
+    var totalPendapatan = 0;
+    var totalKeuntungan = 0;
+
+    list.forEach(function(t) {
+        totalPendapatan += (t.totalRp || 0);
+        (t.items || []).forEach(function(it) {
+            var p = produkList.find(function(x) { return x.id === it.id; });
+            if (!p) return;
+            var hpp = parseFloat(p.hpp) || 0;
+            var jual = parseFloat(p.harga) || 0;
+            var qty = parseInt(it.jumlah, 10) || 0;
+            totalKeuntungan += (jual - hpp) * qty;
+        });
+    });
+
+    return {
+        totalPendapatan: totalPendapatan,
+        totalKeuntungan: totalKeuntungan,
+        totalTransaksi: list.length
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (159) – SIMPAN PENGELUARAN
+// ============================================================
+function simpanPengeluaran(idSeller, data) {
+    if (!idSeller || !data) return { sukses: false, pesan: 'Data tidak valid.' };
+    try {
+        var list = [];
+        var stored = localStorage.getItem('dataPengeluaran_' + idSeller);
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+        list.push({
+            id: generateKodeUnik('EXP'),
+            kategori: data.kategori || 'Lainnya',
+            keterangan: data.keterangan || '',
+            jumlah: parseFloat(data.jumlah) || 0,
+            tanggal: new Date().toISOString()
+        });
+        localStorage.setItem('dataPengeluaran_' + idSeller, JSON.stringify(list));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (160) – LOAD PENGELUARAN
+// ============================================================
+function loadPengeluaran(idSeller) {
+    try {
+        var stored = localStorage.getItem('dataPengeluaran_' + idSeller);
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (161) – CATAT KASBON
+// ============================================================
+function catatKasbon(idCustomer, idSeller, jumlah, keterangan) {
+    if (!idSeller || !jumlah) return { sukses: false, pesan: 'Data tidak valid.' };
+    try {
+        var list = [];
+        var stored = localStorage.getItem('dataKasbon_' + idSeller);
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+
+        var customer = idCustomer ? getDataIdUser(idCustomer) : null;
+
+        list.push({
+            id: generateKodeUnik('KSB'),
+            idCustomer: idCustomer || 'WALKIN',
+            namaCustomer: customer ? customer.nama : 'Customer Walk-in',
+            jumlah: parseFloat(jumlah) || 0,
+            keterangan: keterangan || '',
+            status: 'Belum Lunas',
+            tanggal: new Date().toISOString()
+        });
+        localStorage.setItem('dataKasbon_' + idSeller, JSON.stringify(list));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (162) – LOAD KASBON
+// ============================================================
+function loadKasbon(idSeller) {
+    try {
+        var stored = localStorage.getItem('dataKasbon_' + idSeller);
+        if (!stored) return [];
+        var list = JSON.parse(stored);
+        return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+}
+
+// ============================================================
+// BLOK R 01.0 (163) – BAYAR KASBON
+// ============================================================
+function bayarKasbon(idSeller, idKasbon, jumlahBayar) {
+    if (!idSeller || !idKasbon) return { sukses: false, pesan: 'Data tidak valid.' };
+    jumlahBayar = parseFloat(jumlahBayar) || 0;
+    if (jumlahBayar <= 0) return { sukses: false, pesan: 'Jumlah bayar harus > 0.' };
+
+    try {
+        var list = loadKasbon(idSeller);
+        var idx = list.findIndex(function(k) { return k.id === idKasbon; });
+        if (idx === -1) return { sukses: false, pesan: 'Kasbon tidak ditemukan.' };
+
+        var kasbon = list[idx];
+        if (jumlahBayar >= kasbon.jumlah) {
+            kasbon.status = 'Lunas';
+            kasbon.tanggalLunas = new Date().toISOString();
+            kasbon.jumlahDibayar = kasbon.jumlah;
+        } else {
+            kasbon.jumlah -= jumlahBayar;
+            kasbon.jumlahDibayar = (kasbon.jumlahDibayar || 0) + jumlahBayar;
+        }
+
+        localStorage.setItem('dataKasbon_' + idSeller, JSON.stringify(list));
+        return { sukses: true, kasbon: kasbon };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (164) – GENERATE STRUK HTML
+// ============================================================
+function generateStrukHTML(transaksi, config) {
+    config = config || {};
+    var penjual = getDataIdUser(transaksi.idPenjual);
+    var namaToko = config.namaToko || (penjual ? penjual.nama : 'Toko');
+    var alamat = config.alamat || (penjual ? penjual.alamat : '');
+    var telp = config.telp || (penjual ? penjual.hp : '');
+    var header = config.header || '';
+    var footer = config.footer || 'Terima kasih sudah berbelanja!';
+
+    var items = transaksi.items || [];
+    var totalRp = transaksi.totalRp || 0;
+    var bayar = transaksi.bayar || totalRp;
+    var kembalian = transaksi.kembalian || 0;
+
+    var html = '';
+    html += '<div style="font-family:monospace;font-size:11px;padding:10px;max-width:300px;">';
+    html += '<div style="text-align:center;">';
+    html += '<strong style="font-size:14px;">' + namaToko + '</strong><br>';
+    if (alamat) html += alamat + '<br>';
+    if (telp) html += 'Telp: ' + telp + '<br>';
+    if (header) html += '<small>' + header + '</small><br>';
+    html += '=============================<br>';
+    html += '</div>';
+
+    html += '<div>No: ' + transaksi.id + '</div>';
+    html += '<div>Tgl: ' + new Date(transaksi.tanggal).toLocaleString('id-ID', { hour12: false }) + '</div>';
+    html += '<div>Kasir: ' + (userAktif ? userAktif.nama : 'Kasir') + '</div>';
+    html += '<div>-----------------------------</div>';
+
+    items.forEach(function(it) {
+        var sub = (it.hargaRp || 0) * (it.jumlah || 0);
+        html += '<div>' + it.nama + ' x' + it.jumlah + '</div>';
+        html += '<div style="text-align:right;">Rp ' + sub.toLocaleString('id-ID') + '</div>';
+    });
+
+    html += '<div>-----------------------------</div>';
+    html += '<div style="display:flex;justify-content:space-between;"><span>TOTAL</span><span>Rp ' + totalRp.toLocaleString('id-ID') + '</span></div>';
+    if (transaksi.tipe === 'offline') {
+        html += '<div style="display:flex;justify-content:space-between;"><span>BAYAR</span><span>Rp ' + bayar.toLocaleString('id-ID') + '</span></div>';
+        html += '<div style="display:flex;justify-content:space-between;"><span>KEMBALI</span><span>Rp ' + kembalian.toLocaleString('id-ID') + '</span></div>';
+    }
+    html += '<div>=============================</div>';
+    html += '<div style="text-align:center;">' + footer + '</div>';
+    html += '</div>';
+
+    return html;
+}
+
+// ============================================================
+// BLOK R 01.0 (165) – CETAK STRUK (PRINT)
+// ============================================================
+function cetakStruk(idTransaksi) {
+    var list = loadTransaksiKatalog();
+    var transaksi = list.find(function(t) { return t.id === idTransaksi; });
+    if (!transaksi) return { sukses: false, pesan: 'Transaksi tidak ditemukan.' };
+
+    var config = getConfigStruk();
+    var html = generateStrukHTML(transaksi, config);
+
+    // Buat window baru untuk print
+    var win = window.open('', '_blank', 'width=400,height=600');
+    if (!win) return { sukses: false, pesan: 'Popup diblokir browser.' };
+
+    win.document.write('<html><head><title>Struk ' + idTransaksi + '</title>');
+    win.document.write('<style>@media print { body { margin: 0; } }</style>');
+    win.document.write('</head><body>');
+    win.document.write(html);
+    win.document.write('</body></html>');
+    win.document.close();
+
+    setTimeout(function() { win.print(); }, 500);
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (166) – GET & SIMPAN CONFIG STRUK
+// ============================================================
+function getConfigStruk() {
+    try {
+        var stored = localStorage.getItem('configStruk');
+        if (!stored) return {};
+        var data = JSON.parse(stored);
+        return (data && typeof data === 'object') ? data : {};
+    } catch (e) { return {}; }
+}
+
+function simpanConfigStruk(config) {
+    try {
+        localStorage.setItem('configStruk', JSON.stringify(config || {}));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (167) – EXPORT EXCEL (CSV) LAPORAN
+// ------------------------------------------------------------
+// Pakai CSV (buka di Excel otomatis)
+// ============================================================
+function exportExcelLaporan(tipe, data, namaFile) {
+    if (!Array.isArray(data) || data.length === 0) {
+        alert('Tidak ada data untuk di-export.');
+        return;
+    }
+
+    var headers = Object.keys(data[0]);
+    var csv = headers.join(';') + '\n';
+    data.forEach(function(row) {
+        csv += headers.map(function(h) {
+            var v = row[h];
+            if (v === null || v === undefined) return '';
+            v = String(v).replace(/;/g, ',').replace(/\n/g, ' ');
+            return '"' + v + '"';
+        }).join(';') + '\n';
+    });
+
+    var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement('a');
+    var url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', (namaFile || 'laporan_' + tipe + '_' + Date.now()) + '.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
 
 // ============================================================
 // AKHIR BLOK R 01.0
