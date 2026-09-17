@@ -11431,17 +11431,25 @@ function selesaikanOrderOjek(idOrder, idOjek, ongkosRp, idCustomer) {
         } catch (e) {}
     }
 
-    try {
-        var isiO = '✅ Order *' + idOrder + '* SELESAI.\n\n' +
+        try {
+        var isiOjek = '✅ Order *' + idOrder + '* SELESAI.\n\n' +
             'Ongkos diterima: Rp ' + (parseFloat(ongkosRp) || 0).toLocaleString('id-ID') +
             '\nBiaya jasa platform (' + hasil.persen + '%): Rp ' +
             hasil.nominalJasaRp.toLocaleString('id-ID') +
             ' = *' + hasil.biayaCoin + ' Coin*\n\n' +
             'Saldo R2Coin Anda sekarang: *' + hasil.saldoSetelah + ' Coin*';
-        kirimChatOtomatis('ID_TK2R_SA-0001', idOjek, isiO,
+
+        kirimChatOtomatis('ID_TK2R_SA-0001', idOjek, isiOjek,
             { jenisTransaksi: 'biaya-jasa-ojek',
               idTransaksi: idOrder, biayaCoin: hasil.biayaCoin });
     } catch (e) {}
+
+    // ✅ T5.2 — Notif ke SELLER (FASE T5)
+    try {
+        if (typeof notifOrderSelesaiKeSeller === 'function') {
+            notifOrderSelesaiKeSeller(idOrder, idOjek);
+        }
+    } catch (e) { console.warn('T5.2 notif seller gagal:', e); }
 
     catatAktivitasGlobal(idOjek, 'Selesaikan Order Ojek',
         'Order ' + idOrder + ' selesai. Biaya jasa ' + hasil.biayaCoin +
@@ -11462,13 +11470,155 @@ function selesaikanOrderOjek(idOrder, idOjek, ongkosRp, idCustomer) {
 <!-- ===== AKHIR BLOK FASE T2 ===== -->
 <!-- ============================================================ -->
 
-<!-- ══════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FASE T3 — ORDER MASUK OJEK (ALL-IN-ONE) ═══════ -->
-<!-- ══════════════════════════════════════════════════════════ -->
+<!-- ============================================================ -->
+<!-- ===== PATCH FASE T5 — Notifikasi Order Ojek ke Seller ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// PATCH FASE T5 — Notif Order Ojek ke Seller (Lengkap)
+// ------------------------------------------------------------
+// Dipanggil dari assignOrderKeOjek() & selesaikanOrderOjek()
+// Kirim chat otomatis ke SELLER saat ojek ambil / selesai order.
+//
+// Hanya untuk 6 role (TK, PP, PM, COD, OJ, CT):
+//   - Seller (TK/PP/PM/COD): penerima notif saat ojek ambil order
+//   - Ojek (OJ):           penerima notif selesai (sudah ada di BLOK 255)
+//   - Customer (CT):       penerima notif (sudah ada di BLOK 256)
+// ============================================================
 
-<!-- ══════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FASE T4 — PENDAPATAN PLATFORM (ALL-IN-ONE) ═════ -->
-<!-- ══════════════════════════════════════════════════════════ -->
+// ── (1) NOTIF KE SELLER saat OJEK AMBIL ORDER ──
+function notifOrderDiambilKeSeller(idOrder, idOjek) {
+    if (!idOrder || !idOjek) return { sukses: false, pesan: 'Data tidak valid.' };
+
+    // Ambil order dari dataPesananKatalog
+    var list = [];
+    try {
+        list = JSON.parse(localStorage.getItem('dataPesananKatalog') || '[]');
+        if (!Array.isArray(list)) list = [];
+    } catch (e) { list = []; }
+
+    var order = list.find(function(p) { return p.id === idOrder; });
+    if (!order) return { sukses: false, pesan: 'Order tidak ditemukan.' };
+
+    var idSeller = order.idSeller;
+    if (!idSeller) return { sukses: false, pesan: 'Seller tidak ditemukan di order.' };
+
+    // Cek role seller — hanya 6 role GIF yang dapat notif
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Data seller tidak ditemukan.' };
+
+    var roleBoleh = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller',
+                     'Ojek', 'Customer'];
+    if (roleBoleh.indexOf(seller.role) === -1) {
+        return { sukses: false, pesan: 'Role ' + seller.role + ' tidak menerima notif order.' };
+    }
+
+    // Ambil info ojek
+    var ojek = getDataIdUser(idOjek);
+    if (!ojek) return { sukses: false, pesan: 'Data ojek tidak ditemukan.' };
+
+    var namaOjek = ojek.nama || '-';
+    var hpOjek = ojek.hp || '-';
+    var idOjekStr = idOjek;
+
+    // ── Susun pesan lengkap dengan link chat ──
+    var isi =
+        '🛵 *ORDER DIAMBIL OJEK*\n\n' +
+        'Order *' + idOrder + '* telah diambil oleh ojek.\n\n' +
+        '📋 *Detail Ojek:*\n' +
+        '• Nama: *' + namaOjek + '*\n' +
+        '• ID: `' + idOjekStr + '`\n' +
+        '• HP: *' + hpOjek + '*\n\n' +
+        '📞 *Aksi Cepat:*\n' +
+        '• Chat: buka menu *Chat* → pilih ojek di atas\n' +
+        '• Telepon: ' + hpOjek + '\n\n' +
+        'Ojek akan segera datang ke lokasi Anda untuk mengambil barang. ' +
+        'Mohon siapkan pesanan order *' + idOrder + '*.';
+
+    var meta = {
+        jenisTransaksi: 'order-ojek-ambil',
+        idTransaksi: idOrder,
+        status: 'Diantar',
+        idOjek: idOjekStr,
+        namaOjek: namaOjek,
+        hpOjek: hpOjek,
+        idSeller: idSeller,
+        aksiChat: {
+            label: '💬 Chat Ojek',
+            idTarget: idOjekStr,
+            namaTarget: namaOjek
+        },
+        aksiTelepon: {
+            label: '📞 Telepon Ojek',
+            nomor: hpOjek
+        }
+    };
+
+    try {
+        return kirimChatOtomatis('ID_TK2R_SA-0001', idSeller, isi, meta);
+    } catch (e) {
+        console.warn('notifOrderDiambilKeSeller gagal:', e);
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ── (2) NOTIF KE SELLER saat ORDER OJEK SELESAI ──
+function notifOrderSelesaiKeSeller(idOrder, idOjek) {
+    if (!idOrder || !idOjek) return { sukses: false, pesan: 'Data tidak valid.' };
+
+    var list = [];
+    try {
+        list = JSON.parse(localStorage.getItem('dataPesananKatalog') || '[]');
+        if (!Array.isArray(list)) list = [];
+    } catch (e) { list = []; }
+
+    var order = list.find(function(p) { return p.id === idOrder; });
+    if (!order) return { sukses: false, pesan: 'Order tidak ditemukan.' };
+
+    var idSeller = order.idSeller;
+    if (!idSeller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Data seller tidak ditemukan.' };
+
+    var roleBoleh = ['Toko', 'Pedagang Pasar', 'Pedagang Makanan', 'COD Seller',
+                     'Ojek', 'Customer'];
+    if (roleBoleh.indexOf(seller.role) === -1) {
+        return { sukses: false, pesan: 'Role ' + seller.role + ' tidak menerima notif.' };
+    }
+
+    var ojek = getDataIdUser(idOjek);
+    var namaOjek = ojek ? (ojek.nama || '-') : '-';
+
+    var isi =
+        '✅ *ORDER SELESAI*\n\n' +
+        'Order *' + idOrder + '* telah selesai diantar oleh ojek.\n\n' +
+        '📋 *Detail:*\n' +
+        '• Ojek: *' + namaOjek + '*\n' +
+        '• Total: Rp ' + (order.totalRp || 0).toLocaleString('id-ID') + '\n' +
+        '• Metode: ' + (order.metode || 'Belum dipilih') + '\n\n' +
+        'Terima kasih telah menggunakan layanan Toko Online 2R. ' +
+        'Semoga order berikutnya lancar! 🎉';
+
+    var meta = {
+        jenisTransaksi: 'order-ojek-selesai-seller',
+        idTransaksi: idOrder,
+        status: 'Selesai',
+        idOjek: idOjek,
+        namaOjek: namaOjek,
+        idSeller: idSeller
+    };
+
+    try {
+        return kirimChatOtomatis('ID_TK2R_SA-0001', idSeller, isi, meta);
+    } catch (e) {
+        console.warn('notifOrderSelesaiKeSeller gagal:', e);
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+console.log('✅ PATCH FASE T5 — Fungsi notif order ojek terdaftar');
+</script>
 
 <!-- ═══ PATCH 1: HTML CONTAINER ═══ -->
 <div id="pendapatanPlatformContainer" style="display:none;">
@@ -12290,7 +12440,7 @@ function assignOrderKeOjek(idOrder, idOjek) {
         return { sukses: false, pesan: 'Gagal potong coin: ' + potong.pesan };
     }
 
-    try {
+        try {
         if (order.idPembeli) {
             kirimChatOtomatis(idOjek, order.idPembeli,
                 '🛵 Order *' + idOrder + '* sedang diantar oleh *' +
@@ -12299,6 +12449,13 @@ function assignOrderKeOjek(idOrder, idOjek) {
                   status: 'Diantar' });
         }
     } catch (e) {}
+
+    // ✅ T5.1 — Notif ke SELLER (FASE T5)
+    try {
+        if (typeof notifOrderDiambilKeSeller === 'function') {
+            notifOrderDiambilKeSeller(idOrder, idOjek);
+        }
+    } catch (e) { console.warn('T5.1 notif seller gagal:', e); }
 
     catatAktivitasGlobal(idOjek, 'Ambil Order Ojek',
         'Ojek ' + (ojek.nama || idOjek) + ' ambil order ' + idOrder);
