@@ -2471,7 +2471,8 @@ function getWilayahTerdekat(lat, lng, role) {
 
 function getDaftarRoleWilayah() {
     return ['Toko', 'Ojek', 'Pedagang Pasar', 'Pedagang Makanan',
-            'COD Seller', 'Customer', 'Distributor', 'Grosir', 'SuperAdmin'];
+            'COD Seller', 'Customer', 'Distributor', 'Grosir', 'SuperAdmin',
+            'Developer Properti', 'Dealer dan Showroom', 'Finance Multifinance'];
 }
 
 function isUserDalamWilayah(idUser, idWilayah, maxJarakKm) {
@@ -2535,7 +2536,11 @@ function kodeRoleToPrefix(role) {
         'Kasir': 'KSR', 'Staf Admin': 'ADM', 'Staf Marketing': 'MKT',
         'Staf Penagihan': 'TGH', 'Customer Service': 'CS',
         'Event Organizer': 'EO', 'Organisasi': 'ORG', 'Individu': 'IND',
-        'Staf Owner Toko': 'SOT', 'Staf Owner Ojek': 'SOO'
+        'Staf Owner Toko': 'SOT', 'Staf Owner Ojek': 'SOO',
+        // BARU
+        'Developer Properti': 'DEV',
+        'Dealer dan Showroom': 'DLR',
+        'Finance Multifinance': 'FIN'
     };
     return map[role] || 'USR';
 }
@@ -3463,21 +3468,45 @@ function toggleProdukPublikUniversal(id) {
     return { sukses: true, isPublik: p.isPublik };
 }
 
-// ============================================================
-// BLOK R 01.0 (66) – FUNGSI GLOBAL KERJASAMA DISTRIBUTOR
-// ============================================================
-function getConfigKerjasamaDistributor() {
-    return {
-        prefix:      'KJS_DST',
-        warna:       '#6F42C1',
-        namaDokumen: 'SURAT PERJANJIAN KERJASAMA',
-        pihakKedua: {
-            nama:           'SUGIONO',
-            jabatan:        'Pemilik Pengelola Toko Online 2R',
-            namaPerusahaan: 'PT ADHIKARYA BINTANG MANDIRI',
-            alamat:         'Kantor Pusat Toko Online 2R, Pasar Ciawitali, Kec. Purwadadi, Kab. Ciamis, Jawa Barat'
+// ------------------------------------------------------------
+// Versi universal — untuk Distributor, Developer, Dealer, Finance
+// ------------------------------------------------------------
+function getConfigKerjasamaUniversal(role) {
+    var configs = {
+        'Distributor': {
+            prefix: 'KJS_DST', warna: '#6F42C1',
+            labelUsaha: 'Nama Distributor',
+            labelAlamat: 'Alamat Distributor'
+        },
+        'Developer Properti': {
+            prefix: 'KJS_DEV', warna: '#8B4513',
+            labelUsaha: 'Nama Perusahaan Developer',
+            labelAlamat: 'Alamat Kantor Developer'
+        },
+        'Dealer dan Showroom': {
+            prefix: 'KJS_DLR', warna: '#003366',
+            labelUsaha: 'Nama Dealer / Showroom',
+            labelAlamat: 'Alamat Dealer / Showroom'
+        },
+        'Finance Multifinance': {
+            prefix: 'KJS_FIN', warna: '#046A38',
+            labelUsaha: 'Nama Perusahaan Finance',
+            labelAlamat: 'Alamat Kantor Finance'
         }
     };
+
+    var cfg = configs[role] || configs['Distributor'];
+
+    // Field umum (sama untuk semua)
+    cfg.namaDokumen = 'SURAT PERJANJIAN KERJASAMA';
+    cfg.pihakKedua = {
+        nama:           'SUGIONO',
+        jabatan:        'Pemilik Pengelola Toko Online 2R',
+        namaPerusahaan: 'PT ADHIKARYA BINTANG MANDIRI',
+        alamat:         'Kantor Pusat Toko Online 2R, Pasar Ciawitali, Kec. Purwadadi, Kab. Ciamis, Jawa Barat'
+    };
+
+    return cfg;
 }
 
 function isiDataKerjasamaDST() {
@@ -13372,7 +13401,432 @@ function tampilkanToastOjek(pesan, tipe, durasi) {
 </script>
 <!-- ═══ AKHIR BLOK FASE T3 ═══ -->
 
+// ============================================================
+// BLOK R 01.0 (259) – FUNGSI GLOBAL NOTIFIKASI
+// ------------------------------------------------------------
+// 1. Notifikasi internal (queue di localStorage)
+// 2. Notifikasi browser (Web Notification API)
+// 3. Notifikasi OS-level saat aplikasi di background/ditutup
+// 4. Broadcast ke role / semua user
+// ============================================================
 
+// --- 259.1 KONFIGURASI ---
+var NOTIF_KEY = 'dataNotifikasi';
+var NOTIF_MAX = 200;
+var NOTIF_DURATION_MS = 8000;
+
+// --- 259.2 LOAD / SIMPAN ---
+function loadNotifikasi() {
+    try {
+        var stored = localStorage.getItem(NOTIF_KEY);
+        return stored ? JSON.parse(stored) : [];
+    } catch (e) { return []; }
+}
+
+function simpanNotifikasi(data) {
+    data = Array.isArray(data) ? data : [];
+    if (data.length > NOTIF_MAX) {
+        data = data.slice(0, NOTIF_MAX);
+    }
+    localStorage.setItem(NOTIF_KEY, JSON.stringify(data));
+}
+
+// --- 259.3 MINTA IZIN NOTIFIKASI BROWSER ---
+function mintaIzinNotifikasi() {
+    if (!('Notification' in window)) {
+        console.warn('Browser tidak mendukung Notifikasi.');
+        return Promise.resolve('unsupported');
+    }
+    if (Notification.permission === 'granted') return Promise.resolve('granted');
+    if (Notification.permission === 'denied') return Promise.resolve('denied');
+
+    return Notification.requestPermission().then(function(perm) {
+        console.log('🔔 Izin notifikasi: ' + perm);
+        return perm;
+    });
+}
+
+// --- 259.4 NOTIFIKASI OS-LEVEL (BROWSER) ---
+function notifikasiBrowser(judul, pesan, opsi) {
+    opsi = opsi || {};
+    if (!('Notification' in window)) return false;
+    if (Notification.permission !== 'granted') return false;
+
+    try {
+        var notif = new Notification(judul || 'Toko Online 2R', {
+            body: pesan || '',
+            icon: opsi.icon || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🛍️</text></svg>',
+            badge: opsi.badge || '',
+            tag: opsi.tag || ('notif-' + Date.now()),
+            requireInteraction: opsi.prioritas === 'urgent',
+            silent: opsi.silent === true
+        });
+
+        if (opsi.prioritas !== 'urgent' && !opsi.silent) {
+            setTimeout(function() { try { notif.close(); } catch(e) {} }, opsi.durasi || 10000);
+        }
+
+        notif.onclick = function() {
+            window.focus();
+            if (opsi.link && typeof menuHandlers !== 'undefined' && typeof menuHandlers[opsi.link] === 'function') {
+                menuHandlers[opsi.link]();
+            } else if (opsi.link && typeof window[opsi.link] === 'function') {
+                window[opsi.link]();
+            }
+            notif.close();
+        };
+
+        return true;
+    } catch (e) {
+        console.error('notifikasiBrowser gagal:', e);
+        return false;
+    }
+}
+
+// --- 259.5 TOAST NOTIFIKASI INTERNAL (dalam aplikasi) ---
+function notifikasiToast(judul, pesan, opsi) {
+    opsi = opsi || {};
+    var container = document.getElementById('toastNotifContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toastNotifContainer';
+        container.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;max-width:400px;';
+        document.body.appendChild(container);
+    }
+
+    var toast = document.createElement('div');
+    var warna = opsi.warna || '#FF8C00';
+    var ikon = opsi.ikon || 'fas fa-bell';
+    toast.style.cssText = 'background:white;border-left:5px solid ' + warna +
+        ';padding:12px 16px;margin-bottom:10px;box-shadow:0 4px 12px rgba(0,0,0,0.15);border-radius:8px;' +
+        'animation:slideIn 0.3s ease-out;font-family:inherit;';
+    toast.innerHTML = '<div style="display:flex;gap:10px;align-items:start;">' +
+        '<i class="' + ikon + '" style="color:' + warna + ';font-size:20px;margin-top:2px;"></i>' +
+        '<div style="flex:1;">' +
+        '<strong style="display:block;margin-bottom:4px;">' + (judul || 'Notifikasi') + '</strong>' +
+        '<small style="color:#666;">' + (pesan || '') + '</small>' +
+        '</div>' +
+        '<button style="background:none;border:none;cursor:pointer;color:#999;font-size:16px;" ' +
+        'onclick="this.parentElement.parentElement.remove()">×</button>' +
+        '</div>';
+    container.appendChild(toast);
+
+    setTimeout(function() {
+        if (toast.parentElement) {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.3s';
+            setTimeout(function() { try { toast.remove(); } catch(e) {} }, 300);
+        }
+    }, opsi.durasi || NOTIF_DURATION_MS);
+
+    return toast;
+}
+
+// --- 259.6 API UTAMA: KIRIM NOTIFIKASI ---
+// Pemakaian:
+//   kirimNotifikasi(idUser, 'Judul', 'Pesan', {tipe:'order', link:'orderMasuk'})
+//   kirimNotifikasi('ALL', 'Judul', 'Pesan', {})
+//   kirimNotifikasi(['id1','id2'], 'Judul', 'Pesan', {})
+//   kirimNotifikasi({roles:['Toko','Grosir']}, 'Judul', 'Pesan', {})
+function kirimNotifikasi(target, judul, pesan, opsi) {
+    opsi = opsi || {};
+
+    if (!judul) return { sukses: false, pesan: 'Judul notifikasi wajib diisi.' };
+
+    // Normalisasi target → array of idUser
+    var targets = [];
+    if (target === 'ALL' || target === 'SEMUA') {
+        targets = (dataAkunAktif || []).map(function(a) { return a.id; });
+    } else if (Array.isArray(target)) {
+        targets = target.slice();
+    } else if (target && typeof target === 'string') {
+        targets = [target];
+    } else if (target && typeof target === 'object' && target.roles) {
+        var roles = Array.isArray(target.roles) ? target.roles : [target.roles];
+        targets = (dataAkunAktif || []).filter(function(a) {
+            return roles.indexOf(a.role) !== -1;
+        }).map(function(a) { return a.id; });
+    }
+
+    if (targets.length === 0) {
+        return { sukses: false, pesan: 'Target tidak valid atau kosong.' };
+    }
+
+    var daftar = loadNotifikasi();
+    var now = new Date().toISOString();
+    var notifBaru = [];
+    var idPengirim = (typeof userAktif !== 'undefined' && userAktif) ? userAktif.idUser : 'SYSTEM';
+
+    targets.forEach(function(idTarget) {
+        var idNotif = generateKodeUnik('NOTIF');
+        var notif = {
+            id: idNotif,
+            targetId: idTarget,
+            pengirimId: idPengirim,
+            pengirimNama: (typeof userAktif !== 'undefined' && userAktif) ? (userAktif.nama || '-') : 'Sistem',
+            judul: judul,
+            pesan: pesan || '',
+            tipe: opsi.tipe || 'sistem',
+            ikon: opsi.ikon || 'fas fa-bell',
+            warna: opsi.warna || '#FF8C00',
+            link: opsi.link || null,
+            prioritas: opsi.prioritas || 'normal',
+            createdAt: now,
+            dibaca: false,
+            dibacaPada: null
+        };
+        daftar.unshift(notif);
+        notifBaru.push(notif);
+    });
+
+    simpanNotifikasi(daftar);
+
+    // Tampilkan notif ke user yang sedang login JIKA dia salah satu target
+    if (typeof userAktif !== 'undefined' && userAktif && targets.indexOf(userAktif.idUser) !== -1) {
+        notifikasiToast(judul, pesan, opsi);
+        notifikasiBrowser(judul, pesan, opsi);
+        renderBadgeNotifikasi();
+    }
+
+    // Catat aktivitas
+    if (typeof catatAktivitasGlobal === 'function' && idPengirim !== 'SYSTEM') {
+        catatAktivitasGlobal(idPengirim, 'Kirim Notifikasi',
+            'Kirim ke ' + targets.length + ' user: ' + judul);
+    }
+
+    return { sukses: true, jumlahTarget: targets.length, notifikasi: notifBaru };
+}
+
+// --- 259.7 ALIAS: KIRIM NOTIFIKASI MASSAL BY ROLE ---
+function kirimNotifikasiMassal(roles, judul, pesan, opsi) {
+    return kirimNotifikasi({ roles: roles }, judul, pesan, opsi);
+}
+
+// --- 259.8 HITUNG NOTIF BELUM DIBACA ---
+function getTotalNotifBelumDibaca(idUser) {
+    idUser = idUser || ((typeof userAktif !== 'undefined' && userAktif) ? userAktif.idUser : null);
+    if (!idUser) return 0;
+    var daftar = loadNotifikasi();
+    return daftar.filter(function(n) {
+        return n.targetId === idUser && !n.dibaca;
+    }).length;
+}
+
+function getNotifikasiUser(idUser, hanyaBelumDibaca) {
+    idUser = idUser || ((typeof userAktif !== 'undefined' && userAktif) ? userAktif.idUser : null);
+    if (!idUser) return [];
+    var daftar = loadNotifikasi();
+    return daftar.filter(function(n) {
+        if (n.targetId !== idUser) return false;
+        if (hanyaBelumDibaca && n.dibaca) return false;
+        return true;
+    });
+}
+
+// --- 259.9 TANDAI DIBACA / HAPUS ---
+function tandaiNotifDibaca(idNotif) {
+    var daftar = loadNotifikasi();
+    var idx = daftar.findIndex(function(n) { return n.id === idNotif; });
+    if (idx === -1) return { sukses: false };
+    daftar[idx].dibaca = true;
+    daftar[idx].dibacaPada = new Date().toISOString();
+    simpanNotifikasi(daftar);
+    renderBadgeNotifikasi();
+    return { sukses: true };
+}
+
+function tandaiSemuaNotifDibaca() {
+    if (typeof userAktif === 'undefined' || !userAktif) return { sukses: false };
+    var daftar = loadNotifikasi();
+    var now = new Date().toISOString();
+    daftar.forEach(function(n) {
+        if (n.targetId === userAktif.idUser && !n.dibaca) {
+            n.dibaca = true;
+            n.dibacaPada = now;
+        }
+    });
+    simpanNotifikasi(daftar);
+    renderBadgeNotifikasi();
+    if (typeof renderDropdownNotifikasi === 'function') renderDropdownNotifikasi();
+    return { sukses: true };
+}
+
+function hapusNotifikasi(idNotif) {
+    var daftar = loadNotifikasi();
+    daftar = daftar.filter(function(n) { return n.id !== idNotif; });
+    simpanNotifikasi(daftar);
+    renderBadgeNotifikasi();
+    return { sukses: true };
+}
+
+function hapusSemuaNotifikasiUser() {
+    if (typeof userAktif === 'undefined' || !userAktif) return { sukses: false };
+    var daftar = loadNotifikasi();
+    daftar = daftar.filter(function(n) { return n.targetId !== userAktif.idUser; });
+    simpanNotifikasi(daftar);
+    renderBadgeNotifikasi();
+    return { sukses: true };
+}
+
+// --- 259.10 RENDER BADGE (ANGKA MERAH DI BELL) ---
+function renderBadgeNotifikasi() {
+    var total = getTotalNotifBelumDibaca();
+    var badges = document.querySelectorAll('.notifBadge, #notifBadgeGlobal');
+    badges.forEach(function(b) {
+        if (total > 0) {
+            b.textContent = total > 99 ? '99+' : total;
+            b.style.display = 'inline-block';
+        } else {
+            b.style.display = 'none';
+        }
+    });
+}
+
+// --- 259.11 RENDER DROPDOWN NOTIFIKASI ---
+function renderDropdownNotifikasi() {
+    var container = document.getElementById('dropdownNotifBody');
+    if (!container) return;
+
+    var daftar = getNotifikasiUser(null, false).slice(0, 10);
+
+    if (daftar.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted py-4">' +
+            '<i class="fas fa-bell-slash fa-2x mb-2"></i><br>Belum ada notifikasi</div>';
+        return;
+    }
+
+    var html = '';
+    daftar.forEach(function(n) {
+        var waktu = new Date(n.createdAt);
+        var selisih = Math.floor((Date.now() - waktu.getTime()) / 60000);
+        var waktuTeks = selisih < 1 ? 'Baru saja'
+            : selisih < 60 ? selisih + ' menit lalu'
+            : selisih < 1440 ? Math.floor(selisih/60) + ' jam lalu'
+            : Math.floor(selisih/1440) + ' hari lalu';
+
+        var bgKelas = n.dibaca ? '' : 'background:#FFF8E1;';
+        var borderWarna = n.dibaca ? '#dee2e6' : n.warna;
+
+        html += '<div class="notif-item p-2 border-bottom" style="' + bgKelas +
+            'border-left:3px solid ' + borderWarna + ' !important;cursor:pointer;" ' +
+            'onclick="bukaNotifikasiDariDropdown(\'' + n.id + '\')">' +
+            '<div class="d-flex gap-2 align-items-start">' +
+            '<i class="' + n.ikon + '" style="color:' + n.warna + ';font-size:18px;margin-top:2px;"></i>' +
+            '<div style="flex:1;min-width:0;">' +
+            '<strong style="font-size:13px;display:block;">' + n.judul + '</strong>' +
+            '<small style="color:#666;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+            (n.pesan || '') + '</small>' +
+            '<small style="color:#999;font-size:11px;">' + waktuTeks + '</small>' +
+            '</div>' +
+            (n.dibaca ? '' : '<span class="badge bg-danger" style="font-size:9px;">Baru</span>') +
+            '</div></div>';
+    });
+
+    container.innerHTML = html;
+}
+
+// --- 259.12 BUKA NOTIF DARI DROPDOWN ---
+function bukaNotifikasiDariDropdown(idNotif) {
+    var daftar = loadNotifikasi();
+    var notif = daftar.find(function(n) { return n.id === idNotif; });
+    if (!notif) return;
+
+    tandaiNotifDibaca(idNotif);
+
+    try {
+        var dropdown = bootstrap.Dropdown.getInstance(document.getElementById('dropdownNotifToggle'));
+        if (dropdown) dropdown.hide();
+    } catch (e) {}
+
+    if (notif.link) {
+        if (typeof menuHandlers !== 'undefined' && typeof menuHandlers[notif.link] === 'function') {
+            menuHandlers[notif.link]();
+        } else if (typeof window[notif.link] === 'function') {
+            window[notif.link]();
+        } else {
+            tampilkanPlaceholderMenu(notif.judul, notif.tipe);
+        }
+    }
+}
+
+// --- 259.13 HALAMAN NOTIFIKASI (FULL PAGE) ---
+function tampilkanHalamanNotifikasi() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!konten) return;
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var daftar = getNotifikasiUser(null, false);
+
+    var html = '<div class="container-fluid px-4 py-4">' +
+        '<div class="d-flex justify-content-between align-items-center mb-4">' +
+        '<h4 class="fw-bold text-white"><i class="fas fa-bell me-2"></i>Notifikasi</h4>' +
+        '<div>' +
+        '<button class="btn btn-outline-light me-2" onclick="tandaiSemuaNotifDibaca();tampilkanHalamanNotifikasi();">' +
+        '<i class="fas fa-check-double me-1"></i>Tandai Semua Dibaca</button>' +
+        '<button class="btn btn-outline-danger me-2" onclick="if(confirm(\'Hapus semua notifikasi?\')){hapusSemuaNotifikasiUser();tampilkanHalamanNotifikasi();}">' +
+        '<i class="fas fa-trash me-1"></i>Hapus Semua</button>' +
+        '<button class="btn btn-outline-light" onclick="kembaliKeDasbor()">' +
+        '<i class="fas fa-arrow-left me-1"></i>Kembali</button>' +
+        '</div></div>';
+
+    if (daftar.length === 0) {
+        html += '<div class="card border-0 shadow"><div class="card-body text-center py-5">' +
+            '<i class="fas fa-bell-slash fa-4x text-muted mb-3"></i>' +
+            '<h4 class="text-muted">Belum Ada Notifikasi</h4></div></div>';
+    } else {
+        html += '<div class="card border-0 shadow"><div class="card-body p-0">';
+        daftar.forEach(function(n) {
+            var bgKelas = n.dibaca ? 'bg-white' : 'bg-light';
+            html += '<div class="p-3 border-bottom ' + bgKelas + '" style="border-left:4px solid ' + n.warna + ' !important;">' +
+                '<div class="d-flex gap-3 align-items-start">' +
+                '<i class="' + n.ikon + '" style="color:' + n.warna + ';font-size:24px;"></i>' +
+                '<div style="flex:1;">' +
+                '<div class="d-flex justify-content-between">' +
+                '<strong>' + n.judul + '</strong>' +
+                '<small class="text-muted">' + new Date(n.createdAt).toLocaleString('id-ID') + '</small>' +
+                '</div>' +
+                '<p class="mb-1" style="color:#444;">' + (n.pesan || '') + '</p>' +
+                '<small class="text-muted">' +
+                '<span class="badge bg-secondary me-1">' + n.tipe + '</span>' +
+                'Dari: ' + (n.pengirimNama || '-') +
+                '</small>' +
+                '<div class="mt-2">' +
+                (n.dibaca ? '' : '<button class="btn btn-sm btn-outline-primary me-1" onclick="tandaiNotifDibaca(\'' + n.id + '\');tampilkanHalamanNotifikasi();">' +
+                    '<i class="fas fa-check"></i> Tandai Dibaca</button>') +
+                '<button class="btn btn-sm btn-outline-danger" onclick="hapusNotifikasi(\'' + n.id + '\');tampilkanHalamanNotifikasi();">' +
+                '<i class="fas fa-trash"></i></button>' +
+                '</div>' +
+                '</div></div></div>';
+        });
+        html += '</div></div>';
+    }
+    html += '</div>';
+
+    konten.innerHTML = html;
+    tutupMenu();
+}
+
+// --- 259.14 INISIALISASI SAAT APLIKASI DIBUKA ---
+function inisialisasiNotifikasi() {
+    if ('Notification' in window && Notification.permission === 'default') {
+        setTimeout(function() {
+            mintaIzinNotifikasi().then(function(perm) {
+                if (perm === 'granted') {
+                    notifikasiToast('Notifikasi Aktif',
+                        'Anda akan menerima notifikasi sistem.', {
+                        ikon: 'fas fa-check-circle', warna: '#28A745'
+                    });
+                }
+            });
+        }, 3000);
+    }
+
+    renderBadgeNotifikasi();
+}
+
+// --- 259.15 AUTO-INIT SAAT DOM SIAP ---
+document.addEventListener('DOMContentLoaded', function() {
+    inisialisasiNotifikasi();
+});
 
 			<!-- ============================================================ -->
 			<!-- ===== BLOK 2 – Halaman Login ===== -->
@@ -13489,6 +13943,9 @@ function tampilkanToastOjek(pesan, tipe, durasi) {
 												<option value="COD">COD Seller</option>
 												<option value="CT">Customer (Langsung Aktif)</option>
 												<option value="GR">Grosir</option>
+												<option value="DP">Developer Properti (Langsung Aktif)</option>
+												<option value="DLR">Dealer dan Showroom (Langsung Aktif)</option>
+												<option value="FIN">Finance Multifinance (Langsung Aktif)</option>
 											</select>
 											<small class="text-muted" id="infoRole"></small>
 										</div>
@@ -13693,28 +14150,50 @@ function cekRolePendaftaran() {
     var nikInput = document.getElementById('nikKtp');
     var info = document.getElementById('infoRole');
 
+    // Reset ID jika role kosong
     if (!role) {
         inputId.value = '';
         info.innerHTML = '';
         return;
     }
 
+    // Generate ID unik via fungsi global
     var idBaru = generateKodeUnik(role);
     inputId.value = idBaru;
 
-    var nikRoles = ['TK', 'OJ', 'PP', 'PM', 'COD', 'GR'];
+    // Role kategori
+    var nikRoles  = ['TK', 'OJ', 'PP', 'PM', 'COD', 'GR'];           // wajib NIK
+    var aktifRoles = ['CT', 'DP', 'DLR', 'FIN'];                       // langsung aktif tanpa NIK
+
     if (nikRoles.includes(role)) {
+        // Seller/Grosir — wajib NIK, status Pending
         bagianNIK.style.display = 'block';
         nikInput.setAttribute('required', '');
         info.innerHTML = '<i class="fas fa-info-circle me-1" style="color:#FF8C00;"></i> Akun Seller/Grosir — wajib NIK KTP dan SKU, status <strong>Pending</strong> sampai disetujui SuperAdmin.';
-    } else {
+
+    } else if (aktifRoles.includes(role)) {
+        // Customer / Developer / Dealer / Finance — langsung aktif
         bagianNIK.style.display = 'none';
         nikInput.removeAttribute('required');
+
         if (role === 'CT') {
             info.innerHTML = '<i class="fas fa-check-circle me-1" style="color:#4CAF50;"></i> Customer — langsung <strong>Aktif</strong>, tidak perlu NIK.';
         } else {
-            info.innerHTML = '<i class="fas fa-check-circle me-1" style="color:#4CAF50;"></i> Akun ' + role + ' — silakan lanjutkan.';
+            // DP / DLR / FIN — pakai perjanjian kerjasama
+            var namaRole = {
+                'DP':  'Developer Properti',
+                'DLR': 'Dealer dan Showroom',
+                'FIN': 'Finance Multifinance'
+            }[role] || role;
+
+            info.innerHTML = '<i class="fas fa-file-signature me-1" style="color:#FF8C00;"></i> Akun ' + namaRole +
+                ' — langsung <strong>Aktif</strong>. Wajib unduh & tanda tangani <strong>Surat Perjanjian Kerjasama</strong> di menu setelah login.';
         }
+
+    } else {
+        bagianNIK.style.display = 'none';
+        nikInput.removeAttribute('required');
+        info.innerHTML = '<i class="fas fa-check-circle me-1" style="color:#4CAF50;"></i> Akun ' + role + ' — silakan lanjutkan.';
     }
 
     cekTombolDaftarAktif();
@@ -14004,6 +14483,9 @@ function ajukanPendaftaran() {
         'TK':  'Toko', 'OJ': 'Ojek', 'PP': 'Pedagang Pasar',
         'PM':  'Pedagang Makanan', 'COD': 'COD Seller',
         'CT':  'Customer', 'GR': 'Grosir'
+		'DP':  'Developer Properti',
+        'DLR': 'Dealer dan Showroom',
+        'FIN': 'Finance Multifinance'
     };
     var roleDisplay = roleMap[roleKode] || 'Customer';
 
@@ -14280,6 +14762,31 @@ function tampilkanNotifDaftar(pesan, tipe) {
 							<i class="fas fa-store-alt me-2"></i>Toko Online 2R
 						</a>
 						<div class="d-flex align-items-center ms-auto">
+							<!-- Bell Notifikasi -->
+							<div class="dropdown me-3">
+								<button class="btn btn-link text-white position-relative" type="button"
+										id="dropdownNotifToggle" data-bs-toggle="dropdown"
+										aria-expanded="false" onclick="renderDropdownNotifikasi()">
+									<i class="fas fa-bell fa-lg"></i>
+									<span class="notifBadge badge bg-danger position-absolute"
+										  style="top:0;right:0;font-size:9px;display:none;"
+										  id="notifBadgeGlobal">0</span>
+								</button>
+								<div class="dropdown-menu dropdown-menu-end shadow" style="width:360px;max-height:400px;overflow-y:auto;">
+									<div class="dropdown-header d-flex justify-content-between align-items-center">
+										<strong><i class="fas fa-bell me-1"></i>Notifikasi</strong>
+										<button class="btn btn-sm btn-link text-decoration-none p-0" onclick="tandaiSemuaNotifDibaca();renderDropdownNotifikasi();">
+											Tandai semua
+										</button>
+									</div>
+									<div id="dropdownNotifBody"></div>
+									<div class="dropdown-divider"></div>
+									<a class="dropdown-item text-center" href="#" onclick="event.preventDefault();tampilkanHalamanNotifikasi();">
+										<i class="fas fa-list me-1"></i>Lihat Semua Notifikasi
+									</a>
+								</div>
+							</div>
+
 							<span class="text-white me-2" id="namaUserDisplay">User</span>
 							<button class="btn btn-outline-light btn-sm" onclick="prosesLogout()">Logout</button>
 						</div>
@@ -19588,6 +20095,9 @@ function tampilkanToastPersetujuan(pesan, tipe) {
                                     <option value="COD">COD Seller</option>
                                     <option value="GR">Grosir</option>
                                     <option value="DST">Distributor</option>
+									<option value="DP">Developer Properti</option>
+									<option value="DLR">Dealer dan Showroom</option>
+									<option value="FIN">Finance Multifinance</option>
                                 </optgroup>
                                 <optgroup label="— Non-Seller —">
                                     <option value="CT">Customer</option>
@@ -19996,28 +20506,32 @@ function prosesBuatAkun(event) {
     }
 
     // ── Tentukan role display & kode role ──
-    var roleDisplay = '';
-    var kodeRole    = '';
-    switch (role) {
-        case 'TK':  roleDisplay = 'Toko';              kodeRole = 'TK';  break;
-        case 'OJ':  roleDisplay = 'Ojek';              kodeRole = 'OJ';  break;
-        case 'PP':  roleDisplay = 'Pedagang Pasar';    kodeRole = 'PP';  break;
-        case 'PM':  roleDisplay = 'Pedagang Makanan';  kodeRole = 'PM';  break;
-        case 'COD': roleDisplay = 'COD Seller';        kodeRole = 'COD'; break;
-        case 'CT':  roleDisplay = 'Customer';          kodeRole = 'CT';  break;
-        case 'ADM': roleDisplay = 'Staf Admin';        kodeRole = 'ADM'; break;
-        case 'SOT': roleDisplay = 'Staf Owner Toko';   kodeRole = 'SOT'; break;
-        case 'SOO': roleDisplay = 'Staf Owner Ojek';   kodeRole = 'SOO'; break;
-        case 'MKT': roleDisplay = 'Staf Marketing';    kodeRole = 'MKT'; break;
-        case 'TGH': roleDisplay = 'Staf Penagihan';    kodeRole = 'TGH'; break;
-        case 'CS':  roleDisplay = 'Customer Service';  kodeRole = 'CS';  break;
-        case 'EO':  roleDisplay = 'Event Organizer';   kodeRole = 'EO';  break;
-        case 'ORG': roleDisplay = 'Organisasi';        kodeRole = 'ORG'; break;
-        case 'IND': roleDisplay = 'Individu';          kodeRole = 'IND'; break;
-        case 'DST': roleDisplay = 'Distributor';       kodeRole = 'DST'; break;
-        case 'GR':  roleDisplay = 'Grosir';            kodeRole = 'GR';  break;
-        default:    roleDisplay = 'Customer';          kodeRole = 'CT';  break;
-    }
+    				var roleDisplay = '';
+				var kodeRole = '';
+				switch (role) {
+					case 'TK': roleDisplay = 'Toko'; kodeRole = 'TK'; break;
+					case 'OJ': roleDisplay = 'Ojek'; kodeRole = 'OJ'; break;
+					case 'PP': roleDisplay = 'Pedagang Pasar'; kodeRole = 'PP'; break;
+					case 'PM': roleDisplay = 'Pedagang Makanan'; kodeRole = 'PM'; break;
+					case 'COD': roleDisplay = 'COD Seller'; kodeRole = 'COD'; break;
+					case 'CT': roleDisplay = 'Customer'; kodeRole = 'CT'; break;
+					case 'ADM': roleDisplay = 'Staf Admin'; kodeRole = 'ADM'; break;
+					case 'SOT': roleDisplay = 'Staf Owner Toko'; kodeRole = 'SOT'; break;
+					case 'SOO': roleDisplay = 'Staf Owner Ojek'; kodeRole = 'SOO'; break;
+					case 'MKT': roleDisplay = 'Staf Marketing'; kodeRole = 'MKT'; break;
+					case 'TGH': roleDisplay = 'Staf Penagihan'; kodeRole = 'TGH'; break;
+					case 'CS': roleDisplay = 'Customer Service'; kodeRole = 'CS'; break;
+					case 'EO': roleDisplay = 'Event Organizer'; kodeRole = 'EO'; break;
+					case 'ORG': roleDisplay = 'Organisasi'; kodeRole = 'ORG'; break;
+					case 'IND': roleDisplay = 'Individu'; kodeRole = 'IND'; break;
+					case 'DST': roleDisplay = 'Distributor'; kodeRole = 'DST'; break;
+					case 'GR': roleDisplay = 'Grosir'; kodeRole = 'GR'; break;
+					// ===== BARU =====
+					case 'DP':  roleDisplay = 'Developer Properti';   kodeRole = 'DP';  break;
+					case 'DLR': roleDisplay = 'Dealer dan Showroom';  kodeRole = 'DLR'; break;
+					case 'FIN': roleDisplay = 'Finance Multifinance'; kodeRole = 'FIN'; break;
+					default: roleDisplay = 'Customer'; kodeRole = 'CT';
+				}
 
     // ============================================================
     // CEK DUPLIKAT
@@ -29377,6 +29891,612 @@ function renderDasborGrosirAdmin() {
 			}
 			</script>
 			<!--- ===== AKHIR BLOK R 31.1 JS (REVISI FINAL) ===== -->
+			
+			<!--- ===== BLOK R 32.1 – HTML DASBOR DEVELOPER PROPERTI ===== -->
+<div id="dasborDPContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-building me-2"></i>Dasbor Developer Properti</h4>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-sync me-1"></i> Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- Kartu Profil -->
+        <div class="card border-0 shadow-sm mb-4 bg-white">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-2 text-center">
+                        <img id="dpFotoProfil" src="https://placehold.co/100x100/8B4513/ffffff?text=DP"
+                             class="rounded-circle" style="width:80px;height:80px;object-fit:cover;border:3px solid #8B4513;">
+                    </div>
+                    <div class="col-md-10">
+                        <h5 class="fw-bold mb-1" id="dpNamaProfil">-</h5>
+                        <p class="text-muted small mb-1" id="dpIdProfil">-</p>
+                        <p class="text-muted small mb-1"><i class="fas fa-map-marker-alt me-1"></i><span id="dpAlamatProfil">-</span></p>
+                        <p class="text-muted small mb-1"><i class="fas fa-envelope me-1"></i><span id="dpEmailProfil">-</span></p>
+                        <span id="dpStatusVerifikasiBadge" class="badge bg-secondary">-</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-hard-hat fa-2x mb-2" style="color:#8B4513;"></i>
+                        <h4 class="fw-bold mb-0" id="dpTotalProyek">0</h4>
+                        <small class="text-muted">Total Proyek</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-home fa-2x mb-2" style="color:#8B4513;"></i>
+                        <h4 class="fw-bold mb-0" id="dpTotalUnit">0</h4>
+                        <small class="text-muted">Total Unit</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-file-signature fa-2x mb-2" style="color:#8B4513;"></i>
+                        <h4 class="fw-bold mb-0" id="dpStatusKerjasama">-</h4>
+                        <small class="text-muted">Status Kerjasama</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-coins fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="dpSaldoCoin">0</h4>
+                        <small class="text-muted">Saldo R2Coin</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Kerjasama -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-header text-white" style="background-color: #8B4513;">
+                <i class="fas fa-info-circle me-2"></i>Informasi Kerjasama
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info mb-0">
+                    <strong>Cara Memulai:</strong>
+                    <ol class="mb-0 mt-2 small">
+                        <li>Buka menu <strong>Profil</strong> untuk melengkapi data perusahaan Anda.</li>
+                        <li>Unduh & tanda tangani <strong>Surat Perjanjian Kerjasama</strong> di menu Profil.</li>
+                        <li>Upload surat yang sudah ditandatangani untuk verifikasi.</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+
+        <!-- Aktivitas Terbaru -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #8B4513;">
+                <span><i class="fas fa-clock me-2"></i>Aktivitas Terbaru</span>
+                <span class="badge bg-light text-dark" id="dpTotalAktivitas">0</span>
+            </div>
+            <div class="card-body" id="dpAktivitasList">
+                <p class="text-muted text-center py-4">Belum ada aktivitas.</p>
+            </div>
+        </div>
+    </div>
+</div>
+<!--- ===== AKHIR BLOK R 32.1 HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 32.1 – JAVASCRIPT DASBOR DEVELOPER PROPERTI
+// ============================================================
+
+// --- 32.1.1 TAMPILKAN HALAMAN ---
+function tampilkanDasborDP() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dasborDPContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDasborDP();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Dasbor Developer Properti', '32.1');
+    }
+}
+
+// --- 32.1.2 RENDER DATA ---
+function renderDasborDP() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+
+    var userData = getDataIdUser(user.idUser) || user;
+    var storedProfil = localStorage.getItem('profil_' + user.idUser);
+    var profil = {};
+    if (storedProfil) { try { profil = JSON.parse(storedProfil); } catch(e) { profil = {}; } }
+
+    // --- Update Profil ---
+    var fotoUrl = profil.fotoUrl || getFotoProfilAkun(user.idUser) || '';
+    var namaPerusahaan = profil.namaLengkap || profil.namaUsaha || userData.nama || '-';
+    var alamat = profil.alamat || userData.alamat || '-';
+    var email = profil.email || userData.email || '-';
+    var saldoKoin = getSaldoR2Coin(user.idUser);
+    var statusVerifikasi = userData.statusVerifikasi || '-';
+
+    var imgFoto = document.getElementById('dpFotoProfil');
+    if (imgFoto) imgFoto.src = fotoUrl || 'https://placehold.co/100x100/8B4513/ffffff?text=DP';
+
+    var elNama = document.getElementById('dpNamaProfil');
+    if (elNama) elNama.textContent = namaPerusahaan;
+
+    var elId = document.getElementById('dpIdProfil');
+    if (elId) elId.textContent = userData.idUser || '-';
+
+    var elAlamat = document.getElementById('dpAlamatProfil');
+    if (elAlamat) elAlamat.textContent = alamat;
+
+    var elEmail = document.getElementById('dpEmailProfil');
+    if (elEmail) elEmail.textContent = email;
+
+    var elStatusVerif = document.getElementById('dpStatusVerifikasiBadge');
+    if (elStatusVerif) {
+        elStatusVerif.textContent = statusVerifikasi === 'Aktif' ? 'Aktif' : statusVerifikasi;
+        elStatusVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+    }
+
+    // --- Statistik ---
+    // Placeholder: hitung dari data aktual nanti
+    var elTotalProyek = document.getElementById('dpTotalProyek');
+    if (elTotalProyek) elTotalProyek.textContent = '0';
+
+    var elTotalUnit = document.getElementById('dpTotalUnit');
+    if (elTotalUnit) elTotalUnit.textContent = '0';
+
+    var elStatusKerjasama = document.getElementById('dpStatusKerjasama');
+    if (elStatusKerjasama) elStatusKerjasama.textContent = 'Aktif';
+
+    var elSaldoCoin = document.getElementById('dpSaldoCoin');
+    if (elSaldoCoin) elSaldoCoin.textContent = saldoKoin;
+
+    var elTotalAktivitas = document.getElementById('dpTotalAktivitas');
+    if (elTotalAktivitas) elTotalAktivitas.textContent = '0';
+
+    // --- Aktivitas Terbaru ---
+    var list = document.getElementById('dpAktivitasList');
+    if (!list) return;
+
+    var logSemua = (typeof loadHistoriAktivitas === 'function') ? loadHistoriAktivitas() : [];
+    var logUser = logSemua.filter(function(l) { return l.idUser === user.idUser; }).slice(0, 5);
+
+    if (logUser.length === 0) {
+        list.innerHTML = '<p class="text-muted text-center py-4">Belum ada aktivitas.</p>';
+    } else {
+        var html = '';
+        logUser.forEach(function(l) {
+            var tgl = new Date(l.waktu).toLocaleString('id-ID');
+            html += '<div class="border-bottom pb-2 mb-2">' +
+                '<small class="text-muted">' + tgl + '</small><br>' +
+                '<strong>' + l.aksi + '</strong> — ' + (l.detail || '-') +
+                '</div>';
+        });
+        list.innerHTML = html;
+    }
+
+    if (elTotalAktivitas) elTotalAktivitas.textContent = logUser.length;
+}
+</script>
+<!--- ===== AKHIR BLOK R 32.1 JS ===== -->
+
+<!--- ===== BLOK R 33.1 – HTML DASBOR DEALER & SHOWROOM ===== -->
+<div id="dasborDLRContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-car me-2"></i>Dasbor Dealer & Showroom</h4>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-sync me-1"></i> Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- Kartu Profil -->
+        <div class="card border-0 shadow-sm mb-4 bg-white">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-2 text-center">
+                        <img id="dlrFotoProfil" src="https://placehold.co/100x100/003366/ffffff?text=DLR"
+                             class="rounded-circle" style="width:80px;height:80px;object-fit:cover;border:3px solid #003366;">
+                    </div>
+                    <div class="col-md-10">
+                        <h5 class="fw-bold mb-1" id="dlrNamaProfil">-</h5>
+                        <p class="text-muted small mb-1" id="dlrIdProfil">-</p>
+                        <p class="text-muted small mb-1"><i class="fas fa-map-marker-alt me-1"></i><span id="dlrAlamatProfil">-</span></p>
+                        <p class="text-muted small mb-1"><i class="fas fa-envelope me-1"></i><span id="dlrEmailProfil">-</span></p>
+                        <span id="dlrStatusVerifikasiBadge" class="badge bg-secondary">-</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-motorcycle fa-2x mb-2" style="color:#003366;"></i>
+                        <h4 class="fw-bold mb-0" id="dlrTotalMotor">0</h4>
+                        <small class="text-muted">Total Motor</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-car fa-2x mb-2" style="color:#003366;"></i>
+                        <h4 class="fw-bold mb-0" id="dlrTotalMobil">0</h4>
+                        <small class="text-muted">Total Mobil</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-file-signature fa-2x mb-2" style="color:#003366;"></i>
+                        <h4 class="fw-bold mb-0" id="dlrStatusKerjasama">-</h4>
+                        <small class="text-muted">Status Kerjasama</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-coins fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="dlrSaldoCoin">0</h4>
+                        <small class="text-muted">Saldo R2Coin</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Kerjasama -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-header text-white" style="background-color: #003366;">
+                <i class="fas fa-info-circle me-2"></i>Informasi Kerjasama
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info mb-0">
+                    <strong>Cara Memulai:</strong>
+                    <ol class="mb-0 mt-2 small">
+                        <li>Buka menu <strong>Profil</strong> untuk melengkapi data dealer/showroom Anda.</li>
+                        <li>Unduh & tanda tangani <strong>Surat Perjanjian Kerjasama</strong> di menu Profil.</li>
+                        <li>Upload surat yang sudah ditandatangani untuk verifikasi.</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+
+        <!-- Aktivitas Terbaru -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #003366;">
+                <span><i class="fas fa-clock me-2"></i>Aktivitas Terbaru</span>
+                <span class="badge bg-light text-dark" id="dlrTotalAktivitas">0</span>
+            </div>
+            <div class="card-body" id="dlrAktivitasList">
+                <p class="text-muted text-center py-4">Belum ada aktivitas.</p>
+            </div>
+        </div>
+    </div>
+</div>
+<!--- ===== AKHIR BLOK R 33.1 HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 33.1 – JAVASCRIPT DASBOR DEALER & SHOWROOM
+// ============================================================
+
+// --- 33.1.1 TAMPILKAN HALAMAN ---
+function tampilkanDasborDLR() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dasborDLRContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDasborDLR();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Dasbor Dealer & Showroom', '33.1');
+    }
+}
+
+// --- 33.1.2 RENDER DATA ---
+function renderDasborDLR() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+
+    var userData = getDataIdUser(user.idUser) || user;
+    var storedProfil = localStorage.getItem('profil_' + user.idUser);
+    var profil = {};
+    if (storedProfil) { try { profil = JSON.parse(storedProfil); } catch(e) { profil = {}; } }
+
+    var fotoUrl = profil.fotoUrl || getFotoProfilAkun(user.idUser) || '';
+    var namaDealer = profil.namaLengkap || profil.namaUsaha || userData.nama || '-';
+    var alamat = profil.alamat || userData.alamat || '-';
+    var email = profil.email || userData.email || '-';
+    var saldoKoin = getSaldoR2Coin(user.idUser);
+    var statusVerifikasi = userData.statusVerifikasi || '-';
+
+    var imgFoto = document.getElementById('dlrFotoProfil');
+    if (imgFoto) imgFoto.src = fotoUrl || 'https://placehold.co/100x100/003366/ffffff?text=DLR';
+
+    var elNama = document.getElementById('dlrNamaProfil');
+    if (elNama) elNama.textContent = namaDealer;
+
+    var elId = document.getElementById('dlrIdProfil');
+    if (elId) elId.textContent = userData.idUser || '-';
+
+    var elAlamat = document.getElementById('dlrAlamatProfil');
+    if (elAlamat) elAlamat.textContent = alamat;
+
+    var elEmail = document.getElementById('dlrEmailProfil');
+    if (elEmail) elEmail.textContent = email;
+
+    var elStatusVerif = document.getElementById('dlrStatusVerifikasiBadge');
+    if (elStatusVerif) {
+        elStatusVerif.textContent = statusVerifikasi === 'Aktif' ? 'Aktif' : statusVerifikasi;
+        elStatusVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+    }
+
+    var elTotalMotor = document.getElementById('dlrTotalMotor');
+    if (elTotalMotor) elTotalMotor.textContent = '0';
+
+    var elTotalMobil = document.getElementById('dlrTotalMobil');
+    if (elTotalMobil) elTotalMobil.textContent = '0';
+
+    var elStatusKerjasama = document.getElementById('dlrStatusKerjasama');
+    if (elStatusKerjasama) elStatusKerjasama.textContent = 'Aktif';
+
+    var elSaldoCoin = document.getElementById('dlrSaldoCoin');
+    if (elSaldoCoin) elSaldoCoin.textContent = saldoKoin;
+
+    var elTotalAktivitas = document.getElementById('dlrTotalAktivitas');
+    if (elTotalAktivitas) elTotalAktivitas.textContent = '0';
+
+    // --- Aktivitas Terbaru ---
+    var list = document.getElementById('dlrAktivitasList');
+    if (!list) return;
+
+    var logSemua = (typeof loadHistoriAktivitas === 'function') ? loadHistoriAktivitas() : [];
+    var logUser = logSemua.filter(function(l) { return l.idUser === user.idUser; }).slice(0, 5);
+
+    if (logUser.length === 0) {
+        list.innerHTML = '<p class="text-muted text-center py-4">Belum ada aktivitas.</p>';
+    } else {
+        var html = '';
+        logUser.forEach(function(l) {
+            var tgl = new Date(l.waktu).toLocaleString('id-ID');
+            html += '<div class="border-bottom pb-2 mb-2">' +
+                '<small class="text-muted">' + tgl + '</small><br>' +
+                '<strong>' + l.aksi + '</strong> — ' + (l.detail || '-') +
+                '</div>';
+        });
+        list.innerHTML = html;
+    }
+
+    if (elTotalAktivitas) elTotalAktivitas.textContent = logUser.length;
+}
+</script>
+<!--- ===== AKHIR BLOK R 33.1 JS ===== -->
+
+<!--- ===== BLOK R 34.1 – HTML DASBOR FINANCE MULTIFINANCE ===== -->
+<div id="dasborFINContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-hand-holding-usd me-2"></i>Dasbor Finance Multifinance</h4>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-sync me-1"></i> Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- Kartu Profil -->
+        <div class="card border-0 shadow-sm mb-4 bg-white">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-2 text-center">
+                        <img id="finFotoProfil" src="https://placehold.co/100x100/046A38/ffffff?text=FIN"
+                             class="rounded-circle" style="width:80px;height:80px;object-fit:cover;border:3px solid #046A38;">
+                    </div>
+                    <div class="col-md-10">
+                        <h5 class="fw-bold mb-1" id="finNamaProfil">-</h5>
+                        <p class="text-muted small mb-1" id="finIdProfil">-</p>
+                        <p class="text-muted small mb-1"><i class="fas fa-map-marker-alt me-1"></i><span id="finAlamatProfil">-</span></p>
+                        <p class="text-muted small mb-1"><i class="fas fa-envelope me-1"></i><span id="finEmailProfil">-</span></p>
+                        <span id="finStatusVerifikasiBadge" class="badge bg-secondary">-</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistik -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-file-invoice-dollar fa-2x mb-2" style="color:#046A38;"></i>
+                        <h4 class="fw-bold mb-0" id="finTotalPengajuan">0</h4>
+                        <small class="text-muted">Pengajuan Kredit</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2" style="color:#046A38;"></i>
+                        <h4 class="fw-bold mb-0" id="finTotalDisetujui">0</h4>
+                        <small class="text-muted">Disetujui</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-file-signature fa-2x mb-2" style="color:#046A38;"></i>
+                        <h4 class="fw-bold mb-0" id="finStatusKerjasama">-</h4>
+                        <small class="text-muted">Status Kerjasama</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-coins fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="finSaldoCoin">0</h4>
+                        <small class="text-muted">Saldo R2Coin</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Kerjasama -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-header text-white" style="background-color: #046A38;">
+                <i class="fas fa-info-circle me-2"></i>Informasi Kerjasama
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info mb-0">
+                    <strong>Cara Memulai:</strong>
+                    <ol class="mb-0 mt-2 small">
+                        <li>Buka menu <strong>Profil</strong> untuk melengkapi data perusahaan finance Anda.</li>
+                        <li>Unduh & tanda tangani <strong>Surat Perjanjian Kerjasama</strong> di menu Profil.</li>
+                        <li>Upload surat yang sudah ditandatangani untuk verifikasi.</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+
+        <!-- Aktivitas Terbaru -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background-color: #046A38;">
+                <span><i class="fas fa-clock me-2"></i>Aktivitas Terbaru</span>
+                <span class="badge bg-light text-dark" id="finTotalAktivitas">0</span>
+            </div>
+            <div class="card-body" id="finAktivitasList">
+                <p class="text-muted text-center py-4">Belum ada aktivitas.</p>
+            </div>
+        </div>
+    </div>
+</div>
+<!--- ===== AKHIR BLOK R 34.1 HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 34.1 – JAVASCRIPT DASBOR FINANCE MULTIFINANCE
+// ============================================================
+
+// --- 34.1.1 TAMPILKAN HALAMAN ---
+function tampilkanDasborFIN() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('dasborFINContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        renderDasborFIN();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Dasbor Finance Multifinance', '34.1');
+    }
+}
+
+// --- 34.1.2 RENDER DATA ---
+function renderDasborFIN() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+
+    var userData = getDataIdUser(user.idUser) || user;
+    var storedProfil = localStorage.getItem('profil_' + user.idUser);
+    var profil = {};
+    if (storedProfil) { try { profil = JSON.parse(storedProfil); } catch(e) { profil = {}; } }
+
+    var fotoUrl = profil.fotoUrl || getFotoProfilAkun(user.idUser) || '';
+    var namaFinance = profil.namaLengkap || profil.namaUsaha || userData.nama || '-';
+    var alamat = profil.alamat || userData.alamat || '-';
+    var email = profil.email || userData.email || '-';
+    var saldoKoin = getSaldoR2Coin(user.idUser);
+    var statusVerifikasi = userData.statusVerifikasi || '-';
+
+    var imgFoto = document.getElementById('finFotoProfil');
+    if (imgFoto) imgFoto.src = fotoUrl || 'https://placehold.co/100x100/046A38/ffffff?text=FIN';
+
+    var elNama = document.getElementById('finNamaProfil');
+    if (elNama) elNama.textContent = namaFinance;
+
+    var elId = document.getElementById('finIdProfil');
+    if (elId) elId.textContent = userData.idUser || '-';
+
+    var elAlamat = document.getElementById('finAlamatProfil');
+    if (elAlamat) elAlamat.textContent = alamat;
+
+    var elEmail = document.getElementById('finEmailProfil');
+    if (elEmail) elEmail.textContent = email;
+
+    var elStatusVerif = document.getElementById('finStatusVerifikasiBadge');
+    if (elStatusVerif) {
+        elStatusVerif.textContent = statusVerifikasi === 'Aktif' ? 'Aktif' : statusVerifikasi;
+        elStatusVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+    }
+
+    var elTotalPengajuan = document.getElementById('finTotalPengajuan');
+    if (elTotalPengajuan) elTotalPengajuan.textContent = '0';
+
+    var elTotalDisetujui = document.getElementById('finTotalDisetujui');
+    if (elTotalDisetujui) elTotalDisetujui.textContent = '0';
+
+    var elStatusKerjasama = document.getElementById('finStatusKerjasama');
+    if (elStatusKerjasama) elStatusKerjasama.textContent = 'Aktif';
+
+    var elSaldoCoin = document.getElementById('finSaldoCoin');
+    if (elSaldoCoin) elSaldoCoin.textContent = saldoKoin;
+
+    var elTotalAktivitas = document.getElementById('finTotalAktivitas');
+    if (elTotalAktivitas) elTotalAktivitas.textContent = '0';
+
+    // --- Aktivitas Terbaru ---
+    var list = document.getElementById('finAktivitasList');
+    if (!list) return;
+
+    var logSemua = (typeof loadHistoriAktivitas === 'function') ? loadHistoriAktivitas() : [];
+    var logUser = logSemua.filter(function(l) { return l.idUser === user.idUser; }).slice(0, 5);
+
+    if (logUser.length === 0) {
+        list.innerHTML = '<p class="text-muted text-center py-4">Belum ada aktivitas.</p>';
+    } else {
+        var html = '';
+        logUser.forEach(function(l) {
+            var tgl = new Date(l.waktu).toLocaleString('id-ID');
+            html += '<div class="border-bottom pb-2 mb-2">' +
+                '<small class="text-muted">' + tgl + '</small><br>' +
+                '<strong>' + l.aksi + '</strong> — ' + (l.detail || '-') +
+                '</div>';
+        });
+        list.innerHTML = html;
+    }
+
+    if (elTotalAktivitas) elTotalAktivitas.textContent = logUser.length;
+}
+</script>
+<!--- ===== AKHIR BLOK R 34.1 JS ===== -->
 
 <!--- ===== BLOK R 11.2 – HTML PROFIL TOKO (REVISI FINAL) ===== -->
 <!-- ============================================================ -->
@@ -39253,6 +40373,840 @@ function hapusFotoProfilKasirGR() {
 			<!-- ============================================================ -->
 			<!-- ===== AKHIR BLOK R 31.2 – JAVASCRIPT PROFIL STAF OWNER OJEK ===== -->
 			<!-- ============================================================ -->
+			
+<!--- ===== BLOK R 32.2 – HTML PROFIL DEVELOPER PROPERTI ===== -->
+<div id="profilDPContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-user me-2"></i>Profil Developer Properti</h4>
+            <div>
+                <button class="btn btn-warning text-white fw-bold me-2" id="btnEditProfilDP" onclick="bukaEditProfilDP()">
+                    <i class="fas fa-edit me-1"></i> Edit
+                </button>
+                <button class="btn btn-success text-white fw-bold me-2 d-none" id="btnSimpanProfilDP" onclick="simpanProfilDP(event)">
+                    <i class="fas fa-save me-1"></i> Simpan
+                </button>
+                <button class="btn btn-secondary text-white fw-bold me-2 d-none" id="btnBatalProfilDP" onclick="batalEditProfilDP()">Batal</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i> Kembali
+                </button>
+            </div>
+        </div>
+
+        <div class="row g-4">
+            <!-- Foto -->
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm text-center h-100">
+                    <div class="card-body py-4">
+                        <div style="width:140px;height:140px;border-radius:50%;overflow:hidden;border:4px solid #8B4513;margin:0 auto;">
+                            <img id="profilFotoDP" src="https://placehold.co/140x140/8B4513/ffffff?text=DP" style="width:100%;height:100%;object-fit:cover;">
+                        </div>
+                        <h5 class="fw-bold mt-3" id="profilNamaDP">-</h5>
+                        <p class="text-muted small" id="profilIdDP">-</p>
+                        <span class="badge" id="profilStatusVerifikasiDP">-</span>
+
+                        <div id="areaUploadFotoDP" class="mt-2 d-none">
+                            <label for="uploadFotoDP" class="btn btn-sm btn-outline-primary">
+                                <i class="fas fa-upload me-1"></i> Ganti Foto
+                            </label>
+                            <input type="file" id="uploadFotoDP" class="d-none" accept="image/*" onchange="unggahFotoProfilDP(event)">
+                            <button class="btn btn-sm btn-outline-danger ms-1" onclick="hapusFotoProfilDP()">
+                                <i class="fas fa-trash me-1"></i> Hapus Foto
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Informasi -->
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header text-white" style="background-color: #8B4513;">
+                        <i class="fas fa-id-card me-2"></i>Informasi Akun
+                    </div>
+                    <div class="card-body">
+                        <!-- VIEW -->
+                        <div id="profilViewModeDP">
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Perusahaan</div><div class="col-md-8" id="profilDP_NamaPerusahaan">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Lengkap PIC</div><div class="col-md-8" id="profilDP_NamaLengkap">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Email</div><div class="col-md-8" id="profilDP_Email">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nomor HP</div><div class="col-md-8" id="profilDP_Hp">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Alamat Kantor</div><div class="col-md-8" id="profilDP_Alamat">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Koordinat</div><div class="col-md-8" id="profilDP_Koordinat">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Saldo R2Coin</div><div class="col-md-8"><span id="profilDP_SaldoCoin" class="fw-bold text-success">0 R2Coin</span></div></div>
+                        </div>
+
+                        <!-- EDIT -->
+                        <div id="profilEditModeDP" style="display:none;">
+                            <form id="formEditProfilDP" onsubmit="return false;">
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Perusahaan</div><div class="col-md-8"><input type="text" id="editDP_NamaPerusahaan" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Lengkap PIC</div><div class="col-md-8"><input type="text" id="editDP_NamaLengkap" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Email</div><div class="col-md-8"><input type="email" id="editDP_Email" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nomor HP</div><div class="col-md-8"><input type="text" id="editDP_Hp" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Alamat Kantor</div><div class="col-md-8"><textarea id="editDP_Alamat" class="form-control" rows="2" required></textarea></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Password Baru</div><div class="col-md-8"><input type="password" id="editDP_Password" class="form-control" placeholder="Kosongkan jika tidak ganti" minlength="6"></div></div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!--- ===== AKHIR BLOK R 32.2 HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 32.2 – JAVASCRIPT PROFIL DEVELOPER PROPERTI
+// ============================================================
+var isEditModeDP = false;
+
+function tampilkanProfilDP() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('profilDPContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        if (typeof initProfilDPIfEmpty === 'function') initProfilDPIfEmpty();
+        renderProfilDP();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Profil Developer Properti', '32.2');
+    }
+}
+
+function initProfilDPIfEmpty() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+    var key = 'profil_' + user.idUser;
+    if (!localStorage.getItem(key)) {
+        var userData = getDataIdUser(user.idUser) || user;
+        var profil = {
+            namaPerusahaan: userData.nama || '',
+            namaLengkap: userData.nama || '',
+            email: userData.email || '',
+            hp: userData.hp || '',
+            alamat: userData.alamat || '',
+            alamatKtp: userData.alamat || '',
+            fotoUrl: '', lat: userData.lat || '', lng: userData.lng || '',
+            dragX: 0, dragY: 0
+        };
+        localStorage.setItem(key, JSON.stringify(profil));
+    }
+}
+
+function renderProfilDP() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+    var userData = getDataIdUser(user.idUser) || user;
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = {};
+    if (stored) { try { profil = JSON.parse(stored); } catch(e) { profil = {}; } }
+
+    var namaPerusahaan = profil.namaPerusahaan || userData.nama || '-';
+    var namaLengkap = profil.namaLengkap || userData.nama || '-';
+    var email = profil.email || userData.email || '-';
+    var hp = profil.hp || userData.hp || '-';
+    var alamat = profil.alamat || userData.alamat || '-';
+    var fotoUrl = profil.fotoUrl || '';
+    var saldoKoin = getSaldoR2Coin(user.idUser);
+    var statusVerifikasi = userData.statusVerifikasi || '-';
+
+    var koordinat = '-';
+    if (userData.lat && userData.lng) koordinat = parseFloat(userData.lat).toFixed(6) + ', ' + parseFloat(userData.lng).toFixed(6);
+
+    var imgFoto = document.getElementById('profilFotoDP');
+    if (imgFoto) imgFoto.src = fotoUrl || 'https://placehold.co/140x140/8B4513/ffffff?text=DP';
+    var elNama = document.getElementById('profilNamaDP'); if (elNama) elNama.textContent = namaPerusahaan;
+    var elId = document.getElementById('profilIdDP'); if (elId) elId.textContent = userData.idUser || '-';
+    var elVerif = document.getElementById('profilStatusVerifikasiDP');
+    if (elVerif) {
+        elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Aktif' : statusVerifikasi;
+        elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+    }
+
+    var setT = function(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+    setT('profilDP_NamaPerusahaan', namaPerusahaan);
+    setT('profilDP_NamaLengkap', namaLengkap);
+    setT('profilDP_Email', email);
+    setT('profilDP_Hp', hp);
+    setT('profilDP_Alamat', alamat);
+    setT('profilDP_Koordinat', koordinat);
+    setT('profilDP_SaldoCoin', saldoKoin + ' R2Coin');
+
+    if (isEditModeDP) {
+        var setV = function(id, v) { var el = document.getElementById(id); if (el) el.value = v; };
+        setV('editDP_NamaPerusahaan', namaPerusahaan);
+        setV('editDP_NamaLengkap', namaLengkap);
+        setV('editDP_Email', email);
+        setV('editDP_Hp', hp);
+        setV('editDP_Alamat', alamat);
+        setV('editDP_Password', '');
+    }
+
+    toggleModeDP();
+}
+
+function toggleModeDP() {
+    var btnEdit = document.getElementById('btnEditProfilDP');
+    var btnSimpan = document.getElementById('btnSimpanProfilDP');
+    var btnBatal = document.getElementById('btnBatalProfilDP');
+    var viewMode = document.getElementById('profilViewModeDP');
+    var editMode = document.getElementById('profilEditModeDP');
+    var areaUpload = document.getElementById('areaUploadFotoDP');
+
+    if (isEditModeDP) {
+        if (btnEdit) btnEdit.classList.add('d-none');
+        if (btnSimpan) btnSimpan.classList.remove('d-none');
+        if (btnBatal) btnBatal.classList.remove('d-none');
+        if (viewMode) viewMode.style.display = 'none';
+        if (editMode) editMode.style.display = 'block';
+        if (areaUpload) areaUpload.classList.remove('d-none');
+    } else {
+        if (btnEdit) btnEdit.classList.remove('d-none');
+        if (btnSimpan) btnSimpan.classList.add('d-none');
+        if (btnBatal) btnBatal.classList.add('d-none');
+        if (viewMode) viewMode.style.display = 'block';
+        if (editMode) editMode.style.display = 'none';
+        if (areaUpload) areaUpload.classList.add('d-none');
+    }
+}
+
+function bukaEditProfilDP() { isEditModeDP = true; renderProfilDP(); }
+function batalEditProfilDP() { isEditModeDP = false; renderProfilDP(); }
+
+function simpanProfilDP(event) {
+    if (event) event.preventDefault();
+    var user = userAktif;
+    if (!user) return false;
+
+    var namaPerusahaan = document.getElementById('editDP_NamaPerusahaan').value.trim();
+    var namaLengkap = document.getElementById('editDP_NamaLengkap').value.trim();
+    var email = document.getElementById('editDP_Email').value.trim();
+    var hp = document.getElementById('editDP_Hp').value.trim();
+    var alamat = document.getElementById('editDP_Alamat').value.trim();
+    var password = document.getElementById('editDP_Password').value.trim();
+
+    if (!namaPerusahaan || !namaLengkap || !email || !alamat) {
+        alert('Nama Perusahaan, Nama PIC, Email, dan Alamat wajib diisi!');
+        return false;
+    }
+    if (password && password.length < 6) {
+        alert('Password minimal 6 karakter!');
+        return false;
+    }
+
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = stored ? JSON.parse(stored) : {};
+    profil.namaPerusahaan = namaPerusahaan;
+    profil.namaLengkap = namaLengkap;
+    profil.email = email;
+    profil.hp = hp;
+    profil.alamat = alamat;
+    profil.alamatKtp = alamat;
+    localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+
+    var idx = dataLoginUser.findIndex(function(u) { return u.idUser === user.idUser; });
+    if (idx !== -1) {
+        dataLoginUser[idx].nama = namaPerusahaan;
+        dataLoginUser[idx].email = email;
+        dataLoginUser[idx].hp = hp;
+        dataLoginUser[idx].alamat = alamat;
+        if (password) dataLoginUser[idx].password = password;
+    }
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === user.idUser; });
+    if (idxAktif !== -1) {
+        dataAkunAktif[idxAktif].nama = namaPerusahaan;
+        dataAkunAktif[idxAktif].email = email;
+        dataAkunAktif[idxAktif].hp = hp;
+        dataAkunAktif[idxAktif].alamat = alamat;
+        if (password) dataAkunAktif[idxAktif].password = password;
+    }
+    if (typeof simpanDataKeLocalStorage === 'function') simpanDataKeLocalStorage();
+
+    var logId = generateKodeUnik('LOG-PROFIL');
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(user.idUser, 'Update Profil Developer', 'Profil diperbarui: ' + namaPerusahaan + ' [Log: ' + logId + ']');
+    }
+
+    isEditModeDP = false;
+    renderProfilDP();
+    alert('✅ Profil Developer Properti berhasil diperbarui!');
+    return false;
+}
+
+function unggahFotoProfilDP(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    if (file.size > 2000000) { alert('Ukuran file terlalu besar. Maksimal 2MB.'); return; }
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var user = userAktif;
+        if (!user) return;
+        var stored = localStorage.getItem('profil_' + user.idUser);
+        var profil = stored ? JSON.parse(stored) : {};
+        profil.fotoUrl = e.target.result;
+        localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+        var img = document.getElementById('profilFotoDP');
+        if (img) img.src = e.target.result;
+        alert('✅ Foto profil berhasil diunggah!');
+    };
+    reader.readAsDataURL(file);
+}
+
+function hapusFotoProfilDP() {
+    if (!confirm('Hapus foto profil?')) return;
+    var user = userAktif;
+    if (!user) return;
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = stored ? JSON.parse(stored) : {};
+    delete profil.fotoUrl;
+    localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+    var img = document.getElementById('profilFotoDP');
+    if (img) img.src = 'https://placehold.co/140x140/8B4513/ffffff?text=DP';
+    alert('✅ Foto profil berhasil dihapus.');
+}
+</script>
+<!--- ===== AKHIR BLOK R 32.2 JS ===== -->
+
+<!--- ===== BLOK R 33.2 – HTML PROFIL DEALER & SHOWROOM ===== -->
+<div id="profilDLRContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-user me-2"></i>Profil Dealer & Showroom</h4>
+            <div>
+                <button class="btn btn-warning text-white fw-bold me-2" id="btnEditProfilDLR" onclick="bukaEditProfilDLR()"><i class="fas fa-edit me-1"></i> Edit</button>
+                <button class="btn btn-success text-white fw-bold me-2 d-none" id="btnSimpanProfilDLR" onclick="simpanProfilDLR(event)"><i class="fas fa-save me-1"></i> Simpan</button>
+                <button class="btn btn-secondary text-white fw-bold me-2 d-none" id="btnBatalProfilDLR" onclick="batalEditProfilDLR()">Batal</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <div class="row g-4">
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm text-center h-100">
+                    <div class="card-body py-4">
+                        <div style="width:140px;height:140px;border-radius:50%;overflow:hidden;border:4px solid #003366;margin:0 auto;">
+                            <img id="profilFotoDLR" src="https://placehold.co/140x140/003366/ffffff?text=DLR" style="width:100%;height:100%;object-fit:cover;">
+                        </div>
+                        <h5 class="fw-bold mt-3" id="profilNamaDLR">-</h5>
+                        <p class="text-muted small" id="profilIdDLR">-</p>
+                        <span class="badge" id="profilStatusVerifikasiDLR">-</span>
+
+                        <div id="areaUploadFotoDLR" class="mt-2 d-none">
+                            <label for="uploadFotoDLR" class="btn btn-sm btn-outline-primary"><i class="fas fa-upload me-1"></i> Ganti Foto</label>
+                            <input type="file" id="uploadFotoDLR" class="d-none" accept="image/*" onchange="unggahFotoProfilDLR(event)">
+                            <button class="btn btn-sm btn-outline-danger ms-1" onclick="hapusFotoProfilDLR()"><i class="fas fa-trash me-1"></i> Hapus Foto</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header text-white" style="background-color: #003366;">
+                        <i class="fas fa-id-card me-2"></i>Informasi Akun
+                    </div>
+                    <div class="card-body">
+                        <div id="profilViewModeDLR">
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Dealer</div><div class="col-md-8" id="profilDLR_NamaDealer">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Lengkap PIC</div><div class="col-md-8" id="profilDLR_NamaLengkap">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Email</div><div class="col-md-8" id="profilDLR_Email">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nomor HP</div><div class="col-md-8" id="profilDLR_Hp">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Alamat Showroom</div><div class="col-md-8" id="profilDLR_Alamat">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Koordinat</div><div class="col-md-8" id="profilDLR_Koordinat">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Saldo R2Coin</div><div class="col-md-8"><span id="profilDLR_SaldoCoin" class="fw-bold text-success">0 R2Coin</span></div></div>
+                        </div>
+
+                        <div id="profilEditModeDLR" style="display:none;">
+                            <form id="formEditProfilDLR" onsubmit="return false;">
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Dealer</div><div class="col-md-8"><input type="text" id="editDLR_NamaDealer" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Lengkap PIC</div><div class="col-md-8"><input type="text" id="editDLR_NamaLengkap" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Email</div><div class="col-md-8"><input type="email" id="editDLR_Email" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nomor HP</div><div class="col-md-8"><input type="text" id="editDLR_Hp" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Alamat Showroom</div><div class="col-md-8"><textarea id="editDLR_Alamat" class="form-control" rows="2" required></textarea></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Password Baru</div><div class="col-md-8"><input type="password" id="editDLR_Password" class="form-control" placeholder="Kosongkan jika tidak ganti" minlength="6"></div></div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!--- ===== AKHIR BLOK R 33.2 HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 33.2 – JAVASCRIPT PROFIL DEALER & SHOWROOM
+// ============================================================
+var isEditModeDLR = false;
+
+function tampilkanProfilDLR() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('profilDLRContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        initProfilDLRIfEmpty();
+        renderProfilDLR();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Profil Dealer & Showroom', '33.2');
+    }
+}
+
+function initProfilDLRIfEmpty() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+    var key = 'profil_' + user.idUser;
+    if (!localStorage.getItem(key)) {
+        var userData = getDataIdUser(user.idUser) || user;
+        localStorage.setItem(key, JSON.stringify({
+            namaDealer: userData.nama || '', namaLengkap: userData.nama || '',
+            email: userData.email || '', hp: userData.hp || '',
+            alamat: userData.alamat || '', alamatKtp: userData.alamat || '',
+            fotoUrl: '', lat: userData.lat || '', lng: userData.lng || '',
+            dragX: 0, dragY: 0
+        }));
+    }
+}
+
+function renderProfilDLR() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+    var userData = getDataIdUser(user.idUser) || user;
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = {};
+    if (stored) { try { profil = JSON.parse(stored); } catch(e) { profil = {}; } }
+
+    var namaDealer = profil.namaDealer || userData.nama || '-';
+    var namaLengkap = profil.namaLengkap || userData.nama || '-';
+    var email = profil.email || userData.email || '-';
+    var hp = profil.hp || userData.hp || '-';
+    var alamat = profil.alamat || userData.alamat || '-';
+    var fotoUrl = profil.fotoUrl || '';
+    var saldoKoin = getSaldoR2Coin(user.idUser);
+    var statusVerifikasi = userData.statusVerifikasi || '-';
+
+    var koordinat = '-';
+    if (userData.lat && userData.lng) koordinat = parseFloat(userData.lat).toFixed(6) + ', ' + parseFloat(userData.lng).toFixed(6);
+
+    var imgFoto = document.getElementById('profilFotoDLR');
+    if (imgFoto) imgFoto.src = fotoUrl || 'https://placehold.co/140x140/003366/ffffff?text=DLR';
+    var elNama = document.getElementById('profilNamaDLR'); if (elNama) elNama.textContent = namaDealer;
+    var elId = document.getElementById('profilIdDLR'); if (elId) elId.textContent = userData.idUser || '-';
+    var elVerif = document.getElementById('profilStatusVerifikasiDLR');
+    if (elVerif) {
+        elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Aktif' : statusVerifikasi;
+        elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+    }
+
+    var setT = function(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+    setT('profilDLR_NamaDealer', namaDealer);
+    setT('profilDLR_NamaLengkap', namaLengkap);
+    setT('profilDLR_Email', email);
+    setT('profilDLR_Hp', hp);
+    setT('profilDLR_Alamat', alamat);
+    setT('profilDLR_Koordinat', koordinat);
+    setT('profilDLR_SaldoCoin', saldoKoin + ' R2Coin');
+
+    if (isEditModeDLR) {
+        var setV = function(id, v) { var el = document.getElementById(id); if (el) el.value = v; };
+        setV('editDLR_NamaDealer', namaDealer);
+        setV('editDLR_NamaLengkap', namaLengkap);
+        setV('editDLR_Email', email);
+        setV('editDLR_Hp', hp);
+        setV('editDLR_Alamat', alamat);
+        setV('editDLR_Password', '');
+    }
+
+    toggleModeDLR();
+}
+
+function toggleModeDLR() {
+    var btnEdit = document.getElementById('btnEditProfilDLR');
+    var btnSimpan = document.getElementById('btnSimpanProfilDLR');
+    var btnBatal = document.getElementById('btnBatalProfilDLR');
+    var viewMode = document.getElementById('profilViewModeDLR');
+    var editMode = document.getElementById('profilEditModeDLR');
+    var areaUpload = document.getElementById('areaUploadFotoDLR');
+
+    if (isEditModeDLR) {
+        if (btnEdit) btnEdit.classList.add('d-none');
+        if (btnSimpan) btnSimpan.classList.remove('d-none');
+        if (btnBatal) btnBatal.classList.remove('d-none');
+        if (viewMode) viewMode.style.display = 'none';
+        if (editMode) editMode.style.display = 'block';
+        if (areaUpload) areaUpload.classList.remove('d-none');
+    } else {
+        if (btnEdit) btnEdit.classList.remove('d-none');
+        if (btnSimpan) btnSimpan.classList.add('d-none');
+        if (btnBatal) btnBatal.classList.add('d-none');
+        if (viewMode) viewMode.style.display = 'block';
+        if (editMode) editMode.style.display = 'none';
+        if (areaUpload) areaUpload.classList.add('d-none');
+    }
+}
+
+function bukaEditProfilDLR() { isEditModeDLR = true; renderProfilDLR(); }
+function batalEditProfilDLR() { isEditModeDLR = false; renderProfilDLR(); }
+
+function simpanProfilDLR(event) {
+    if (event) event.preventDefault();
+    var user = userAktif;
+    if (!user) return false;
+
+    var namaDealer = document.getElementById('editDLR_NamaDealer').value.trim();
+    var namaLengkap = document.getElementById('editDLR_NamaLengkap').value.trim();
+    var email = document.getElementById('editDLR_Email').value.trim();
+    var hp = document.getElementById('editDLR_Hp').value.trim();
+    var alamat = document.getElementById('editDLR_Alamat').value.trim();
+    var password = document.getElementById('editDLR_Password').value.trim();
+
+    if (!namaDealer || !namaLengkap || !email || !alamat) { alert('Nama Dealer, Nama PIC, Email, dan Alamat wajib diisi!'); return false; }
+    if (password && password.length < 6) { alert('Password minimal 6 karakter!'); return false; }
+
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = stored ? JSON.parse(stored) : {};
+    profil.namaDealer = namaDealer;
+    profil.namaLengkap = namaLengkap;
+    profil.email = email;
+    profil.hp = hp;
+    profil.alamat = alamat;
+    profil.alamatKtp = alamat;
+    localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+
+    var idx = dataLoginUser.findIndex(function(u) { return u.idUser === user.idUser; });
+    if (idx !== -1) {
+        dataLoginUser[idx].nama = namaDealer;
+        dataLoginUser[idx].email = email;
+        dataLoginUser[idx].hp = hp;
+        dataLoginUser[idx].alamat = alamat;
+        if (password) dataLoginUser[idx].password = password;
+    }
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === user.idUser; });
+    if (idxAktif !== -1) {
+        dataAkunAktif[idxAktif].nama = namaDealer;
+        dataAkunAktif[idxAktif].email = email;
+        dataAkunAktif[idxAktif].hp = hp;
+        dataAkunAktif[idxAktif].alamat = alamat;
+        if (password) dataAkunAktif[idxAktif].password = password;
+    }
+    if (typeof simpanDataKeLocalStorage === 'function') simpanDataKeLocalStorage();
+
+    var logId = generateKodeUnik('LOG-PROFIL');
+    if (typeof catatAktivitasGlobal === 'function') catatAktivitasGlobal(user.idUser, 'Update Profil Dealer', 'Profil diperbarui: ' + namaDealer + ' [Log: ' + logId + ']');
+
+    isEditModeDLR = false;
+    renderProfilDLR();
+    alert('✅ Profil Dealer & Showroom berhasil diperbarui!');
+    return false;
+}
+
+function unggahFotoProfilDLR(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    if (file.size > 2000000) { alert('Ukuran file terlalu besar. Maksimal 2MB.'); return; }
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var user = userAktif;
+        if (!user) return;
+        var stored = localStorage.getItem('profil_' + user.idUser);
+        var profil = stored ? JSON.parse(stored) : {};
+        profil.fotoUrl = e.target.result;
+        localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+        var img = document.getElementById('profilFotoDLR');
+        if (img) img.src = e.target.result;
+        alert('✅ Foto profil berhasil diunggah!');
+    };
+    reader.readAsDataURL(file);
+}
+
+function hapusFotoProfilDLR() {
+    if (!confirm('Hapus foto profil?')) return;
+    var user = userAktif;
+    if (!user) return;
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = stored ? JSON.parse(stored) : {};
+    delete profil.fotoUrl;
+    localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+    var img = document.getElementById('profilFotoDLR');
+    if (img) img.src = 'https://placehold.co/140x140/003366/ffffff?text=DLR';
+    alert('✅ Foto profil berhasil dihapus.');
+}
+</script>
+<!--- ===== AKHIR BLOK R 33.2 JS ===== -->
+
+<!--- ===== BLOK R 34.2 – HTML PROFIL FINANCE MULTIFINANCE ===== -->
+<div id="profilFINContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="fw-bold text-white"><i class="fas fa-user me-2"></i>Profil Finance Multifinance</h4>
+            <div>
+                <button class="btn btn-warning text-white fw-bold me-2" id="btnEditProfilFIN" onclick="bukaEditProfilFIN()"><i class="fas fa-edit me-1"></i> Edit</button>
+                <button class="btn btn-success text-white fw-bold me-2 d-none" id="btnSimpanProfilFIN" onclick="simpanProfilFIN(event)"><i class="fas fa-save me-1"></i> Simpan</button>
+                <button class="btn btn-secondary text-white fw-bold me-2 d-none" id="btnBatalProfilFIN" onclick="batalEditProfilFIN()">Batal</button>
+                <button class="btn btn-outline-light" onclick="kembaliKeDasbor()"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+            </div>
+        </div>
+
+        <div class="row g-4">
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm text-center h-100">
+                    <div class="card-body py-4">
+                        <div style="width:140px;height:140px;border-radius:50%;overflow:hidden;border:4px solid #046A38;margin:0 auto;">
+                            <img id="profilFotoFIN" src="https://placehold.co/140x140/046A38/ffffff?text=FIN" style="width:100%;height:100%;object-fit:cover;">
+                        </div>
+                        <h5 class="fw-bold mt-3" id="profilNamaFIN">-</h5>
+                        <p class="text-muted small" id="profilIdFIN">-</p>
+                        <span class="badge" id="profilStatusVerifikasiFIN">-</span>
+
+                        <div id="areaUploadFotoFIN" class="mt-2 d-none">
+                            <label for="uploadFotoFIN" class="btn btn-sm btn-outline-primary"><i class="fas fa-upload me-1"></i> Ganti Foto</label>
+                            <input type="file" id="uploadFotoFIN" class="d-none" accept="image/*" onchange="unggahFotoProfilFIN(event)">
+                            <button class="btn btn-sm btn-outline-danger ms-1" onclick="hapusFotoProfilFIN()"><i class="fas fa-trash me-1"></i> Hapus Foto</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header text-white" style="background-color: #046A38;">
+                        <i class="fas fa-id-card me-2"></i>Informasi Akun
+                    </div>
+                    <div class="card-body">
+                        <div id="profilViewModeFIN">
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Perusahaan</div><div class="col-md-8" id="profilFIN_NamaPerusahaan">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Lengkap PIC</div><div class="col-md-8" id="profilFIN_NamaLengkap">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Email</div><div class="col-md-8" id="profilFIN_Email">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nomor HP</div><div class="col-md-8" id="profilFIN_Hp">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Alamat Kantor</div><div class="col-md-8" id="profilFIN_Alamat">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Koordinat</div><div class="col-md-8" id="profilFIN_Koordinat">-</div></div>
+                            <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Saldo R2Coin</div><div class="col-md-8"><span id="profilFIN_SaldoCoin" class="fw-bold text-success">0 R2Coin</span></div></div>
+                        </div>
+
+                        <div id="profilEditModeFIN" style="display:none;">
+                            <form id="formEditProfilFIN" onsubmit="return false;">
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Perusahaan</div><div class="col-md-8"><input type="text" id="editFIN_NamaPerusahaan" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nama Lengkap PIC</div><div class="col-md-8"><input type="text" id="editFIN_NamaLengkap" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Email</div><div class="col-md-8"><input type="email" id="editFIN_Email" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Nomor HP</div><div class="col-md-8"><input type="text" id="editFIN_Hp" class="form-control" required></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Alamat Kantor</div><div class="col-md-8"><textarea id="editFIN_Alamat" class="form-control" rows="2" required></textarea></div></div>
+                                <div class="row mb-3"><div class="col-md-4 fw-bold text-muted">Password Baru</div><div class="col-md-8"><input type="password" id="editFIN_Password" class="form-control" placeholder="Kosongkan jika tidak ganti" minlength="6"></div></div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!--- ===== AKHIR BLOK R 34.2 HTML ===== -->
+
+<script>
+// ============================================================
+// BLOK R 34.2 – JAVASCRIPT PROFIL FINANCE MULTIFINANCE
+// ============================================================
+var isEditModeFIN = false;
+
+function tampilkanProfilFIN() {
+    var konten = document.getElementById('kontenDasbor');
+    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+    var container = document.getElementById('profilFINContainer');
+    if (container) {
+        konten.innerHTML = container.innerHTML;
+        initProfilFINIfEmpty();
+        renderProfilFIN();
+        tutupMenu();
+    } else {
+        tampilkanPlaceholderMenu('Profil Finance Multifinance', '34.2');
+    }
+}
+
+function initProfilFINIfEmpty() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+    var key = 'profil_' + user.idUser;
+    if (!localStorage.getItem(key)) {
+        var userData = getDataIdUser(user.idUser) || user;
+        localStorage.setItem(key, JSON.stringify({
+            namaPerusahaan: userData.nama || '', namaLengkap: userData.nama || '',
+            email: userData.email || '', hp: userData.hp || '',
+            alamat: userData.alamat || '', alamatKtp: userData.alamat || '',
+            fotoUrl: '', lat: userData.lat || '', lng: userData.lng || '',
+            dragX: 0, dragY: 0
+        }));
+    }
+}
+
+function renderProfilFIN() {
+    var user = userAktif;
+    if (!user || !user.idUser) return;
+    var userData = getDataIdUser(user.idUser) || user;
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = {};
+    if (stored) { try { profil = JSON.parse(stored); } catch(e) { profil = {}; } }
+
+    var namaPerusahaan = profil.namaPerusahaan || userData.nama || '-';
+    var namaLengkap = profil.namaLengkap || userData.nama || '-';
+    var email = profil.email || userData.email || '-';
+    var hp = profil.hp || userData.hp || '-';
+    var alamat = profil.alamat || userData.alamat || '-';
+    var fotoUrl = profil.fotoUrl || '';
+    var saldoKoin = getSaldoR2Coin(user.idUser);
+    var statusVerifikasi = userData.statusVerifikasi || '-';
+
+    var koordinat = '-';
+    if (userData.lat && userData.lng) koordinat = parseFloat(userData.lat).toFixed(6) + ', ' + parseFloat(userData.lng).toFixed(6);
+
+    var imgFoto = document.getElementById('profilFotoFIN');
+    if (imgFoto) imgFoto.src = fotoUrl || 'https://placehold.co/140x140/046A38/ffffff?text=FIN';
+    var elNama = document.getElementById('profilNamaFIN'); if (elNama) elNama.textContent = namaPerusahaan;
+    var elId = document.getElementById('profilIdFIN'); if (elId) elId.textContent = userData.idUser || '-';
+    var elVerif = document.getElementById('profilStatusVerifikasiFIN');
+    if (elVerif) {
+        elVerif.textContent = statusVerifikasi === 'Aktif' ? 'Aktif' : statusVerifikasi;
+        elVerif.className = 'badge ' + (statusVerifikasi === 'Aktif' ? 'bg-success' : 'bg-warning text-dark');
+    }
+
+    var setT = function(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+    setT('profilFIN_NamaPerusahaan', namaPerusahaan);
+    setT('profilFIN_NamaLengkap', namaLengkap);
+    setT('profilFIN_Email', email);
+    setT('profilFIN_Hp', hp);
+    setT('profilFIN_Alamat', alamat);
+    setT('profilFIN_Koordinat', koordinat);
+    setT('profilFIN_SaldoCoin', saldoKoin + ' R2Coin');
+
+    if (isEditModeFIN) {
+        var setV = function(id, v) { var el = document.getElementById(id); if (el) el.value = v; };
+        setV('editFIN_NamaPerusahaan', namaPerusahaan);
+        setV('editFIN_NamaLengkap', namaLengkap);
+        setV('editFIN_Email', email);
+        setV('editFIN_Hp', hp);
+        setV('editFIN_Alamat', alamat);
+        setV('editFIN_Password', '');
+    }
+
+    toggleModeFIN();
+}
+
+function toggleModeFIN() {
+    var btnEdit = document.getElementById('btnEditProfilFIN');
+    var btnSimpan = document.getElementById('btnSimpanProfilFIN');
+    var btnBatal = document.getElementById('btnBatalProfilFIN');
+    var viewMode = document.getElementById('profilViewModeFIN');
+    var editMode = document.getElementById('profilEditModeFIN');
+    var areaUpload = document.getElementById('areaUploadFotoFIN');
+
+    if (isEditModeFIN) {
+        if (btnEdit) btnEdit.classList.add('d-none');
+        if (btnSimpan) btnSimpan.classList.remove('d-none');
+        if (btnBatal) btnBatal.classList.remove('d-none');
+        if (viewMode) viewMode.style.display = 'none';
+        if (editMode) editMode.style.display = 'block';
+        if (areaUpload) areaUpload.classList.remove('d-none');
+    } else {
+        if (btnEdit) btnEdit.classList.remove('d-none');
+        if (btnSimpan) btnSimpan.classList.add('d-none');
+        if (btnBatal) btnBatal.classList.add('d-none');
+        if (viewMode) viewMode.style.display = 'block';
+        if (editMode) editMode.style.display = 'none';
+        if (areaUpload) areaUpload.classList.add('d-none');
+    }
+}
+
+function bukaEditProfilFIN() { isEditModeFIN = true; renderProfilFIN(); }
+function batalEditProfilFIN() { isEditModeFIN = false; renderProfilFIN(); }
+
+function simpanProfilFIN(event) {
+    if (event) event.preventDefault();
+    var user = userAktif;
+    if (!user) return false;
+
+    var namaPerusahaan = document.getElementById('editFIN_NamaPerusahaan').value.trim();
+    var namaLengkap = document.getElementById('editFIN_NamaLengkap').value.trim();
+    var email = document.getElementById('editFIN_Email').value.trim();
+    var hp = document.getElementById('editFIN_Hp').value.trim();
+    var alamat = document.getElementById('editFIN_Alamat').value.trim();
+    var password = document.getElementById('editFIN_Password').value.trim();
+
+    if (!namaPerusahaan || !namaLengkap || !email || !alamat) { alert('Nama Perusahaan, Nama PIC, Email, dan Alamat wajib diisi!'); return false; }
+    if (password && password.length < 6) { alert('Password minimal 6 karakter!'); return false; }
+
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = stored ? JSON.parse(stored) : {};
+    profil.namaPerusahaan = namaPerusahaan;
+    profil.namaLengkap = namaLengkap;
+    profil.email = email;
+    profil.hp = hp;
+    profil.alamat = alamat;
+    profil.alamatKtp = alamat;
+    localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+
+    var idx = dataLoginUser.findIndex(function(u) { return u.idUser === user.idUser; });
+    if (idx !== -1) {
+        dataLoginUser[idx].nama = namaPerusahaan;
+        dataLoginUser[idx].email = email;
+        dataLoginUser[idx].hp = hp;
+        dataLoginUser[idx].alamat = alamat;
+        if (password) dataLoginUser[idx].password = password;
+    }
+    var idxAktif = dataAkunAktif.findIndex(function(a) { return a.id === user.idUser; });
+    if (idxAktif !== -1) {
+        dataAkunAktif[idxAktif].nama = namaPerusahaan;
+        dataAkunAktif[idxAktif].email = email;
+        dataAkunAktif[idxAktif].hp = hp;
+        dataAkunAktif[idxAktif].alamat = alamat;
+        if (password) dataAkunAktif[idxAktif].password = password;
+    }
+    if (typeof simpanDataKeLocalStorage === 'function') simpanDataKeLocalStorage();
+
+    var logId = generateKodeUnik('LOG-PROFIL');
+    if (typeof catatAktivitasGlobal === 'function') catatAktivitasGlobal(user.idUser, 'Update Profil Finance', 'Profil diperbarui: ' + namaPerusahaan + ' [Log: ' + logId + ']');
+
+    isEditModeFIN = false;
+    renderProfilFIN();
+    alert('✅ Profil Finance Multifinance berhasil diperbarui!');
+    return false;
+}
+
+function unggahFotoProfilFIN(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    if (file.size > 2000000) { alert('Ukuran file terlalu besar. Maksimal 2MB.'); return; }
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var user = userAktif;
+        if (!user) return;
+        var stored = localStorage.getItem('profil_' + user.idUser);
+        var profil = stored ? JSON.parse(stored) : {};
+        profil.fotoUrl = e.target.result;
+        localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+        var img = document.getElementById('profilFotoFIN');
+        if (img) img.src = e.target.result;
+        alert('✅ Foto profil berhasil diunggah!');
+    };
+    reader.readAsDataURL(file);
+}
+
+function hapusFotoProfilFIN() {
+    if (!confirm('Hapus foto profil?')) return;
+    var user = userAktif;
+    if (!user) return;
+    var stored = localStorage.getItem('profil_' + user.idUser);
+    var profil = stored ? JSON.parse(stored) : {};
+    delete profil.fotoUrl;
+    localStorage.setItem('profil_' + user.idUser, JSON.stringify(profil));
+    var img = document.getElementById('profilFotoFIN');
+    if (img) img.src = 'https://placehold.co/140x140/046A38/ffffff?text=FIN';
+    alert('✅ Foto profil berhasil dihapus.');
+}
+</script>
+<!--- ===== AKHIR BLOK R 34.2 JS ===== -->
 
 			<!-- ============================================================ -->
 			<!-- ===== BLOK R 11.3(1) – PENGAJUAN VERIFIKASI TOKO (HTML) ===== -->
@@ -59249,7 +61203,7 @@ menuConfig['DST'] = {
     ]
 };
 
-	// --- 7. GROSIR (GR) ---
+		// --- 7. GROSIR (GR) ---
 	menuConfig['GR'] = {
 		namaRole: 'Grosir',
 		menu: [
@@ -59258,12 +61212,10 @@ menuConfig['DST'] = {
 			{ nama: 'Profil Grosir', ikon: 'fas fa-user', blok: '28.2', aksi: 'tampilkanProfilGrosir' },
 			{ nama: 'Pengajuan Verifikasi', ikon: 'fas fa-file-upload', blok: '28.3', aksi: 'pengajuanVerifikasi', onlyPending: true },
 			{ nama: 'Download Form SKU', ikon: 'fas fa-download', blok: '28.4', aksi: 'downloadSKU', onlyPending: true },
-			// REVISI: aksi manajemen produk diubah ke fungsi spesifik
 			{ nama: 'Manajemen Produk', ikon: 'fas fa-boxes', blok: '28.5', aksi: 'tampilkanManajemenProdukGrosir' },
 			{ nama: 'Order Masuk', ikon: 'fas fa-shopping-cart', blok: '28.4', aksi: 'tampilkanOrderMasukGrosir' },
 			{ nama: 'Manajemen Coin', ikon: 'fas fa-coins', blok: '28.5', aksi: 'tampilkanManajemenCoinGrosir' },
 			{ nama: 'Transaksi Coin', ikon: 'fas fa-exchange-alt', blok: '28.6', aksi: 'tampilkanTransaksiCoinGrosir' },
-			{ nama: 'Laporan & Keuangan', ikon: 'fas fa-chart-line', blok: '28.6(1)', aksi: 'laporanKeuangan' },
 			{ nama: 'Buat Akun Kasir', ikon: 'fas fa-user-plus', blok: '28.11', aksi: 'buatAkunKasir' },
 			{ nama: 'Menu Chat User', ikon: 'fas fa-comments', blok: '11.24', aksi: 'tampilkanMenuChatToko' },
 			{ nama: 'Koleksi GIF Saya', ikon: 'fas fa-gift', blok: '11.32', aksi: 'tampilkanKoleksiGifToko' },
@@ -59275,11 +61227,48 @@ menuConfig['DST'] = {
 			{ nama: 'Tampilkan Produk', ikon: 'fas fa-eye', blok: '28.5.1', aksi: 'tampilkanDaftarProdukGrosir' },
 			{ nama: 'History Penjualan', ikon: 'fas fa-history', blok: '28.5.3', aksi: 'tampilkanHistoryPenjualanGrosir' },
 			{ nama: 'Hasil Penjualan Kasir', ikon: 'fas fa-users-cog', blok: '28.5.5', aksi: 'tampilkanHasilPenjualanKasirGrosir' },
-			{ nama: 'Dompet R2Coin', ikon: 'fas fa-wallet', blok: '28.31', aksi: 'tampilkanDompetR2CoinGR' },
+			{ nama: 'Dompet R2Coin', ikon: 'fas fa-wallet', blok: '27.31', aksi: 'tampilkanDompetR2Coin' },
 			{ nama: 'Dasbor Distributor', ikon: 'fas fa-warehouse', blok: '10.62', aksi: 'tampilkanDasborDistributorSemuaRole' },
 			{ nama: 'Dasbor Ojek', ikon: 'fas fa-motorcycle', blok: '10.64', aksi: 'tampilkanDasborOjekSemuaRole' }
 		]
 	};
+
+	// ============================================================
+	// --- 8. DEVELOPER PROPERTI (DP) --- BARU
+	// ============================================================
+	menuConfig['DP'] = {
+		namaRole: 'Developer Properti',
+		menu: [
+			{ nama: 'Dasbor Developer Properti', ikon: 'fas fa-building',   blok: '32.1', aksi: 'dashboardUtama' },
+			{ nama: 'Hello Friends',             ikon: 'fas fa-video',      blok: '50.1', aksi: 'tampilkanHelloFriends' },
+			{ nama: 'Profil Developer Properti', ikon: 'fas fa-user',       blok: '32.2', aksi: 'profil' }
+		]
+	};
+
+	// ============================================================
+	// --- 9. DEALER DAN SHOWROOM (DLR) --- BARU
+	// ============================================================
+	menuConfig['DLR'] = {
+		namaRole: 'Dealer dan Showroom',
+		menu: [
+			{ nama: 'Dasbor Dealer & Showroom', ikon: 'fas fa-car',         blok: '33.1', aksi: 'dashboardUtama' },
+			{ nama: 'Hello Friends',            ikon: 'fas fa-video',       blok: '50.1', aksi: 'tampilkanHelloFriends' },
+			{ nama: 'Profil Dealer & Showroom', ikon: 'fas fa-user',        blok: '33.2', aksi: 'profil' }
+		]
+	};
+
+	// ============================================================
+	// --- 10. FINANCE MULTIFINANCE (FIN) --- BARU
+	// ============================================================
+	menuConfig['FIN'] = {
+		namaRole: 'Finance Multifinance',
+		menu: [
+			{ nama: 'Dasbor Finance Multifinance', ikon: 'fas fa-hand-holding-usd', blok: '34.1', aksi: 'dashboardUtama' },
+			{ nama: 'Hello Friends',               ikon: 'fas fa-video',            blok: '50.1', aksi: 'tampilkanHelloFriends' },
+			{ nama: 'Profil Finance Multifinance', ikon: 'fas fa-user',             blok: '34.2', aksi: 'profil' }
+		]
+	};
+
 	</script>
 	<!-- ===== AKHIR BLOK 9.3.1(2) ===== -->
 
@@ -59554,14 +61543,29 @@ menuConfig['SOO'] = {
 						if (typeof tampilkanDasborSOT === 'function') tampilkanDasborSOT();
 						else tampilkanPlaceholderMenu('Dasbor Staf Owner Toko', '30.1');
 						break;
-					case 'Staf Owner Ojek':
-						if (typeof tampilkanDasborSOO === 'function') tampilkanDasborSOO();
-						else tampilkanPlaceholderMenu('Dasbor Staf Owner Ojek', '31.1');
-						break;
-					default:
-						tampilkanPlaceholderMenu('Dasbor', '0');
-				}
-			};
+					        case 'Staf Owner Ojek':
+            if (typeof tampilkanProfilSOO === 'function') tampilkanProfilSOO();
+            else tampilkanPlaceholderMenu('Profil Staf Owner Ojek', '31.2');
+            break;
+
+        // ===== BARU =====
+        case 'Developer Properti':
+            if (typeof tampilkanProfilDP === 'function') tampilkanProfilDP();
+            else tampilkanPlaceholderMenu('Profil Developer Properti', '32.2');
+            break;
+        case 'Dealer dan Showroom':
+            if (typeof tampilkanProfilDLR === 'function') tampilkanProfilDLR();
+            else tampilkanPlaceholderMenu('Profil Dealer & Showroom', '33.2');
+            break;
+        case 'Finance Multifinance':
+            if (typeof tampilkanProfilFIN === 'function') tampilkanProfilFIN();
+            else tampilkanPlaceholderMenu('Profil Finance Multifinance', '34.2');
+            break;
+
+        default:
+            tampilkanPlaceholderMenu('Profil', '0');
+    }
+};
 
 				// ============================================================
 				// Handler untuk menu Profil (semua role) – ditambahkan di sini
