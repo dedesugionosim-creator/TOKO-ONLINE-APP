@@ -14216,6 +14216,578 @@ function hfBolehLihatPost(post) {
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (321–345) – FOTO / CHAT KONTEKS / LIVE DETAIL -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+// ============================================================
+// BLOK R 01.0 (321) – HF VALIDASI FILE FOTO
+// ============================================================
+function hfValidasiFileFoto(file) {
+    if (!file) return { sukses: false, pesan: 'File kosong.' };
+
+    var tipeBoleh = ['image/jpeg','image/jpg','image/png','image/webp','image/gif'];
+    if (tipeBoleh.indexOf(file.type) === -1) {
+        return { sukses: false, pesan: 'Format foto harus JPG/PNG/WEBP/GIF.' };
+    }
+    var maxSize = 5 * 1024 * 1024;
+    if (file.size > maxSize) {
+        return { sukses: false, pesan: 'Ukuran file maks 5MB.' };
+    }
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (322) – HF KOMPRES FOTO (CORE)
+// ============================================================
+function hfKompresFoto(file, maxWidth, maxHeight, quality) {
+    return new Promise(function(resolve, reject) {
+        maxWidth  = maxWidth  || 720;
+        maxHeight = maxHeight || 720;
+        quality   = quality   || 0.75;
+
+        var validasi = hfValidasiFileFoto(file);
+        if (!validasi.sukses) { reject(validasi); return; }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var img = new Image();
+            img.onload = function() {
+                var w = img.width;
+                var h = img.height;
+                if (w > maxWidth) {
+                    h = Math.round(h * (maxWidth / w));
+                    w = maxWidth;
+                }
+                if (h > maxHeight) {
+                    w = Math.round(w * (maxHeight / h));
+                    h = maxHeight;
+                }
+                var canvas = document.createElement('canvas');
+                canvas.width  = w;
+                canvas.height = h;
+                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                var base64 = canvas.toDataURL('image/jpeg', quality);
+                resolve({
+                    sukses: true, base64: base64,
+                    lebar: w, tinggi: h,
+                    ukuranKB: Math.round((base64.length * 2) / 1024)
+                });
+            };
+            img.onerror = function() { reject({ sukses: false, pesan: 'Gagal baca gambar.' }); };
+            img.src = e.target.result;
+        };
+        reader.onerror = function() { reject({ sukses: false, pesan: 'Gagal baca file.' }); };
+        reader.readAsDataURL(file);
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (323) – HF KOMPRES BANYAK FOTO (BATCH)
+// ============================================================
+function hfKompresFotoBatch(files, maxFoto, maxWidth, quality) {
+    return new Promise(function(resolve) {
+        maxFoto  = maxFoto  || 5;
+        maxWidth = maxWidth || 720;
+        quality  = quality  || 0.75;
+
+        var arrFile = Array.from(files).slice(0, maxFoto);
+        if (arrFile.length === 0) { resolve({ sukses: true, hasil: [] }); return; }
+
+        var hasil = [];
+        var gagal = [];
+        var selesai = 0;
+
+        arrFile.forEach(function(file, idx) {
+            hfKompresFoto(file, maxWidth, maxWidth, quality)
+                .then(function(res) { hasil[idx] = res.base64; })
+                .catch(function(err) { gagal.push({ index: idx, pesan: err.pesan }); })
+                .finally(function() {
+                    selesai++;
+                    if (selesai === arrFile.length) {
+                        resolve({
+                            sukses: true,
+                            hasil: hasil.filter(function(x) { return !!x; }),
+                            gagal: gagal
+                        });
+                    }
+                });
+        });
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (324) – HF GENERATE THUMBNAIL DARI BASE64
+// ============================================================
+function hfGenerateThumbnail(base64, ukuran) {
+    return new Promise(function(resolve, reject) {
+        ukuran = ukuran || 300;
+        if (!base64) { reject({ sukses: false, pesan: 'Base64 kosong.' }); return; }
+
+        var img = new Image();
+        img.onload = function() {
+            var w = img.width;
+            var h = img.height;
+            if (w > ukuran) { h = Math.round(h * (ukuran / w)); w = ukuran; }
+            if (h > ukuran) { w = Math.round(w * (ukuran / h)); h = ukuran; }
+            var canvas = document.createElement('canvas');
+            canvas.width  = w;
+            canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.onerror = function() { reject({ sukses: false, pesan: 'Gagal buat thumbnail.' }); };
+        img.src = base64;
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (325) – HF ESTIMASI UKURAN BASE64
+// ============================================================
+function hfEstimasiUkuranBase64(base64) {
+    if (!base64) return 0;
+    return Math.round((base64.length * 2) / 1024);
+}
+
+// ============================================================
+// BLOK R 01.0 (326) – HF CEK SISA STORAGE UNTUK FOTO
+// ============================================================
+function hfCekStorageUntukFoto(ukuranBaruKB) {
+    var total = 0;
+    for (var key in localStorage) {
+        if (localStorage.hasOwnProperty(key)) {
+            total += (key.length + (localStorage.getItem(key) || '').length) * 2;
+        }
+    }
+    var terpakaiKB = Math.round(total / 1024);
+    var limitKB    = 5 * 1024;
+    var sisaKB     = limitKB - terpakaiKB;
+    var cukup = sisaKB > (ukuranBaruKB + 500);
+    return {
+        terpakaiKB: terpakaiKB,
+        sisaKB: sisaKB,
+        cukup: cukup,
+        pesan: cukup
+            ? 'Storage cukup.'
+            : 'Storage hampir penuh. Hapus post lama atau kurangi foto.'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (327) – HF AMANKAN SIMPAN POST (CEK STORAGE)
+// ============================================================
+function hfAmankanSimpanPost(data) {
+    var foto = (data && Array.isArray(data.foto)) ? data.foto : [];
+    var totalKB = 0;
+    foto.forEach(function(f) { totalKB += hfEstimasiUkuranBase64(f); });
+
+    var cek = hfCekStorageUntukFoto(totalKB);
+    if (!cek.cukup) {
+        return { sukses: false, pesan: cek.pesan, detail: cek };
+    }
+    return hfBuatPost(data);
+}
+
+// ============================================================
+// BLOK R 01.0 (328) – HF CHAT KE CREATOR POST
+// ============================================================
+function hfChatKeCreatorPost(idPost) {
+    if (!userAktif || !userAktif.idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+    var post = hfGetPostById(idPost);
+    if (!post) return { sukses: false, pesan: 'Post tidak ditemukan.' };
+    if (post.creatorId === userAktif.idUser) {
+        return { sukses: false, pesan: 'Tidak bisa chat diri sendiri.' };
+    }
+
+    if (typeof tampilkanMenuChatUser === 'function') {
+        tampilkanMenuChatUser();
+        setTimeout(function() {
+            if (typeof bukaChatDenganUser === 'function') {
+                bukaChatDenganUser(post.creatorId);
+            }
+        }, 500);
+    } else if (typeof tampilkanMenuChatToko === 'function') {
+        tampilkanMenuChatToko();
+        setTimeout(function() {
+            if (typeof bukaChatDenganUser === 'function') {
+                bukaChatDenganUser(post.creatorId);
+            }
+        }, 500);
+    }
+
+    return { sukses: true, creatorId: post.creatorId };
+}
+
+// ============================================================
+// BLOK R 01.0 (329) – HF CHAT KE CREATOR LIVE
+// ============================================================
+function hfChatKeCreatorLive(idLive) {
+    if (!userAktif || !userAktif.idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+    var list = hfLoad('live');
+    var live = list.find(function(l) { return l.id === idLive; });
+    if (!live) return { sukses: false, pesan: 'Live tidak ditemukan.' };
+    if (live.creatorId === userAktif.idUser) {
+        return { sukses: false, pesan: 'Tidak bisa chat diri sendiri.' };
+    }
+
+    if (typeof tampilkanMenuChatUser === 'function') {
+        tampilkanMenuChatUser();
+        setTimeout(function() {
+            if (typeof bukaChatDenganUser === 'function') {
+                bukaChatDenganUser(live.creatorId);
+            }
+        }, 500);
+    }
+
+    return { sukses: true, creatorId: live.creatorId };
+}
+
+// ============================================================
+// BLOK R 01.0 (330) – HF CHAT DENGAN KONTEKS POST
+// ============================================================
+function hfChatDenganKonteksPost(idPost, isiTambahan) {
+    var post = hfGetPostById(idPost);
+    if (!post) return { sukses: false, pesan: 'Post tidak ditemukan.' };
+
+    var konteks = 'Saya lihat post kamu';
+    if (post.teks) {
+        konteks += ' tentang: "' + post.teks.substring(0, 50) + '"';
+    }
+    if (isiTambahan) konteks += '\n\n' + isiTambahan;
+
+    if (typeof kirimPesan === 'function') {
+        var hasil = kirimPesan(post.creatorId, konteks, 'text');
+        if (hasil.sukses && typeof hfChatKeCreatorPost === 'function') {
+            hfChatKeCreatorPost(idPost);
+        }
+        return hasil;
+    }
+    return { sukses: false, pesan: 'Fungsi kirimPesan tidak tersedia.' };
+}
+
+// ============================================================
+// BLOK R 01.0 (331) – HF CHAT DENGAN KONTEKS LIVE
+// ============================================================
+function hfChatDenganKonteksLive(idLive, isiTambahan) {
+    var list = hfLoad('live');
+    var live = list.find(function(l) { return l.id === idLive; });
+    if (!live) return { sukses: false, pesan: 'Live tidak ditemukan.' };
+
+    var konteks = 'Saya lihat live kamu: "' + (live.judul || '') + '"';
+    if (isiTambahan) konteks += '\n\n' + isiTambahan;
+
+    if (typeof kirimPesan === 'function') {
+        var hasil = kirimPesan(live.creatorId, konteks, 'text');
+        if (hasil.sukses && typeof hfChatKeCreatorLive === 'function') {
+            hfChatKeCreatorLive(idLive);
+        }
+        return hasil;
+    }
+    return { sukses: false, pesan: 'Fungsi kirimPesan tidak tersedia.' };
+}
+
+// ============================================================
+// BLOK R 01.0 (332) – HF KIRIM KARTU POST KE CHAT
+// ============================================================
+function hfKirimKartuPostKeChat(idPost, idPenerima, pesanOpsional) {
+    return hfSharePostKeUser(idPost, idPenerima, pesanOpsional);
+}
+
+// ============================================================
+// BLOK R 01.0 (333) – HF GET DAFTAR KONTAK UNTUK SHARE
+// ============================================================
+function hfGetDaftarKontakUntukShare(limit) {
+    limit = limit || 50;
+    var idMe = userAktif ? userAktif.idUser : null;
+    if (!idMe) return [];
+
+    var daftar = [];
+    (dataAkunAktif || []).forEach(function(u) {
+        if (u.id === idMe) return;
+        daftar.push({
+            idUser: u.id,
+            nama:   u.nama,
+            role:   u.role
+        });
+    });
+
+    daftar.sort(function(a, b) {
+        var sa = (typeof getStatusOnlineAkun === 'function' &&
+                  getStatusOnlineAkun(a.idUser) === 'Online') ? 0 : 1;
+        var sb = (typeof getStatusOnlineAkun === 'function' &&
+                  getStatusOnlineAkun(b.idUser) === 'Online') ? 0 : 1;
+        if (sa !== sb) return sa - sb;
+        return (a.nama || '').localeCompare(b.nama || '');
+    });
+
+    return daftar.slice(0, limit);
+}
+
+// ============================================================
+// BLOK R 01.0 (334) – HF GET KONTEKS POST UNTUK PESAN
+// ============================================================
+function hfGetKonteksPost(idPost) {
+    var post = hfGetPostById(idPost);
+    if (!post) return '';
+    var teks = 'Saya lihat post kamu';
+    if (post.creatorNama) teks = 'Hai ' + post.creatorNama + ', saya lihat post kamu';
+    if (post.teks) {
+        teks += ' tentang "' + post.teks.substring(0, 50) + '"';
+    } else if (post.foto && post.foto.length > 0) {
+        teks += ' dengan foto';
+    }
+    return teks;
+}
+
+// ============================================================
+// BLOK R 01.0 (335) – HF GET KONTEKS LIVE UNTUK PESAN
+// ============================================================
+function hfGetKonteksLive(idLive) {
+    var list = hfLoad('live');
+    var live = list.find(function(l) { return l.id === idLive; });
+    if (!live) return '';
+    var teks = 'Saya lihat live kamu';
+    if (live.creatorNama) teks = 'Hai ' + live.creatorNama + ', saya lihat live kamu';
+    if (live.judul) teks += ': "' + live.judul + '"';
+    return teks;
+}
+
+// ============================================================
+// BLOK R 01.0 (336) – HF JOIN LIVE (PENONTON MASUK)
+// ============================================================
+function hfJoinLive(idLive) {
+    if (!userAktif || !userAktif.idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+    var list = hfLoad('live');
+    var idx = list.findIndex(function(l) { return l.id === idLive; });
+    if (idx === -1) return { sukses: false, pesan: 'Live tidak ditemukan.' };
+    if (list[idx].status !== 'aktif') {
+        return { sukses: false, pesan: 'Live sudah selesai.' };
+    }
+
+    var key = 'hfLiveJoin_' + idLive;
+    var sudahJoin = {};
+    try {
+        var stored = localStorage.getItem(key);
+        if (stored) sudahJoin = JSON.parse(stored) || {};
+    } catch (e) { sudahJoin = {}; }
+
+    if (!sudahJoin[userAktif.idUser]) {
+        sudahJoin[userAktif.idUser] = new Date().toISOString();
+        localStorage.setItem(key, JSON.stringify(sudahJoin));
+        list[idx].totalPenonton = Object.keys(sudahJoin).length;
+        hfSave('live', list);
+    }
+    return { sukses: true, live: list[idx] };
+}
+
+// ============================================================
+// BLOK R 01.0 (337) – HF GET LIVE DETAIL
+// ============================================================
+function hfGetLiveDetail(idLive) {
+    var list = hfLoad('live');
+    var live = list.find(function(l) { return l.id === idLive; });
+    if (!live) return null;
+
+    var komentar = hfGetKomentarLive(idLive);
+    var durasiDetik = 0;
+    if (live.mulaiAt) {
+        var mulai = new Date(live.mulaiAt).getTime();
+        var akhir = live.selesaiAt ? new Date(live.selesaiAt).getTime() : Date.now();
+        durasiDetik = Math.floor((akhir - mulai) / 1000);
+    }
+
+    return {
+        live: live,
+        komentar: komentar,
+        durasiDetik: durasiDetik,
+        durasiTeks: hfFormatDurasi(durasiDetik),
+        isAktif: live.status === 'aktif'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (338) – HF FORMAT DURASI
+// ============================================================
+function hfFormatDurasi(detik) {
+    detik = parseInt(detik, 10) || 0;
+    var jam = Math.floor(detik / 3600);
+    var mnt = Math.floor((detik % 3600) / 60);
+    var sisa = detik % 60;
+    if (jam > 0) return jam + 'j ' + mnt + 'm ' + sisa + 's';
+    if (mnt > 0) return mnt + 'm ' + sisa + 's';
+    return sisa + 's';
+}
+
+// ============================================================
+// BLOK R 01.0 (339) – HF GET RIWAYAT LIVE BY CREATOR
+// ============================================================
+function hfGetRiwayatLiveCreator(idCreator, limit) {
+    idCreator = idCreator || (userAktif ? userAktif.idUser : null);
+    if (!idCreator) return [];
+
+    var list = hfLoad('live');
+    var hasil = list.filter(function(l) {
+        return l.creatorId === idCreator;
+    });
+    hasil.sort(function(a, b) {
+        return new Date(b.mulaiAt) - new Date(a.mulaiAt);
+    });
+    if (limit && limit > 0) hasil = hasil.slice(0, limit);
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (340) – HF CEK LIVE KADALUARSA (AUTO SELESAI)
+// ============================================================
+function hfCekLiveKadaluarsa() {
+    var batasJam = 2;
+    var list = hfLoad('live');
+    var diubah = false;
+
+    list.forEach(function(l) {
+        if (l.status !== 'aktif') return;
+        var mulai = new Date(l.mulaiAt).getTime();
+        var selisihJam = (Date.now() - mulai) / 3600000;
+        if (selisihJam > batasJam) {
+            l.status = 'selesai';
+            l.selesaiAt = new Date().toISOString();
+            l.catatanSelesai = 'Auto selesai (kadaluarsa)';
+            diubah = true;
+        }
+    });
+
+    if (diubah) hfSave('live', list);
+    return diubah;
+}
+
+// ============================================================
+// BLOK R 01.0 (341) – HF GET STATISTIK LIVE
+// ============================================================
+function hfGetStatistikLive(idLive) {
+    var live = hfGetLiveDetail(idLive);
+    if (!live) return null;
+
+    var komentar = live.komentar.length;
+    var sawer = hfHitungSawerLive(idLive);
+
+    return {
+        totalPenonton: live.live.totalPenonton || 0,
+        totalKomentar: komentar,
+        totalSawer:    sawer.jumlah,
+        totalR2Coin:   sawer.r2coin,
+        durasiDetik:   live.durasiDetik,
+        durasiTeks:    live.durasiTeks
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (342) – HF HITUNG SAWER LIVE
+// ------------------------------------------------------------
+// Sawer live dicatat dengan postId = 'LIVE-xxx'
+// ============================================================
+function hfHitungSawerLive(idLive) {
+    var list = hfLoad('sawer');
+    var total = { jumlah: 0, r2coin: 0 };
+    list.forEach(function(s) {
+        if (s.postId === 'LIVE-' + idLive) {
+            total.jumlah++;
+            total.r2coin += (s.r2coin || 0);
+        }
+    });
+    return total;
+}
+
+// ============================================================
+// BLOK R 01.0 (343) – HF SAWER LIVE (WRAPPER)
+// ============================================================
+function hfSawerLive(idLive, giftId, jumlahGif, catatan) {
+    if (!userAktif || !userAktif.idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+    var list = hfLoad('live');
+    var live = list.find(function(l) { return l.id === idLive; });
+    if (!live) return { sukses: false, pesan: 'Live tidak ditemukan.' };
+    if (live.status !== 'aktif') {
+        return { sukses: false, pesan: 'Live sudah selesai.' };
+    }
+    if (live.creatorId === userAktif.idUser) {
+        return { sukses: false, pesan: 'Tidak bisa sawer diri sendiri.' };
+    }
+    if (typeof kirimGiftSawer !== 'function') {
+        return { sukses: false, pesan: 'Sistem sawer belum siap.' };
+    }
+
+    var hasil = kirimGiftSawer(
+        userAktif.idUser, live.creatorId, giftId, jumlahGif,
+        catatan || ('Sawer live ' + idLive)
+    );
+    if (!hasil.sukses) return hasil;
+
+    var listSawer = hfLoad('sawer');
+    listSawer.push({
+        id: hfGenerateId('sawer'),
+        postId: 'LIVE-' + idLive,
+        dariUser: userAktif.idUser,
+        dariNama: userAktif.nama || '-',
+        keCreator: live.creatorId,
+        giftId: giftId,
+        jumlahGif: hasil.jumlahTerkirim,
+        r2coin: hasil.r2coinDibayar,
+        catatan: catatan || '',
+        waktu: new Date().toISOString()
+    });
+    hfSave('sawer', listSawer);
+
+    var idx = list.findIndex(function(l) { return l.id === idLive; });
+    if (idx !== -1) {
+        list[idx].totalSawer = (list[idx].totalSawer || 0) + 1;
+        hfSave('live', list);
+    }
+
+    return {
+        sukses: true,
+        jumlahTerkirim: hasil.jumlahTerkirim,
+        r2coinDibayar: hasil.r2coinDibayar
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (344) – HF FORMAT WAKTU RELATIF
+// ============================================================
+function hfFormatWaktuRelatif(isoString) {
+    if (!isoString) return '-';
+    var waktu = new Date(isoString).getTime();
+    if (isNaN(waktu)) return '-';
+
+    var selisih = Math.floor((Date.now() - waktu) / 1000);
+    if (selisih < 60) return 'Baru saja';
+    if (selisih < 3600) return Math.floor(selisih / 60) + ' menit lalu';
+    if (selisih < 86400) return Math.floor(selisih / 3600) + ' jam lalu';
+    if (selisih < 604800) return Math.floor(selisih / 86400) + ' hari lalu';
+
+    return new Date(isoString).toLocaleDateString('id-ID', {
+        day: 'numeric', month: 'short', year: 'numeric'
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (345) – HF FORMAT ANGKA (1000 → 1rb)
+// ============================================================
+function hfFormatAngka(angka) {
+    angka = parseInt(angka, 10) || 0;
+    if (angka < 1000) return String(angka);
+    if (angka < 1000000) return (angka / 1000).toFixed(1) + 'rb';
+    return (angka / 1000000).toFixed(1) + 'jt';
+}
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 
 
 <!-- ═══ PATCH 2: HTML CONTAINER ═══ -->
