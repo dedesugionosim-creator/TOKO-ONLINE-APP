@@ -18162,6 +18162,1659 @@ function getDetailSellerLengkap(idSeller) {
 }
 
 console.log('✅ BLOK R 01.0 (380-384) – Fungsi global menu akun SA terpasang.');
+
+// ============================================================
+// BLOK R 01.0 (256–301) — AI KNOWLEDGE BASE & AUDIT SYSTEM
+// TAHAP 1 — FONDASI
+// ------------------------------------------------------------
+// Sistem "otak kedua" aplikasi untuk SuperAdmin:
+//   - Simpan pengetahuan kode di dalam kode (self-knowledge)
+//   - AI bisa baca, audit, dan saran pengembangan
+//   - Multi-provider (Claude/Gemini/OpenAI/Manual)
+// ------------------------------------------------------------
+// Semua fungsi di sini adalah fungsi GLOBAL. Dipanggil oleh
+// BLOK 32.x (AI Engine) & BLOK 33 (Code Factory).
+// ============================================================
+
+// ────────────────────────────────────────────────────────────
+// KONSTANTA GLOBAL AI
+// ────────────────────────────────────────────────────────────
+var AI_KB_KEY              = 'aiKnowledgeBase';
+var AI_KB_VERSION          = '1.0';
+var AI_PROVIDER_KEY        = 'aiProviderConfig';
+var AI_CHAT_KEY            = 'aiChatHistory';
+var AI_AUDIT_KEY           = 'aiAuditResults';
+
+// ────────────────────────────────────────────────────────────
+// HELPER INTERNAL (PRIVATE — jangan dipanggil dari luar)
+// ────────────────────────────────────────────────────────────
+function _aiLoadJSON(key, fallback) {
+    try {
+        var raw = localStorage.getItem(key);
+        if (!raw) return fallback;
+        var parsed = JSON.parse(raw);
+        return parsed !== null ? parsed : fallback;
+    } catch (e) {
+        console.warn('_aiLoadJSON gagal untuk key:', key, e);
+        return fallback;
+    }
+}
+
+function _aiSaveJSON(key, data) {
+    try {
+        localStorage.setItem(key, JSON.stringify(data));
+        return { sukses: true };
+    } catch (e) {
+        console.error('_aiSaveJSON gagal untuk key:', key, e);
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+function _aiGenerateId(prefix) {
+    var t = Date.now().toString(36).toUpperCase();
+    var r = Math.random().toString(36).substring(2, 6).toUpperCase();
+    return (prefix || 'AI') + '-' + t + '-' + r;
+}
+
+function _aiNow() {
+    return new Date().toISOString();
+}
+
+// ============================================================
+// BLOK R 01.0 (256) — GET SEMUA FUNGSI GLOBAL
+// ------------------------------------------------------------
+// Return array semua fungsi global yang terdaftar di KB.
+// Filter opsional: { kategori, blokAsal, cari }
+// ============================================================
+function getSemuaFungsiGlobal(filter) {
+    filter = filter || {};
+    var kb = loadKnowledgeBase();
+    var list = (kb && Array.isArray(kb.fungsiGlobal)) ? kb.fungsiGlobal : [];
+
+    if (filter.kategori) {
+        list = list.filter(function(f) { return f.kategori === filter.kategori; });
+    }
+    if (filter.blokAsal) {
+        list = list.filter(function(f) { return f.blokAsal === filter.blokAsal; });
+    }
+    if (filter.cari) {
+        var c = filter.cari.toLowerCase();
+        list = list.filter(function(f) {
+            return (f.nama || '').toLowerCase().indexOf(c) !== -1 ||
+                   (f.deskripsi || '').toLowerCase().indexOf(c) !== -1;
+        });
+    }
+    return list;
+}
+
+// ============================================================
+// BLOK R 01.0 (257) — REGISTER FUNGSI GLOBAL
+// ------------------------------------------------------------
+// Daftarkan fungsi baru di KB. Return { sukses, id }.
+// Kalau nama sudah ada → tolak (kecuali paksa=true).
+// ============================================================
+function registerFungsiGlobal(nama, meta) {
+    if (!nama || typeof nama !== 'string') {
+        return { sukses: false, pesan: 'Nama fungsi wajib diisi.' };
+    }
+    meta = meta || {};
+
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.fungsiGlobal)) kb.fungsiGlobal = [];
+
+    var duplikat = kb.fungsiGlobal.find(function(f) { return f.nama === nama; });
+    if (duplikat && !meta.paksa) {
+        return { sukses: false, pesan: 'Fungsi "' + nama + '" sudah terdaftar.' };
+    }
+
+    var entry = {
+        nomor:      meta.nomor || null,
+        nama:       nama,
+        kategori:   meta.kategori || 'Lainnya',
+        deskripsi:  meta.deskripsi || '',
+        parameter:  Array.isArray(meta.parameter) ? meta.parameter : [],
+        returnType: meta.returnType || 'any',
+        blokAsal:   meta.blokAsal || 'BLOK R 01.0',
+        terdaftar:  _aiNow()
+    };
+
+    if (duplikat && meta.paksa) {
+        var idx = kb.fungsiGlobal.findIndex(function(f) { return f.nama === nama; });
+        kb.fungsiGlobal[idx] = entry;
+    } else {
+        kb.fungsiGlobal.push(entry);
+    }
+    kb.updatedAt = _aiNow();
+
+    var simpan = simpanKnowledgeBase(kb);
+    return simpan.sukses
+        ? { sukses: true, id: nama, entry: entry }
+        : simpan;
+}
+
+// ============================================================
+// BLOK R 01.0 (258) — CARI FUNGSI GLOBAL
+// ------------------------------------------------------------
+// Cari fungsi by nama/kategori/deskripsi. Case-insensitive.
+// ============================================================
+function cariFungsiGlobal(keyword) {
+    if (!keyword) return getSemuaFungsiGlobal();
+    var c = String(keyword).toLowerCase().trim();
+
+    return getSemuaFungsiGlobal().filter(function(f) {
+        return (f.nama || '').toLowerCase().indexOf(c) !== -1 ||
+               (f.kategori || '').toLowerCase().indexOf(c) !== -1 ||
+               (f.deskripsi || '').toLowerCase().indexOf(c) !== -1 ||
+               (f.blokAsal || '').toLowerCase().indexOf(c) !== -1;
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (259) — CEK DUPLIKAT FUNGSI GLOBAL
+// ------------------------------------------------------------
+// Return { duplikat: bool, entry, saran }
+// ============================================================
+function cekDuplikatFungsiGlobal(nama) {
+    if (!nama) return { duplikat: false };
+    var kb = loadKnowledgeBase();
+    var list = (kb && Array.isArray(kb.fungsiGlobal)) ? kb.fungsiGlobal : [];
+    var found = list.find(function(f) {
+        return (f.nama || '').toLowerCase() === String(nama).toLowerCase();
+    });
+    return found
+        ? { duplikat: true, entry: found, saran: 'Ganti nama atau pakai "paksa: true" untuk update.' }
+        : { duplikat: false };
+}
+
+// ============================================================
+// BLOK R 01.0 (260) — HAPUS FUNGSI GLOBAL
+// ============================================================
+function hapusFungsiGlobal(nama) {
+    if (!nama) return { sukses: false, pesan: 'Nama fungsi wajib diisi.' };
+
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.fungsiGlobal)) kb.fungsiGlobal = [];
+
+    var sebelum = kb.fungsiGlobal.length;
+    kb.fungsiGlobal = kb.fungsiGlobal.filter(function(f) { return f.nama !== nama; });
+    var sesudah = kb.fungsiGlobal.length;
+
+    if (sebelum === sesudah) {
+        return { sukses: false, pesan: 'Fungsi "' + nama + '" tidak ditemukan.' };
+    }
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, dihapus: sebelum - sesudah };
+}
+
+// ============================================================
+// BLOK R 01.0 (261) — GET SEMUA BLOK
+// ============================================================
+function getSemuaBlok(filter) {
+    filter = filter || {};
+    var kb = loadKnowledgeBase();
+    var list = (kb && Array.isArray(kb.blokTerpasang)) ? kb.blokTerpasang : [];
+
+    if (filter.role) {
+        list = list.filter(function(b) { return b.role === filter.role; });
+    }
+    if (filter.status) {
+        list = list.filter(function(b) { return b.status === filter.status; });
+    }
+    if (filter.cari) {
+        var c = filter.cari.toLowerCase();
+        list = list.filter(function(b) {
+            return (b.nomor || '').toLowerCase().indexOf(c) !== -1 ||
+                   (b.nama || '').toLowerCase().indexOf(c) !== -1;
+        });
+    }
+    return list;
+}
+
+// ============================================================
+// BLOK R 01.0 (262) — REGISTER BLOK
+// ============================================================
+function registerBlok(nomor, meta) {
+    if (!nomor) return { sukses: false, pesan: 'Nomor blok wajib diisi.' };
+    meta = meta || {};
+
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.blokTerpasang)) kb.blokTerpasang = [];
+
+    var duplikat = kb.blokTerpasang.find(function(b) { return b.nomor === nomor; });
+
+    var entry = {
+        nomor:      nomor,
+        nama:       meta.nama || '-',
+        role:       meta.role || 'Semua',
+        status:     meta.status || 'Aktif',
+        deskripsi:  meta.deskripsi || '',
+        fungsiKunci: Array.isArray(meta.fungsiKunci) ? meta.fungsiKunci : [],
+        terdaftar:  _aiNow()
+    };
+
+    if (duplikat && !meta.paksa) {
+        return { sukses: false, pesan: 'Blok "' + nomor + '" sudah terdaftar.' };
+    }
+    if (duplikat && meta.paksa) {
+        var idx = kb.blokTerpasang.findIndex(function(b) { return b.nomor === nomor; });
+        kb.blokTerpasang[idx] = entry;
+    } else {
+        kb.blokTerpasang.push(entry);
+    }
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, entry: entry };
+}
+
+// ============================================================
+// BLOK R 01.0 (263) — CARI BLOK
+// ============================================================
+function cariBlok(keyword) {
+    if (!keyword) return getSemuaBlok();
+    return getSemuaBlok({ cari: keyword });
+}
+
+// ============================================================
+// BLOK R 01.0 (264) — GET BLOK BY ID
+// ============================================================
+function getBlokById(nomor) {
+    if (!nomor) return null;
+    var list = getSemuaBlok();
+    return list.find(function(b) { return b.nomor === nomor; }) || null;
+}
+
+// ============================================================
+// BLOK R 01.0 (265) — HAPUS BLOK
+// ============================================================
+function hapusBlok(nomor) {
+    if (!nomor) return { sukses: false, pesan: 'Nomor blok wajib diisi.' };
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.blokTerpasang)) kb.blokTerpasang = [];
+
+    var sebelum = kb.blokTerpasang.length;
+    kb.blokTerpasang = kb.blokTerpasang.filter(function(b) { return b.nomor !== nomor; });
+    if (sebelum === kb.blokTerpasang.length) {
+        return { sukses: false, pesan: 'Blok "' + nomor + '" tidak ditemukan.' };
+    }
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (266) — GET KONVENSI PROJECT
+// ============================================================
+function getKonvensiProject() {
+    var kb = loadKnowledgeBase();
+    var k = (kb && kb.konvensi) ? kb.konvensi : null;
+    if (k && typeof k === 'object') return k;
+
+    // Fallback default kalau kosong
+    return {
+        masterPrompt: '',
+        prefix: {},
+        warnaTema: {},
+        polaWajib: {},
+        aturanWajib: [
+            'Semua fungsi global di BLOK R 01.0',
+            'Jangan duplikasi fungsi global',
+            'Jangan pakai alert() — pakai tampilkanToastXxx',
+            'Pakai getIdUserAktif() untuk string ID user',
+            'Pakai getDataIdUser(idUser) untuk object user'
+        ]
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (267) — SIMPAN KONVENSI PROJECT
+// ============================================================
+function simpanKonvensiProject(data) {
+    if (!data || typeof data !== 'object') {
+        return { sukses: false, pesan: 'Data konvensi tidak valid.' };
+    }
+    var kb = loadKnowledgeBase();
+    kb.konvensi = Object.assign({}, kb.konvensi || {}, data);
+    kb.updatedAt = _aiNow();
+    return simpanKnowledgeBase(kb);
+}
+
+// ============================================================
+// BLOK R 01.0 (268) — RESET KONVENSI PROJECT
+// ============================================================
+function resetKonvensiProject() {
+    var kb = loadKnowledgeBase();
+    kb.konvensi = {
+        masterPrompt: '',
+        prefix: {},
+        warnaTema: {},
+        polaWajib: {},
+        aturanWajib: [
+            'Semua fungsi global di BLOK R 01.0',
+            'Jangan duplikasi fungsi global',
+            'Jangan pakai alert() — pakai tampilkanToastXxx',
+            'Pakai getIdUserAktif() untuk string ID user',
+            'Pakai getDataIdUser(idUser) untuk object user'
+        ]
+    };
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, konvensi: kb.konvensi };
+}
+
+// ============================================================
+// BLOK R 01.0 (269) — VALIDASI KODE PATUH KONVENSI
+// ------------------------------------------------------------
+// Scan kode (string), return { sukses, error: [], warning: [] }
+// ============================================================
+function validasiKodePatuhKonvensi(kode) {
+    if (!kode || typeof kode !== 'string') {
+        return { sukses: false, pesan: 'Kode wajib string.', error: [], warning: [] };
+    }
+
+    var errors = [];
+    var warnings = [];
+    var konvensi = getKonvensiProject();
+
+    // Cek 1: alert() → harus toast
+    if (/\balert\s*\(/.test(kode)) {
+        warnings.push({
+            tipe: 'alert()',
+            level: 'warning',
+            pesan: 'Gunakan tampilkanToastXxx() daripada alert().'
+        });
+    }
+
+    // Cek 2: getDataIdUser() tanpa parameter
+    if (/getDataIdUser\s*\(\s*\)/.test(kode)) {
+        errors.push({
+            tipe: 'getDataIdUser()',
+            level: 'error',
+            pesan: 'getDataIdUser() butuh parameter idUser.'
+        });
+    }
+
+    // Cek 3: eval / new Function
+    if (/\beval\s*\(/.test(kode) || /new\s+Function\s*\(/.test(kode)) {
+        errors.push({
+            tipe: 'eval',
+            level: 'error',
+            pesan: 'eval() dan new Function() dilarang (risiko keamanan).'
+        });
+    }
+
+    // Cek 4: return di luar function (heuristik kasar)
+    var openBraces = (kode.match(/\{/g) || []).length;
+    var closeBraces = (kode.match(/\}/g) || []).length;
+    if (openBraces !== closeBraces) {
+        errors.push({
+            tipe: 'kurung',
+            level: 'error',
+            pesan: 'Jumlah { dan } tidak seimbang (' + openBraces + ' vs ' + closeBraces + ').'
+        });
+    }
+
+    // Cek 5: console.log di produksi
+    if (/console\.log\s*\(/.test(kode)) {
+        warnings.push({
+            tipe: 'console.log',
+            level: 'warning',
+            pesan: 'Hapus console.log() untuk kode produksi.'
+        });
+    }
+
+    // Cek 6: var(--primary-color) — var tidak ada
+    if (/var\(--primary-color\)/.test(kode)) {
+        errors.push({
+            tipe: 'css-var',
+            level: 'error',
+            pesan: 'var(--primary-color) tidak terdefinisi. Pakai var(--primary) atau #FF8C00.'
+        });
+    }
+
+    // Cek 7: innerHTML dari input user (heuristik)
+    if (/\.innerHTML\s*=\s*[^"']*\+/.test(kode) && /input|value|user/i.test(kode)) {
+        warnings.push({
+            tipe: 'xss',
+            level: 'warning',
+            pesan: 'Kemungkinan XSS — escape input user sebelum innerHTML.'
+        });
+    }
+
+    // Cek 8: API key hardcoded
+    if (/sk-ant-[a-zA-Z0-9\-_]{20,}/.test(kode)) {
+        errors.push({
+            tipe: 'api-key',
+            level: 'error',
+            pesan: 'API key Claude terdeteksi di kode. Jangan hardcode!'
+        });
+    }
+
+    return {
+        sukses: errors.length === 0,
+        error: errors,
+        warning: warnings,
+        total: errors.length + warnings.length
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (270) — GET SEMUA KEY LOCALSTORAGE
+// ------------------------------------------------------------
+// Return array { key, sizeKB, sizeChars }
+// ============================================================
+function getSemuaKeyLocalStorage() {
+    var hasil = [];
+    try {
+        Object.keys(localStorage).forEach(function(k) {
+            var v = localStorage.getItem(k) || '';
+            hasil.push({
+                key: k,
+                sizeChars: k.length + v.length,
+                sizeKB: Math.round((k.length + v.length) * 2 / 1024 * 100) / 100
+            });
+        });
+    } catch (e) { console.warn(e); }
+    hasil.sort(function(a, b) { return b.sizeKB - a.sizeKB; });
+    return hasil;
+}
+
+// ============================================================
+// BLOK R 01.0 (271) — GET STRUKTUR DATA
+// ------------------------------------------------------------
+// Return schema 1 key (dari KB atau fallback inferensi)
+// ============================================================
+function getStrukturData(key) {
+    if (!key) return null;
+    var kb = loadKnowledgeBase();
+    var s = (kb && kb.strukturData && kb.strukturData[key]) ? kb.strukturData[key] : null;
+    if (s) return s;
+
+    // Fallback: inferensi dari data nyata
+    try {
+        var raw = localStorage.getItem(key);
+        if (!raw) return { tipe: 'unknown', fields: [], deskripsi: 'Data kosong.' };
+        var parsed = JSON.parse(raw);
+        var tipe = Array.isArray(parsed) ? 'array' : typeof parsed;
+        var fields = [];
+
+        if (Array.isArray(parsed) && parsed.length > 0) {
+            fields = Object.keys(parsed[0] || {});
+        } else if (parsed && typeof parsed === 'object') {
+            fields = Object.keys(parsed);
+        }
+        return { tipe: tipe, fields: fields, deskripsi: 'Inferensi otomatis.' };
+    } catch (e) {
+        return { tipe: 'unknown', fields: [], deskripsi: 'Gagal parse: ' + e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (272) — AUTO DOKUMENTASI STRUKTUR DATA
+// ============================================================
+function autoDokumentasiStrukturData() {
+    var semuaKey = getSemuaKeyLocalStorage();
+    var kb = loadKnowledgeBase();
+    if (!kb.strukturData) kb.strukturData = {};
+
+    semuaKey.forEach(function(item) {
+        if (!kb.strukturData[item.key]) {
+            kb.strukturData[item.key] = getStrukturData(item.key);
+        }
+    });
+
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, total: Object.keys(kb.strukturData).length };
+}
+
+// ============================================================
+// BLOK R 01.0 (273) — CEK KUOTA LOCALSTORAGE
+// ============================================================
+function cekKuotaLocalStorage() {
+    var total = 0;
+    try {
+        Object.keys(localStorage).forEach(function(k) {
+            total += (k.length + (localStorage.getItem(k) || '').length) * 2;
+        });
+    } catch (e) { console.warn(e); }
+
+    var terpakaiKB = Math.round(total / 1024 * 100) / 100;
+    var limitKB = 5 * 1024; // 5 MB standar
+    var sisaKB = Math.round((limitKB - terpakaiKB) * 100) / 100;
+    var persen = Math.round(terpakaiKB / limitKB * 10000) / 100;
+
+    return {
+        terpakaiKB: terpakaiKB,
+        sisaKB: sisaKB,
+        limitKB: limitKB,
+        persen: persen,
+        status: persen > 90 ? 'danger' : (persen > 70 ? 'warning' : 'normal')
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (274) — CATAT CHANGELOG
+// ============================================================
+function catatChangelog(versi, perubahan, meta) {
+    if (!perubahan) return { sukses: false, pesan: 'Perubahan wajib diisi.' };
+    meta = meta || {};
+
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.changelog)) kb.changelog = [];
+
+    var entry = {
+        id:        _aiGenerateId('LOG'),
+        versi:     versi || 'snapshot',
+        tanggal:   _aiNow(),
+        perubahan: perubahan,
+        oleh:      meta.oleh || (userAktif ? userAktif.nama : 'SuperAdmin'),
+        kategori:  meta.kategori || 'umum'
+    };
+    kb.changelog.unshift(entry);
+    if (kb.changelog.length > 500) kb.changelog = kb.changelog.slice(0, 500);
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, entry: entry };
+}
+
+// ============================================================
+// BLOK R 01.0 (275) — GET CHANGELOG
+// ============================================================
+function getChangelog(filter) {
+    filter = filter || {};
+    var kb = loadKnowledgeBase();
+    var list = (kb && Array.isArray(kb.changelog)) ? kb.changelog : [];
+
+    if (filter.kategori) {
+        list = list.filter(function(c) { return c.kategori === filter.kategori; });
+    }
+    if (filter.cari) {
+        var c = filter.cari.toLowerCase();
+        list = list.filter(function(x) {
+            return (x.perubahan || '').toLowerCase().indexOf(c) !== -1 ||
+                   (x.versi || '').toLowerCase().indexOf(c) !== -1;
+        });
+    }
+    if (filter.limit && filter.limit > 0) {
+        list = list.slice(0, filter.limit);
+    }
+    return list;
+}
+
+// ============================================================
+// BLOK R 01.0 (276) — HAPUS CHANGELOG
+// ============================================================
+function hapusChangelog(id) {
+    if (!id) return { sukses: false, pesan: 'ID wajib diisi.' };
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.changelog)) kb.changelog = [];
+
+    var sebelum = kb.changelog.length;
+    kb.changelog = kb.changelog.filter(function(c) { return c.id !== id; });
+    if (sebelum === kb.changelog.length) {
+        return { sukses: false, pesan: 'Changelog tidak ditemukan.' };
+    }
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (277) — AUDIT KEAMANAN
+// ------------------------------------------------------------
+// Scan localStorage + KB untuk pola berbahaya (16 pattern).
+// ============================================================
+function auditKeamanan() {
+    var issues = [];
+    var semuaKey = getSemuaKeyLocalStorage();
+
+    // Pattern berbahaya
+    var patterns = [
+        { regex: /\beval\s*\(/g,              level: 'high',   tipe: 'eval',         saran: 'Hapus eval().' },
+        { regex: /new\s+Function\s*\(/g,      level: 'high',   tipe: 'new-function', saran: 'Hapus new Function().' },
+        { regex: /sk-ant-[a-zA-Z0-9\-_]{20,}/g, level: 'high', tipe: 'api-key-leak', saran: 'Jangan simpan API key di data publik.' },
+        { regex: /<script[^>]*>[\s\S]{500,}/g, level: 'medium', tipe: 'long-script', saran: 'Cek script panjang — mungkin XSS.' },
+        { regex: /document\.write\s*\(/g,     level: 'medium', tipe: 'document-write', saran: 'Hindari document.write().' },
+        { regex: /innerHTML\s*=/g,            level: 'low',    tipe: 'innerHTML',    saran: 'Cek apakah ada input user.' }
+    ];
+
+    // Scan semua value localStorage
+    semuaKey.forEach(function(item) {
+        try {
+            var val = localStorage.getItem(item.key) || '';
+            patterns.forEach(function(p) {
+                var match = val.match(p.regex);
+                if (match) {
+                    issues.push({
+                        id:    _aiGenerateId('SEC'),
+                        level: p.level,
+                        tipe:  p.tipe,
+                        key:   item.key,
+                        jumlah: match.length,
+                        saran: p.saran
+                    });
+                }
+            });
+        } catch (e) { /* skip */ }
+    });
+
+    // Simpan hasil
+    _aiSaveJSON(AI_AUDIT_KEY, {
+        waktu: _aiNow(),
+        total: issues.length,
+        issues: issues
+    });
+
+    return {
+        total: issues.length,
+        high:   issues.filter(function(i) { return i.level === 'high'; }).length,
+        medium: issues.filter(function(i) { return i.level === 'medium'; }).length,
+        low:    issues.filter(function(i) { return i.level === 'low'; }).length,
+        issues: issues
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (278) — AUDIT INKONSISTENSI
+// ------------------------------------------------------------
+// Cek pelanggaran konvensi (duplikasi, pola salah, dll).
+// ============================================================
+function auditInkonsistensi() {
+    var issues = [];
+    var kb = loadKnowledgeBase();
+
+    // Cek 1: duplikasi nama fungsi global
+    var list = (kb && Array.isArray(kb.fungsiGlobal)) ? kb.fungsiGlobal : [];
+    var seen = {};
+    list.forEach(function(f) {
+        if (!f || !f.nama) return;
+        var key = f.nama.toLowerCase();
+        if (seen[key]) {
+            issues.push({
+                id: _aiGenerateId('INK'),
+                level: 'medium',
+                tipe: 'duplikasi-fungsi',
+                nama: f.nama,
+                saran: 'Fungsi "' + f.nama + '" terdaftar lebih dari sekali.'
+            });
+        }
+        seen[key] = true;
+    });
+
+    // Cek 2: fungsi global yang TIDAK di BLOK R 01.0
+    list.forEach(function(f) {
+        if (!f || !f.blokAsal) return;
+        if (f.blokAsal.indexOf('BLOK R 01.0') === -1 &&
+            f.kategori !== 'UI' && f.kategori !== 'Handler' &&
+            f.kategori !== 'Render' && f.kategori !== 'Alias') {
+            issues.push({
+                id: _aiGenerateId('INK'),
+                level: 'low',
+                tipe: 'lokasi-salah',
+                nama: f.nama,
+                saran: 'Fungsi "' + f.nama + '" sebaiknya di BLOK R 01.0.'
+            });
+        }
+    });
+
+    // Cek 3: blok tanpa fungsi kunci
+    var blokList = (kb && Array.isArray(kb.blokTerpasang)) ? kb.blokTerpasang : [];
+    blokList.forEach(function(b) {
+        if (!b.fungsiKunci || b.fungsiKunci.length === 0) {
+            issues.push({
+                id: _aiGenerateId('INK'),
+                level: 'low',
+                tipe: 'blok-tanpa-fungsi',
+                nomor: b.nomor,
+                saran: 'Blok "' + b.nomor + '" belum didaftarkan fungsi kuncinya.'
+            });
+        }
+    });
+
+    return {
+        total: issues.length,
+        high:   issues.filter(function(i) { return i.level === 'high'; }).length,
+        medium: issues.filter(function(i) { return i.level === 'medium'; }).length,
+        low:    issues.filter(function(i) { return i.level === 'low'; }).length,
+        issues: issues
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (279) — AUDIT API KEY USAGE
+// ------------------------------------------------------------
+// Cek apakah API key bocor di chat/log/changelog.
+// ============================================================
+function auditApiKeyUsage() {
+    var issues = [];
+    var providerCfg = getProviderConfig();
+    var apiKey = (providerCfg && providerCfg.apiKey) ? providerCfg.apiKey : '';
+    if (!apiKey) return { total: 0, isu: [], pesan: 'Tidak ada API key tersimpan.' };
+
+    var partial = apiKey.substring(0, 12); // cek 12 karakter pertama
+
+    // Cek di chat history
+    try {
+        var chatHistory = _aiLoadJSON(AI_CHAT_KEY, []);
+        if (Array.isArray(chatHistory)) {
+            chatHistory.forEach(function(msg) {
+                if (msg && typeof msg.isi === 'string' && msg.isi.indexOf(partial) !== -1) {
+                    issues.push({
+                        id: _aiGenerateId('KEY'),
+                        level: 'high',
+                        tipe: 'api-key-di-chat',
+                        lokasi: 'aiChatHistory',
+                        saran: 'API key terdeteksi di riwayat chat. Hapus segera!'
+                    });
+                }
+            });
+        }
+    } catch (e) { /* skip */ }
+
+    // Cek di changelog KB
+    try {
+        var kb = loadKnowledgeBase();
+        if (kb && Array.isArray(kb.changelog)) {
+            kb.changelog.forEach(function(c) {
+                if (c && typeof c.perubahan === 'string' && c.perubahan.indexOf(partial) !== -1) {
+                    issues.push({
+                        id: _aiGenerateId('KEY'),
+                        level: 'high',
+                        tipe: 'api-key-di-changelog',
+                        lokasi: 'changelog',
+                        saran: 'API key terdeteksi di changelog. Hapus segera!'
+                    });
+                }
+            });
+        }
+    } catch (e) { /* skip */ }
+
+    return {
+        total: issues.length,
+        isu: issues,
+        pesan: issues.length === 0 ? 'API key aman.' : 'Ada ' + issues.length + ' kebocoran!'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (280) — GENERATE LAPORAN AUDIT
+// ============================================================
+function generateLaporanAudit() {
+    var keamanan = auditKeamanan();
+    var inkonsistensi = auditInkonsistensi();
+    var apiKey = auditApiKeyUsage();
+
+    return {
+        waktu: _aiNow(),
+        keamanan: {
+            total: keamanan.total,
+            high: keamanan.high,
+            medium: keamanan.medium,
+            low: keamanan.low
+        },
+        inkonsistensi: {
+            total: inkonsistensi.total,
+            high: inkonsistensi.high,
+            medium: inkonsistensi.medium,
+            low: inkonsistensi.low
+        },
+        apiKey: {
+            total: apiKey.total,
+            pesan: apiKey.pesan
+        },
+        ringkasan: 'Total masalah: ' +
+            (keamanan.total + inkonsistensi.total + apiKey.total)
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (281) — LOAD KNOWLEDGE BASE
+// ------------------------------------------------------------
+// Fungsi inti — return object KB lengkap.
+// ============================================================
+function loadKnowledgeBase() {
+    var defaultKB = {
+        versi: AI_KB_VERSION,
+        createdAt: _aiNow(),
+        updatedAt: _aiNow(),
+        konvensi: {
+            masterPrompt: '',
+            prefix: {},
+            warnaTema: {},
+            polaWajib: {},
+            aturanWajib: [
+                'Semua fungsi global di BLOK R 01.0',
+                'Jangan duplikasi fungsi global',
+                'Jangan pakai alert() — pakai tampilkanToastXxx'
+            ]
+        },
+        fungsiGlobal: [],
+        blokTerpasang: [],
+        strukturData: {},
+        changelog: [],
+        keamanan: [],
+        ideBacklog: []
+    };
+
+    var stored = _aiLoadJSON(AI_KB_KEY, null);
+    if (!stored || typeof stored !== 'object') {
+        return defaultKB;
+    }
+    // Merge dengan default biar field baru tidak hilang
+    Object.keys(defaultKB).forEach(function(k) {
+        if (typeof stored[k] === 'undefined') stored[k] = defaultKB[k];
+    });
+    return stored;
+}
+
+// ============================================================
+// BLOK R 01.0 (282) — SIMPAN KNOWLEDGE BASE
+// ============================================================
+function simpanKnowledgeBase(data) {
+    if (!data || typeof data !== 'object') {
+        return { sukses: false, pesan: 'Data KB tidak valid.' };
+    }
+    data.updatedAt = _aiNow();
+    data.versi = data.versi || AI_KB_VERSION;
+    return _aiSaveJSON(AI_KB_KEY, data);
+}
+
+// ============================================================
+// BLOK R 01.0 (283) — CARI PENGETAHUAN
+// ------------------------------------------------------------
+// Cari di semua kategori KB (fungsi, blok, changelog, dll).
+// ============================================================
+function cariPengetahuan(keyword) {
+    if (!keyword) return { total: 0, hasil: [] };
+    var c = String(keyword).toLowerCase().trim();
+    var hasil = [];
+
+    // Fungsi global
+    getSemuaFungsiGlobal().forEach(function(f) {
+        if ((f.nama || '').toLowerCase().indexOf(c) !== -1 ||
+            (f.deskripsi || '').toLowerCase().indexOf(c) !== -1) {
+            hasil.push({ kategori: 'fungsi', data: f });
+        }
+    });
+
+    // Blok
+    getSemuaBlok().forEach(function(b) {
+        if ((b.nomor || '').toLowerCase().indexOf(c) !== -1 ||
+            (b.nama || '').toLowerCase().indexOf(c) !== -1) {
+            hasil.push({ kategori: 'blok', data: b });
+        }
+    });
+
+    // Changelog
+    getChangelog().forEach(function(ch) {
+        if ((ch.perubahan || '').toLowerCase().indexOf(c) !== -1) {
+            hasil.push({ kategori: 'changelog', data: ch });
+        }
+    });
+
+    return { total: hasil.length, keyword: keyword, hasil: hasil };
+}
+
+// ============================================================
+// BLOK R 01.0 (284) — TAMBAH PENGETAHUAN
+// ------------------------------------------------------------
+// Wrapper: tambah ke kategori tertentu.
+// kategori: 'fungsi' | 'blok' | 'changelog' | 'ide' | 'keamanan'
+// ============================================================
+function tambahPengetahuan(kategori, data) {
+    if (!kategori) return { sukses: false, pesan: 'Kategori wajib diisi.' };
+    data = data || {};
+
+    switch (kategori) {
+        case 'fungsi':    return registerFungsiGlobal(data.nama, data);
+        case 'blok':      return registerBlok(data.nomor, data);
+        case 'changelog': return catatChangelog(data.versi, data.perubahan, data);
+        case 'ide':       return simpanIdeFitur(data);
+        case 'keamanan':
+            var kb = loadKnowledgeBase();
+            if (!Array.isArray(kb.keamanan)) kb.keamanan = [];
+            kb.keamanan.push(data);
+            simpanKnowledgeBase(kb);
+            return { sukses: true };
+        default:
+            return { sukses: false, pesan: 'Kategori tidak dikenal: ' + kategori };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (285) — HAPUS PENGETAHUAN
+// ============================================================
+function hapusPengetahuan(kategori, id) {
+    if (!kategori || !id) return { sukses: false, pesan: 'Kategori & ID wajib.' };
+
+    switch (kategori) {
+        case 'fungsi':    return hapusFungsiGlobal(id);
+        case 'blok':      return hapusBlok(id);
+        case 'changelog': return hapusChangelog(id);
+        case 'ide':       return hapusIde(id);
+        default:          return { sukses: false, pesan: 'Kategori tidak dikenal.' };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (286) — RESET KNOWLEDGE BASE
+// ------------------------------------------------------------
+// Kembalikan KB ke default (hapus semua data, hanya konvensi kosong).
+// ============================================================
+function resetKnowledgeBase() {
+    if (!confirm('Reset Knowledge Base ke default? Semua data fungsi/blok/changelog akan hilang.')) {
+        return { sukses: false, pesan: 'Dibatalkan oleh user.' };
+    }
+    localStorage.removeItem(AI_KB_KEY);
+    return { sukses: true, kb: loadKnowledgeBase() };
+}
+
+// ============================================================
+// BLOK R 01.0 (287) — BUILD PROMPT KONTEKS
+// ------------------------------------------------------------
+// Susun konteks KB jadi teks prompt untuk AI.
+// ============================================================
+function buildPromptKonteks() {
+    var kb = loadKnowledgeBase();
+    var konvensi = kb.konvensi || {};
+    var lines = [];
+
+    lines.push('═══════════════════════════════════════');
+    lines.push('KONTEKS APLIKASI — TOKO ONLINE 2R');
+    lines.push('═══════════════════════════════════════');
+    lines.push('');
+    lines.push('▸ Total fungsi global: ' + (kb.fungsiGlobal || []).length);
+    lines.push('▸ Total blok terpasang: ' + (kb.blokTerpasang || []).length);
+    lines.push('▸ Total changelog: ' + (kb.changelog || []).length);
+    lines.push('');
+    lines.push('── ATURAN WAJIB ──');
+    (konvensi.aturanWajib || []).forEach(function(a, i) {
+        lines.push((i + 1) + '. ' + a);
+    });
+    lines.push('');
+    lines.push('── PREFIX ROLE ──');
+    var prefix = konvensi.prefix || {};
+    Object.keys(prefix).forEach(function(k) {
+        lines.push('  ' + k + ' → ' + prefix[k]);
+    });
+    lines.push('');
+    lines.push('── WARNA TEMA ──');
+    var warna = konvensi.warnaTema || {};
+    Object.keys(warna).forEach(function(k) {
+        lines.push('  ' + k + ' → ' + warna[k]);
+    });
+    lines.push('');
+    lines.push('── FUNGSI GLOBAL UTAMA (10 contoh) ──');
+    (kb.fungsiGlobal || []).slice(0, 10).forEach(function(f) {
+        lines.push('  ' + (f.nama || '-') + '() — ' + (f.deskripsi || '-'));
+    });
+    lines.push('');
+    lines.push('═══════════════════════════════════════');
+
+    return lines.join('\n');
+}
+
+// ============================================================
+// BLOK R 01.0 (288) — BUILD PROMPT PERBAIKAN
+// ============================================================
+function buildPromptPerbaikan(idBlok) {
+    var blok = getBlokById(idBlok);
+    if (!blok) {
+        return 'Perbaiki BLOK ' + idBlok + '. (Detail blok tidak ditemukan di KB.)';
+    }
+    var lines = [
+        '═══════════════════════════════════════',
+        'PERMINTAAN PERBAIKAN BLOK ' + idBlok,
+        '═══════════════════════════════════════',
+        '',
+        '▸ Nama blok: ' + (blok.nama || '-'),
+        '▸ Role: ' + (blok.role || '-'),
+        '▸ Fungsi kunci: ' + (blok.fungsiKunci || []).join(', '),
+        '▸ Deskripsi: ' + (blok.deskripsi || '-'),
+        '',
+        'Tugas: Audit blok ini, cari bug/inkonsistensi, berikan patch siap-tempel.',
+        '═══════════════════════════════════════'
+    ];
+    return lines.join('\n');
+}
+
+// ============================================================
+// BLOK R 01.0 (289) — BUILD PROMPT FITUR BARU
+// ============================================================
+function buildPromptFiturBaru(deskripsi) {
+    if (!deskripsi) return 'Deskripsi fitur kosong.';
+    var konteks = buildPromptKonteks();
+    var lines = [
+        konteks,
+        '',
+        '═══════════════════════════════════════',
+        'PERMINTAAN FITUR BARU',
+        '═══════════════════════════════════════',
+        '',
+        'Deskripsi: ' + deskripsi,
+        '',
+        'Tugas:',
+        '1. Rencanakan struktur (blok baru atau update blok existing)',
+        '2. Tulis kode HTML + JS sesuai konvensi',
+        '3. Sertakan anti-duplikat ID kalau render halaman',
+        '4. Return siap-tempel',
+        '═══════════════════════════════════════'
+    ];
+    return lines.join('\n');
+}
+
+// ============================================================
+// BLOK R 01.0 (290) — BUILD PROMPT AUDIT
+// ============================================================
+function buildPromptAudit() {
+    var laporan = generateLaporanAudit();
+    var lines = [
+        '═══════════════════════════════════════',
+        'LAPORAN AUDIT SISTEM',
+        '═══════════════════════════════════════',
+        '',
+        'Waktu: ' + laporan.waktu,
+        '',
+        '▸ Keamanan  : ' + laporan.keamanan.total + ' isu' +
+            ' (H:' + laporan.keamanan.high +
+            ' M:' + laporan.keamanan.medium +
+            ' L:' + laporan.keamanan.low + ')',
+        '▸ Inkonsistensi: ' + laporan.inkonsistensi.total + ' isu' +
+            ' (H:' + laporan.inkonsistensi.high +
+            ' M:' + laporan.inkonsistensi.medium +
+            ' L:' + laporan.inkonsistensi.low + ')',
+        '▸ API Key   : ' + laporan.apiKey.pesan,
+        '',
+        'Tugas: Analisis laporan, prioritaskan yang high, saran fix.',
+        '═══════════════════════════════════════'
+    ];
+    return lines.join('\n');
+}
+
+// ============================================================
+// BLOK R 01.0 (291) — BUILD PROMPT CUSTOM
+// ============================================================
+function buildPromptCustom(instruksi) {
+    if (!instruksi) return buildPromptKonteks();
+    return buildPromptKonteks() + '\n\n── INSTRUKSI ──\n' + instruksi;
+}
+
+// ============================================================
+// BLOK R 01.0 (292) — GET PROVIDER CONFIG
+// ============================================================
+function getProviderConfig() {
+    var defaultCfg = {
+        provider: 'claude',
+        model: 'claude-sonnet-4-5',
+        apiKey: '',
+        mode: 'direct', // 'direct' | 'manual'
+        maxTokens: 4000,
+        temperature: 0.7,
+        autoInjectKB: true,
+        autoBackup: true,
+        updatedAt: null
+    };
+    var stored = _aiLoadJSON(AI_PROVIDER_KEY, null);
+    if (!stored || typeof stored !== 'object') return defaultCfg;
+
+    Object.keys(defaultCfg).forEach(function(k) {
+        if (typeof stored[k] === 'undefined') stored[k] = defaultCfg[k];
+    });
+    return stored;
+}
+
+// ============================================================
+// BLOK R 01.0 (293) — SET PROVIDER CONFIG
+// ============================================================
+function setProviderConfig(data) {
+    if (!data || typeof data !== 'object') {
+        return { sukses: false, pesan: 'Data config tidak valid.' };
+    }
+    var cfg = Object.assign({}, getProviderConfig(), data);
+    cfg.updatedAt = _aiNow();
+    return _aiSaveJSON(AI_PROVIDER_KEY, cfg);
+}
+
+// ============================================================
+// BLOK R 01.0 (294) — TEST KONEKSI PROVIDER
+// ------------------------------------------------------------
+// Kirim pesan minimal ke provider untuk cek API key valid.
+// Return Promise { sukses, pesan }
+// ============================================================
+function testKoneksiProvider() {
+    var cfg = getProviderConfig();
+    if (!cfg.apiKey) {
+        return Promise.resolve({ sukses: false, pesan: 'API key belum diisi.' });
+    }
+    if (cfg.provider !== 'claude') {
+        return Promise.resolve({
+            sukses: false,
+            pesan: 'Provider "' + cfg.provider + '" belum diimplementasi di TAHAP 1.'
+        });
+    }
+
+    return fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': cfg.apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: cfg.model,
+            max_tokens: 20,
+            messages: [{ role: 'user', content: 'Reply OK only.' }]
+        })
+    })
+    .then(function(res) {
+        if (!res.ok) {
+            return res.json().then(function(e) {
+                throw new Error((e.error && e.error.message) || ('HTTP ' + res.status));
+            });
+        }
+        return res.json();
+    })
+    .then(function(data) {
+        return {
+            sukses: true,
+            pesan: 'Koneksi OK! Response: ' +
+                   ((data.content && data.content[0] && data.content[0].text) || '(kosong)')
+        };
+    })
+    .catch(function(err) {
+        return { sukses: false, pesan: 'Gagal: ' + err.message };
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (295) — KIRIM KE AI
+// ------------------------------------------------------------
+// Kirim prompt ke provider. Return Promise { sukses, jawaban, meta }
+// ============================================================
+function kirimKeAI(prompt, konteks) {
+    var cfg = getProviderConfig();
+    if (!prompt) return Promise.resolve({ sukses: false, pesan: 'Prompt kosong.' });
+
+    // Gabungkan konteks (kalau autoInjectKB aktif)
+    var fullPrompt = prompt;
+    if (cfg.autoInjectKB !== false && konteks !== false) {
+        var ctx = konteks || buildPromptKonteks();
+        fullPrompt = ctx + '\n\n── PERTANYAAN USER ──\n' + prompt;
+    }
+
+    if (cfg.mode === 'manual') {
+        // Manual: return prompt siap copy
+        return Promise.resolve({
+            sukses: true,
+            mode: 'manual',
+            prompt: fullPrompt,
+            pesan: 'Mode manual — copy prompt ke Claude.ai.'
+        });
+    }
+
+    // Mode direct
+    if (cfg.provider !== 'claude') {
+        return Promise.resolve({
+            sukses: false,
+            pesan: 'Provider "' + cfg.provider + '" belum diimplementasi di TAHAP 1.'
+        });
+    }
+    if (!cfg.apiKey) {
+        return Promise.resolve({ sukses: false, pesan: 'API key belum diisi.' });
+    }
+
+    var startTime = Date.now();
+
+    return fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': cfg.apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: cfg.model,
+            max_tokens: cfg.maxTokens || 4000,
+            temperature: cfg.temperature || 0.7,
+            messages: [{ role: 'user', content: fullPrompt }]
+        })
+    })
+    .then(function(res) {
+        if (!res.ok) {
+            return res.json().then(function(e) {
+                throw new Error((e.error && e.error.message) || ('HTTP ' + res.status));
+            });
+        }
+        return res.json();
+    })
+    .then(function(data) {
+        var jawaban = (data.content && data.content[0] && data.content[0].text) || '';
+        var durasi = Date.now() - startTime;
+
+        // Simpan ke riwayat chat
+        catatRiwayatChat({
+            tipe: 'user',
+            isi: prompt,
+            waktu: _aiNow()
+        });
+        catatRiwayatChat({
+            tipe: 'ai',
+            isi: jawaban,
+            waktu: _aiNow(),
+            model: cfg.model,
+            durasiMs: durasi,
+            tokens: (data.usage && data.usage.output_tokens) || 0
+        });
+
+        return {
+            sukses: true,
+            mode: 'direct',
+            jawaban: jawaban,
+            meta: {
+                model: cfg.model,
+                durasiMs: durasi,
+                tokensInput: (data.usage && data.usage.input_tokens) || 0,
+                tokensOutput: (data.usage && data.usage.output_tokens) || 0
+            }
+        };
+    })
+    .catch(function(err) {
+        return { sukses: false, pesan: 'Gagal: ' + err.message };
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (296) — CATAT RIWAYAT CHAT
+// ============================================================
+function catatRiwayatChat(pesan) {
+    if (!pesan || typeof pesan !== 'object') return { sukses: false };
+    var history = _aiLoadJSON(AI_CHAT_KEY, []);
+    if (!Array.isArray(history)) history = [];
+
+    pesan.id = pesan.id || _aiGenerateId('CHAT');
+    pesan.waktu = pesan.waktu || _aiNow();
+    history.push(pesan);
+    if (history.length > 500) history = history.slice(-500);
+
+    return _aiSaveJSON(AI_CHAT_KEY, history);
+}
+
+// ============================================================
+// BLOK R 01.0 (297) — GET RIWAYAT CHAT
+// ============================================================
+function getRiwayatChat(filter) {
+    filter = filter || {};
+    var history = _aiLoadJSON(AI_CHAT_KEY, []);
+    if (!Array.isArray(history)) return [];
+
+    if (filter.tipe) {
+        history = history.filter(function(h) { return h.tipe === filter.tipe; });
+    }
+    if (filter.limit && filter.limit > 0) {
+        history = history.slice(-filter.limit);
+    }
+    return history;
+}
+
+// ============================================================
+// BLOK R 01.0 (298) — SIMPAN IDE FITUR
+// ============================================================
+function simpanIdeFitur(ide) {
+    if (!ide || !ide.judul) {
+        return { sukses: false, pesan: 'Judul ide wajib diisi.' };
+    }
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.ideBacklog)) kb.ideBacklog = [];
+
+    var entry = {
+        id: _aiGenerateId('IDE'),
+        judul: ide.judul,
+        deskripsi: ide.deskripsi || '',
+        prioritas: ide.prioritas || 'medium', // 'high' | 'medium' | 'low'
+        status: ide.status || 'baru', // 'baru' | 'dikerjakan' | 'selesai'
+        targetBlok: ide.targetBlok || null,
+        dibuat: _aiNow(),
+        oleh: (userAktif ? userAktif.nama : 'SuperAdmin')
+    };
+    kb.ideBacklog.unshift(entry);
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, ide: entry };
+}
+
+// ============================================================
+// BLOK R 01.0 (299) — GET DAFTAR IDE
+// ============================================================
+function getDaftarIde(filter) {
+    filter = filter || {};
+    var kb = loadKnowledgeBase();
+    var list = (kb && Array.isArray(kb.ideBacklog)) ? kb.ideBacklog : [];
+
+    if (filter.status) {
+        list = list.filter(function(i) { return i.status === filter.status; });
+    }
+    if (filter.prioritas) {
+        list = list.filter(function(i) { return i.prioritas === filter.prioritas; });
+    }
+    return list;
+}
+
+// ============================================================
+// BLOK R 01.0 (300) — UBAH STATUS IDE
+// ============================================================
+function ubahStatusIde(id, status) {
+    if (!id || !status) return { sukses: false, pesan: 'ID dan status wajib.' };
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.ideBacklog)) kb.ideBacklog = [];
+
+    var idx = kb.ideBacklog.findIndex(function(i) { return i.id === id; });
+    if (idx === -1) return { sukses: false, pesan: 'Ide tidak ditemukan.' };
+
+    kb.ideBacklog[idx].status = status;
+    kb.ideBacklog[idx].updatedAt = _aiNow();
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true, ide: kb.ideBacklog[idx] };
+}
+
+// ============================================================
+// BLOK R 01.0 (301) — HAPUS IDE
+// ============================================================
+function hapusIde(id) {
+    if (!id) return { sukses: false, pesan: 'ID wajib diisi.' };
+    var kb = loadKnowledgeBase();
+    if (!Array.isArray(kb.ideBacklog)) kb.ideBacklog = [];
+
+    var sebelum = kb.ideBacklog.length;
+    kb.ideBacklog = kb.ideBacklog.filter(function(i) { return i.id !== id; });
+    if (sebelum === kb.ideBacklog.length) {
+        return { sukses: false, pesan: 'Ide tidak ditemukan.' };
+    }
+    kb.updatedAt = _aiNow();
+    simpanKnowledgeBase(kb);
+    return { sukses: true };
+}
+
+// ============================================================
+// SEEDER — AUTO-INISIALISASI KB SAAT PERTAMA KALI
+// ============================================================
+(function seedAiKnowledgeBase() {
+    var FLAG = 'seedingAiKnowledgeBaseV1';
+
+    // Cek flag + cek data benar-benar ada
+    var sudahAda = false;
+    try {
+        var raw = localStorage.getItem(AI_KB_KEY);
+        if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.fungsiGlobal) && parsed.fungsiGlobal.length > 0) {
+                sudahAda = true;
+            }
+        }
+    } catch (e) {}
+
+    if (sudahAda) return; // Sudah di-seed, skip
+
+    console.log('🌱 Seeder AI Knowledge Base — mulai inisialisasi...');
+
+    var kb = loadKnowledgeBase();
+
+    // ─── A. KONVENSI DASAR ───
+    kb.konvensi = {
+        masterPrompt: '[Master Prompt lengkap ada di file terpisah — paste manual di BLOK 32.5]',
+        prefix: {
+            'TK':  'Toko',
+            'OJ':  'Ojek',
+            'PP':  'Pedagang Pasar',
+            'PM':  'Pedagang Makanan',
+            'COD': 'COD Seller',
+            'CT':  'Customer',
+            'GR':  'Grosir',
+            'DST': 'Distributor',
+            'KSR': 'Kasir',
+            'ADM': 'Staf Admin',
+            'SOT': 'Staf Owner Toko',
+            'SOO': 'Staf Owner Ojek',
+            'MKT': 'Staf Marketing',
+            'TGH': 'Staf Penagihan',
+            'CS':  'Customer Service',
+            'EO':  'Event Organizer',
+            'ORG': 'Organisasi',
+            'IND': 'Individu'
+        },
+        warnaTema: {
+            'Primary':         '#FF8C00',
+            'Secondary':       '#FF6B00',
+            'Toko':            '#FF8C00',
+            'Pedagang Pasar':  '#28A745',
+            'Pedagang Makanan':'#FFC107',
+            'COD Seller':      '#17A2B8',
+            'Ojek':            '#DC3545',
+            'Grosir':          '#17A2B8',
+            'Distributor':     '#6F42C1',
+            'Customer':        '#6C757D'
+        },
+        polaWajib: {
+            renderHalaman: 'function tampilkanXxx() { tutupMenu(); ... if (!window._templateXxx) { var c = document.getElementById("xxxContainer"); window._templateXxx = c.innerHTML; c.remove(); } konten.innerHTML = window._templateXxx; setTimeout(renderXxx, 300); }',
+            tambahData: 'function tambahXxx() { var idUser = getIdUserAktif(); ... }'
+        },
+        aturanWajib: [
+            'Semua fungsi global WAJIB di BLOK R 01.0',
+            'JANGAN duplikasi fungsi global di blok lain',
+            'JANGAN pakai alert() — pakai tampilkanToastXxx()',
+            'JANGAN pakai var(--primary-color) — pakai var(--primary) atau #FF8C00',
+            'Pakai getIdUserAktif() untuk string ID user',
+            'Pakai getDataIdUser(idUser) untuk object user',
+            'JANGAN return di luar function',
+            'Pakai anti-duplikat ID: window._templateXxx + container.remove()',
+            'Semua aksi WAJIB catatAktivitasGlobal(idUser, aksi, detail)'
+        ]
+    };
+
+    // ─── B. FUNGSI GLOBAL EXISTING (KURASI) ───
+    var fungsiExisting = [
+        // Helper dasar
+        { nama: 'generateKodeUnik', kategori: 'Helper', deskripsi: 'Generate kode unik dengan prefix', blokAsal: 'BLOK R 01.0 (1)' },
+        { nama: 'getDataIdUser', kategori: 'Helper', deskripsi: 'Ambil data user by ID', blokAsal: 'BLOK R 01.0 (2)' },
+        { nama: 'simpanDataKeLocalStorage', kategori: 'Storage', deskripsi: 'Simpan semua data ke localStorage', blokAsal: 'BLOK R 01.0 (3)' },
+        { nama: 'muatDataDariLocalStorage', kategori: 'Storage', deskripsi: 'Muat semua data dari localStorage', blokAsal: 'BLOK R 01.0 (4)' },
+        { nama: 'tutupMenu', kategori: 'UI', deskripsi: 'Tutup offcanvas sidebar', blokAsal: 'BLOK R 01.0 (5)' },
+        { nama: 'prosesLogout', kategori: 'Auth', deskripsi: 'Logout user', blokAsal: 'BLOK R 01.0 (6)' },
+        { nama: 'formatRupiah', kategori: 'Helper', deskripsi: 'Format angka jadi Rp', blokAsal: 'BLOK R 01.0 (7)' },
+        { nama: 'getFotoProfilAkun', kategori: 'Profil', deskripsi: 'Ambil foto profil user', blokAsal: 'BLOK R 01.0 (16)' },
+        { nama: 'getProfilLengkap', kategori: 'Profil', deskripsi: 'Ambil profil lengkap user', blokAsal: 'BLOK R 01.0 (17)' },
+        { nama: 'catatAktivitasGlobal', kategori: 'Log', deskripsi: 'Catat aktivitas user', blokAsal: 'BLOK R 01.0 (21)' },
+        { nama: 'loadProdukByRole', kategori: 'Produk', deskripsi: 'Load produk by role', blokAsal: 'BLOK R 01.0 (65)' },
+        { nama: 'simpanProdukByRole', kategori: 'Produk', deskripsi: 'Simpan produk by role', blokAsal: 'BLOK R 01.0 (65)' },
+        { nama: 'tambahProdukGlobalUniversal', kategori: 'Produk', deskripsi: 'Tambah produk baru', blokAsal: 'BLOK R 01.0 (65)' },
+        { nama: 'getStatusOnlineAkun', kategori: 'Status', deskripsi: 'Cek status online user', blokAsal: 'BLOK R 01.0 (60)' },
+        { nama: 'hitungJarak', kategori: 'Geo', deskripsi: 'Hitung jarak 2 koordinat', blokAsal: 'BLOK R 01.0 (57)' },
+        { nama: 'getDompetUser', kategori: 'Dompet', deskripsi: 'Ambil dompet user', blokAsal: 'BLOK R 01.0 (82)' },
+        { nama: 'getSaldoDompet', kategori: 'Dompet', deskripsi: 'Ambil saldo dompet user', blokAsal: 'BLOK R 01.0 (83)' },
+        { nama: 'tambahSaldoDompet', kategori: 'Dompet', deskripsi: 'Tambah saldo user', blokAsal: 'BLOK R 01.0 (85)' },
+        { nama: 'kurangSaldoDompet', kategori: 'Dompet', deskripsi: 'Kurangi saldo user', blokAsal: 'BLOK R 01.0 (86)' },
+        { nama: 'transferCoin', kategori: 'Dompet', deskripsi: 'Transfer coin antar user', blokAsal: 'BLOK R 01.0 (87)' },
+        { nama: 'bisaWithdrawRole', kategori: 'Rules', deskripsi: 'Cek role bisa withdraw', blokAsal: 'BLOK R 01.0 (88)' },
+        { nama: 'bisaKirimCoinRole', kategori: 'Rules', deskripsi: 'Cek role bisa kirim coin', blokAsal: 'BLOK R 01.0 (89)' },
+        { nama: 'bisaTerimaOrderOjek', kategori: 'Ojek', deskripsi: 'Cek ojek bisa terima order', blokAsal: 'BLOK R 01.0 (90)' },
+        { nama: 'potongCoinOjek', kategori: 'Ojek', deskripsi: 'Potong 1 coin ojek', blokAsal: 'BLOK R 01.0 (91)' },
+        { nama: 'hitungStatistikDompetGlobal', kategori: 'Statistik', deskripsi: 'Statistik dompet global', blokAsal: 'BLOK R 01.0 (92)' },
+        { nama: 'getSaldoKasRupiah', kategori: 'Statistik', deskripsi: 'Saldo kas rupiah platform', blokAsal: 'BLOK R 01.0 (93)' },
+        { nama: 'generateKodeVerifikasi', kategori: 'Verifikasi', deskripsi: 'Generate kode OTP', blokAsal: 'BLOK R 01.0 (95)' },
+        { nama: 'kirimChatOtomatis', kategori: 'Chat', deskripsi: 'Kirim chat otomatis', blokAsal: 'BLOK R 01.0 (96)' },
+        { nama: 'notifTopUpKeSA', kategori: 'Chat', deskripsi: 'Notif topup ke SA', blokAsal: 'BLOK R 01.0 (97)' },
+        { nama: 'notifTopUpKeUser', kategori: 'Chat', deskripsi: 'Notif topup ke user', blokAsal: 'BLOK R 01.0 (98)' },
+        { nama: 'notifWithdrawKeSA', kategori: 'Chat', deskripsi: 'Notif withdraw ke SA', blokAsal: 'BLOK R 01.0 (99)' },
+        { nama: 'notifWithdrawKeUser', kategori: 'Chat', deskripsi: 'Notif withdraw ke user', blokAsal: 'BLOK R 01.0 (100)' },
+        { nama: 'loadTopUpHistory', kategori: 'TopUp', deskripsi: 'Load riwayat topup', blokAsal: 'BLOK R 01.0 (101)' },
+        { nama: 'ajukanTopUp', kategori: 'TopUp', deskripsi: 'Ajukan topup', blokAsal: 'BLOK R 01.0 (103)' },
+        { nama: 'setujuiTopUp', kategori: 'TopUp', deskripsi: 'Setujui topup', blokAsal: 'BLOK R 01.0 (104)' },
+        { nama: 'tolakTopUp', kategori: 'TopUp', deskripsi: 'Tolak topup', blokAsal: 'BLOK R 01.0 (105)' },
+        { nama: 'ajukanWithdraw', kategori: 'Withdraw', deskripsi: 'Ajukan withdraw', blokAsal: 'BLOK R 01.0 (110)' },
+        { nama: 'setujuiWithdraw', kategori: 'Withdraw', deskripsi: 'Setujui withdraw', blokAsal: 'BLOK R 01.0 (111)' },
+        { nama: 'tolakWithdraw', kategori: 'Withdraw', deskripsi: 'Tolak withdraw', blokAsal: 'BLOK R 01.0 (112)' },
+        { nama: 'intervensiCoinSA', kategori: 'Intervensi', deskripsi: 'Intervensi coin oleh SA', blokAsal: 'BLOK R 01.0 (114)' },
+        { nama: 'getSettingEkonomiGlobal', kategori: 'Setting', deskripsi: 'Ambil setting ekonomi', blokAsal: 'BLOK R 01.0 (15)' },
+        { nama: 'simpanSettingEkonomiGlobal', kategori: 'Setting', deskripsi: 'Simpan setting ekonomi', blokAsal: 'BLOK R 01.0 (79)' },
+        { nama: 'hitungCoinDariBelanja', kategori: 'Ekonomi', deskripsi: 'Hitung coin dari belanja', blokAsal: 'BLOK R 01.0 (80)' },
+        { nama: 'hitungCoinDariRupiah', kategori: 'Ekonomi', deskripsi: 'Konversi Rp ke Coin', blokAsal: 'BLOK R 01.0 (116)' },
+        { nama: 'hitungRupiahDariCoin', kategori: 'Ekonomi', deskripsi: 'Konversi Coin ke Rp', blokAsal: 'BLOK R 01.0 (117)' },
+        { nama: 'hitungCoinRewardTerbaru', kategori: 'Ekonomi', deskripsi: 'Reward coin dari belanja', blokAsal: 'BLOK R 01.0 (118)' },
+        { nama: 'cekSaldoUntukBayarCoin', kategori: 'Ekonomi', deskripsi: 'Cek saldo cukup bayar', blokAsal: 'BLOK R 01.0 (119)' },
+        { nama: 'bisaJualanSeller', kategori: 'Rules', deskripsi: 'Cek seller bisa jualan', blokAsal: 'BLOK R 01.0 (121)' },
+        { nama: 'transferCoinReward', kategori: 'Reward', deskripsi: 'Transfer reward coin', blokAsal: 'BLOK R 01.0 (122)' },
+        { nama: 'prosesBelanjaDenganRupiah', kategori: 'Belanja', deskripsi: 'Belanja pakai Rp', blokAsal: 'BLOK R 01.0 (123)' },
+        { nama: 'prosesBelanjaDenganCoin', kategori: 'Belanja', deskripsi: 'Belanja pakai Coin', blokAsal: 'BLOK R 01.0 (124)' },
+        { nama: 'getKategoriByRole', kategori: 'Kategori', deskripsi: 'Daftar kategori produk', blokAsal: 'BLOK R 01.0 (127)' },
+        { nama: 'getSatuanByRole', kategori: 'Satuan', deskripsi: 'Daftar satuan produk', blokAsal: 'BLOK R 01.0 (128)' },
+        { nama: 'generateKodeProduk', kategori: 'Produk', deskripsi: 'Generate kode produk', blokAsal: 'BLOK R 01.0 (130)' },
+        { nama: 'hitungHargaCoinOtomatis', kategori: 'Produk', deskripsi: 'Auto harga coin', blokAsal: 'BLOK R 01.0 (131)' },
+        { nama: 'getDaftarSellerYangBisaDilihat', kategori: 'Katalog', deskripsi: 'Seller yang bisa dilihat', blokAsal: 'BLOK R 01.0 (133)' },
+        { nama: 'mintaIzinLokasiCustomer', kategori: 'Geo', deskripsi: 'Minta izin lokasi', blokAsal: 'BLOK R 01.0 (136)' },
+        { nama: 'hitungJarakRealTime', kategori: 'Geo', deskripsi: 'Jarak real-time', blokAsal: 'BLOK R 01.0 (137)' },
+        { nama: 'cekStokCukup', kategori: 'Stok', deskripsi: 'Cek stok cukup', blokAsal: 'BLOK R 01.0 (140)' },
+        { nama: 'kurangiStokProduk', kategori: 'Stok', deskripsi: 'Kurangi stok', blokAsal: 'BLOK R 01.0 (141)' },
+        { nama: 'getKeranjangPesanan', kategori: 'Keranjang', deskripsi: 'Ambil keranjang', blokAsal: 'BLOK R 01.0 (143)' },
+        { nama: 'tambahItemKeranjang', kategori: 'Keranjang', deskripsi: 'Tambah item keranjang', blokAsal: 'BLOK R 01.0 (144)' },
+        { nama: 'hitungTotalKeranjang', kategori: 'Keranjang', deskripsi: 'Total keranjang', blokAsal: 'BLOK R 01.0 (147)' },
+        { nama: 'kirimChatPesanan', kategori: 'Chat', deskripsi: 'Kirim pesanan via chat', blokAsal: 'BLOK R 01.0 (150)' },
+        { nama: 'simpanPesananUser', kategori: 'Pesanan', deskripsi: 'Simpan pesanan', blokAsal: 'BLOK R 01.0 (151)' },
+        { nama: 'prosesTransaksiOnline', kategori: 'Transaksi', deskripsi: 'Transaksi online', blokAsal: 'BLOK R 01.0 (153)' },
+        { nama: 'prosesTransaksiOffline', kategori: 'Transaksi', deskripsi: 'Transaksi offline', blokAsal: 'BLOK R 01.0 (154)' },
+        { nama: 'simpanTransaksiKatalog', kategori: 'Transaksi', deskripsi: 'Simpan transaksi', blokAsal: 'BLOK R 01.0 (155)' },
+        { nama: 'loadTransaksiKatalog', kategori: 'Transaksi', deskripsi: 'Load transaksi', blokAsal: 'BLOK R 01.0 (156)' },
+        { nama: 'getHistoryPenjualan', kategori: 'Transaksi', deskripsi: 'History penjualan', blokAsal: 'BLOK R 01.0 (157)' },
+        { nama: 'hitungKeuntungan', kategori: 'Laporan', deskripsi: 'Hitung keuntungan', blokAsal: 'BLOK R 01.0 (158)' },
+        { nama: 'simpanPengeluaran', kategori: 'Laporan', deskripsi: 'Simpan pengeluaran', blokAsal: 'BLOK R 01.0 (159)' },
+        { nama: 'catatKasbon', kategori: 'Kasbon', deskripsi: 'Catat kasbon', blokAsal: 'BLOK R 01.0 (161)' },
+        { nama: 'bayarKasbon', kategori: 'Kasbon', deskripsi: 'Bayar kasbon', blokAsal: 'BLOK R 01.0 (163)' },
+        { nama: 'generateStrukHTML', kategori: 'Struk', deskripsi: 'Generate HTML struk', blokAsal: 'BLOK R 01.0 (164)' },
+        { nama: 'cetakStruk', kategori: 'Struk', deskripsi: 'Cetak struk', blokAsal: 'BLOK R 01.0 (165)' },
+        { nama: 'getConfigStrukLengkap', kategori: 'Struk', deskripsi: 'Config struk lengkap', blokAsal: 'BLOK R 01.0 (194)' },
+        { nama: 'generateStrukLengkap', kategori: 'Struk', deskripsi: 'Generate struk lengkap', blokAsal: 'BLOK R 01.0 (196)' },
+        { nama: 'exportExcelLaporan', kategori: 'Export', deskripsi: 'Export ke CSV', blokAsal: 'BLOK R 01.0 (167)' },
+        // GIF Saweran
+        { nama: 'loadKatalogGiftSawer', kategori: 'Gift', deskripsi: 'Load katalog gift', blokAsal: 'BLOK R 01.0 (220)' },
+        { nama: 'getGiftSawerById', kategori: 'Gift', deskripsi: 'Ambil gift by ID', blokAsal: 'BLOK R 01.0 (222)' },
+        { nama: 'tambahGiftSawer', kategori: 'Gift', deskripsi: 'Tambah gift', blokAsal: 'BLOK R 01.0 (223)' },
+        { nama: 'kirimGiftSawer', kategori: 'Gift', deskripsi: 'Kirim gift sawer', blokAsal: 'BLOK R 01.0 (233)' },
+        { nama: 'konversiGifKeR2Coin', kategori: 'Gift', deskripsi: 'Konversi GIF ke Coin', blokAsal: 'BLOK R 01.0 (234)' },
+        { nama: 'getFeePlatformGift', kategori: 'Gift', deskripsi: 'Fee platform gift', blokAsal: 'BLOK R 01.0 (219)' },
+        // Tarif Ojek
+        { nama: 'getTarifOjekGlobal', kategori: 'Ojek', deskripsi: 'Ambil tarif ojek', blokAsal: 'BLOK R 01.0 (248)' },
+        { nama: 'simpanTarifOjekGlobal', kategori: 'Ojek', deskripsi: 'Simpan tarif ojek', blokAsal: 'BLOK R 01.0 (249)' },
+        { nama: 'hitungOngkosOjek', kategori: 'Ojek', deskripsi: 'Hitung ongkos ojek', blokAsal: 'BLOK R 01.0 (250)' },
+        { nama: 'formatOngkosOjek', kategori: 'Ojek', deskripsi: 'Format ongkos ojek', blokAsal: 'BLOK R 01.0 (251)' },
+        { nama: 'hitungBiayaJasaOjekCoin', kategori: 'Ojek', deskripsi: 'Biaya jasa ojek', blokAsal: 'BLOK R 01.0 (252)' },
+        { nama: 'bisaSelesaikanOrderOjek', kategori: 'Ojek', deskripsi: 'Cek bisa selesaikan', blokAsal: 'BLOK R 01.0 (253)' },
+        { nama: 'potongBiayaJasaOjek', kategori: 'Ojek', deskripsi: 'Potong biaya jasa', blokAsal: 'BLOK R 01.0 (254)' },
+        { nama: 'selesaikanOrderOjek', kategori: 'Ojek', deskripsi: 'Selesaikan order', blokAsal: 'BLOK R 01.0 (255)' }
+    ];
+
+    kb.fungsiGlobal = fungsiExisting.map(function(f) {
+        return {
+            nomor: null,
+            nama: f.nama,
+            kategori: f.kategori,
+            deskripsi: f.deskripsi,
+            parameter: [],
+            returnType: 'any',
+            blokAsal: f.blokAsal,
+            terdaftar: _aiNow()
+        };
+    });
+
+    // ─── C. BLOK TERPASANG (KURASI) ───
+    var blokExisting = [
+        { nomor: '10.1',  nama: 'Dasbor SuperAdmin',      role: 'SuperAdmin' },
+        { nomor: '10.2',  nama: 'Profil SuperAdmin',      role: 'SuperAdmin' },
+        { nomor: '10.3',  nama: 'Kelola Akun Aktif',      role: 'SuperAdmin' },
+        { nomor: '10.4',  nama: 'Persetujuan Akun',       role: 'SuperAdmin' },
+        { nomor: '10.5',  nama: 'Buat Akun SA',           role: 'SuperAdmin' },
+        { nomor: '10.7',  nama: 'Verifikasi Dokumen',     role: 'SuperAdmin' },
+        { nomor: '10.19', nama: 'Menu Chat SA',           role: 'SuperAdmin' },
+        { nomor: '10.20', nama: 'Kelola Wilayah',         role: 'SuperAdmin' },
+        { nomor: '10.41', nama: 'Manajemen Rekening',     role: 'SuperAdmin' },
+        { nomor: '10.45', nama: 'Setting Ekonomi',        role: 'SuperAdmin' },
+        { nomor: '10.46', nama: 'Dompet R2Coin SA',       role: 'SuperAdmin' },
+        { nomor: '10.47', nama: 'Verifikasi TopUp',       role: 'SuperAdmin' },
+        { nomor: '10.70', nama: 'Pengecualian Minimal',   role: 'SuperAdmin' },
+        { nomor: '10.71', nama: 'Penukaran GIF',          role: 'SuperAdmin' },
+        { nomor: '10.72', nama: 'Pendapatan Platform',    role: 'SuperAdmin' },
+        { nomor: '11.2',  nama: 'Profil Toko',            role: 'Toko' },
+        { nomor: '11.3',  nama: 'Pengajuan Verifikasi',   role: 'Toko' },
+        { nomor: '11.5',  nama: 'Manajemen Produk',       role: 'Toko' },
+        { nomor: '11.6',  nama: 'Transaksi Offline',      role: 'Toko' },
+        { nomor: '11.7',  nama: 'Order Masuk',            role: 'Toko' },
+        { nomor: '11.8',  nama: 'Konfigurasi Struk',      role: 'Toko' },
+        { nomor: '11.11', nama: 'Buat Akun Kasir',        role: 'Toko' },
+        { nomor: '11.14', nama: 'Katalog Produk',         role: 'Toko' },
+        { nomor: '11.15', nama: 'Manajemen Katalog',      role: 'Toko' },
+        { nomor: '11.16', nama: 'Penataan Produk',        role: 'Toko' },
+        { nomor: '11.23', nama: 'Laporan & Keuangan',     role: 'Toko' },
+        { nomor: '11.24', nama: 'Menu Chat User',         role: 'Semua' },
+        { nomor: '11.31', nama: 'Dompet R2Coin Toko',     role: 'Toko' },
+        { nomor: '12.2',  nama: 'Profil PP',              role: 'Pedagang Pasar' },
+        { nomor: '12.31', nama: 'Dompet R2Coin PP',       role: 'Pedagang Pasar' },
+        { nomor: '13.2',  nama: 'Profil PM',              role: 'Pedagang Makanan' },
+        { nomor: '13.31', nama: 'Dompet R2Coin PM',       role: 'Pedagang Makanan' },
+        { nomor: '14.31', nama: 'Dompet R2Coin COD',      role: 'COD Seller' },
+        { nomor: '15.31', nama: 'Dompet R2Coin Ojek',     role: 'Ojek' },
+        { nomor: '15.7',  nama: 'Order Masuk Ojek',       role: 'Ojek' },
+        { nomor: '19.31', nama: 'Dompet R2Coin CT',       role: 'Customer' },
+        { nomor: '27.31', nama: 'Dompet R2Coin DST',      role: 'Distributor' },
+        { nomor: '28.31', nama: 'Dompet R2Coin GR',       role: 'Grosir' }
+    ];
+
+    kb.blokTerpasang = blokExisting.map(function(b) {
+        return {
+            nomor: b.nomor,
+            nama: b.nama,
+            role: b.role,
+            status: 'Aktif',
+            deskripsi: '',
+            fungsiKunci: [],
+            terdaftar: _aiNow()
+        };
+    });
+
+    // ─── D. CHANGELOG AWAL ───
+    kb.changelog = [
+        { id: _aiGenerateId('LOG'), versi: 'v1.0', tanggal: _aiNow(), perubahan: 'Fondasi project — konvensi & struktur', oleh: 'SuperAdmin', kategori: 'umum' },
+        { id: _aiGenerateId('LOG'), versi: 'v2.0', tanggal: _aiNow(), perubahan: 'FASE 1 — Dompet R2Coin core', oleh: 'SuperAdmin', kategori: 'dompet' },
+        { id: _aiGenerateId('LOG'), versi: 'v3.0', tanggal: _aiNow(), perubahan: 'FASE 2 — Menu Dompet SA', oleh: 'SuperAdmin', kategori: 'dompet' },
+        { id: _aiGenerateId('LOG'), versi: 'v4.0', tanggal: _aiNow(), perubahan: 'FASE T1–T4 — Tarif Ojek, Biaya Jasa, Pendapatan Platform', oleh: 'SuperAdmin', kategori: 'ojek' },
+        { id: _aiGenerateId('LOG'), versi: 'v5.0', tanggal: _aiNow(), perubahan: 'FASE 5 — Dompet semua role + GIF Saweran', oleh: 'SuperAdmin', kategori: 'dompet' },
+        { id: _aiGenerateId('LOG'), versi: 'v6.0', tanggal: _aiNow(), perubahan: 'AI Knowledge Base TAHAP 1 — Fondasi (46 fungsi global)', oleh: 'SuperAdmin', kategori: 'ai' }
+    ];
+
+    // ─── E. INISIALISASI FIELD LAIN ───
+    kb.strukturData = {};
+    kb.keamanan = [];
+    kb.ideBacklog = [];
+    kb.versi = AI_KB_VERSION;
+    kb.updatedAt = _aiNow();
+
+    // ─── SIMPAN ───
+    var hasil = simpanKnowledgeBase(kb);
+    if (hasil.sukses) {
+        localStorage.setItem(FLAG, 'true');
+        console.log('✅ Seeder AI Knowledge Base selesai.');
+        console.log('   • Fungsi global  :', kb.fungsiGlobal.length);
+        console.log('   • Blok terpasang :', kb.blokTerpasang.length);
+        console.log('   • Changelog      :', kb.changelog.length);
+    } else {
+        console.error('❌ Seeder gagal:', hasil.pesan);
+    }
+})();
+
+// ============================================================
+// AKHIR BLOK R 01.0 (256–301) — AI KNOWLEDGE BASE TAHAP 1
+// ============================================================
+
 </script>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 01.0 (380-384) ===== -->
