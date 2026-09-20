@@ -16450,7 +16450,458 @@ function setupDragProfilUniversal(idUser) {
 }
 </script>
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 01.0 (426–433) ===== -->
+<!-- ===== AKHIR BLOK R 01.0 (433) ===== -->
+<!-- ============================================================ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (434-441) – FUNGSI GLOBAL KEAMANAN SISTEM -->
+<!-- ------------------------------------------------------------ -->
+<!-- Dipakai oleh: BLOK 10.23 (Keamanan Sistem), Login, Pendaftaran -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+// ============================================================
+// BLOK R 01.0 (434) – GET KEAMANAN CONFIG GLOBAL
+// ------------------------------------------------------------
+// Ambil config keamanan dari localStorage.
+// Merge dengan default supaya field baru otomatis terisi.
+//
+// Struktur return:
+//   {
+//     maxLoginAttempts: 5,
+//     blockDuration:    30,
+//     toggleRegistrasi: true,
+//     toggleUploadProduk: true,
+//     ipWhitelist: [],
+//     updatedAt: null,
+//     updatedBy: null
+//   }
+// ============================================================
+function getKeamananConfigGlobal() {
+    var defaults = {
+        maxLoginAttempts:   5,
+        blockDuration:      30,
+        toggleRegistrasi:   true,
+        toggleUploadProduk: true,
+        ipWhitelist:        [],
+        updatedAt:          null,
+        updatedBy:          null
+    };
+
+    try {
+        var stored = localStorage.getItem('keamananConfig');
+        if (!stored) return defaults;
+
+        var data = JSON.parse(stored);
+        if (!data || typeof data !== 'object') return defaults;
+
+        // Merge field yang belum ada
+        Object.keys(defaults).forEach(function(k) {
+            if (typeof data[k] === 'undefined') data[k] = defaults[k];
+        });
+
+        // Pastikan ipWhitelist array
+        if (!Array.isArray(data.ipWhitelist)) data.ipWhitelist = [];
+
+        // Pastikan angka valid
+        data.maxLoginAttempts = parseInt(data.maxLoginAttempts, 10) || 5;
+        data.blockDuration    = parseInt(data.blockDuration, 10)    || 30;
+
+        // Clamp
+        if (data.maxLoginAttempts < 1) data.maxLoginAttempts = 1;
+        if (data.maxLoginAttempts > 10) data.maxLoginAttempts = 10;
+        if (data.blockDuration < 1) data.blockDuration = 1;
+        if (data.blockDuration > 60) data.blockDuration = 60;
+
+        return data;
+    } catch (e) {
+        console.warn('getKeamananConfigGlobal parse error:', e);
+        return defaults;
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (435) – SAVE KEAMANAN CONFIG GLOBAL
+// ------------------------------------------------------------
+// Simpan config ke localStorage + validasi + catat aktivitas.
+//
+// Parameter: data (object — field apapun opsional, merge dengan
+//            config yang ada).
+//
+// Return: { sukses: bool, pesan?: string, config?: object }
+// ============================================================
+function saveKeamananConfigGlobal(data) {
+    var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+    if (!idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    data = data || {};
+
+    var lama = getKeamananConfigGlobal();
+    var baru = {
+        maxLoginAttempts:   (typeof data.maxLoginAttempts !== 'undefined')
+                              ? parseInt(data.maxLoginAttempts, 10)
+                              : lama.maxLoginAttempts,
+        blockDuration:      (typeof data.blockDuration !== 'undefined')
+                              ? parseInt(data.blockDuration, 10)
+                              : lama.blockDuration,
+        toggleRegistrasi:   (typeof data.toggleRegistrasi !== 'undefined')
+                              ? !!data.toggleRegistrasi
+                              : lama.toggleRegistrasi,
+        toggleUploadProduk: (typeof data.toggleUploadProduk !== 'undefined')
+                              ? !!data.toggleUploadProduk
+                              : lama.toggleUploadProduk,
+        ipWhitelist:        (typeof data.ipWhitelist !== 'undefined' && Array.isArray(data.ipWhitelist))
+                              ? data.ipWhitelist.slice()
+                              : lama.ipWhitelist.slice(),
+        updatedAt:          new Date().toISOString(),
+        updatedBy:          idUser
+    };
+
+    // Validasi
+    if (isNaN(baru.maxLoginAttempts) || baru.maxLoginAttempts < 1 ||
+        baru.maxLoginAttempts > 10) {
+        return { sukses: false, pesan: 'Maks percobaan login harus 1-10.' };
+    }
+    if (isNaN(baru.blockDuration) || baru.blockDuration < 1 ||
+        baru.blockDuration > 60) {
+        return { sukses: false, pesan: 'Durasi blokir harus 1-60 menit.' };
+    }
+
+    try {
+        localStorage.setItem('keamananConfig', JSON.stringify(baru));
+
+        // Sync ke variable global
+        if (typeof keamananConfig !== 'undefined' && keamananConfig) {
+            Object.keys(baru).forEach(function(k) {
+                keamananConfig[k] = baru[k];
+            });
+        }
+
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(idUser, 'Setting Keamanan',
+                'Max login: ' + baru.maxLoginAttempts +
+                ', blokir: ' + baru.blockDuration + ' menit');
+        }
+
+        return { sukses: true, config: baru };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (436) – VALIDASI FORMAT IP GLOBAL
+// ------------------------------------------------------------
+// Cek apakah string adalah IPv4 valid (0-255 tiap oktet).
+//
+// Return: { sukses: bool, pesan?: string }
+// ============================================================
+function validasiFormatIPGlobal(ip) {
+    if (!ip || typeof ip !== 'string') {
+        return { sukses: false, pesan: 'IP kosong.' };
+    }
+
+    ip = ip.trim();
+
+    // Regex dasar
+    var regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+    var match = ip.match(regex);
+
+    if (!match) {
+        return {
+            sukses: false,
+            pesan: 'Format IP tidak valid. Contoh: 182.253.64.12'
+        };
+    }
+
+    // Cek range 0-255
+    for (var i = 1; i <= 4; i++) {
+        var n = parseInt(match[i], 10);
+        if (isNaN(n) || n < 0 || n > 255) {
+            return {
+                sukses: false,
+                pesan: 'Setiap oktet IP harus 0-255 (ditemukan: ' + match[i] + ').'
+            };
+        }
+    }
+
+    // Cek tidak ada leading zero (optional, biar ketat)
+    for (var j = 1; j <= 4; j++) {
+        if (match[j].length > 1 && match[j][0] === '0') {
+            return {
+                sukses: false,
+                pesan: 'Oktet tidak boleh diawali 0 (contoh salah: 01).'
+            };
+        }
+    }
+
+    return { sukses: true, ip: ip };
+}
+
+// ============================================================
+// BLOK R 01.0 (437) – TAMBAH IP WHITELIST GLOBAL
+// ------------------------------------------------------------
+// Tambah IP ke whitelist + validasi format + cek duplikat.
+//
+// Return: { sukses: bool, pesan?: string, ipWhitelist?: array }
+// ============================================================
+function tambahIPWhitelistGlobal(ip) {
+    var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+    if (!idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    // Validasi format
+    var val = validasiFormatIPGlobal(ip);
+    if (!val.sukses) return val;
+
+    var cleanIP = val.ip;
+
+    // Cek duplikat
+    var cfg = getKeamananConfigGlobal();
+    if (cfg.ipWhitelist.indexOf(cleanIP) !== -1) {
+        return {
+            sukses: false,
+            pesan: 'IP ' + cleanIP + ' sudah ada di daftar.'
+        };
+    }
+
+    // Tambah
+    var newList = cfg.ipWhitelist.slice();
+    newList.push(cleanIP);
+
+    var hasil = saveKeamananConfigGlobal({ ipWhitelist: newList });
+    if (!hasil.sukses) return hasil;
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idUser, 'Tambah IP Whitelist',
+            'IP: ' + cleanIP);
+    }
+
+    return {
+        sukses: true,
+        ipWhitelist: newList,
+        ip: cleanIP
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (438) – HAPUS IP WHITELIST GLOBAL
+// ------------------------------------------------------------
+// Hapus IP dari whitelist berdasarkan index atau IP string.
+//
+// Parameter: identifier — index (number) atau IP string
+//
+// Return: { sukses: bool, pesan?: string, ipWhitelist?: array }
+// ============================================================
+function hapusIPWhitelistGlobal(identifier) {
+    var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+    if (!idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    var cfg = getKeamananConfigGlobal();
+    var list = cfg.ipWhitelist.slice();
+
+    if (list.length === 0) {
+        return { sukses: false, pesan: 'Whitelist kosong.' };
+    }
+
+    var idx = -1;
+    var ipHapus = '';
+
+    if (typeof identifier === 'number') {
+        // By index
+        if (identifier < 0 || identifier >= list.length) {
+            return { sukses: false, pesan: 'Index tidak valid.' };
+        }
+        idx = identifier;
+        ipHapus = list[idx];
+    } else {
+        // By IP string
+        var ip = String(identifier).trim();
+        idx = list.indexOf(ip);
+        if (idx === -1) {
+            return { sukses: false, pesan: 'IP ' + ip + ' tidak ditemukan.' };
+        }
+        ipHapus = ip;
+    }
+
+    list.splice(idx, 1);
+
+    var hasil = saveKeamananConfigGlobal({ ipWhitelist: list });
+    if (!hasil.sukses) return hasil;
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idUser, 'Hapus IP Whitelist',
+            'IP: ' + ipHapus);
+    }
+
+    return {
+        sukses: true,
+        ipWhitelist: list,
+        ip: ipHapus
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (439) – CEK IP DIIZINKAN GLOBAL
+// ------------------------------------------------------------
+// Cek apakah IP boleh login. Dipakai di proses login SA.
+//
+// Aturan:
+//   - Kalau whitelist kosong → semua IP diizinkan
+//   - Kalau ada isi → hanya IP di list yang boleh
+//
+// Parameter:
+//   - ip: string (opsional — kalau kosong, coba deteksi)
+//
+// Return: { sukses: bool, diizinkan: bool, pesan?: string, ip?: string }
+// ============================================================
+function cekIPDiizinkanGlobal(ip) {
+    var cfg = getKeamananConfigGlobal();
+    var list = cfg.ipWhitelist;
+
+    // Whitelist kosong = semua diizinkan
+    if (!Array.isArray(list) || list.length === 0) {
+        return {
+            sukses: true,
+            diizinkan: true,
+            pesan: 'Whitelist kosong — semua IP diizinkan.',
+            ip: ip || null
+        };
+    }
+
+    // Kalau IP tidak disediakan → tidak bisa cek
+    if (!ip) {
+        // Fallback: ambil dari cache session
+        var cached = sessionStorage.getItem('ipSekarang');
+        if (cached) {
+            ip = cached;
+        } else {
+            return {
+                sukses: false,
+                diizinkan: false,
+                pesan: 'IP tidak terdeteksi. Cek manual via menu Keamanan Sistem.'
+            };
+        }
+    }
+
+    var cleanIP = String(ip).trim();
+
+    if (list.indexOf(cleanIP) !== -1) {
+        return {
+            sukses: true,
+            diizinkan: true,
+            pesan: 'IP ' + cleanIP + ' diizinkan.',
+            ip: cleanIP
+        };
+    }
+
+    return {
+        sukses: true,
+        diizinkan: false,
+        pesan: 'IP ' + cleanIP + ' TIDAK diizinkan login SuperAdmin.',
+        ip: cleanIP
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (440) – CEK TOGGLE FITUR GLOBAL
+// ------------------------------------------------------------
+// Cek apakah fitur tertentu aktif. Dipakai di:
+//   - Halaman pendaftaran publik → cek toggleRegistrasi
+//   - Form upload produk → cek toggleUploadProduk
+//
+// Parameter: namaFitur — 'registrasi' | 'uploadProduk'
+//
+// Return: { aktif: bool, pesan?: string }
+// ============================================================
+function cekToggleFiturGlobal(namaFitur) {
+    var cfg = getKeamananConfigGlobal();
+
+    if (namaFitur === 'registrasi') {
+        return {
+            aktif: !!cfg.toggleRegistrasi,
+            pesan: cfg.toggleRegistrasi
+                ? 'Pendaftaran aktif.'
+                : 'Pendaftaran akun baru sedang DINONAKTIFKAN oleh SuperAdmin.'
+        };
+    }
+
+    if (namaFitur === 'uploadProduk') {
+        return {
+            aktif: !!cfg.toggleUploadProduk,
+            pesan: cfg.toggleUploadProduk
+                ? 'Upload produk aktif.'
+                : 'Pengajuan upload produk sedang DINONAKTIFKAN oleh SuperAdmin.'
+        };
+    }
+
+    return {
+        aktif: false,
+        pesan: 'Nama fitur "' + namaFitur + '" tidak dikenal.'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (441) – RESET KEAMANAN CONFIG GLOBAL
+// ------------------------------------------------------------
+// Reset config keamanan ke default. Whitelist IP ikut direset
+// jadi kosong (semua IP boleh login).
+//
+// Return: { sukses: bool, pesan?: string, config?: object }
+// ============================================================
+function resetKeamananConfigGlobal() {
+    var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+    if (!idUser) {
+        return { sukses: false, pesan: 'User tidak valid.' };
+    }
+
+    var defaults = {
+        maxLoginAttempts:   5,
+        blockDuration:      30,
+        toggleRegistrasi:   true,
+        toggleUploadProduk: true,
+        ipWhitelist:        [],
+        updatedAt:          new Date().toISOString(),
+        updatedBy:          idUser
+    };
+
+    try {
+        localStorage.setItem('keamananConfig', JSON.stringify(defaults));
+
+        // Sync variable global
+        if (typeof keamananConfig !== 'undefined' && keamananConfig) {
+            Object.keys(defaults).forEach(function(k) {
+                keamananConfig[k] = defaults[k];
+            });
+        }
+
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(idUser, 'Reset Keamanan',
+                'Config keamanan direset ke default');
+        }
+
+        return { sukses: true, config: defaults };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+console.log('✅ BLOK R 01.0 (434-441) – 8 fungsi keamanan global terpasang:');
+console.log('   (434) getKeamananConfigGlobal');
+console.log('   (435) saveKeamananConfigGlobal');
+console.log('   (436) validasiFormatIPGlobal');
+console.log('   (437) tambahIPWhitelistGlobal');
+console.log('   (438) hapusIPWhitelistGlobal');
+console.log('   (439) cekIPDiizinkanGlobal');
+console.log('   (440) cekToggleFiturGlobal');
+console.log('   (441) resetKeamananConfigGlobal');
+</script>
+<!-- ============================================================ -->
+<!-- AKHIR BLOK R 01.0 (434-441) -->
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
