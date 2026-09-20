@@ -19815,6 +19815,671 @@ function hapusIde(id) {
 // AKHIR BLOK R 01.0 (256–301) — AI KNOWLEDGE BASE TAHAP 1
 // ============================================================
 
+// ============================================================
+// BLOK R 01.0 (426–435) – FUNGSI GLOBAL CHAT CUSTOMER (19.24)
+// ------------------------------------------------------------
+// Fungsi global untuk Menu Chat & Belanja Customer:
+//   - Ambil daftar kontak (seller retail + ojek lokal)
+//   - Buka chat + auto-select dari HF
+//   - Render produk / keranjang / riwayat
+//   - Checkout via chat
+//   - Request ojek lokal
+// ------------------------------------------------------------
+// Semua fungsi di sini adalah GLOBAL — dipanggil oleh:
+//   - BLOK 19.24 (Menu Chat Customer)
+//   - BLOK 50.1b (HelloFriends → Chat Creator)
+// ============================================================
+
+
+// ============================================================
+// BLOK R 01.0 (426) – GET DAFTAR KONTAK CHAT CT
+// ------------------------------------------------------------
+// Ambil daftar kontak untuk Customer:
+//   - Seller retail: Toko, PP, PM, COD (via aturan bisnis)
+//   - Ojek lokal: dari dataAkunAktif (role 'Ojek')
+// Return: array user (sudah difilter)
+// ============================================================
+function getDaftarKontakChatCT(idUser) {
+    if (!idUser) return [];
+
+    var user = getDataIdUser(idUser);
+    if (!user) return [];
+
+    if (user.role !== 'Customer') {
+        // Fallback: kalau bukan customer, ambil dari aturan umum
+        if (typeof getDaftarSellerYangBisaDilihat === 'function') {
+            return getDaftarSellerYangBisaDilihat(user.role, idUser) || [];
+        }
+        return [];
+    }
+
+    var daftar = [];
+    var sudahAda = {};
+
+    // 1. Seller retail (Toko, PP, PM, COD)
+    if (typeof getDaftarSellerYangBisaDilihat === 'function') {
+        var sellerList = getDaftarSellerYangBisaDilihat('Customer', idUser) || [];
+        sellerList.forEach(function(s) {
+            if (!s || !s.id) return;
+            if (sudahAda[s.id]) return;
+            sudahAda[s.id] = true;
+            daftar.push(s);
+        });
+    }
+
+    // 2. Ojek lokal (role = 'Ojek')
+    (dataAkunAktif || []).forEach(function(a) {
+        if (!a || !a.id) return;
+        if (a.id === idUser) return;
+        if (a.role !== 'Ojek') return;
+        if (sudahAda[a.id]) return;
+        var st = a.statusVerifikasi || a.status || 'Aktif';
+        if (st !== 'Aktif') return;
+        sudahAda[a.id] = true;
+        daftar.push(a);
+    });
+
+    return daftar;
+}
+
+
+// ============================================================
+// BLOK R 01.0 (427) – GET KONTAK CHAT CT BY ID
+// ------------------------------------------------------------
+// Ambil info lengkap 1 kontak chat CT:
+//   { user, role, isOjek, produkList, isOnline }
+// ============================================================
+function getKontakChatCTById(idKontak) {
+    if (!idKontak) return null;
+
+    var user = getDataIdUser(idKontak);
+    if (!user) return null;
+
+    var isOjek = (user.role === 'Ojek');
+    var produkList = [];
+
+    if (!isOjek && typeof loadProdukByRole === 'function') {
+        produkList = loadProdukByRole(user.role, idKontak) || [];
+        // Filter hanya yang publik
+        produkList = produkList.filter(function(p) { return !!p.isPublik; });
+    }
+
+    return {
+        user: user,
+        role: user.role,
+        isOjek: isOjek,
+        isOnline: (typeof getStatusOnlineAkun === 'function'
+            ? getStatusOnlineAkun(idKontak) === 'Online'
+            : false),
+        produkList: produkList,
+        jumlahProduk: produkList.length
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (428) – BUKA CHAT CT DENGAN USER (DISPTACHER)
+// ------------------------------------------------------------
+// Dipanggil dari HelloFriends saat klik "Chat Creator" / "Chat".
+// Buka BLOK 19.24 + auto-select kontak + fokus ke chat.
+//
+// Fallback: kalau BLOK 19.24 belum ada, pakai menu chat generic.
+// ============================================================
+function bukaChatCTDenganUser(idUser) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var target = getDataIdUser(idUser);
+    if (!target) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    // Cek kalau pemanggil bukan Customer → pakai menu chat generic
+    if (userAktif && userAktif.role !== 'Customer') {
+        if (typeof tampilkanMenuChatUser === 'function') {
+            tampilkanMenuChatUser();
+            setTimeout(function() {
+                if (typeof bukaChatDenganUser === 'function') {
+                    bukaChatDenganUser(idUser);
+                }
+            }, 300);
+            return { sukses: true, mode: 'generic' };
+        }
+    }
+
+    // Customer → buka BLOK 19.24
+    if (typeof tampilkanMenuChatCT !== 'function') {
+        return { sukses: false, pesan: 'BLOK 19.24 belum terpasang.' };
+    }
+
+    tampilkanMenuChatCT();
+
+    // Auto-select kontak setelah DOM siap
+    setTimeout(function() {
+        if (typeof bukaKontakCT === 'function') {
+            bukaKontakCT(idUser);
+        }
+    }, 300);
+
+    return { sukses: true, mode: 'chatCT' };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (429) – RENDER PRODUK KONTAK CT (HTML)
+// ------------------------------------------------------------
+// Generate HTML grid produk seller untuk tab "Produk" di 19.24.
+// Return: string HTML (siap tempel ke innerHTML)
+// ============================================================
+function renderProdukKontakCTHTML(seller) {
+    if (!seller || !seller.id) return '<p class="text-muted text-center py-4">Seller tidak valid.</p>';
+
+    var isOjek = (seller.role === 'Ojek');
+    if (isOjek) {
+        return '<p class="text-muted text-center py-4">' +
+               '<i class="fas fa-motorcycle fa-3x d-block mb-2 opacity-25"></i>' +
+               'Ojek tidak punya produk. Gunakan tab <strong>Pesan Antar</strong>.</p>';
+    }
+
+    var produkList = (typeof loadProdukByRole === 'function')
+        ? loadProdukByRole(seller.role, seller.id) : [];
+
+    // Filter publik + stok > 0
+    produkList = produkList.filter(function(p) {
+        return !!p.isPublik && (parseInt(p.stok, 10) || 0) > 0;
+    });
+
+    if (produkList.length === 0) {
+        return '<p class="text-muted text-center py-4">' +
+               '<i class="fas fa-box-open fa-3x d-block mb-2 opacity-25"></i>' +
+               'Belum ada produk tersedia.</p>';
+    }
+
+    var html = '<div class="row g-2">';
+    produkList.forEach(function(p) {
+        var foto = p.foto || ('https://placehold.co/150x150/FF8C00/ffffff?text=' +
+                   encodeURIComponent((p.nama || 'P').substring(0, 2)));
+        var stok = parseInt(p.stok, 10) || 0;
+        var hargaRp = (parseFloat(p.harga) || 0).toLocaleString('id-ID');
+        var hargaCoin = parseInt(p.hargaCoin, 10) || 0;
+
+        var stokBadge = stok === 0
+            ? '<span class="badge bg-danger">Habis</span>'
+            : (stok <= 5
+                ? '<span class="badge bg-warning text-dark">Stok: ' + stok + '</span>'
+                : '<span class="badge bg-success">Stok: ' + stok + '</span>');
+
+        var namaEsc = (p.nama || '').replace(/'/g, "\\'");
+
+        html +=
+            '<div class="col-6 col-md-4">' +
+                '<div class="card border-0 shadow-sm h-100">' +
+                    '<img src="' + foto + '" class="card-img-top" ' +
+                         'style="height:110px;object-fit:cover;" ' +
+                         'onerror="this.src=\'https://placehold.co/150x150/FF8C00/ffffff?text=Produk\'">' +
+                    '<div class="card-body p-2 d-flex flex-column">' +
+                        '<div class="fw-bold small mb-1" style="font-size:12px;line-height:1.2;">' +
+                            (p.nama || '-') + '</div>' +
+                        '<div class="small text-success fw-bold" style="font-size:12px;">' +
+                            'Rp ' + hargaRp + '</div>' +
+                        '<div class="small text-warning" style="font-size:11px;">' +
+                            '<i class="fas fa-coins me-1"></i>' + hargaCoin + ' Coin' +
+                        '</div>' +
+                        '<div class="mt-1 mb-2">' + stokBadge + '</div>' +
+                        '<button class="btn btn-sm btn-success mt-auto w-100" ' +
+                                'onclick="tambahProdukKeKeranjangCT(\'' + p.id + '\', \'' + namaEsc + '\')">' +
+                            '<i class="fas fa-cart-plus me-1"></i>+' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+
+// ============================================================
+// BLOK R 01.0 (430) – RENDER KERANJANG CT (HTML)
+// ------------------------------------------------------------
+// Generate HTML keranjang customer (dari KERANJANG_PESANAN).
+// Return: { html, totalRp, totalCoin, totalItem, jumlahProduk }
+// ============================================================
+function renderKeranjangCTHTML() {
+    var keranjang = (typeof getKeranjangPesanan === 'function')
+        ? getKeranjangPesanan() : { idSeller: null, items: [] };
+
+    var items = keranjang.items || [];
+
+    if (items.length === 0) {
+        return {
+            html: '<p class="text-muted text-center py-4 small mb-0">' +
+                  '<i class="fas fa-shopping-cart fa-2x d-block mb-2 opacity-25"></i>' +
+                  'Keranjang kosong.</p>',
+            totalRp: 0, totalCoin: 0, totalItem: 0, jumlahProduk: 0,
+            idSeller: null
+        };
+    }
+
+    var totalRp = 0;
+    var totalCoin = 0;
+    var totalItem = 0;
+
+    var html = '';
+    items.forEach(function(it) {
+        var sub = (it.hargaRp || 0) * (it.jumlah || 0);
+        var subCoin = (it.hargaCoin || 0) * (it.jumlah || 0);
+        totalRp += sub;
+        totalCoin += subCoin;
+        totalItem += (it.jumlah || 0);
+
+        html +=
+            '<div class="border-bottom pb-2 mb-2">' +
+                '<div class="d-flex justify-content-between align-items-start">' +
+                    '<div style="flex:1;min-width:0;">' +
+                        '<div class="fw-bold small text-truncate">' + (it.nama || '-') + '</div>' +
+                        '<small class="text-muted">' +
+                            'Rp ' + (it.hargaRp || 0).toLocaleString('id-ID') +
+                            ' × ' + it.jumlah +
+                        '</small>' +
+                    '</div>' +
+                    '<div class="text-end ms-2">' +
+                        '<div class="fw-bold small text-success">' +
+                            'Rp ' + sub.toLocaleString('id-ID') + '</div>' +
+                        '<small class="text-warning">' + subCoin + ' Coin</small>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="d-flex gap-1 mt-1">' +
+                    '<button class="btn btn-sm btn-outline-secondary p-0 px-2" ' +
+                            'onclick="updateQtyKeranjangCT(\'' + it.idProduk + '\', ' + (it.jumlah - 1) + ')">−</button>' +
+                    '<button class="btn btn-sm btn-outline-secondary p-0 px-2" ' +
+                            'onclick="updateQtyKeranjangCT(\'' + it.idProduk + '\', ' + (it.jumlah + 1) + ')">+</button>' +
+                    '<button class="btn btn-sm btn-outline-danger p-0 px-2 ms-auto" ' +
+                            'onclick="hapusItemKeranjangCT(\'' + it.idProduk + '\')">' +
+                        '<i class="fas fa-trash" style="font-size:10px;"></i>' +
+                    '</button>' +
+                '</div>' +
+            '</div>';
+    });
+
+    return {
+        html: html,
+        totalRp: Math.floor(totalRp),
+        totalCoin: Math.floor(totalCoin),
+        totalItem: totalItem,
+        jumlahProduk: items.length,
+        idSeller: keranjang.idSeller
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (431) – BUKA MODAL CHECKOUT CT
+// ------------------------------------------------------------
+// Dipanggil dari tab keranjang saat klik "Checkout".
+// Return: { sukses, idSeller, totalRp, totalCoin }
+// ============================================================
+function bukaCheckoutCT(idSeller, items, metode, catatan) {
+    if (!idSeller) return { sukses: false, pesan: 'ID seller tidak valid.' };
+    if (!Array.isArray(items) || items.length === 0) {
+        return { sukses: false, pesan: 'Keranjang kosong.' };
+    }
+
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    var totalRp = 0;
+    var totalCoin = 0;
+    items.forEach(function(it) {
+        totalRp += (it.hargaRp || 0) * (it.jumlah || 0);
+        totalCoin += (it.hargaCoin || 0) * (it.jumlah || 0);
+    });
+
+    return {
+        sukses: true,
+        idSeller: idSeller,
+        namaSeller: seller.nama,
+        roleSeller: seller.role,
+        items: items,
+        totalRp: Math.floor(totalRp),
+        totalCoin: Math.floor(totalCoin),
+        metode: metode || 'Chat - Transfer',
+        catatan: catatan || ''
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (432) – KIRIM CHECKOUT CT (FINAL)
+// ------------------------------------------------------------
+// Submit final dari modal checkout:
+//   - Validasi stok (ulang)
+//   - Validasi metode coin (kalau pakai R2Coin)
+//   - Kirim via chat pesanan ke seller
+//   - Return sukses/gagal
+// ============================================================
+function kirimCheckoutCTFinal(idSeller, items, metode, catatan) {
+    var idMe = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+    if (!idMe) return { sukses: false, pesan: 'User tidak valid.' };
+    if (!idSeller) return { sukses: false, pesan: 'ID seller tidak valid.' };
+    if (!Array.isArray(items) || items.length === 0) {
+        return { sukses: false, pesan: 'Keranjang kosong.' };
+    }
+
+    var seller = getDataIdUser(idSeller);
+    if (!seller) return { sukses: false, pesan: 'Seller tidak ditemukan.' };
+
+    // Validasi stok
+    if (typeof cekStokCukup === 'function') {
+        var cekStok = cekStokCukup(idSeller, items);
+        if (!cekStok.sukses) return cekStok;
+    }
+
+    // Hitung total
+    var totalRp = 0;
+    var totalCoin = 0;
+    items.forEach(function(it) {
+        totalRp += (it.hargaRp || 0) * (it.jumlah || 0);
+        totalCoin += (it.hargaCoin || 0) * (it.jumlah || 0);
+    });
+
+    // Validasi metode coin
+    if (metode === 'R2Coin') {
+        var saldo = (typeof getSaldoDompet === 'function')
+            ? getSaldoDompet(idMe) : 0;
+        if (saldo < totalCoin) {
+            return {
+                sukses: false,
+                pesan: 'Saldo R2Coin tidak cukup. Saldo: ' + saldo +
+                       ' Coin, dibutuhkan: ' + totalCoin + ' Coin.'
+            };
+        }
+    }
+
+    // Kirim pesanan via chat
+    if (typeof kirimChatPesanan !== 'function') {
+        return { sukses: false, pesan: 'Fungsi kirimChatPesanan belum tersedia.' };
+    }
+
+    var daftarItem = items.map(function(it) {
+        return {
+            id: it.idProduk || it.id,
+            nama: it.nama || '-',
+            jumlah: it.jumlah || 0,
+            hargaRp: it.hargaRp || 0,
+            hargaCoin: it.hargaCoin || 0,
+            satuan: it.satuan || ''
+        };
+    });
+
+    var hasil = kirimChatPesanan(idMe, idSeller, daftarItem, catatan, metode);
+
+    if (!hasil.sukses) return hasil;
+
+    // Kosongkan keranjang
+    if (typeof kosongkanKeranjang === 'function') {
+        kosongkanKeranjang();
+    }
+
+    // Catat aktivitas
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idMe, 'Checkout CT',
+            hasil.idPesanan + ' - ' + items.length + ' item - Rp ' +
+            totalRp.toLocaleString('id-ID'));
+    }
+
+    return {
+        sukses: true,
+        idPesanan: hasil.idPesanan,
+        totalRp: Math.floor(totalRp),
+        totalCoin: Math.floor(totalCoin),
+        totalItem: items.length,
+        metode: metode
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (433) – HITUNG ONGKOS REQUEST OJEK CT
+// ------------------------------------------------------------
+// Hitung ongkos ojek dari koordinat customer ke tujuan.
+// Return: { sukses, jarakKm, ongkosRp, teksDetail }
+// ============================================================
+function hitungOngkosRequestOjekCT(idSellerOjek, lat, lng) {
+    if (!idSellerOjek) return { sukses: false, pesan: 'ID ojek tidak valid.' };
+
+    var ojek = getDataIdUser(idSellerOjek);
+    if (!ojek || ojek.role !== 'Ojek') {
+        return { sukses: false, pesan: 'User bukan Ojek.' };
+    }
+
+    lat = parseFloat(lat) || 0;
+    lng = parseFloat(lng) || 0;
+    if (lat === 0 || lng === 0) {
+        return { sukses: false, pesan: 'Koordinat tujuan tidak valid.' };
+    }
+
+    var ojekLat = parseFloat(ojek.lat) || 0;
+    var ojekLng = parseFloat(ojek.lng) || 0;
+    if (ojekLat === 0 || ojekLng === 0) {
+        // Fallback: pakai tarif minimum
+        var setting = (typeof getTarifOjekGlobal === 'function')
+            ? getTarifOjekGlobal() : { tarifMinimum: 5000 };
+        return {
+            sukses: true,
+            jarakKm: 0,
+            ongkosRp: setting.tarifMinimum,
+            teksDetail: 'Lokasi ojek belum diatur. Pakai tarif minimum.',
+            pakaiMinimum: true
+        };
+    }
+
+    var jarak = (typeof hitungJarak === 'function')
+        ? hitungJarak(ojekLat, ojekLng, lat, lng) : 0;
+
+    var format = (typeof formatOngkosOjek === 'function')
+        ? formatOngkosOjek(jarak)
+        : { jarakKm: jarak, ongkosFinal: 5000, teksDetail: '-' };
+
+    return {
+        sukses: true,
+        jarakKm: format.jarakKm,
+        ongkosRp: format.ongkosFinal,
+        teksRingkas: format.teksRingkas,
+        teksDetail: format.teksDetail,
+        pakaiMinimum: format.pakaiMinimum
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (434) – KIRIM REQUEST OJEK CT (FINAL)
+// ------------------------------------------------------------
+// Submit form request ojek dari BLOK 19.24.
+// Kirim via chat ke ojek + simpan record.
+// ============================================================
+function kirimRequestOjekCTFinal(idOjek, data) {
+    var idMe = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+    if (!idMe) return { sukses: false, pesan: 'User tidak valid.' };
+    if (!idOjek) return { sukses: false, pesan: 'ID ojek tidak valid.' };
+    if (!data || typeof data !== 'object') {
+        return { sukses: false, pesan: 'Data request tidak valid.' };
+    }
+
+    var ojek = getDataIdUser(idOjek);
+    if (!ojek || ojek.role !== 'Ojek') {
+        return { sukses: false, pesan: 'User bukan Ojek lokal.' };
+    }
+
+    var jenis = (data.jenis || 'Antar Barang').trim();
+    var alamatJemput = (data.alamatJemput || '').trim();
+    var alamatTujuan = (data.alamatTujuan || '').trim();
+    var ongkosRp = parseFloat(data.ongkosRp) || 0;
+    var metode = data.metode || 'Cash';
+    var catatan = (data.catatan || '').trim();
+
+    if (!alamatJemput || !alamatTujuan) {
+        return { sukses: false, pesan: 'Alamat jemput & tujuan wajib diisi.' };
+    }
+
+    // Bangun pesan chat terstruktur
+    var lines = [];
+    lines.push('🛵 *REQUEST OJEK LOKAL*');
+    lines.push('');
+    lines.push('Jenis Layanan: *' + jenis + '*');
+    lines.push('Alamat Jemput: ' + alamatJemput);
+    lines.push('Alamat Tujuan: ' + alamatTujuan);
+    if (ongkosRp > 0) {
+        lines.push('Ongkos: *Rp ' + ongkosRp.toLocaleString('id-ID') + '*');
+    }
+    lines.push('Metode Bayar: ' + metode);
+    if (catatan) {
+        lines.push('Catatan: ' + catatan);
+    }
+    lines.push('');
+    lines.push('Mohon konfirmasi kesediaan. Terima kasih.');
+
+    var isiPesan = lines.join('\n');
+
+    // Kirim chat otomatis (tipe khusus 'request-ojek')
+    if (typeof kirimPesan !== 'function') {
+        return { sukses: false, pesan: 'Fungsi kirimPesan tidak tersedia.' };
+    }
+
+    // Gunakan simpanPesanAntarUser untuk menyertakan meta
+    var idPesan = (typeof generateKodeUnik === 'function')
+        ? generateKodeUnik('CHAT')
+        : 'CHAT-' + Date.now();
+
+    var pengirim = getDataIdUser(idMe);
+    var pesanBaru = {
+        id: idPesan,
+        idPengirim: idMe,
+        namaPengirim: pengirim ? pengirim.nama : '-',
+        idPenerima: idOjek,
+        namaPenerima: ojek.nama || '-',
+        isi: isiPesan,
+        tipe: 'request-ojek',
+        meta: {
+            jenisTransaksi: 'request-ojek-ct',
+            jenis: jenis,
+            alamatJemput: alamatJemput,
+            alamatTujuan: alamatTujuan,
+            ongkosRp: ongkosRp,
+            metode: metode,
+            catatan: catatan,
+            status: 'Menunggu'
+        },
+        waktu: new Date().toISOString(),
+        dibaca: false
+    };
+
+    if (typeof simpanPesanAntarUser === 'function') {
+        simpanPesanAntarUser(idMe, idOjek, pesanBaru);
+    }
+
+    // Catat aktivitas
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idMe, 'Request Ojek CT',
+            'Request ke ' + (ojek.nama || idOjek) +
+            ' (' + jenis + ') — Rp ' + ongkosRp.toLocaleString('id-ID'));
+    }
+
+    return {
+        sukses: true,
+        idPesan: idPesan,
+        idOjek: idOjek,
+        jenis: jenis,
+        ongkosRp: ongkosRp
+    };
+}
+
+
+// ============================================================
+// BLOK R 01.0 (435) – GET RIWAYAT TRANSAKSI DENGAN KONTAK CT
+// ------------------------------------------------------------
+// Ambil riwayat transaksi customer dengan kontak tertentu:
+//   - Order pesanan katalog
+//   - Request ojek
+// Filter by idPembeli + idSeller
+// ============================================================
+function getRiwayatTransaksiDenganKontakCT(idUser, idKontak, limit) {
+    if (!idUser) return [];
+
+    var hasil = [];
+
+    // 1. Dari dataPesananKatalog
+    try {
+        var stored = localStorage.getItem('dataPesananKatalog');
+        if (stored) {
+            var list = JSON.parse(stored);
+            if (Array.isArray(list)) {
+                list.forEach(function(p) {
+                    if (!p) return;
+                    var matchArah =
+                        (p.idPembeli === idUser && p.idSeller === idKontak) ||
+                        (p.idSeller === idUser && p.idPembeli === idKontak);
+                    if (!matchArah) return;
+                    if (idKontak && p.idSeller !== idKontak && p.idPembeli !== idKontak) return;
+                    hasil.push({
+                        tipe: 'pesanan',
+                        id: p.id,
+                        status: p.status || 'Menunggu',
+                        tanggal: p.tanggal || p.createdAt,
+                        totalRp: p.totalRp || 0,
+                        metode: p.metode || '-',
+                        arah: (p.idPembeli === idUser) ? 'keluar' : 'masuk',
+                        kontakId: (p.idPembeli === idUser) ? p.idSeller : p.idPembeli,
+                        kontakNama: (p.idPembeli === idUser) ? p.namaSeller : p.namaPembeli,
+                        items: p.items || []
+                    });
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('getRiwayatTransaksiDenganKontakCT (pesanan):', e);
+    }
+
+    // 2. Dari dataTransaksiKatalog
+    try {
+        var stored2 = localStorage.getItem('dataTransaksiKatalog');
+        if (stored2) {
+            var list2 = JSON.parse(stored2);
+            if (Array.isArray(list2)) {
+                list2.forEach(function(t) {
+                    if (!t) return;
+                    if (idKontak && t.idPenjual !== idKontak && t.idPembeli !== idKontak) return;
+                    if (t.idPembeli !== idUser && t.idPenjual !== idUser) return;
+                    hasil.push({
+                        tipe: 'transaksi',
+                        id: t.id,
+                        status: t.status || 'Selesai',
+                        tanggal: t.tanggal,
+                        totalRp: t.totalRp || 0,
+                        metode: t.metode || '-',
+                        arah: (t.idPembeli === idUser) ? 'keluar' : 'masuk',
+                        kontakId: (t.idPembeli === idUser) ? t.idPenjual : t.idPembeli,
+                        items: t.items || []
+                    });
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('getRiwayatTransaksiDenganKontakCT (transaksi):', e);
+    }
+
+    // Sort terbaru dulu
+    hasil.sort(function(a, b) {
+        return new Date(b.tanggal || 0) - new Date(a.tanggal || 0);
+    });
+
+    if (limit && limit > 0) hasil = hasil.slice(0, limit);
+
+    return hasil;
+}
+
+
+// ============================================================
+// AKHIR BLOK R 01.0 (426–435) – FUNGSI GLOBAL CHAT CUSTOMER
+// ============================================================
+
 </script>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 01.0 (380-384) ===== -->
