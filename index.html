@@ -16558,10 +16558,338 @@ function hfOptimasiMediaPost(idPost) {
 
     return { sukses: true, dihapus: hapus, disimpan: simpan };
 }
+
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- AKHIR BLOK R 01.0 (378–425) – HF TERINTEGRASI -->
 <!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 01.0 (426–433) – FUNGSI GLOBAL DRAG COVER/AVATAR ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 01.0 (426) – SIMPAN POSISI DRAG USER
+// ------------------------------------------------------------
+// Simpan offset geser (drag) untuk cover atau avatar user.
+// Field tersimpan di localStorage key: profil_<idUser>
+//   - cover  → profil.dragX, profil.dragY            (existing)
+//   - avatar → profil.dragXAvatar, profil.dragYAvatar (baru)
+//
+// UNIVERSAL — dipakai semua role.
+// ============================================================
+function simpanPosisiDragUser(idUser, target, x, y) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (target !== 'cover' && target !== 'avatar') {
+        return { sukses: false, pesan: 'Target harus "cover" atau "avatar".' };
+    }
+    x = parseFloat(x) || 0;
+    y = parseFloat(y) || 0;
+
+    try {
+        var key = 'profil_' + idUser;
+        var stored = localStorage.getItem(key);
+        var profil = stored ? JSON.parse(stored) : {};
+        if (!profil || typeof profil !== 'object') profil = {};
+
+        if (target === 'cover') {
+            profil.dragX = x;
+            profil.dragY = y;
+        } else {
+            profil.dragXAvatar = x;
+            profil.dragYAvatar = y;
+        }
+        profil.updatedAt = new Date().toISOString();
+        localStorage.setItem(key, JSON.stringify(profil));
+        return { sukses: true, dragX: x, dragY: y };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (427) – GET POSISI DRAG USER
+// ============================================================
+function getPosisiDragUser(idUser, target) {
+    if (!idUser) return { x: 0, y: 0 };
+    if (target !== 'cover' && target !== 'avatar') {
+        return { x: 0, y: 0 };
+    }
+    try {
+        var stored = localStorage.getItem('profil_' + idUser);
+        if (!stored) return { x: 0, y: 0 };
+        var profil = JSON.parse(stored);
+        if (!profil || typeof profil !== 'object') return { x: 0, y: 0 };
+
+        if (target === 'cover') {
+            return {
+                x: parseFloat(profil.dragX) || 0,
+                y: parseFloat(profil.dragY) || 0
+            };
+        }
+        return {
+            x: parseFloat(profil.dragXAvatar) || 0,
+            y: parseFloat(profil.dragYAvatar) || 0
+        };
+    } catch (e) {
+        return { x: 0, y: 0 };
+    }
+}
+
+// ============================================================
+// BLOK R 01.0 (428) – RESET POSISI DRAG USER
+// ============================================================
+function resetPosisiDragUser(idUser, target) {
+    return simpanPosisiDragUser(idUser, target, 0, 0);
+}
+
+// ============================================================
+// BLOK R 01.0 (429) – TERAPKAN POSISI DRAG KE ELEMEN
+// ------------------------------------------------------------
+// Set style.transform ke elemen target berdasarkan state
+// tersimpan di localStorage.
+// ============================================================
+function terapkanPosisiDragUser(idUser, target, elTarget) {
+    if (!elTarget || !idUser) return;
+    var pos = getPosisiDragUser(idUser, target);
+    elTarget.style.transform = 'translate(' + pos.x + 'px, ' + pos.y + 'px)';
+    elTarget.style.willChange = 'transform';
+    elTarget.dataset.dragX = pos.x;
+    elTarget.dataset.dragY = pos.y;
+}
+
+// ============================================================
+// BLOK R 01.0 (430) – AKTIFKAN DRAG UNIVERSAL
+// ------------------------------------------------------------
+// Pasang handler pointer (mouse + touch + pen) ke elWrapper.
+// Geser akan meng-update transform di elInner (dicari otomatis).
+// Auto-save saat pointer dilepas.
+//
+// Pakai Pointer Events API → 1 handler untuk semua device.
+// ============================================================
+function aktifkanDragUniversal(elWrapper, target, idUser) {
+    if (!elWrapper || !idUser) {
+        return { sukses: false, pesan: 'Data tidak valid.' };
+    }
+    if (target !== 'cover' && target !== 'avatar') {
+        return { sukses: false, pesan: 'Target harus "cover" atau "avatar".' };
+    }
+
+    // Bersihkan handler lama kalau ada
+    if (elWrapper._dragHandlers) {
+        var old = elWrapper._dragHandlers;
+        elWrapper.removeEventListener('pointerdown', old.down);
+        elWrapper.removeEventListener('pointermove', old.move);
+        elWrapper.removeEventListener('pointerup', old.up);
+        elWrapper.removeEventListener('pointercancel', old.up);
+        elWrapper._dragHandlers = null;
+    }
+
+    elWrapper.style.cursor = 'grab';
+    elWrapper.style.touchAction = 'none';
+    elWrapper.style.userSelect = 'none';
+
+    var state = {
+        dragging: false,
+        startX: 0,
+        startY: 0,
+        originX: 0,
+        originY: 0,
+        pointerId: null
+    };
+
+    function getInner() {
+        if (target === 'cover') {
+            return elWrapper.querySelector('.profil-cover-inner') || elWrapper;
+        }
+        return elWrapper.querySelector('img') || elWrapper;
+    }
+
+    function onDown(e) {
+        // Kalau user klik tombol / input di dalam wrapper → jangan drag
+        if (e.target.closest('button')) return;
+        if (e.target.tagName === 'INPUT') return;
+
+        var pos = getPosisiDragUser(idUser, target);
+
+        state.dragging = true;
+        state.startX = e.clientX;
+        state.startY = e.clientY;
+        state.originX = pos.x;
+        state.originY = pos.y;
+        state.pointerId = e.pointerId;
+
+        elWrapper.style.cursor = 'grabbing';
+        try { elWrapper.setPointerCapture(e.pointerId); } catch (er) {}
+    }
+
+    function onMove(e) {
+        if (!state.dragging) return;
+        if (state.pointerId !== null && e.pointerId !== state.pointerId) return;
+
+        var dx = e.clientX - state.startX;
+        var dy = e.clientY - state.startY;
+        var newX = state.originX + dx;
+        var newY = state.originY + dy;
+
+        var elInner = getInner();
+        elInner.style.transform = 'translate(' + newX + 'px, ' + newY + 'px)';
+        elInner.dataset.dragX = newX;
+        elInner.dataset.dragY = newY;
+    }
+
+    function onUp(e) {
+        if (!state.dragging) return;
+        state.dragging = false;
+        elWrapper.style.cursor = 'grab';
+
+        try { elWrapper.releasePointerCapture(state.pointerId); } catch (er) {}
+
+        var elInner = getInner();
+        var finalX = parseFloat(elInner.dataset.dragX) || 0;
+        var finalY = parseFloat(elInner.dataset.dragY) || 0;
+
+        simpanPosisiDragUser(idUser, target, finalX, finalY);
+        state.pointerId = null;
+    }
+
+    elWrapper.addEventListener('pointerdown', onDown);
+    elWrapper.addEventListener('pointermove', onMove);
+    elWrapper.addEventListener('pointerup', onUp);
+    elWrapper.addEventListener('pointercancel', onUp);
+
+    elWrapper._dragHandlers = { down: onDown, move: onMove, up: onUp };
+
+    return { sukses: true };
+}
+
+// ============================================================
+// BLOK R 01.0 (431) – NONAKTIFKAN DRAG UNIVERSAL
+// ============================================================
+function nonaktifkanDragUniversal(elWrapper) {
+    if (!elWrapper) return;
+    if (elWrapper._dragHandlers) {
+        var h = elWrapper._dragHandlers;
+        elWrapper.removeEventListener('pointerdown', h.down);
+        elWrapper.removeEventListener('pointermove', h.move);
+        elWrapper.removeEventListener('pointerup', h.up);
+        elWrapper.removeEventListener('pointercancel', h.up);
+        elWrapper._dragHandlers = null;
+    }
+    elWrapper.style.cursor = '';
+    elWrapper.style.touchAction = '';
+    elWrapper.style.userSelect = '';
+}
+
+// ============================================================
+// BLOK R 01.0 (432) – INJECT CSS DRAG UNIVERSAL
+// ------------------------------------------------------------
+// IIFE — dipanggil otomatis sekali saat halaman load.
+// Idempotent — guard by id 'cssDragUniversal'.
+// ============================================================
+(function injectCSSDragUniversal() {
+    if (document.getElementById('cssDragUniversal')) return;
+
+    var cssRules =
+        '.profil-cover-inner {' +
+            'position: absolute;' +
+            'top: 0; left: 0;' +
+            'width: 100%; height: 100%;' +
+            'background-size: cover;' +
+            'background-position: center;' +
+            'background-repeat: no-repeat;' +
+            'z-index: 0;' +
+            'pointer-events: none;' +
+            'transition: transform 0.05s linear;' +
+        '}' +
+        '.profil-cover { position: relative; overflow: hidden; }' +
+        '.profil-cover > *:not(.profil-cover-inner) { position: relative; z-index: 1; }' +
+        '.profil-avatar { overflow: hidden; }' +
+        '.profil-avatar img {' +
+            'transition: transform 0.05s linear;' +
+            'user-select: none;' +
+            '-webkit-user-drag: none;' +
+        '}';
+
+    var style = document.createElement('style');
+    style.id = 'cssDragUniversal';
+    style.appendChild(document.createTextNode(cssRules));
+    document.head.appendChild(style);
+})();
+
+// ============================================================
+// BLOK R 01.0 (433) – SETUP DRAG PROFIL UNIVERSAL
+// ------------------------------------------------------------
+// Wrapper utama — dipanggil setiap habis render profil.
+// Tugas:
+//   1. Auto-buat `.profil-cover-inner` kalau belum ada
+//   2. Pindah background-image dari wrapper ke inner
+//   3. Terapkan posisi drag tersimpan
+//   4. Pasang handler drag
+//
+// UNIVERSAL — semua role.
+// ============================================================
+function setupDragProfilUniversal(idUser) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    // Cari elemen cover & avatar (fallback selector multi-role)
+    var elCover  = document.getElementById('coverProfilTK') ||
+                   document.querySelector('.profil-cover');
+    var elAvatar = document.querySelector('.profil-avatar');
+
+    if (!elCover)  elCover  = document.querySelector('[id^="coverProfil"]');
+    if (!elAvatar) elAvatar = document.querySelector('.profil-avatar-wrapper .profil-avatar');
+
+    var hasil = { sukses: true, cover: false, avatar: false };
+
+    // === COVER ===
+    if (elCover) {
+        var elInner = elCover.querySelector('.profil-cover-inner');
+
+        // Auto-buat inner kalau belum ada
+        if (!elInner) {
+            elInner = document.createElement('div');
+            elInner.className = 'profil-cover-inner';
+            elCover.insertBefore(elInner, elCover.firstChild);
+        }
+
+        // Pindah background-image dari wrapper ke inner (kalau wrapper masih pakai)
+        if (elCover.style.backgroundImage && elCover.style.backgroundImage !== 'none') {
+            elInner.style.backgroundImage = elCover.style.backgroundImage;
+            elCover.style.backgroundImage = '';
+            elCover.style.backgroundColor = 'transparent';
+        }
+
+        // Sinkron dari state profil (kalau wrapper kosong)
+        if (!elInner.style.backgroundImage || elInner.style.backgroundImage === 'none') {
+            var fotoCover = (typeof getFotoCoverAkun === 'function')
+                ? getFotoCoverAkun(idUser) : '';
+            if (fotoCover) {
+                elInner.style.backgroundImage = 'url(' + fotoCover + ')';
+            }
+        }
+
+        terapkanPosisiDragUser(idUser, 'cover', elInner);
+        aktifkanDragUniversal(elCover, 'cover', idUser);
+        hasil.cover = true;
+    }
+
+    // === AVATAR ===
+    if (elAvatar) {
+        var imgAvatar = elAvatar.querySelector('img');
+        if (imgAvatar) {
+            terapkanPosisiDragUser(idUser, 'avatar', imgAvatar);
+            aktifkanDragUniversal(elAvatar, 'avatar', idUser);
+            hasil.avatar = true;
+        }
+    }
+
+    return hasil;
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 01.0 (426–433) ===== -->
+<!-- ============================================================ -->
 
 <!-- ═══ PATCH 2: HTML CONTAINER ═══ -->
 <div id="orderMasukOjekContainer" style="display:none;">
@@ -35864,6 +36192,11 @@ function uploadAvatarTK(event) {
     });
 }
 
+renderProfilTK();
+// [BARU] Aktifkan drag cover & avatar (fungsi global 433)
+setupDragProfilUniversal(userAktif.idUser);
+tutupMenu();
+		
 // --- HAPUS FOTO AVATAR ---
 function hapusFotoProfilTK() {
     if (!confirm('Hapus foto profil?')) return;
