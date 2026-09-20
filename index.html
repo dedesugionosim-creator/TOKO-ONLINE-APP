@@ -12780,7 +12780,7 @@ function hfGetPostDihapusSaya(idUser) {
 }
 
 // ============================================================
-// BLOK R 01.0 (274) – HF BUAT POST
+// BLOK R 01.0 (274) – HF BUAT POST (FIXED — handle video & mentions)
 // ============================================================
 function hfBuatPost(data) {
     if (!userAktif || !userAktif.idUser) {
@@ -12788,8 +12788,9 @@ function hfBuatPost(data) {
     }
     data = data || {};
     var teks = (data.teks || '').trim();
-    if (!teks && (!data.foto || data.foto.length === 0)) {
-        return { sukses: false, pesan: 'Postingan harus ada teks atau foto.' };
+
+    if (!teks && (!data.foto || data.foto.length === 0) && !data.video) {
+        return { sukses: false, pesan: 'Postingan harus ada teks, foto, atau video.' };
     }
     if (teks.length > 280) {
         return { sukses: false, pesan: 'Teks maksimal 280 karakter.' };
@@ -12797,6 +12798,7 @@ function hfBuatPost(data) {
     if (data.foto && data.foto.length > 5) {
         return { sukses: false, pesan: 'Maksimal 5 foto per postingan.' };
     }
+
     var list = hfLoad('post');
     var idBaru = hfGenerateId('post');
     var postBaru = {
@@ -12806,15 +12808,19 @@ function hfBuatPost(data) {
         creatorRole: userAktif.role || '-',
         teks: teks,
         foto: Array.isArray(data.foto) ? data.foto : [],
+        video: data.video || null,                                    // ✅ FIX
         hashtag: Array.isArray(data.hashtag) ? data.hashtag : [],
+        mentions: Array.isArray(data.mentions) ? data.mentions : [],  // ✅ FIX
         kategori: data.kategori || 'cerita',
         produkTerkaitId: data.produkTerkaitId || null,
+        produkTipe: data.produkTipe || null,                          // ✅ FIX
         status: data.status || 'publik',
         createdAt: new Date().toISOString(),
         updatedAt: null
     };
     list.push(postBaru);
     hfSave('post', list);
+
     if (typeof catatAktivitasGlobal === 'function') {
         catatAktivitasGlobal(userAktif.idUser, 'HF Buat Post', 'Post baru: ' + idBaru);
     }
@@ -12822,7 +12828,7 @@ function hfBuatPost(data) {
 }
 
 // ============================================================
-// BLOK R 01.0 (275) – HF UPDATE POST
+// BLOK R 01.0 (275) – HF UPDATE POST (FIXED — handle video & mentions)
 // ============================================================
 function hfUpdatePost(idPost, data) {
     if (!idPost) return { sukses: false, pesan: 'ID tidak valid.' };
@@ -12837,6 +12843,7 @@ function hfUpdatePost(idPost, data) {
         return { sukses: false, pesan: 'Tidak berhak edit post ini.' };
     }
     data = data || {};
+
     if (data.teks !== undefined) {
         var teks = String(data.teks).trim();
         if (teks.length > 280) {
@@ -12850,12 +12857,24 @@ function hfUpdatePost(idPost, data) {
         }
         list[idx].foto = data.foto;
     }
+    // ✅ FIX: handle video
+    if (data.video !== undefined) {
+        list[idx].video = data.video || null;
+    }
+    // ✅ FIX: handle mentions
+    if (data.mentions !== undefined && Array.isArray(data.mentions)) {
+        list[idx].mentions = data.mentions.slice();
+    }
     if (data.hashtag !== undefined)   list[idx].hashtag = data.hashtag;
     if (data.kategori !== undefined)  list[idx].kategori = data.kategori;
     if (data.produkTerkaitId !== undefined) {
         list[idx].produkTerkaitId = data.produkTerkaitId;
     }
+    if (data.produkTipe !== undefined) {
+        list[idx].produkTipe = data.produkTipe;
+    }
     if (data.status !== undefined)    list[idx].status = data.status;
+
     list[idx].updatedAt = new Date().toISOString();
     hfSave('post', list);
     return { sukses: true, post: list[idx] };
@@ -33111,18 +33130,27 @@ function hfKonfirmasiHapusPost() {
 // ── akhir BLOK R 50.2 (28) ──
 
 // ============================================================
-// BLOK R 50.2 (29) – OVERRIDE hfHFLoadDraftKeForm KE V2
+// BLOK R 50.2 (29) – OVERRIDE hfHFLoadDraftKeForm KE V2 (FIXED)
+// ------------------------------------------------------------
+// BUG FIX: sebelumnya panggil hfFormPostV2BukaEdit(null) →
+// alert "Post tidak ditemukan" + BREAK karena function return awal.
+// Solusi: pakai BukaBaru() dulu, lalu set idPost manual.
 // ============================================================
-(function overrideLoadDraft() {
+(function overrideLoadDraftFixed() {
     var original = window.hfHFLoadDraftKeForm;
     window.hfHFLoadDraftKeForm = function(idDraft) {
         var draft = hfLoadDraft(idDraft);
         if (!draft) { alert('Draft tidak ditemukan.'); return; }
 
         if (document.getElementById('modalHFFormPostV2')) {
-            hfFormPostV2BukaEdit(null);
+            // ✅ FIX: pakai BukaBaru (bukan BukaEdit null)
+            hfFormPostV2BukaBaru();
+
             setTimeout(function() {
-                document.getElementById('hfFormPostV2Id').value = draft.id;
+                // Set idPost manual setelah form terbuka
+                hfFormPostV2State.idPost = draft.id;
+
+                document.getElementById('hfFormPostV2Id').value = draft.id || '';
                 document.getElementById('hfFormPostV2Teks').value = draft.teks || '';
                 document.getElementById('hfFormPostV2Kategori').value = draft.kategori || 'cerita';
                 document.getElementById('hfFormPostV2Publik').checked = draft.status !== 'privat';
@@ -33143,12 +33171,12 @@ function hfKonfirmasiHapusPost() {
 
                 document.getElementById('hfFormPostV2Label').textContent = 'Edit Draft';
                 document.getElementById('hfFormPostV2BtnLabel').textContent = 'Publikasikan';
-            }, 300);
+            }, 400);
         } else if (typeof original === 'function') {
             original(idDraft);
         }
     };
-    console.log('✅ BLOK R 50.2 (29) – hfHFLoadDraftKeForm → V2');
+    console.log('✅ BLOK R 50.2 (29) – hfHFLoadDraftKeForm → V2 (FIXED)');
 })();
 // ── akhir BLOK R 50.2 (29) ──
 
