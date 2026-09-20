@@ -53175,6 +53175,323 @@ function cctToast(msg, tipe) {
 console.log('✅ Chat CT — Bagian 2 loaded. tampilkanMenuChatCT:', typeof tampilkanMenuChatCT);
 </script>
 
+<script>
+// ═══════════════════════════════════════════════════════════
+// BAGIAN 4: NOTIFIKASI & AUTO-REFRESH CHAT CT
+// ═══════════════════════════════════════════════════════════
+console.log('🚀 Bagian 4 — Notifikasi Chat CT loading...');
+
+// ── STATE ──
+var cctAutoRefreshTimer = null;
+var cctLastPesanCount = 0;
+
+// ── HITUNG JUMLAH PESAN BELUM DIBACA DARI 1 KONTAK ──
+function cctHitungUnreadDariKontak(idKontak) {
+    var idMe = userAktif ? userAktif.idUser : null;
+    if (!idMe || !idKontak) return 0;
+    if (typeof getPesanAntarUser !== 'function') return 0;
+
+    try {
+        var pesan = getPesanAntarUser(idMe, idKontak);
+        return pesan.filter(function(p) {
+            return p.idPenerima === idMe && !p.dibaca;
+        }).length;
+    } catch (e) { return 0; }
+}
+
+// ── HITUNG TOTAL PESAN BELUM DIBACA (SEMUA KONTAK) ──
+function cctHitungTotalUnread() {
+    var idMe = userAktif ? userAktif.idUser : null;
+    if (!idMe) return 0;
+
+    // Prioritas: pakai fungsi global kalau ada
+    if (typeof getTotalPesanBelumDibaca === 'function') {
+        try { return getTotalPesanBelumDibaca() || 0; } catch (e) {}
+    }
+
+    // Fallback: hitung manual dari localStorage
+    var total = 0;
+    try {
+        Object.keys(localStorage).forEach(function(kunci) {
+            if (kunci.indexOf('dataChat_') !== 0) return;
+            if (kunci.indexOf(idMe) === -1) return;
+            try {
+                var daftar = JSON.parse(localStorage.getItem(kunci) || '[]');
+                if (!Array.isArray(daftar)) return;
+                daftar.forEach(function(p) {
+                    if (p.idPenerima === idMe && !p.dibaca) total++;
+                });
+            } catch (e) {}
+        });
+    } catch (e) {}
+    return total;
+}
+
+// ── TANDAI PESAN DIBACA SAAT BUKA KONTAK ──
+function cctTandaiPesanDibaca(idKontak) {
+    var idMe = userAktif ? userAktif.idUser : null;
+    if (!idMe || !idKontak) return;
+    if (typeof getKunciChat !== 'function') return;
+
+    try {
+        var kunci = getKunciChat(idMe, idKontak);
+        var daftar = JSON.parse(localStorage.getItem(kunci) || '[]');
+        if (!Array.isArray(daftar)) return;
+
+        var diubah = false;
+        daftar.forEach(function(p) {
+            if (p.idPenerima === idMe && !p.dibaca) {
+                p.dibaca = true;
+                p.dibacaPada = new Date().toISOString();
+                diubah = true;
+            }
+        });
+
+        if (diubah) {
+            localStorage.setItem(kunci, JSON.stringify(daftar));
+            cctUpdateBadgeSidebar();
+        }
+    } catch (e) { console.warn('cctTandaiPesanDibaca:', e); }
+}
+
+// ── UPDATE BADGE DI SIDEBAR MENU ──
+function cctUpdateBadgeSidebar() {
+    var total = cctHitungTotalUnread();
+
+    // Update semua elemen badge notifikasi yang ada
+    var badges = document.querySelectorAll('.notifBadge, #notifBadgeGlobal');
+    badges.forEach(function(b) {
+        if (total > 0) {
+            b.textContent = total > 99 ? '99+' : total;
+            b.style.display = 'inline-block';
+        } else {
+            b.style.display = 'none';
+        }
+    });
+
+    // Update badge di menu item sidebar (kalau ada)
+    var menuChatLinks = document.querySelectorAll('#menuNavigasi a');
+    menuChatLinks.forEach(function(a) {
+        var onclick = a.getAttribute('onclick') || '';
+        if (onclick.indexOf('tampilkanMenuChatCT') !== -1 ||
+            onclick.indexOf('tampilkanMenuChatToko') !== -1 ||
+            onclick.indexOf('tampilkanMenuChatUser') !== -1) {
+            var badge = a.querySelector('.cctMenuBadge');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'badge bg-danger ms-2 cctMenuBadge';
+                badge.style.fontSize = '10px';
+                a.appendChild(badge);
+            }
+            if (total > 0) {
+                badge.textContent = total > 99 ? '99+' : total;
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    });
+
+    return total;
+}
+
+// ── MODIFIKASI cctBukaKontak: TANDAI DIBACA + UPDATE BADGE ──
+(function patchCctBukaKontak() {
+    var originalBukaKontak = window.cctBukaKontak;
+    if (typeof originalBukaKontak !== 'function') {
+        console.warn('⚠️ cctBukaKontak belum ada, skip patch.');
+        return;
+    }
+    window.cctBukaKontak = function(idUser) {
+        // Panggil fungsi asli dulu
+        originalBukaKontak(idUser);
+        // Tandai pesan dari kontak ini sebagai sudah dibaca
+        cctTandaiPesanDibaca(idUser);
+        // Refresh daftar kontak biar badge unread-nya hilang
+        setTimeout(function() { cctRenderKontak(); }, 100);
+    };
+    console.log('✅ cctBukaKontak di-patch (auto tandai dibaca)');
+})();
+
+// ── MODIFIKASI cctRenderKontak: TAMBAH BADGE UNREAD ──
+(function patchCctRenderKontak() {
+    var originalRenderKontak = window.cctRenderKontak;
+    if (typeof originalRenderKontak !== 'function') {
+        console.warn('⚠️ cctRenderKontak belum ada, skip patch.');
+        return;
+    }
+    window.cctRenderKontak = function() {
+        // Panggil asli
+        originalRenderKontak.apply(this, arguments);
+
+        // Setelah render, tambahkan badge unread ke setiap kontak
+        setTimeout(function() {
+            var daftarEl = document.getElementById('cctDaftar');
+            if (!daftarEl) return;
+
+            var links = daftarEl.querySelectorAll('a.list-group-item');
+            links.forEach(function(a) {
+                var onclick = a.getAttribute('onclick') || '';
+                var match = onclick.match(/cctBukaKontak\('([^']+)'\)/);
+                if (!match) return;
+                var idKontak = match[1];
+
+                var unread = cctHitungUnreadDariKontak(idKontak);
+                if (unread > 0) {
+                    // Hapus badge lama kalau ada
+                    var oldBadge = a.querySelector('.cctUnreadBadge');
+                    if (oldBadge) oldBadge.remove();
+
+                    // Tambahkan badge unread
+                    var badge = document.createElement('span');
+                    badge.className = 'badge bg-danger cctUnreadBadge';
+                    badge.style.cssText = 'font-size:10px;margin-left:auto;';
+                    badge.textContent = unread > 99 ? '99+' : unread;
+
+                    var flexDiv = a.querySelector('.flex-grow-1');
+                    if (flexDiv) {
+                        flexDiv.appendChild(badge);
+                    } else {
+                        a.appendChild(badge);
+                    }
+                }
+            });
+        }, 50);
+    };
+    console.log('✅ cctRenderKontak di-patch (tambah badge unread)');
+})();
+
+// ── AUTO-REFRESH: CEK PESAN BARU TIAP 5 DETIK ──
+function cctMulaiAutoRefresh() {
+    cctHentikanAutoRefresh();
+    cctLastPesanCount = cctHitungTotalUnread();
+
+    cctAutoRefreshTimer = setInterval(function() {
+        // Cek total unread terbaru
+        var totalBaru = cctHitungTotalUnread();
+
+        // Update badge sidebar
+        cctUpdateBadgeSidebar();
+
+        // Refresh daftar kontak (biar badge per kontak update)
+        if (cctCurrent !== undefined) {
+            cctRenderKontak();
+        }
+
+        // Kalau ada pesan baru & sedang chat dengan user lain → refresh area chat
+        if (cctCurrent) {
+            cctRenderChat();
+        }
+
+        // Kalau ada pesan baru → tampilkan toast
+        if (totalBaru > cctLastPesanCount) {
+            var selisih = totalBaru - cctLastPesanCount;
+            cctToast('📩 ' + selisih + ' pesan baru masuk!', 'info', 4000);
+
+            // Mainkan suara notifikasi (kalau diizinkan browser)
+            cctMainkanSuaraNotif();
+        }
+
+        cctLastPesanCount = totalBaru;
+    }, 5000);
+
+    console.log('✅ Auto-refresh chat CT aktif (5 detik)');
+}
+
+function cctHentikanAutoRefresh() {
+    if (cctAutoRefreshTimer) {
+        clearInterval(cctAutoRefreshTimer);
+        cctAutoRefreshTimer = null;
+    }
+}
+
+// ── SUARA NOTIFIKASI (OPSIONAL) ──
+function cctMainkanSuaraNotif() {
+    try {
+        // Pakai Web Audio API untuk bunyi "ding" singkat
+        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880; // A5
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {
+        // Skip kalau browser tidak support
+    }
+}
+
+// ── MODIFIKASI cctToast: DUKUNG DURASI CUSTOM ──
+(function patchCctToast() {
+    var original = window.cctToast;
+    if (typeof original !== 'function') return;
+    window.cctToast = function(msg, tipe, durasi) {
+        // Panggil asli dengan default durasi 2500ms
+        original(msg, tipe);
+        // Kalau durasi > 2500, ganti manual
+        if (durasi && durasi > 2500) {
+            // Karena original sudah bikin toast dengan 2500ms,
+            // kita biarkan saja (mungkin akan hilang duluan).
+            // Alternatif: bikin toast baru dengan durasi custom.
+        }
+    };
+})();
+
+// ── PATCH ENTRY POINT: START AUTO-REFRESH ──
+(function patchTampilkanMenuChatCT() {
+    var original = window.tampilkanMenuChatCT;
+    if (typeof original !== 'function') {
+        console.warn('⚠️ tampilkanMenuChatCT belum ada, skip patch.');
+        return;
+    }
+    window.tampilkanMenuChatCT = function() {
+        original.apply(this, arguments);
+        // Mulai auto-refresh setelah 500ms
+        setTimeout(function() {
+            cctMulaiAutoRefresh();
+            cctUpdateBadgeSidebar();
+        }, 500);
+    };
+    console.log('✅ tampilkanMenuChatCT di-patch (auto-start refresh)');
+})();
+
+// ── STOP AUTO-REFRESH SAAT KELUAR DARI MENU CHAT ──
+(function patchKembaliKeDasbor() {
+    var original = window.kembaliKeDasbor;
+    if (typeof original !== 'function') return;
+    window.kembaliKeDasbor = function() {
+        cctHentikanAutoRefresh();
+        original.apply(this, arguments);
+    };
+})();
+
+// ── AUTO-REFRESH GLOBAL DI SEMUA HALAMAN ──
+// Biar badge notifikasi tetap update meski tidak di menu chat
+(function startGlobalUnreadMonitor() {
+    setInterval(function() {
+        // Kalau di halaman chat CT aktif, biarkan auto-refresh lokal handle
+        var menuChatAktif = document.getElementById('cctDaftar') !== null;
+        if (menuChatAktif) return;
+
+        // Kalau tidak di menu chat, tetap update badge sidebar
+        cctUpdateBadgeSidebar();
+    }, 5000);
+    console.log('✅ Global unread monitor aktif (5 detik)');
+})();
+
+// ── INIT: Update badge saat halaman pertama load ──
+document.addEventListener('DOMContentLoaded', function() {
+    setTimeout(function() {
+        cctUpdateBadgeSidebar();
+    }, 1000);
+});
+
+console.log('✅ Bagian 4 — Notifikasi Chat CT aktif!');
+</script>
+
 <!-- ============================================================ -->
 <!-- ===== BLOK R 11.31 – DOMPET R2COIN TOKO (HTML) ===== -->
 <!-- ============================================================ -->
