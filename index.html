@@ -16460,21 +16460,9 @@ function setupDragProfilUniversal(idUser) {
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
 // ============================================================
-// BLOK R 01.0 (434) – GET KEAMANAN CONFIG GLOBAL
+// BLOK R 01.0 (434) – GET KEAMANAN CONFIG GLOBAL (v2)
 // ------------------------------------------------------------
-// Ambil config keamanan dari localStorage.
-// Merge dengan default supaya field baru otomatis terisi.
-//
-// Struktur return:
-//   {
-//     maxLoginAttempts: 5,
-//     blockDuration:    30,
-//     toggleRegistrasi: true,
-//     toggleUploadProduk: true,
-//     ipWhitelist: [],
-//     updatedAt: null,
-//     updatedBy: null
-//   }
+// v2: tambah field toggleWhitelistIP (default OFF)
 // ============================================================
 function getKeamananConfigGlobal() {
     var defaults = {
@@ -16482,6 +16470,7 @@ function getKeamananConfigGlobal() {
         blockDuration:      30,
         toggleRegistrasi:   true,
         toggleUploadProduk: true,
+        toggleWhitelistIP:  false,   // ← BARU: default OFF
         ipWhitelist:        [],
         updatedAt:          null,
         updatedBy:          null
@@ -16494,23 +16483,24 @@ function getKeamananConfigGlobal() {
         var data = JSON.parse(stored);
         if (!data || typeof data !== 'object') return defaults;
 
-        // Merge field yang belum ada
         Object.keys(defaults).forEach(function(k) {
             if (typeof data[k] === 'undefined') data[k] = defaults[k];
         });
 
-        // Pastikan ipWhitelist array
         if (!Array.isArray(data.ipWhitelist)) data.ipWhitelist = [];
 
-        // Pastikan angka valid
         data.maxLoginAttempts = parseInt(data.maxLoginAttempts, 10) || 5;
         data.blockDuration    = parseInt(data.blockDuration, 10)    || 30;
 
-        // Clamp
         if (data.maxLoginAttempts < 1) data.maxLoginAttempts = 1;
         if (data.maxLoginAttempts > 10) data.maxLoginAttempts = 10;
         if (data.blockDuration < 1) data.blockDuration = 1;
         if (data.blockDuration > 60) data.blockDuration = 60;
+
+        // Pastikan boolean
+        data.toggleRegistrasi   = !!data.toggleRegistrasi;
+        data.toggleUploadProduk = !!data.toggleUploadProduk;
+        data.toggleWhitelistIP  = !!data.toggleWhitelistIP;
 
         return data;
     } catch (e) {
@@ -16520,24 +16510,17 @@ function getKeamananConfigGlobal() {
 }
 
 // ============================================================
-// BLOK R 01.0 (435) – SAVE KEAMANAN CONFIG GLOBAL
+// BLOK R 01.0 (435) – SAVE KEAMANAN CONFIG GLOBAL (v2)
 // ------------------------------------------------------------
-// Simpan config ke localStorage + validasi + catat aktivitas.
-//
-// Parameter: data (object — field apapun opsional, merge dengan
-//            config yang ada).
-//
-// Return: { sukses: bool, pesan?: string, config?: object }
+// v2: handle field toggleWhitelistIP
 // ============================================================
 function saveKeamananConfigGlobal(data) {
     var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
-    if (!idUser) {
-        return { sukses: false, pesan: 'User tidak valid.' };
-    }
+    if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
 
     data = data || {};
-
     var lama = getKeamananConfigGlobal();
+
     var baru = {
         maxLoginAttempts:   (typeof data.maxLoginAttempts !== 'undefined')
                               ? parseInt(data.maxLoginAttempts, 10)
@@ -16551,6 +16534,9 @@ function saveKeamananConfigGlobal(data) {
         toggleUploadProduk: (typeof data.toggleUploadProduk !== 'undefined')
                               ? !!data.toggleUploadProduk
                               : lama.toggleUploadProduk,
+        toggleWhitelistIP:  (typeof data.toggleWhitelistIP !== 'undefined')   // ← BARU
+                              ? !!data.toggleWhitelistIP
+                              : lama.toggleWhitelistIP,
         ipWhitelist:        (typeof data.ipWhitelist !== 'undefined' && Array.isArray(data.ipWhitelist))
                               ? data.ipWhitelist.slice()
                               : lama.ipWhitelist.slice(),
@@ -16558,7 +16544,6 @@ function saveKeamananConfigGlobal(data) {
         updatedBy:          idUser
     };
 
-    // Validasi
     if (isNaN(baru.maxLoginAttempts) || baru.maxLoginAttempts < 1 ||
         baru.maxLoginAttempts > 10) {
         return { sukses: false, pesan: 'Maks percobaan login harus 1-10.' };
@@ -16571,7 +16556,6 @@ function saveKeamananConfigGlobal(data) {
     try {
         localStorage.setItem('keamananConfig', JSON.stringify(baru));
 
-        // Sync ke variable global
         if (typeof keamananConfig !== 'undefined' && keamananConfig) {
             Object.keys(baru).forEach(function(k) {
                 keamananConfig[k] = baru[k];
@@ -16581,7 +16565,8 @@ function saveKeamananConfigGlobal(data) {
         if (typeof catatAktivitasGlobal === 'function') {
             catatAktivitasGlobal(idUser, 'Setting Keamanan',
                 'Max login: ' + baru.maxLoginAttempts +
-                ', blokir: ' + baru.blockDuration + ' menit');
+                ', blokir: ' + baru.blockDuration + 'm' +
+                ', whitelist: ' + (baru.toggleWhitelistIP ? 'ON' : 'OFF'));
         }
 
         return { sukses: true, config: baru };
@@ -16746,43 +16731,52 @@ function hapusIPWhitelistGlobal(identifier) {
 }
 
 // ============================================================
-// BLOK R 01.0 (439) – CEK IP DIIZINKAN GLOBAL
+// BLOK R 01.0 (439) – CEK IP DIIZINKAN GLOBAL (v2)
 // ------------------------------------------------------------
-// Cek apakah IP boleh login. Dipakai di proses login SA.
+// v2: pakai toggleWhitelistIP
 //
-// Aturan:
-//   - Kalau whitelist kosong → semua IP diizinkan
-//   - Kalau ada isi → hanya IP di list yang boleh
-//
-// Parameter:
-//   - ip: string (opsional — kalau kosong, coba deteksi)
-//
-// Return: { sukses: bool, diizinkan: bool, pesan?: string, ip?: string }
+// Logika:
+//   Toggle OFF                → semua IP diizinkan (skip cek)
+//   Toggle ON + whitelist ada → cek IP vs whitelist
+//   Toggle ON + whitelist kosong → BLOKIR semua + warning
 // ============================================================
 function cekIPDiizinkanGlobal(ip) {
     var cfg = getKeamananConfigGlobal();
     var list = cfg.ipWhitelist;
+    var toggle = !!cfg.toggleWhitelistIP;
 
-    // Whitelist kosong = semua diizinkan
-    if (!Array.isArray(list) || list.length === 0) {
+    // ── Toggle OFF → semua diizinkan ──
+    if (!toggle) {
         return {
             sukses: true,
             diizinkan: true,
-            pesan: 'Whitelist kosong — semua IP diizinkan.',
+            mode: 'OFF',
+            pesan: 'Whitelist IP nonaktif — semua IP diizinkan.',
             ip: ip || null
         };
     }
 
-    // Kalau IP tidak disediakan → tidak bisa cek
+    // ── Toggle ON + whitelist KOSONG → blokir semua ──
+    if (!Array.isArray(list) || list.length === 0) {
+        return {
+            sukses: true,
+            diizinkan: false,
+            mode: 'ON_EMPTY',
+            pesan: '⚠️ Whitelist IP AKTIF tapi daftar masih KOSONG. ' +
+                   'Semua login SuperAdmin akan DITOLAK. ' +
+                   'Tambahkan IP Anda dulu sebelum mengaktifkan.'
+        };
+    }
+
+    // ── Toggle ON + whitelist ada → cek IP ──
     if (!ip) {
-        // Fallback: ambil dari cache session
         var cached = sessionStorage.getItem('ipSekarang');
-        if (cached) {
-            ip = cached;
-        } else {
+        if (cached) ip = cached;
+        else {
             return {
                 sukses: false,
                 diizinkan: false,
+                mode: 'ON_NO_IP',
                 pesan: 'IP tidak terdeteksi. Cek manual via menu Keamanan Sistem.'
             };
         }
@@ -16794,6 +16788,7 @@ function cekIPDiizinkanGlobal(ip) {
         return {
             sukses: true,
             diizinkan: true,
+            mode: 'ON_ALLOWED',
             pesan: 'IP ' + cleanIP + ' diizinkan.',
             ip: cleanIP
         };
@@ -16802,6 +16797,7 @@ function cekIPDiizinkanGlobal(ip) {
     return {
         sukses: true,
         diizinkan: false,
+        mode: 'ON_DENIED',
         pesan: 'IP ' + cleanIP + ' TIDAK diizinkan login SuperAdmin.',
         ip: cleanIP
     };
@@ -16846,50 +16842,160 @@ function cekToggleFiturGlobal(namaFitur) {
 }
 
 // ============================================================
-// BLOK R 01.0 (441) – RESET KEAMANAN CONFIG GLOBAL
+// BLOK R 01.0 (441) – RESET KEAMANAN CONFIG GLOBAL (v2 LENGKAP)
 // ------------------------------------------------------------
-// Reset config keamanan ke default. Whitelist IP ikut direset
-// jadi kosong (semua IP boleh login).
+// Reset config keamanan ke default:
+//   • Max login       → 5
+//   • Durasi blokir   → 30 menit
+//   • Toggle registrasi   → ON
+//   • Toggle upload produk → ON
+//   • Toggle whitelist IP  → OFF  (semua IP boleh login)
+//   • Whitelist IP    → KOSONG
 //
-// Return: { sukses: bool, pesan?: string, config?: object }
+// Parameter:
+//   opsi (object, opsional):
+//     - konfirmasi (bool) → default false; kalau true, minta konfirmasi
+//     - alasan (string)   → catatan di log aktivitas
+//
+// Return: { sukses: bool, pesan?: string, config?: object, sebelum?: object }
 // ============================================================
-function resetKeamananConfigGlobal() {
+function resetKeamananConfigGlobal(opsi) {
+    opsi = opsi || {};
+
+    // ── 1. Cek user valid ──
     var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
     if (!idUser) {
-        return { sukses: false, pesan: 'User tidak valid.' };
+        return { sukses: false, pesan: 'User tidak valid. Silakan login ulang.' };
     }
 
+    // ── 2. Snapshot config lama (untuk log & rollback) ──
+    var configLama = (typeof getKeamananConfigGlobal === 'function')
+        ? getKeamananConfigGlobal()
+        : {};
+
+    // ── 3. Default baru ──
     var defaults = {
         maxLoginAttempts:   5,
         blockDuration:      30,
         toggleRegistrasi:   true,
         toggleUploadProduk: true,
+        toggleWhitelistIP:  false,     // ← default OFF (safety)
         ipWhitelist:        [],
         updatedAt:          new Date().toISOString(),
         updatedBy:          idUser
     };
 
+    // ── 4. Optional: konfirmasi (kalau dipanggil dari UI) ──
+    if (opsi.konfirmasi === true) {
+        var pesanKonfirmasi =
+            '⚠️ RESET CONFIG KEAMANAN?\n\n' +
+            'Ini akan mengembalikan:\n' +
+            '  • Max login         → 5\n' +
+            '  • Durasi blokir     → 30 menit\n' +
+            '  • Toggle registrasi → ON\n' +
+            '  • Toggle upload     → ON\n' +
+            '  • Toggle whitelist  → OFF\n' +
+            '  • Whitelist IP      → KOSONG\n\n' +
+            'Semua IP boleh login SA setelah reset.\n\n' +
+            'Lanjut?';
+
+        if (typeof window.confirm === 'function') {
+            if (!window.confirm(pesanKonfirmasi)) {
+                return { sukses: false, pesan: 'Reset dibatalkan oleh user.' };
+            }
+        }
+    }
+
+    // ── 5. Coba simpan ──
     try {
         localStorage.setItem('keamananConfig', JSON.stringify(defaults));
-
-        // Sync variable global
-        if (typeof keamananConfig !== 'undefined' && keamananConfig) {
-            Object.keys(defaults).forEach(function(k) {
-                keamananConfig[k] = defaults[k];
-            });
-        }
-
-        if (typeof catatAktivitasGlobal === 'function') {
-            catatAktivitasGlobal(idUser, 'Reset Keamanan',
-                'Config keamanan direset ke default');
-        }
-
-        return { sukses: true, config: defaults };
     } catch (e) {
-        return { sukses: false, pesan: e.message };
+        // Kalau localStorage penuh / error → return gagal
+        return {
+            sukses: false,
+            pesan: 'Gagal simpan ke localStorage: ' + e.message
+        };
     }
-}
 
+    // ── 6. Sync variable global `keamananConfig` ──
+    // (biar kode lain yang baca variable langsung dapat nilai baru)
+    if (typeof keamananConfig !== 'undefined' && keamananConfig) {
+        Object.keys(defaults).forEach(function(k) {
+            keamananConfig[k] = defaults[k];
+        });
+
+        // Bersihkan field yang mungkin tidak ada di defaults
+        // (biar konsisten)
+        Object.keys(keamananConfig).forEach(function(k) {
+            if (typeof defaults[k] === 'undefined') {
+                delete keamananConfig[k];
+            }
+        });
+    }
+
+    // ── 7. Catat aktivitas global ──
+    if (typeof catatAktivitasGlobal === 'function') {
+        var detailLog = 'Reset config keamanan ke default';
+
+        // Ringkas perubahan
+        var perubahan = [];
+        if (configLama.maxLoginAttempts !== defaults.maxLoginAttempts) {
+            perubahan.push('maxLogin: ' + configLama.maxLoginAttempts +
+                           '→' + defaults.maxLoginAttempts);
+        }
+        if (configLama.blockDuration !== defaults.blockDuration) {
+            perubahan.push('blockDur: ' + configLama.blockDuration +
+                           '→' + defaults.blockDuration);
+        }
+        if (configLama.toggleWhitelistIP !== defaults.toggleWhitelistIP) {
+            perubahan.push('toggleWhitelist: ' +
+                (configLama.toggleWhitelistIP ? 'ON' : 'OFF') + '→' +
+                (defaults.toggleWhitelistIP ? 'ON' : 'OFF'));
+        }
+        if (Array.isArray(configLama.ipWhitelist) && configLama.ipWhitelist.length > 0) {
+            perubahan.push('whitelist: ' + configLama.ipWhitelist.length + ' IP→0');
+        }
+
+        if (perubahan.length > 0) {
+            detailLog += ' (' + perubahan.join(', ') + ')';
+        }
+
+        if (opsi.alasan) {
+            detailLog += ' — Alasan: ' + opsi.alasan;
+        }
+
+        try {
+            catatAktivitasGlobal(idUser, 'Reset Keamanan', detailLog);
+        } catch (e) {
+            console.warn('catatAktivitasGlobal gagal:', e.message);
+        }
+    }
+
+    // ── 8. Log ke console (dev) ──
+    console.log('%c🔐 Reset keamanan berhasil', 
+        'color:#FF8C00;font-weight:bold');
+    console.log('   Sebelum:', {
+        maxLoginAttempts: configLama.maxLoginAttempts,
+        blockDuration:    configLama.blockDuration,
+        toggleWhitelistIP: configLama.toggleWhitelistIP,
+        ipCount:          (configLama.ipWhitelist || []).length
+    });
+    console.log('   Sesudah:', {
+        maxLoginAttempts: defaults.maxLoginAttempts,
+        blockDuration:    defaults.blockDuration,
+        toggleWhitelistIP: defaults.toggleWhitelistIP,
+        ipCount:          defaults.ipWhitelist.length
+    });
+
+    // ── 9. Return sukses ──
+    return {
+        sukses: true,
+        pesan: 'Config keamanan berhasil direset ke default.',
+        config: defaults,
+        sebelum: configLama
+    };
+}
+	
 console.log('✅ BLOK R 01.0 (434-441) – 8 fungsi keamanan global terpasang:');
 console.log('   (434) getKeamananConfigGlobal');
 console.log('   (435) saveKeamananConfigGlobal');
@@ -27098,72 +27204,95 @@ function brHapusKategoriUI(kode) {
             </div>
         </div>
 
-        <!-- Card 3: Whitelist IP SuperAdmin -->
-        <div class="card border-0 shadow mb-4">
-            <div class="card-header text-white" style="background-color:#17A2B8;">
-                <i class="fas fa-network-wired me-2"></i>Whitelist IP SuperAdmin
+       <!-- Card 3: Whitelist IP SuperAdmin -->
+<div class="card border-0 shadow mb-4">
+    <div class="card-header text-white" style="background-color:#17A2B8;">
+        <i class="fas fa-network-wired me-2"></i>Whitelist IP SuperAdmin
+    </div>
+    <div class="card-body">
+
+        <!-- Toggle ON/OFF -->
+        <div class="alert alert-light border mb-3">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox"
+                       id="kmToggleWhitelistIP"
+                       onchange="kmToggleWhitelistBerubah()">
+                <label class="form-check-label fw-bold"
+                       for="kmToggleWhitelistIP">
+                    <i class="fas fa-shield-alt me-1"></i>
+                    Aktifkan Whitelist IP
+                </label>
             </div>
-            <div class="card-body">
-                <div class="alert alert-info">
-                    <i class="fas fa-info-circle me-1"></i>
-                    <strong>Cara Kerja:</strong> Kalau daftar <strong>kosong</strong>,
-                    semua IP boleh login SA. Kalau ada isi, hanya IP di daftar
-                    yang diizinkan.
-                    <hr class="my-2">
-                    <div class="d-flex justify-content-between align-items-center flex-wrap">
-                        <div>
-                            <i class="fas fa-map-pin me-1 text-success"></i>
-                            IP Anda saat ini: <strong id="kmIpSekarang">Memuat...</strong>
-                        </div>
-                        <button class="btn btn-sm btn-outline-primary mt-1"
-                                onclick="kmAmbilIpSekarang()">
-                            <i class="fas fa-sync me-1"></i> Refresh IP
-                        </button>
-                    </div>
-                </div>
+            <small class="text-muted d-block mt-1" id="kmToggleWhitelistStatus">
+                Status: <strong>NONAKTIF</strong> — semua IP boleh login SA.
+            </small>
+        </div>
 
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="fw-bold">
-                            <i class="fas fa-list me-1"></i>Daftar IP Diizinkan
-                        </label>
-                        <ul id="kmDaftarIP" class="list-group"
-                            style="max-height:350px;overflow-y:auto;">
-                            <li class="list-group-item text-muted text-center">
-                                <i class="fas fa-globe me-1"></i>
-                                Belum ada IP (semua IP diizinkan)
-                            </li>
-                        </ul>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="fw-bold">
-                            <i class="fas fa-plus me-1"></i>Tambah IP Baru
-                        </label>
-                        <div class="input-group mb-2">
-                            <input type="text" id="kmInputIPBaru"
-                                   class="form-control"
-                                   placeholder="Contoh: 182.253.64.12"
-                                   onkeypress="if(event.key==='Enter'){event.preventDefault();kmTambahIP();}">
-                            <button class="btn btn-primary" onclick="kmTambahIP()">
-                                <i class="fas fa-plus"></i> Tambah
-                            </button>
-                        </div>
-                        <small class="text-muted">
-                            Format IPv4. Untuk testing lokal: 127.0.0.1
-                        </small>
-                        <div class="mt-2">
-                            <button class="btn btn-sm btn-outline-success"
-                                    onclick="kmTambahIpSekarang()">
-                                <i class="fas fa-map-pin me-1"></i>
-                                Tambah IP Saya Sekarang
-                            </button>
-                        </div>
-                    </div>
-                </div>
+        <!-- Warning kalau ON tapi kosong -->
+        <div id="kmWarningWhitelistKosong" class="alert alert-danger d-none">
+            <i class="fas fa-exclamation-triangle me-1"></i>
+            <strong>PERINGATAN!</strong>
+            Whitelist IP aktif tapi daftar kosong.
+            <strong>Semua login SuperAdmin akan DITOLAK</strong>
+            sampai Anda menambahkan minimal 1 IP di bawah.
+        </div>
 
-                <div id="kmNotifIP" class="alert d-none mt-3"></div>
+        <!-- Info IP Sekarang -->
+        <div class="alert alert-info">
+            <div class="d-flex justify-content-between align-items-center flex-wrap">
+                <div>
+                    <i class="fas fa-map-pin me-1 text-success"></i>
+                    IP Anda saat ini: <strong id="kmIpSekarang">Memuat...</strong>
+                </div>
+                <button class="btn btn-sm btn-outline-primary mt-1"
+                        onclick="kmAmbilIpSekarang()">
+                    <i class="fas fa-sync me-1"></i> Refresh IP
+                </button>
             </div>
         </div>
+
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="fw-bold">
+                    <i class="fas fa-list me-1"></i>Daftar IP Diizinkan
+                </label>
+                <ul id="kmDaftarIP" class="list-group"
+                    style="max-height:350px;overflow-y:auto;">
+                    <li class="list-group-item text-muted text-center">
+                        <i class="fas fa-globe me-1"></i>
+                        Belum ada IP
+                    </li>
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <label class="fw-bold">
+                    <i class="fas fa-plus me-1"></i>Tambah IP Baru
+                </label>
+                <div class="input-group mb-2">
+                    <input type="text" id="kmInputIPBaru"
+                           class="form-control"
+                           placeholder="Contoh: 182.253.64.12"
+                           onkeypress="if(event.key==='Enter'){event.preventDefault();kmTambahIP();}">
+                    <button class="btn btn-primary" onclick="kmTambahIP()">
+                        <i class="fas fa-plus"></i> Tambah
+                    </button>
+                </div>
+                <small class="text-muted">
+                    Format IPv4. Untuk testing lokal: 127.0.0.1
+                </small>
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-outline-success"
+                            onclick="kmTambahIpSekarang()">
+                        <i class="fas fa-map-pin me-1"></i>
+                        Tambah IP Saya Sekarang
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="kmNotifIP" class="alert d-none mt-3"></div>
+    </div>
+</div>
 
         <!-- Card 4: Reset Keamanan -->
         <div class="card border-0 shadow mb-4">
@@ -27234,28 +27363,122 @@ function brHapusKategoriUI(kode) {
     };
 
     // ── Render form ──
-    function kmRenderForm() {
-        if (typeof getKeamananConfigGlobal !== 'function') {
-            console.error('❌ getKeamananConfigGlobal belum ada!');
-            return;
+function kmRenderForm() {
+    if (typeof getKeamananConfigGlobal !== 'function') {
+        console.error('❌ getKeamananConfigGlobal belum ada!');
+        return;
+    }
+
+    var cfg = getKeamananConfigGlobal();
+
+    var el1 = document.getElementById('kmMaxLoginAttempts');
+    if (el1) el1.value = cfg.maxLoginAttempts;
+
+    var el2 = document.getElementById('kmBlockDuration');
+    if (el2) el2.value = cfg.blockDuration;
+
+    var el3 = document.getElementById('kmToggleRegistrasi');
+    if (el3) el3.checked = !!cfg.toggleRegistrasi;
+
+    var el4 = document.getElementById('kmToggleUploadProduk');
+    if (el4) el4.checked = !!cfg.toggleUploadProduk;
+
+    // ── Toggle whitelist (BARU) ──
+    var el5 = document.getElementById('kmToggleWhitelistIP');
+    if (el5) el5.checked = !!cfg.toggleWhitelistIP;
+
+    kmUpdateStatusWhitelist();
+
+    kmRenderDaftarIP();
+kmUpdateStatusWhitelist();
+}
+
+// ── Update status toggle whitelist (BARU) ──
+function kmUpdateStatusWhitelist() {
+    if (typeof getKeamananConfigGlobal !== 'function') return;
+
+    var cfg = getKeamananConfigGlobal();
+    var el = document.getElementById('kmToggleWhitelistStatus');
+    var warn = document.getElementById('kmWarningWhitelistKosong');
+
+    if (!el) return;
+
+    if (!cfg.toggleWhitelistIP) {
+        el.innerHTML = 'Status: <strong class="text-success">NONAKTIF</strong> — semua IP boleh login SA.';
+        if (warn) warn.classList.add('d-none');
+        return;
+    }
+
+    // Toggle ON
+    if (!cfg.ipWhitelist || cfg.ipWhitelist.length === 0) {
+        el.innerHTML = 'Status: <strong class="text-danger">AKTIF (KOSONG!)</strong> — login SA akan DITOLAK.';
+        if (warn) warn.classList.remove('d-none');
+    } else {
+        el.innerHTML = 'Status: <strong class="text-warning">AKTIF</strong> — hanya IP di daftar yang boleh login.';
+        if (warn) warn.classList.add('d-none');
+    }
+}
+
+// ── Handler toggle whitelist berubah (BARU) ──
+window.kmToggleWhitelistBerubah = function() {
+    var el = document.getElementById('kmToggleWhitelistIP');
+    if (!el) return;
+
+    var on = el.checked;
+    var notif = document.getElementById('kmNotifIP');
+
+    // Konfirmasi kalau ON
+    if (on) {
+        var cfg = getKeamananConfigGlobal();
+        var adaIP = cfg.ipWhitelist && cfg.ipWhitelist.length > 0;
+
+        var pesan = 'Aktifkan Whitelist IP?\n\n';
+        if (adaIP) {
+            pesan += 'Login SuperAdmin akan dibatasi ke ' +
+                     cfg.ipWhitelist.length + ' IP di daftar.\n\n' +
+                     'Pastikan IP Anda saat ini (' +
+                     (sessionStorage.getItem('ipSekarang') || 'belum terdeteksi') +
+                     ') ada di daftar, atau Anda akan TERKUNCI!';
+        } else {
+            pesan += '⚠️ DAFTAR MASIH KOSONG!\n\n' +
+                     'Semua login SuperAdmin akan DITOLAK ' +
+                     'sampai Anda tambahkan minimal 1 IP.\n\n' +
+                     'Lanjut tetap aktifkan?';
         }
 
-        var cfg = getKeamananConfigGlobal();
-
-        var el1 = document.getElementById('kmMaxLoginAttempts');
-        if (el1) el1.value = cfg.maxLoginAttempts;
-
-        var el2 = document.getElementById('kmBlockDuration');
-        if (el2) el2.value = cfg.blockDuration;
-
-        var el3 = document.getElementById('kmToggleRegistrasi');
-        if (el3) el3.checked = !!cfg.toggleRegistrasi;
-
-        var el4 = document.getElementById('kmToggleUploadProduk');
-        if (el4) el4.checked = !!cfg.toggleUploadProduk;
-
-        kmRenderDaftarIP();
+        if (!confirm(pesan)) {
+            el.checked = false;
+            return;
+        }
     }
+
+    // Simpan
+    if (typeof saveKeamananConfigGlobal !== 'function') {
+        alert('❌ Fungsi global belum tersedia.');
+        el.checked = !on;
+        return;
+    }
+
+    var hasil = saveKeamananConfigGlobal({ toggleWhitelistIP: on });
+
+    if (hasil.sukses) {
+        kmUpdateStatusWhitelist();
+        if (notif) {
+            notif.className = 'alert alert-success';
+            notif.innerHTML = '✅ Whitelist IP ' +
+                (on ? '<strong>DIAKTIFKAN</strong>' : '<strong>DINONAKTIFKAN</strong>') + '.';
+            notif.classList.remove('d-none');
+            setTimeout(function() { notif.classList.add('d-none'); }, 3000);
+        }
+    } else {
+        el.checked = !on;
+        if (notif) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + hasil.pesan;
+            notif.classList.remove('d-none');
+        }
+    }
+};
 
     // ── Render daftar IP ──
     function kmRenderDaftarIP() {
@@ -27388,6 +27611,7 @@ function brHapusKategoriUI(kode) {
         if (hasil.sukses) {
             if (input) input.value = '';
             kmRenderDaftarIP();
+kmUpdateStatusWhitelist();
             if (notif) {
                 notif.className = 'alert alert-success';
                 notif.innerHTML = '✅ IP <code>' + hasil.ip + '</code> ditambahkan.';
@@ -27413,6 +27637,7 @@ function brHapusKategoriUI(kode) {
         var hasil = hapusIPWhitelistGlobal(idx);
         if (hasil.sukses) {
             kmRenderDaftarIP();
+kmUpdateStatusWhitelist();
             var notif = document.getElementById('kmNotifIP');
             if (notif) {
                 notif.className = 'alert alert-success';
@@ -27475,35 +27700,42 @@ function brHapusKategoriUI(kode) {
         kmTambahIP();
     };
 
-    // ── Reset keamanan ──
-    window.kmResetKeamanan = function() {
-        if (!confirm('⚠️ Reset semua config keamanan ke default?\n\n' +
-            'Whitelist IP akan DIKOSONGKAN.\nLanjut?')) return;
+    // ── Reset keamanan (v2 — pakai konfirmasi dari fungsi global) ──
+window.kmResetKeamanan = function() {
+    if (typeof resetKeamananConfigGlobal !== 'function') {
+        alert('❌ Fungsi global resetKeamananConfigGlobal belum tersedia.');
+        return;
+    }
 
-        if (typeof resetKeamananConfigGlobal !== 'function') {
-            alert('❌ Fungsi global belum tersedia.');
-            return;
+    var hasil = resetKeamananConfigGlobal({
+        konfirmasi: true,
+        alasan: 'Diminta via menu Keamanan Sistem'
+    });
+
+    var notif = document.getElementById('kmNotifReset');
+
+    if (hasil.sukses) {
+        // Refresh form dengan config baru
+        kmRenderForm();
+
+        if (notif) {
+            notif.className = 'alert alert-success';
+            notif.innerHTML = '✅ Config keamanan direset ke default.<br>' +
+                '<small>Max login: 5 | Blokir: 30 menit | Whitelist: OFF</small>';
+            notif.classList.remove('d-none');
+            setTimeout(function() { notif.classList.add('d-none'); }, 4000);
         }
 
-        var hasil = resetKeamananConfigGlobal();
-        var notif = document.getElementById('kmNotifReset');
-
-        if (hasil.sukses) {
-            kmRenderForm();
-            if (notif) {
-                notif.className = 'alert alert-success';
-                notif.innerHTML = '✅ Config keamanan direset ke default.';
-                notif.classList.remove('d-none');
-                setTimeout(function() { notif.classList.add('d-none'); }, 3000);
-            }
-        } else {
-            if (notif) {
-                notif.className = 'alert alert-danger';
-                notif.innerHTML = '❌ ' + hasil.pesan;
-                notif.classList.remove('d-none');
-            }
+        console.log('✅ Reset keamanan sukses:', hasil.config);
+    } else {
+        if (notif) {
+            notif.className = 'alert alert-warning';
+            notif.innerHTML = 'ℹ️ ' + hasil.pesan;
+            notif.classList.remove('d-none');
+            setTimeout(function() { notif.classList.add('d-none'); }, 3000);
         }
-    };
+    }
+};
 
     // ── Handler menu ──
     window.menuHandlers = window.menuHandlers || {};
