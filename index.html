@@ -12780,54 +12780,6 @@ function hfGetPostDihapusSaya(idUser) {
 }
 
 // ============================================================
-// BLOK R 01.0 (274) – HF BUAT POST (FIXED — handle video & mentions)
-// ============================================================
-function hfBuatPost(data) {
-    if (!userAktif || !userAktif.idUser) {
-        return { sukses: false, pesan: 'User tidak valid.' };
-    }
-    data = data || {};
-    var teks = (data.teks || '').trim();
-
-    if (!teks && (!data.foto || data.foto.length === 0) && !data.video) {
-        return { sukses: false, pesan: 'Postingan harus ada teks, foto, atau video.' };
-    }
-    if (teks.length > 280) {
-        return { sukses: false, pesan: 'Teks maksimal 280 karakter.' };
-    }
-    if (data.foto && data.foto.length > 5) {
-        return { sukses: false, pesan: 'Maksimal 5 foto per postingan.' };
-    }
-
-    var list = hfLoad('post');
-    var idBaru = hfGenerateId('post');
-    var postBaru = {
-        id: idBaru,
-        creatorId: userAktif.idUser,
-        creatorNama: userAktif.nama || '-',
-        creatorRole: userAktif.role || '-',
-        teks: teks,
-        foto: Array.isArray(data.foto) ? data.foto : [],
-        video: data.video || null,                                    // ✅ FIX
-        hashtag: Array.isArray(data.hashtag) ? data.hashtag : [],
-        mentions: Array.isArray(data.mentions) ? data.mentions : [],  // ✅ FIX
-        kategori: data.kategori || 'cerita',
-        produkTerkaitId: data.produkTerkaitId || null,
-        produkTipe: data.produkTipe || null,                          // ✅ FIX
-        status: data.status || 'publik',
-        createdAt: new Date().toISOString(),
-        updatedAt: null
-    };
-    list.push(postBaru);
-    hfSave('post', list);
-
-    if (typeof catatAktivitasGlobal === 'function') {
-        catatAktivitasGlobal(userAktif.idUser, 'HF Buat Post', 'Post baru: ' + idBaru);
-    }
-    return { sukses: true, id: idBaru, post: postBaru };
-}
-
-// ============================================================
 // BLOK R 01.0 (275) – HF UPDATE POST (FIXED — handle video & mentions)
 // ============================================================
 function hfUpdatePost(idPost, data) {
@@ -33130,37 +33082,89 @@ function hfKonfirmasiHapusPost() {
 // ── akhir BLOK R 50.2 (28) ──
 
 // ============================================================
-// BLOK R 50.2 (29) – OVERRIDE hfHFLoadDraftKeForm KE V2 (FIXED)
+// BLOK R 50.2 (29) – OVERRIDE hfHFLoadDraftKeForm KE V2
 // ------------------------------------------------------------
-// BUG FIX: sebelumnya panggil hfFormPostV2BukaEdit(null) →
-// alert "Post tidak ditemukan" + BREAK karena function return awal.
-// Solusi: pakai BukaBaru() dulu, lalu set idPost manual.
+// REVISI FINAL — v2.0
+//
+// BUG LAMA (sebelumnya):
+//   Panggil hfFormPostV2BukaEdit(null) → alert "Post tidak
+//   ditemukan" + BREAK karena fungsi return awal.
+//
+// FIX:
+//   Pakai hfFormPostV2BukaBaru() untuk reset form + buka modal.
+//   Set idPost manual setelah modal terbuka.
+//
+// Guard:
+//   _overrideLoadDraftV2Done — cegah double-wrap kalau blok
+//   ini ter-load 2× (misal: full refresh + partial reload).
 // ============================================================
-(function overrideLoadDraftFixed() {
-    var original = window.hfHFLoadDraftKeForm;
+(function overrideLoadDraftV2() {
+    // ── Guard idempotency ──
+    if (window._overrideLoadDraftV2Done) {
+        console.log('ℹ️ BLOK R 50.2 (29) V2 sudah terpasang — dilewati.');
+        return;
+    }
+    window._overrideLoadDraftV2Done = true;
+
     window.hfHFLoadDraftKeForm = function(idDraft) {
+        // ── 1. Validasi ID ──
+        if (!idDraft) {
+            alert('ID Draft tidak valid.');
+            return;
+        }
+
+        // ── 2. Load draft ──
         var draft = hfLoadDraft(idDraft);
-        if (!draft) { alert('Draft tidak ditemukan.'); return; }
+        if (!draft) {
+            alert('Draft tidak ditemukan.');
+            return;
+        }
 
-        if (document.getElementById('modalHFFormPostV2')) {
-            // ✅ FIX: pakai BukaBaru (bukan BukaEdit null)
-            hfFormPostV2BukaBaru();
+        // ── 3. Cek modal V2 tersedia ──
+        var modalV2 = document.getElementById('modalHFFormPostV2');
+        if (!modalV2) {
+            // Fallback: pakai form lama kalau ada
+            if (typeof window.hfHFBukaFormPost === 'function') {
+                hfHFBukaFormPost();
+                console.warn('⚠️ Modal V2 tidak ada, fallback ke form lama.');
+            } else {
+                alert('Form post belum tersedia.');
+            }
+            return;
+        }
 
-            setTimeout(function() {
-                // Set idPost manual setelah form terbuka
+        // ── 4. Buka form BARU (bukan Edit) ──
+        // Kenapa BukaBaru? Karena BukaEdit butuh post yang sudah ada.
+        // Untuk draft, kita buka form kosong dulu, lalu isi manual.
+        hfFormPostV2BukaBaru();
+
+        // ── 5. Setelah modal terbuka (delay 400ms), isi data draft ──
+        setTimeout(function() {
+            try {
+                // Set state idPost = draft.id (bukan null)
                 hfFormPostV2State.idPost = draft.id;
 
-                document.getElementById('hfFormPostV2Id').value = draft.id || '';
-                document.getElementById('hfFormPostV2Teks').value = draft.teks || '';
-                document.getElementById('hfFormPostV2Kategori').value = draft.kategori || 'cerita';
-                document.getElementById('hfFormPostV2Publik').checked = draft.status !== 'privat';
+                // Isi field form
+                var elId = document.getElementById('hfFormPostV2Id');
+                if (elId) elId.value = draft.id || '';
 
+                var elTeks = document.getElementById('hfFormPostV2Teks');
+                if (elTeks) elTeks.value = draft.teks || '';
+
+                var elKategori = document.getElementById('hfFormPostV2Kategori');
+                if (elKategori) elKategori.value = draft.kategori || 'cerita';
+
+                var elPublik = document.getElementById('hfFormPostV2Publik');
+                if (elPublik) elPublik.checked = draft.status !== 'privat';
+
+                // Set state lokal
                 hfFormPostV2State.fotoList = Array.isArray(draft.foto) ? draft.foto.slice() : [];
                 hfFormPostV2State.videoData = draft.video || null;
                 hfFormPostV2State.hashtagList = Array.isArray(draft.hashtag) ? draft.hashtag.slice() : [];
                 hfFormPostV2State.mentionList = [];
                 hfFormPostV2State.produkId = draft.produkTerkaitId || null;
 
+                // Render komponen (foto, video, hashtag, mention, produk)
                 hfFormPostV2RenderFoto();
                 hfFormPostV2RenderVideo();
                 hfFormPostV2RenderHashtag();
@@ -33169,14 +33173,23 @@ function hfKonfirmasiHapusPost() {
                 hfFormPostV2PreviewProduk();
                 hfFormPostV2UpdateCounter();
 
-                document.getElementById('hfFormPostV2Label').textContent = 'Edit Draft';
-                document.getElementById('hfFormPostV2BtnLabel').textContent = 'Publikasikan';
-            }, 400);
-        } else if (typeof original === 'function') {
-            original(idDraft);
-        }
+                // Ganti label
+                var elLabel = document.getElementById('hfFormPostV2Label');
+                if (elLabel) elLabel.textContent = 'Edit Draft';
+
+                var elBtnLabel = document.getElementById('hfFormPostV2BtnLabel');
+                if (elBtnLabel) elBtnLabel.textContent = 'Publikasikan';
+
+                console.log('✅ Draft dimuat ke form V2:', draft.id);
+
+            } catch (e) {
+                console.error('❌ Error load draft ke form:', e.message);
+                alert('Gagal memuat draft: ' + e.message);
+            }
+        }, 400);
     };
-    console.log('✅ BLOK R 50.2 (29) – hfHFLoadDraftKeForm → V2 (FIXED)');
+
+    console.log('✅ BLOK R 50.2 (29) V2 – hfHFLoadDraftKeForm → V2 (REVISI FINAL)');
 })();
 // ── akhir BLOK R 50.2 (29) ──
 
