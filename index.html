@@ -52236,45 +52236,180 @@ function tampilkanToastChatCT(pesan, tipe) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// BLOK R 19.24 (27) — PATCH MENUCONFIG['CT'] + HANDLER
+// BLOK R 19.24 (27) — PATCH MENUCONFIG['CT'] + HANDLER (REVISI)
+// ------------------------------------------------------------
+// Self-healing patch:
+//   - Hapus SEMUA entry chat lama (11.24 / tampilkanMenuChatToko
+//     / nama "Menu Chat User")
+//   - Tambah entry baru (19.24 / tampilkanMenuChatCT) kalau belum ada
+//   - Retry 5x untuk antisipasi seeder yang jalan setelahnya
+//   - Auto re-render sidebar kalau user CT sudah login
 // ═══════════════════════════════════════════════════════════
-(function patchMenuConfigChatCT() {
-    // Update menuConfig['CT'] — cari entry chat lama
-    if (menuConfig && menuConfig['CT'] && Array.isArray(menuConfig['CT'].menu)) {
-        var idx = -1;
+function patchMenuConfigChatCT_Apply() {
+    // ── Guard: menuConfig harus ada ──
+    if (typeof menuConfig === 'undefined') {
+        console.warn('⚠️ PATCH 19.24: menuConfig belum siap');
+        return false;
+    }
+
+    // ── Guard: menuHandlers harus ada ──
+    if (typeof menuHandlers === 'undefined') {
+        window.menuHandlers = window.menuHandlers || {};
+    }
+
+    // ── Pastikan menuConfig['CT'] ada & valid ──
+    if (!menuConfig['CT']) menuConfig['CT'] = { menu: [] };
+    if (!Array.isArray(menuConfig['CT'].menu)) menuConfig['CT'].menu = [];
+
+    // ══════════════════════════════════════════════════════
+    // 1. HAPUS SEMUA entry chat LAMA
+    //    Kriteria:
+    //      - aksi === 'tampilkanMenuChatToko'
+    //      - aksi === 'menuChatToko'
+    //      - blok === '11.24'
+    //      - nama.toLowerCase() === 'menu chat user'
+    // ══════════════════════════════════════════════════════
+    var sebelum = menuConfig['CT'].menu.length;
+    menuConfig['CT'].menu = menuConfig['CT'].menu.filter(function(m) {
+        if (!m) return false;
+        var aksi = (m.aksi || '').toLowerCase();
+        var nama = (m.nama || '').toLowerCase();
+        var blok = (m.blok || '').toLowerCase();
+
+        if (aksi === 'tampilkanmenuchattoko') return false;
+        if (aksi === 'menuchattoko') return false;
+        if (blok === '11.24') return false;
+        if (nama === 'menu chat user') return false;
+
+        return true;
+    });
+    var dihapus = sebelum - menuConfig['CT'].menu.length;
+
+    // ══════════════════════════════════════════════════════
+    // 2. CEK & TAMBAH entry chat baru
+    // ══════════════════════════════════════════════════════
+    var sudahAdaCT = menuConfig['CT'].menu.some(function(m) {
+        return m.aksi === 'tampilkanMenuChatCT' || m.blok === '19.24';
+    });
+
+    var ditambah = 0;
+    if (!sudahAdaCT) {
+        // Cari posisi ideal: setelah "Profil Customer"
+        var idxProfil = -1;
         for (var i = 0; i < menuConfig['CT'].menu.length; i++) {
-            var m = menuConfig['CT'].menu[i];
-            if (m.blok === '11.24' ||
-                m.aksi === 'tampilkanMenuChatToko' ||
-                m.aksi === 'menuChatToko' ||
-                (m.nama && m.nama.toLowerCase().indexOf('chat') !== -1)) {
-                idx = i; break;
+            if (menuConfig['CT'].menu[i].aksi === 'profil') {
+                idxProfil = i;
+                break;
             }
         }
-        if (idx !== -1) {
-            menuConfig['CT'].menu[idx].blok = '19.24';
-            menuConfig['CT'].menu[idx].aksi = 'tampilkanMenuChatCT';
-            menuConfig['CT'].menu[idx].nama = 'Menu Chat Customer';
-            console.log('✅ menuConfig[CT] — chat diupdate ke blok 19.24');
+
+        var entryBaru = {
+            nama: 'Chat dengan Seller',
+            ikon: 'fas fa-comments',
+            aksi: 'tampilkanMenuChatCT',
+            blok: '19.24'
+        };
+
+        if (idxProfil !== -1) {
+            menuConfig['CT'].menu.splice(idxProfil + 1, 0, entryBaru);
         } else {
-            menuConfig['CT'].menu.push({
-                nama: 'Menu Chat Customer',
-                ikon: 'fas fa-comments',
-                aksi: 'tampilkanMenuChatCT',
-                blok: '19.24'
-            });
-            console.log('✅ menuConfig[CT] — entry chat BARU ditambahkan');
+            menuConfig['CT'].menu.push(entryBaru);
+        }
+        ditambah = 1;
+    }
+
+    // ══════════════════════════════════════════════════════
+    // 3. HAPUS DUPLIKAT entry chat CT (kalau ada > 1)
+    // ══════════════════════════════════════════════════════
+    var idxChatCT = [];
+    menuConfig['CT'].menu.forEach(function(m, i) {
+        if (m.aksi === 'tampilkanMenuChatCT' || m.blok === '19.24') {
+            idxChatCT.push(i);
+        }
+    });
+
+    if (idxChatCT.length > 1) {
+        // Simpan yang pertama, hapus sisanya (dari belakang)
+        for (var j = idxChatCT.length - 1; j > 0; j--) {
+            menuConfig['CT'].menu.splice(idxChatCT[j], 1);
+        }
+        console.log('✅ PATCH 19.24: Hapus ' + (idxChatCT.length - 1) + ' duplikat');
+    }
+
+    // ══════════════════════════════════════════════════════
+    // 4. PASTIKAN HANDLER terdaftar
+    // ══════════════════════════════════════════════════════
+    menuHandlers['tampilkanMenuChatCT'] = function() {
+        if (typeof tampilkanMenuChatCT === 'function') {
+            tampilkanMenuChatCT();
+        } else {
+            tampilkanPlaceholderMenu('Chat dengan Seller', '19.24');
+        }
+    };
+
+    // ══════════════════════════════════════════════════════
+    // 5. SIMPAN ke localStorage
+    // ══════════════════════════════════════════════════════
+    try {
+        localStorage.setItem('menuConfig', JSON.stringify(menuConfig));
+    } catch (e) {
+        console.warn('PATCH 19.24: gagal simpan:', e.message);
+    }
+
+    // ══════════════════════════════════════════════════════
+    // 6. LOG RINGKASAN
+    // ══════════════════════════════════════════════════════
+    if (dihapus > 0 || ditambah > 0) {
+        console.log('');
+        console.log('════════════════════════════════════════');
+        console.log('✅ PATCH BLOK 19.24 — menuConfig[CT] diupdate');
+        console.log('════════════════════════════════════════');
+        console.log('   Entry lama dihapus : ' + dihapus);
+        console.log('   Entry baru ditambah: ' + ditambah);
+        console.log('   Total entry CT     : ' + menuConfig['CT'].menu.length);
+        console.log('');
+        console.log('   Daftar menu CT:');
+        menuConfig['CT'].menu.forEach(function(m, i) {
+            var mark = (m.aksi === 'tampilkanMenuChatCT') ? ' ⭐' : '';
+            console.log('     ' + (i + 1) + '. [' + (m.blok || '?') + '] ' +
+                        (m.nama || '-') + ' → ' + (m.aksi || '-') + mark);
+        });
+        console.log('════════════════════════════════════════');
+
+        // ══════════════════════════════════════════════════════
+        // 7. AUTO RE-RENDER SIDEBAR (kalau user CT sudah login)
+        // ══════════════════════════════════════════════════════
+        if (typeof userAktif !== 'undefined' &&
+            userAktif && userAktif.role === 'Customer' &&
+            typeof loadMenuNavigasi === 'function') {
+
+            setTimeout(function() {
+                loadMenuNavigasi(userAktif.kodeRole, userAktif.statusVerifikasi);
+                console.log('✅ Sidebar CT di-refresh ulang');
+            }, 300);
         }
     }
 
-    // Handler menu
-    window.menuHandlers = window.menuHandlers || {};
-    menuHandlers['tampilkanMenuChatCT'] = function() {
-        tampilkanMenuChatCT();
-    };
+    return true;
+}
 
-    console.log('✅ BLOK R 19.24 — Menu Chat Customer terpasang.');
+// ── Retry guard: jalankan 5x (antisipasi seeder yang jalan setelahnya) ──
+(function initPatchMenuConfigCT() {
+    var delays = [500, 1500, 3000, 5000, 8000];
+    delays.forEach(function(ms, idx) {
+        setTimeout(function() {
+            var ok = patchMenuConfigChatCT_Apply();
+            if (ok && idx === 0) {
+                // Sukses di run pertama → log ringkas
+                console.log('✅ PATCH 19.24: applied (run #' + (idx + 1) + ')');
+            } else if (ok) {
+                console.log('🔁 PATCH 19.24: re-apply (run #' + (idx + 1) + ')');
+            }
+        }, ms);
+    });
 })();
+
+console.log('✅ BLOK R 19.24 — Menu Chat Customer terpasang (patch v2).');
 
 console.log('✅ BLOK R 19.24 — JS selesai dieksekusi.');
 console.log('   tampilkanMenuChatCT =', typeof tampilkanMenuChatCT);
@@ -69117,7 +69252,7 @@ menuConfig['CT'] = {
         { nama: 'Hello Friends', ikon: 'fas fa-video', blok: '50.1', aksi: 'tampilkanHelloFriends' },
         { nama: 'Profil Customer', ikon: 'fas fa-user', blok: '19.2', aksi: 'profil' },
         { nama: 'Semua Order', ikon: 'fas fa-shopping-cart', blok: '19.3', aksi: 'semuaOrderCT' },
-        { nama: 'Menu Chat User', ikon: 'fas fa-comments', blok: '11.24', aksi: 'tampilkanMenuChatToko' },
+        { nama: 'Chat dengan Seller', ikon: 'fas fa-comments', aksi: 'tampilkanMenuChatCT', blok: '19.24' },
 		{ nama: 'Koleksi GIF Saya', ikon: 'fas fa-gift', blok: '11.32', aksi: 'tampilkanKoleksiGifToko' },
         { nama: 'Chat dengan CS', ikon: 'fas fa-headset', blok: '18.3', aksi: 'tampilkanChatCS' },
         { nama: 'Katalog Produk', ikon: 'fas fa-th-list', blok: '10.9', aksi: 'katalogProduk' },
