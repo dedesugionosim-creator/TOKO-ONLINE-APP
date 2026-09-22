@@ -19729,211 +19729,266 @@ console.log('       (481) kirimPromptKeAIProvider');
 <!-- ============================================================ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- FASE 6 — PATCH GUARD SUSPEND (REVISI — 7 Patch)             -->
-<!-- Role kena sewa (DP/DLR/FIN/Jasa) TIDAK punya Dompet R2Coin  -->
-<!-- → Tidak ada withdraw / transfer / sawer                     -->
+<!-- FASE 6 — BLOK R 01.0 (506-512) — GUARD SUSPEND SAAT SEWA   -->
+<!-- ------------------------------------------------------------ -->
+<!-- Dipakai oleh: Guard upload produk, chat, posting sosial,   -->
+<!-- filter katalog, banner suspend untuk role kena sewa         -->
+<!-- (DP / DLR / FIN / Jasa)                                     -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
-(function PATCH_FASE_6_GUARD_SUSPEND_v2() {
-    if (window._patchFase6Done) {
-        console.log('ℹ️ Patch FASE 6 sudah terpasang — dilewati.');
-        return;
+// ============================================================
+// BLOK R 01.0 (506) — MASTER GUARD IZIN AKSES SAAT SUSPEND
+// ------------------------------------------------------------
+// Fungsi tunggal untuk cek apakah user boleh melakukan aksi
+// tertentu saat akunnya dalam status suspend.
+//
+// Parameter:
+//   idUser — string ID user
+//   aksi   — string aksi ('uploadProduk', 'chat', dll)
+//
+// Return:
+//   { diizinkan: bool, pesan?: string, statusSuspend: bool, kode?: string }
+// ============================================================
+function cekIzinAksesSaatSuspend(idUser, aksi) {
+    if (!idUser) {
+        return { diizinkan: false, pesan: 'ID user tidak valid.', kode: 'INVALID_USER' };
     }
-    window._patchFase6Done = true;
 
-    // ============================================================
-    // PATCH 1 — tambahProdukGlobalUniversal: BLOCK upload baru
-    // ============================================================
-    (function wrapTambahProduk() {
-        var original = window.tambahProdukGlobalUniversal;
-        if (typeof original !== 'function') {
-            console.warn('⚠️ tambahProdukGlobalUniversal tidak ditemukan, skip.');
-            return;
+    var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+    if (!user) {
+        return { diizinkan: false, pesan: 'User tidak ditemukan.', kode: 'USER_NOT_FOUND' };
+    }
+
+    // ── Cek apakah role user kena sewa ──
+    var setting = (typeof getSewaAplikasiSettingGlobal === 'function')
+        ? getSewaAplikasiSettingGlobal()
+        : { roleKenaSewa: [] };
+
+    if (!Array.isArray(setting.roleKenaSewa) ||
+        setting.roleKenaSewa.indexOf(user.role) === -1) {
+        return { diizinkan: true, statusSuspend: false, alasan: 'Role tidak kena sewa' };
+    }
+
+    // ── Cek status suspend ──
+    var isSuspend = (typeof isAkunTersuspendGlobal === 'function')
+        ? isAkunTersuspendGlobal(idUser)
+        : false;
+
+    if (!isSuspend) {
+        return { diizinkan: true, statusSuspend: false, alasan: 'Akun aktif' };
+    }
+
+    // ── Akun suspend — cek whitelist aksi ──
+    var aksiSelaluBoleh = [
+        'login', 'logout',
+        'lihatDashboard', 'lihatTagihan', 'uploadBuktiBayar',
+        'chatKeSA', 'topUp', 'editProfil',
+        'bacaChat', 'bacaNotifikasi', 'lihatKatalog'
+    ];
+
+    if (aksiSelaluBoleh.indexOf(aksi) !== -1) {
+        return { diizinkan: true, statusSuspend: true, alasan: 'Aksi diizinkan saat suspend' };
+    }
+
+    // ── Blokir ──
+    return {
+        diizinkan: false,
+        pesan: getPesanBlokirSuspend(aksi),
+        statusSuspend: true,
+        kode: 'SUSPEND_BLOCK'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (507) — CEK IZIN UPLOAD PRODUK
+// ------------------------------------------------------------
+// Upload produk baru = BLOCK total saat suspend.
+// Edit produk existing = boleh (perbaiki data).
+// ============================================================
+function bisaUploadProdukSaatSuspend(idUser) {
+    return cekIzinAksesSaatSuspend(idUser, 'uploadProduk');
+}
+
+// ============================================================
+// BLOK R 01.0 (508) — CEK IZIN CHAT SAAT SUSPEND
+// ------------------------------------------------------------
+// Chat ke SA diizinkan (urusan tagihan).
+// Chat ke role lain = BLOCK.
+// ============================================================
+function bisaChatSaatSuspend(idUser, idTarget) {
+    if (!idUser || !idTarget) {
+        return { diizinkan: false, pesan: 'Data tidak valid.', kode: 'INVALID_DATA' };
+    }
+
+    // Bukan suspend → boleh
+    if (typeof isAkunTersuspendGlobal !== 'function' ||
+        !isAkunTersuspendGlobal(idUser)) {
+        return { diizinkan: true };
+    }
+
+    var user = getDataIdUser(idUser);
+    if (!user) return { diizinkan: false, pesan: 'User tidak ditemukan.' };
+
+    var setting = (typeof getSewaAplikasiSettingGlobal === 'function')
+        ? getSewaAplikasiSettingGlobal()
+        : { roleKenaSewa: [] };
+
+    if (!Array.isArray(setting.roleKenaSewa) ||
+        setting.roleKenaSewa.indexOf(user.role) === -1) {
+        return { diizinkan: true, alasan: 'Role tidak kena sewa' };
+    }
+
+    // ── Target SA? Boleh. ──
+    var idSA = 'ID_TK2R_SA-0001';
+    var target = getDataIdUser(idTarget);
+
+    if (idTarget === idSA || (target && target.role === 'SuperAdmin')) {
+        return { diizinkan: true, alasan: 'Chat ke SA diizinkan' };
+    }
+
+    // ── Selain SA → BLOCK ──
+    return {
+        diizinkan: false,
+        pesan: 'Chat diblokir karena akun Anda di-suspend. ' +
+               'Silakan bayar tagihan sewa (menu "Tagihan Saya") ' +
+               'untuk mengaktifkan kembali.',
+        kode: 'SUSPEND_BLOCK'
+    };
+}
+
+// ============================================================
+// BLOK R 01.0 (509) — FILTER PRODUK DARI SELLER SUSPEND
+// ------------------------------------------------------------
+// Menyembunyikan produk seller yang sedang suspend dari katalog.
+// ============================================================
+function filterProdukSellerSuspend(produkList) {
+    if (!Array.isArray(produkList)) return [];
+    if (typeof isAkunTersuspendGlobal !== 'function') return produkList;
+
+    return produkList.filter(function(p) {
+        if (!p || !p.sellerId) return true;
+        return !isAkunTersuspendGlobal(p.sellerId);
+    });
+}
+
+// ============================================================
+// BLOK R 01.0 (510) — PESAN BLOKIR PER AKSI
+// ============================================================
+function getPesanBlokirSuspend(aksi) {
+    var map = {
+        'uploadProduk':   'Upload produk baru DIBLOKIR karena akun Anda di-suspend. Bayar tagihan sewa untuk mengaktifkan kembali.',
+        'togglePublik':   'Ubah status publik produk DIBLOKIR karena akun Anda di-suspend.',
+        'chatCustomer':   'Chat ke customer DIBLOKIR karena akun Anda di-suspend. Silakan bayar tagihan sewa.',
+        'chatSeller':     'Chat ke sesama seller DIBLOKIR karena akun Anda di-suspend.',
+        'chat':           'Chat DIBLOKIR karena akun Anda di-suspend. Hanya chat ke SuperAdmin yang diizinkan.',
+        'transferCoin':   'Transfer coin DIBLOKIR karena akun Anda di-suspend.',
+        'withdraw':       'Withdraw coin DIBLOKIR karena akun Anda di-suspend.',
+        'sawer':          'Fitur sawer GIF DIBLOKIR karena akun Anda di-suspend.',
+        'postingSosial':  'Posting di HelloFriends DIBLOKIR karena akun Anda di-suspend.',
+        'order':          'Penerimaan order DIBLOKIR karena akun Anda di-suspend.'
+    };
+    return map[aksi] ||
+        'Aksi DIBLOKIR karena akun Anda di-suspend. Silakan bayar tagihan sewa untuk mengaktifkan kembali.';
+}
+
+// ============================================================
+// BLOK R 01.0 (511) — RENDER BANNER SUSPEND (HTML STRING)
+// ============================================================
+function renderBannerSuspendHTML(idUser) {
+    if (!idUser) return '';
+
+    var user = getDataIdUser(idUser);
+    if (!user) return '';
+
+    // Ambil info tagihan aktif
+    var tagihanInfo = '';
+    try {
+        var tagihan = (typeof getTagihanAktifSewaUserGlobal === 'function')
+            ? getTagihanAktifSewaUserGlobal(idUser)
+            : null;
+        if (tagihan) {
+            tagihanInfo = '<br><small>' +
+                'Tagihan periode <strong>' + (tagihan.periodeTagihan || '-') + '</strong> — ' +
+                'Rp <strong>' + ((tagihan.jumlahTagihan || 0).toLocaleString('id-ID')) + '</strong>' +
+                (tagihan.tanggalJatuhTempo
+                    ? ' • Jatuh tempo: ' + new Date(tagihan.tanggalJatuhTempo).toLocaleDateString('id-ID')
+                    : '') +
+                '</small>';
+        }
+    } catch (e) {}
+
+    return '' +
+    '<div id="bannerSuspendGlobal" class="alert alert-danger border-0 shadow-sm m-3 d-flex align-items-start" ' +
+         'style="border-left:5px solid #DC3545 !important;">' +
+        '<i class="fas fa-lock fa-2x me-3 mt-1"></i>' +
+        '<div class="flex-grow-1">' +
+            '<h6 class="fw-bold mb-1">⚠️ AKUN ANDA DI-SUSPEND</h6>' +
+            '<div class="small">' +
+                'Tagihan sewa belum dibayar. Fitur ' +
+                '<strong>upload brosur/layanan baru</strong>, ' +
+                '<strong>chat ke pelanggan</strong>, ' +
+                '<strong>posting HelloFriends</strong>, ' +
+                'dan <strong>tampil di katalog publik</strong> ' +
+                'dimatikan sementara.' +
+                tagihanInfo +
+            '</div>' +
+            '<div class="mt-2 d-flex gap-2 flex-wrap">' +
+                '<button class="btn btn-sm btn-light fw-bold" ' +
+                        'onclick="if(typeof menuHandlers!==\'undefined\' && menuHandlers[\'tagihanSaya\']) menuHandlers[\'tagihanSaya\']();">' +
+                    '<i class="fas fa-file-invoice-dollar me-1"></i> Buka Tagihan Saya' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-light" ' +
+                        'onclick="if(typeof kirimChatOtomatis===\'function\'){ kirimChatOtomatis(userAktif.idUser, \'ID_TK2R_SA-0001\', \'Halo SA, saya mau tanya soal tagihan sewa saya.\', {jenisTransaksi:\'tanya-tagihan\'}); alert(\'✅ Pesan terkirim ke SA.\'); }">' +
+                    '<i class="fas fa-headset me-1"></i> Tanya SA' +
+                '</button>' +
+            '</div>' +
+        '</div>' +
+    '</div>';
+}
+
+// ============================================================
+// BLOK R 01.0 (512) — CATAT LOG BLOKIR SUSPEND
+// ------------------------------------------------------------
+// Audit trail — kapan aksi diblokir. Untuk investigasi.
+// ============================================================
+function catatLogBlokirSuspend(idUser, aksi, target) {
+    if (!idUser) return;
+    try {
+        var list = [];
+        var stored = localStorage.getItem('dataLogBlokirSuspend');
+        if (stored) {
+            var parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) list = parsed;
         }
 
-        window.tambahProdukGlobalUniversal = function(dataProduk) {
-            var idUser = (typeof userAktif !== 'undefined' && userAktif)
-                ? userAktif.idUser : null;
+        list.push({
+            id: (typeof generateKodeUnik === 'function')
+                ? generateKodeUnik('LOG-BLK')
+                : ('LOG-BLK-' + Date.now()),
+            idUser: idUser,
+            aksi: aksi || '-',
+            target: target || null,
+            waktu: new Date().toISOString()
+        });
 
-            if (idUser && typeof cekIzinAksesSaatSuspend === 'function') {
-                var izin = cekIzinAksesSaatSuspend(idUser, 'uploadProduk');
-                if (!izin.diizinkan) {
-                    catatLogBlokirSuspend(idUser, 'uploadProduk', null);
-                    return {
-                        sukses: false,
-                        pesan: izin.pesan,
-                        kode: 'SUSPEND_BLOCK'
-                    };
-                }
-            }
+        if (list.length > 1000) list = list.slice(-1000);
+        localStorage.setItem('dataLogBlokirSuspend', JSON.stringify(list));
+    } catch (e) {
+        console.warn('catatLogBlokirSuspend gagal:', e);
+    }
+}
 
-            return original.apply(this, arguments);
-        };
-        console.log('✅ PATCH 1: tambahProdukGlobalUniversal → cek suspend');
-    })();
-
-    // ============================================================
-    // PATCH 2 — kirimPesan: BLOCK chat ke non-SA
-    // ============================================================
-    (function wrapKirimPesan() {
-        var original = window.kirimPesan;
-        if (typeof original !== 'function') return;
-
-        window.kirimPesan = function(idPenerima, isiPesan, tipePesan) {
-            var idUser = (typeof userAktif !== 'undefined' && userAktif)
-                ? userAktif.idUser : null;
-
-            if (idUser && typeof bisaChatSaatSuspend === 'function') {
-                var cek = bisaChatSaatSuspend(idUser, idPenerima);
-                if (!cek.diizinkan) {
-                    catatLogBlokirSuspend(idUser, 'chat', idPenerima);
-                    return {
-                        sukses: false,
-                        pesan: cek.pesan,
-                        kode: 'SUSPEND_BLOCK'
-                    };
-                }
-            }
-
-            return original.apply(this, arguments);
-        };
-        console.log('✅ PATCH 2: kirimPesan → cek suspend');
-    })();
-
-    // ============================================================
-    // PATCH 3 — kirimChatMassalPerRole: BLOCK kalau suspend
-    // ============================================================
-    (function wrapChatMassal() {
-        var original = window.kirimChatMassalPerRole;
-        if (typeof original !== 'function') return;
-
-        window.kirimChatMassalPerRole = function(role, isi, tipe) {
-            var idUser = (typeof userAktif !== 'undefined' && userAktif)
-                ? userAktif.idUser : null;
-
-            if (idUser && typeof cekIzinAksesSaatSuspend === 'function') {
-                var izin = cekIzinAksesSaatSuspend(idUser, 'chat');
-                if (!izin.diizinkan) {
-                    catatLogBlokirSuspend(idUser, 'chatMassal', role);
-                    return { sukses: false, pesan: izin.pesan, kode: 'SUSPEND_BLOCK' };
-                }
-            }
-
-            return original.apply(this, arguments);
-        };
-        console.log('✅ PATCH 3: kirimChatMassalPerRole → cek suspend');
-    })();
-
-    // ============================================================
-    // PATCH 4 — kirimChatSemuaUser: BLOCK kalau suspend
-    // ============================================================
-    (function wrapChatSemuaUser() {
-        var original = window.kirimChatSemuaUser;
-        if (typeof original !== 'function') return;
-
-        window.kirimChatSemuaUser = function(isi, tipe) {
-            var idUser = (typeof userAktif !== 'undefined' && userAktif)
-                ? userAktif.idUser : null;
-
-            if (idUser && typeof cekIzinAksesSaatSuspend === 'function') {
-                var izin = cekIzinAksesSaatSuspend(idUser, 'chat');
-                if (!izin.diizinkan) {
-                    catatLogBlokirSuspend(idUser, 'chatAll', null);
-                    return { sukses: false, pesan: izin.pesan, kode: 'SUSPEND_BLOCK' };
-                }
-            }
-
-            return original.apply(this, arguments);
-        };
-        console.log('✅ PATCH 4: kirimChatSemuaUser → cek suspend');
-    })();
-
-    // ============================================================
-    // PATCH 5 — hfBuatPost: BLOCK posting sosial kalau suspend
-    // ============================================================
-    (function wrapHfBuatPost() {
-        var original = window.hfBuatPost;
-        if (typeof original !== 'function') return;
-
-        window.hfBuatPost = function(data) {
-            var idUser = (typeof userAktif !== 'undefined' && userAktif)
-                ? userAktif.idUser : null;
-
-            if (idUser && typeof cekIzinAksesSaatSuspend === 'function') {
-                var izin = cekIzinAksesSaatSuspend(idUser, 'postingSosial');
-                if (!izin.diizinkan) {
-                    catatLogBlokirSuspend(idUser, 'postingSosial', null);
-                    return { sukses: false, pesan: izin.pesan, kode: 'SUSPEND_BLOCK' };
-                }
-            }
-
-            return original.apply(this, arguments);
-        };
-        console.log('✅ PATCH 5: hfBuatPost → cek suspend');
-    })();
-
-    // ============================================================
-    // PATCH 6 — getAllProdukDariSemuaToko: FILTER seller suspend
-    // ============================================================
-    (function wrapGetAllProduk() {
-        var original = window.getAllProdukDariSemuaToko;
-        if (typeof original !== 'function') return;
-
-        window.getAllProdukDariSemuaToko = function(opsi) {
-            opsi = opsi || {};
-            var list = original.apply(this, arguments);
-
-            // Skip filter kalau explicit diminta (untuk SA / laporan)
-            if (opsi.includeSuspend === true) return list;
-
-            if (typeof filterProdukSellerSuspend === 'function') {
-                return filterProdukSellerSuspend(list);
-            }
-
-            return list;
-        };
-        console.log('✅ PATCH 6: getAllProdukDariSemuaToko → filter seller suspend');
-    })();
-
-    // ============================================================
-    // PATCH 7 — tampilkanFormProdukGlobal: BLOCK form upload BARU
-    // ------------------------------------------------------------
-    // Edit produk existing TETAP BOLEH (perbaiki data).
-    // ============================================================
-    (function wrapFormProduk() {
-        var original = window.tampilkanFormProdukGlobal;
-        if (typeof original !== 'function') return;
-
-        window.tampilkanFormProdukGlobal = function(idProduk) {
-            // Hanya block kalau UPLOAD BARU (idProduk null)
-            if (!idProduk) {
-                var idUser = (typeof userAktif !== 'undefined' && userAktif)
-                    ? userAktif.idUser : null;
-
-                if (idUser && typeof cekIzinAksesSaatSuspend === 'function') {
-                    var izin = cekIzinAksesSaatSuspend(idUser, 'uploadProduk');
-                    if (!izin.diizinkan) {
-                        catatLogBlokirSuspend(idUser, 'uploadProduk', null);
-                        alert('⚠️ ' + izin.pesan);
-                        return;
-                    }
-                }
-            }
-
-            return original.apply(this, arguments);
-        };
-        console.log('✅ PATCH 7: tampilkanFormProdukGlobal → cek suspend (hanya baru)');
-    })();
-
-    console.log('');
-    console.log('✅ PATCH FASE 6 (v2) selesai — 7 wrapper terpasang.');
-    console.log('   Role kena sewa (DP/DLR/FIN/Jasa) TIDAK punya Dompet R2Coin.');
-    console.log('   → Tidak ada guard withdraw/transfer/sawer (tidak relevan).');
-    console.log('   → Hanya guard: upload produk, chat, posting sosial, katalog.');
-})();
+console.log('✅ BLOK R 01.0 (506-512) — FASE 6 Guard Suspend terpasang:');
+console.log('   (506) cekIzinAksesSaatSuspend');
+console.log('   (507) bisaUploadProdukSaatSuspend');
+console.log('   (508) bisaChatSaatSuspend');
+console.log('   (509) filterProdukSellerSuspend');
+console.log('   (510) getPesanBlokirSuspend');
+console.log('   (511) renderBannerSuspendHTML');
+console.log('   (512) catatLogBlokirSuspend');
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- AKHIR PATCH FASE 6 v2                                       -->
+<!-- AKHIR FASE 6 — BLOK R 01.0 (506-512)                        -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ============================================================ -->
