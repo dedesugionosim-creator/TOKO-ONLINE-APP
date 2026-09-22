@@ -478,10 +478,28 @@ function masukDasbor() {
     if (typeof mulaiIntervalLogout === 'function') mulaiIntervalLogout();
 
     // ✅ FIX: catatWaktuOnline harus di DALAM fungsi masukDasbor
-    if (typeof catatWaktuOnline === 'function') {
+        if (typeof catatWaktuOnline === 'function') {
         catatWaktuOnline(userAktif.idUser);
     }
-}
+
+    // 🆕 TRIGGER SEWA APLIKASI — cek otomatis tagihan & suspend
+    if (typeof cekOtomatisSewaAplikasiGlobal === 'function') {
+        try {
+            var hasilSewa = cekOtomatisSewaAplikasiGlobal(userAktif.idUser);
+
+            // Kalau baru saja di-suspend, tampilkan notif
+            if (hasilSewa.diSuspendSekarang) {
+                setTimeout(function() {
+                    alert('⚠️ AKUN ANDA DI-SUSPEND\n\n' +
+                          'Tagihan sewa belum dibayar.\n' +
+                          'Fitur publikasi & chat dimatikan sementara.\n\n' +
+                          'Silakan buka menu "Tagihan Saya" untuk upload bukti pembayaran.');
+                }, 1000);
+            }
+        } catch (e) {
+            console.error('Cek otomatis sewa error:', e);
+        }
+    }
 
 // ============================================================
 // FUNGSI DASBOR SUPERADMIN (HANYA SATU DEFINISI)
@@ -20192,6 +20210,622 @@ console.log('   (495) updateStatusSewaAkunGlobal');
 <!-- AKHIR FUNGSI GLOBAL SEWA APLIKASI -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- FUNGSI GLOBAL SEWA APLIKASI — FASE 2 (496-505) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+// ═════════════════════════════════════════════════════════════
+// HELPER INTERNAL
+// ═════════════════════════════════════════════════════════════
+
+// Internal: ambil list semua tagihan
+function _getAllTagihanSewa() {
+    try {
+        var s = localStorage.getItem('dataTagihanSewa');
+        if (!s) return [];
+        var d = JSON.parse(s);
+        return Array.isArray(d) ? d : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+// Internal: simpan list tagihan
+function _saveAllTagihanSewa(data) {
+    try {
+        localStorage.setItem('dataTagihanSewa', JSON.stringify(data || []));
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// Internal: tanggal ISO format YYYY-MM-DD
+function _tglISO(d) {
+    var x = d instanceof Date ? d : new Date(d);
+    var y = x.getFullYear();
+    var m = String(x.getMonth() + 1).padStart(2, '0');
+    var day = String(x.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+}
+
+// Internal: periode tagihan YYYY-MM
+function _periodeTagihan(d) {
+    var x = d instanceof Date ? d : new Date(d);
+    var y = x.getFullYear();
+    var m = String(x.getMonth() + 1).padStart(2, '0');
+    return y + '-' + m;
+}
+
+// ═════════════════════════════════════════════════════════════
+// (496) Ambil semua tagihan user
+// ═════════════════════════════════════════════════════════════
+function getTagihanSewaUserGlobal(idUser) {
+    if (!idUser) return [];
+    return _getAllTagihanSewa().filter(function(t) {
+        return t.idUser === idUser;
+    });
+}
+
+// ═════════════════════════════════════════════════════════════
+// (497) Ambil tagihan aktif user (belum lunas)
+// ═════════════════════════════════════════════════════════════
+function getTagihanAktifSewaUserGlobal(idUser) {
+    if (!idUser) return null;
+    var list = getTagihanSewaUserGlobal(idUser);
+    // Prioritas: belum_bayar > menunggu_verifikasi > terlambat > ditolak
+    var prioritas = ['belum_bayar', 'menunggu_verifikasi', 'terlambat', 'ditolak'];
+    for (var i = 0; i < prioritas.length; i++) {
+        var found = list.find(function(t) { return t.status === prioritas[i]; });
+        if (found) return found;
+    }
+    return null;
+}
+
+// ═════════════════════════════════════════════════════════════
+// (498) Generate tagihan bulanan otomatis
+// ------------------------------------------------------------
+// Dipanggil saat login. Cek apakah user perlu tagihan bulan ini.
+//
+// Alur:
+// 1. Cek user role kena sewa
+// 2. Cek apakah sudah ada tagihan periode bulan ini
+// 3. Kalau belum & hari ini >= tgl terbit → generate
+// ═════════════════════════════════════════════════════════════
+function autoGenerateTagihanBulananGlobal(idUser) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+    if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    var setting = getSewaAplikasiSettingGlobal();
+
+    // Cek role kena sewa
+    if (setting.roleKenaSewa.indexOf(user.role) === -1) {
+        return { sukses: true, skip: true, alasan: 'Role tidak kena sewa' };
+    }
+
+    // Cek status sewa akun
+    var statusSewa = getStatusSewaAkunGlobal(idUser);
+    if (!statusSewa.adaData) {
+        // Belum ada data sewa → user belum pernah berlangganan
+        return { sukses: true, skip: true, alasan: 'Belum berlangganan' };
+    }
+
+    var dataSewa = statusSewa.data;
+    var hariIni = new Date();
+    var periode = _periodeTagihan(hariIni);
+
+    // Cek apakah sudah ada tagihan periode ini
+    var allTagihan = _getAllTagihanSewa();
+    var sudahAda = allTagihan.some(function(t) {
+        return t.idUser === idUser && t.periodeTagihan === periode;
+    });
+
+    if (sudahAda) {
+        return { sukses: true, skip: true, alasan: 'Tagihan periode ini sudah ada' };
+    }
+
+    // Cek apakah hari ini >= tgl terbit tagihan
+    var tglTerbit = setting.tanggalTerbitTagihan;
+    if (hariIni.getDate() < tglTerbit) {
+        return { sukses: true, skip: true, alasan: 'Belum tgl terbit' };
+    }
+
+    // Tentukan paket & harga
+    var paketKode = dataSewa.paketAktif || '1_bulan';
+    var paket = getPaketSewaByKode(paketKode);
+    if (!paket) {
+        return { sukses: false, pesan: 'Paket aktif tidak valid.' };
+    }
+
+    // Hitung tanggal jatuh tempo
+    var tglSuspend = setting.tanggalSuspend;
+    var jatuhTempo = new Date(hariIni.getFullYear(), hariIni.getMonth(), tglSuspend);
+
+    // Buat tagihan baru
+    var idTagihan = 'INV-' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+    var tagihanBaru = {
+        id: idTagihan,
+        idUser: idUser,
+        nama: user.nama || '-',
+        role: user.role || '-',
+        periodeTagihan: periode,
+        tanggalTerbit: _tglISO(hariIni),
+        tanggalJatuhTempo: _tglISO(jatuhTempo),
+        jumlahTagihan: paket.harga,
+        paket: paketKode,
+        status: 'belum_bayar',
+        buktiBayar: null,
+        verifiedBy: null,
+        verifiedAt: null,
+        alasanTolak: null,
+        createdAt: new Date().toISOString()
+    };
+
+    allTagihan.push(tagihanBaru);
+    var simpan = _saveAllTagihanSewa(allTagihan);
+    if (!simpan.sukses) return simpan;
+
+    // Chat notif otomatis
+    try {
+        if (typeof kirimChatOtomatis === 'function') {
+            var isiChat = '📄 *TAGIHAN SEWA APLIKASI BARU*\n\n' +
+                'Periode: *' + periode + '*\n' +
+                'Paket: ' + paket.label + '\n' +
+                'Jumlah: *Rp ' + paket.harga.toLocaleString('id-ID') + '*\n' +
+                'Jatuh Tempo: *' + _tglISO(jatuhTempo) + '*\n\n' +
+                'Silakan buka menu *Tagihan Saya* untuk upload bukti pembayaran.\n\n' +
+                '⚠️ Jika belum dibayar sampai jatuh tempo, fitur publikasi & chat ' +
+                'akan otomatis disuspend.';
+
+            kirimChatOtomatis('ID_TK2R_SA-0001', idUser, isiChat, {
+                jenisTransaksi: 'tagihan-sewa',
+                idTagihan: idTagihan,
+                periode: periode
+            });
+        }
+    } catch (e) {
+        console.warn('Chat notif tagihan gagal:', e);
+    }
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idUser, 'Tagihan Sewa',
+            'Generate tagihan ' + periode + ' - Rp ' + paket.harga.toLocaleString('id-ID'));
+    }
+
+    return { sukses: true, tagihan: tagihanBaru };
+}
+
+// ═════════════════════════════════════════════════════════════
+// (499) Auto-suspend akun terlambat bayar
+// ------------------------------------------------------------
+// Dipanggil saat login. Cek apakah user harus disuspend.
+// ============================================================
+function autoSuspendTerlambatGlobal(idUser) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+    if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+
+    var setting = getSewaAplikasiSettingGlobal();
+
+    // Cek role kena sewa
+    if (setting.roleKenaSewa.indexOf(user.role) === -1) {
+        return { sukses: true, skip: true };
+    }
+
+    // Cek status isolir sekarang
+    var statusSewa = getStatusSewaAkunGlobal(idUser);
+    if (!statusSewa.adaData) return { sukses: true, skip: true };
+
+    var dataSewa = statusSewa.data;
+    if (dataSewa.status === 'suspend') {
+        return { sukses: true, skip: true, alasan: 'Sudah suspend' };
+    }
+
+    // Cek tagihan terlambat
+    var tglSuspend = setting.tanggalSuspend;
+    var hariIni = new Date();
+    if (hariIni.getDate() < tglSuspend) {
+        return { sukses: true, skip: true, alasan: 'Belum tgl suspend' };
+    }
+
+    // Cek tagihan aktif (belum bayar / terlambat)
+    var tagihanAktif = getTagihanAktifSewaUserGlobal(idUser);
+    if (!tagihanAktif) {
+        return { sukses: true, skip: true, alasan: 'Tidak ada tagihan aktif' };
+    }
+
+    if (tagihanAktif.status === 'lunas') {
+        return { sukses: true, skip: true, alasan: 'Tagihan sudah lunas' };
+    }
+
+    if (tagihanAktif.status === 'menunggu_verifikasi') {
+        // Masih menunggu verifikasi SA → jangan suspend
+        return { sukses: true, skip: true, alasan: 'Menunggu verifikasi' };
+    }
+
+    // SUSPEND
+    // 1. Update status sewa
+    updateStatusSewaAkunGlobal(idUser, { status: 'suspend' });
+
+    // 2. Update status tagihan → terlambat
+    var allTagihan = _getAllTagihanSewa();
+    var idx = allTagihan.findIndex(function(t) { return t.id === tagihanAktif.id; });
+    if (idx !== -1) {
+        allTagihan[idx].status = 'terlambat';
+        _saveAllTagihanSewa(allTagihan);
+    }
+
+    // 3. Simpan log isolir
+    try {
+        var logIsolir = {
+            idUser: idUser,
+            statusIsolir: 'isolir',
+            alasanIsolir: 'Tidak bayar tagihan ' + tagihanAktif.periodeTagihan,
+            tanggalIsolir: new Date().toISOString(),
+            tagihanIsolir: tagihanAktif.id,
+            updatedAt: new Date().toISOString()
+        };
+        localStorage.setItem('dataIsolirAkun_' + idUser, JSON.stringify(logIsolir));
+    } catch (e) {}
+
+    // 4. Chat notif
+    try {
+        if (typeof kirimChatOtomatis === 'function') {
+            var isiChat = '⚠️ *AKUN ANDA DI-SUSPEND*\n\n' +
+                'Tagihan sewa periode *' + tagihanAktif.periodeTagihan + '* ' +
+                'belum dibayar.\n\n' +
+                'Fitur yang dimatikan:\n' +
+                '• Upload brosur baru\n' +
+                '• Brosur tampil di publik\n' +
+                '• Chat dengan customer\n\n' +
+                'Silakan buka *Tagihan Saya* → upload bukti pembayaran → ' +
+                'ajukan aktivasi ulang.';
+
+            kirimChatOtomatis('ID_TK2R_SA-0001', idUser, isiChat, {
+                jenisTransaksi: 'isolir-sewa',
+                idTagihan: tagihanAktif.id
+            });
+        }
+    } catch (e) {}
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idUser, 'Auto-Suspend',
+            'Akun di-suspend karena tagihan ' + tagihanAktif.periodeTagihan + ' belum dibayar');
+    }
+
+    return { sukses: true, diSuspend: true, tagihan: tagihanAktif };
+}
+
+// ═════════════════════════════════════════════════════════════
+// (500) Cek apakah akun sedang tersuspend
+// ═════════════════════════════════════════════════════════════
+function isAkunTersuspendGlobal(idUser) {
+    if (!idUser) return false;
+    var statusSewa = getStatusSewaAkunGlobal(idUser);
+    if (!statusSewa.adaData) return false;
+    return statusSewa.data.status === 'suspend';
+}
+
+// ═════════════════════════════════════════════════════════════
+// (501) Upload bukti pembayaran tagihan (dari user)
+// ═════════════════════════════════════════════════════════════
+function uploadBuktiBayarSewaGlobal(idUser, idTagihan, dataBukti) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (!idTagihan) return { sukses: false, pesan: 'ID tagihan tidak valid.' };
+    dataBukti = dataBukti || {};
+
+    var allTagihan = _getAllTagihanSewa();
+    var idx = allTagihan.findIndex(function(t) {
+        return t.id === idTagihan && t.idUser === idUser;
+    });
+    if (idx === -1) return { sukses: false, pesan: 'Tagihan tidak ditemukan.' };
+
+    var tagihan = allTagihan[idx];
+
+    if (tagihan.status === 'lunas') {
+        return { sukses: false, pesan: 'Tagihan sudah lunas.' };
+    }
+    if (tagihan.status === 'menunggu_verifikasi') {
+        return { sukses: false, pesan: 'Tagihan sedang menunggu verifikasi SA.' };
+    }
+
+    tagihan.buktiBayar = {
+        tanggalUpload: new Date().toISOString(),
+        file: dataBukti.file || null,
+        namaFile: dataBukti.namaFile || 'bukti.jpg',
+        rekeningTujuan: dataBukti.rekeningTujuan || '-',
+        jumlahTransfer: parseInt(dataBukti.jumlahTransfer, 10) || tagihan.jumlahTagihan,
+        catatanUser: dataBukti.catatanUser || ''
+    };
+    tagihan.status = 'menunggu_verifikasi';
+
+    allTagihan[idx] = tagihan;
+    var simpan = _saveAllTagihanSewa(allTagihan);
+    if (!simpan.sukses) return simpan;
+
+    // Chat notif ke SA
+    try {
+        if (typeof kirimChatOtomatis === 'function') {
+            var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+            var nama = user ? user.nama : idUser;
+            var isiChat = '💰 *BUKTI BAYAR SEWA BARU*\n\n' +
+                'User: *' + nama + '*\n' +
+                'ID: `' + idUser + '`\n' +
+                'Periode: *' + tagihan.periodeTagihan + '*\n' +
+                'Jumlah: *Rp ' + tagihan.jumlahTagihan.toLocaleString('id-ID') + '*\n' +
+                'Tanggal Upload: ' + new Date().toLocaleString('id-ID') + '\n\n' +
+                'Buka menu *Pengajuan Berlangganan* untuk verifikasi.';
+
+            kirimChatOtomatis(idUser, 'ID_TK2R_SA-0001', isiChat, {
+                jenisTransaksi: 'verifikasi-bayar-sewa',
+                idTagihan: idTagihan
+            });
+        }
+    } catch (e) {}
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idUser, 'Upload Bukti Bayar Sewa',
+            'Tagihan ' + idTagihan + ' - Rp ' + tagihan.jumlahTagihan.toLocaleString('id-ID'));
+    }
+
+    return { sukses: true, tagihan: tagihan };
+}
+
+// ═════════════════════════════════════════════════════════════
+// (502) Approve bukti bayar (dari SA)
+// ═════════════════════════════════════════════════════════════
+function approveBuktiBayarSewaGlobal(idTagihan, idAdmin) {
+    if (!idTagihan) return { sukses: false, pesan: 'ID tagihan tidak valid.' };
+    if (!idAdmin) return { sukses: false, pesan: 'ID admin tidak valid.' };
+
+    var allTagihan = _getAllTagihanSewa();
+    var idx = allTagihan.findIndex(function(t) { return t.id === idTagihan; });
+    if (idx === -1) return { sukses: false, pesan: 'Tagihan tidak ditemukan.' };
+
+    var tagihan = allTagihan[idx];
+    if (tagihan.status !== 'menunggu_verifikasi') {
+        return { sukses: false, pesan: 'Status tidak valid (bukan menunggu_verifikasi).' };
+    }
+
+    // Update tagihan
+    tagihan.status = 'lunas';
+    tagihan.verifiedBy = idAdmin;
+    tagihan.verifiedAt = new Date().toISOString();
+    allTagihan[idx] = tagihan;
+
+    var simpan = _saveAllTagihanSewa(allTagihan);
+    if (!simpan.sukses) return simpan;
+
+    // Extend masa aktif sewa
+    var statusSewa = getStatusSewaAkunGlobal(tagihan.idUser);
+    var dataSewa = statusSewa.adaData ? statusSewa.data : null;
+    if (dataSewa) {
+        var paket = getPaketSewaByKode(tagihan.paket);
+        if (paket) {
+            var mulaiBaru = new Date();
+            var selesaiBaru = new Date(mulaiBaru.getTime());
+            selesaiBaru.setDate(selesaiBaru.getDate() + paket.durasiHari);
+
+            updateStatusSewaAkunGlobal(tagihan.idUser, {
+                status: 'aktif',
+                paketAktif: tagihan.paket,
+                tanggalMulai: mulaiBaru.toISOString(),
+                tanggalSelesai: selesaiBaru.toISOString(),
+                riwayat: {
+                    tanggal: mulaiBaru.toISOString(),
+                    paket: tagihan.paket,
+                    jumlah: tagihan.jumlahTagihan,
+                    idTagihan: tagihan.id,
+                    approvedBy: idAdmin
+                }
+            });
+
+            // Update log isolir (kalau ada)
+            try {
+                var logIsolir = JSON.parse(localStorage.getItem('dataIsolirAkun_' + tagihan.idUser) || 'null');
+                if (logIsolir && logIsolir.statusIsolir === 'isolir') {
+                    logIsolir.statusIsolir = 'aktif';
+                    logIsolir.updatedAt = new Date().toISOString();
+                    logIsolir.catatan = 'Diaktifkan kembali oleh ' + idAdmin;
+                    localStorage.setItem('dataIsolirAkun_' + tagihan.idUser, JSON.stringify(logIsolir));
+                }
+            } catch (e) {}
+        }
+    }
+
+    // Chat notif ke user
+    try {
+        if (typeof kirimChatOtomatis === 'function') {
+            var isiChat = '✅ *PEMBAYARAN DISETUJUI*\n\n' +
+                'Tagihan periode *' + tagihan.periodeTagihan + '* telah diverifikasi.\n' +
+                'Jumlah: *Rp ' + tagihan.jumlahTagihan.toLocaleString('id-ID') + '*\n\n' +
+                'Akun Anda aktif kembali. Semua fitur bisa dipakai.';
+
+            kirimChatOtomatis('ID_TK2R_SA-0001', tagihan.idUser, isiChat, {
+                jenisTransaksi: 'bayar-sewa-approved',
+                idTagihan: idTagihan
+            });
+        }
+    } catch (e) {}
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idAdmin, 'Approve Bayar Sewa',
+            'Tagihan ' + idTagihan + ' untuk ' + tagihan.nama);
+    }
+
+    return { sukses: true, tagihan: tagihan };
+}
+
+// ═════════════════════════════════════════════════════════════
+// (503) Tolak bukti bayar (dari SA)
+// ═════════════════════════════════════════════════════════════
+function tolakBuktiBayarSewaGlobal(idTagihan, idAdmin, alasan) {
+    if (!idTagihan) return { sukses: false, pesan: 'ID tagihan tidak valid.' };
+    if (!idAdmin) return { sukses: false, pesan: 'ID admin tidak valid.' };
+    if (!alasan || alasan.trim().length < 5) {
+        return { sukses: false, pesan: 'Alasan minimal 5 karakter.' };
+    }
+
+    var allTagihan = _getAllTagihanSewa();
+    var idx = allTagihan.findIndex(function(t) { return t.id === idTagihan; });
+    if (idx === -1) return { sukses: false, pesan: 'Tagihan tidak ditemukan.' };
+
+    var tagihan = allTagihan[idx];
+    if (tagihan.status !== 'menunggu_verifikasi') {
+        return { sukses: false, pesan: 'Status tidak valid.' };
+    }
+
+    tagihan.status = 'ditolak';
+    tagihan.alasanTolak = alasan;
+    tagihan.verifiedBy = idAdmin;
+    tagihan.verifiedAt = new Date().toISOString();
+    allTagihan[idx] = tagihan;
+
+    var simpan = _saveAllTagihanSewa(allTagihan);
+    if (!simpan.sukses) return simpan;
+
+    // Chat notif ke user
+    try {
+        if (typeof kirimChatOtomatis === 'function') {
+            var isiChat = '❌ *BUKTI BAYAR DITOLAK*\n\n' +
+                'Tagihan periode *' + tagihan.periodeTagihan + '* ditolak.\n\n' +
+                'Alasan: ' + alasan + '\n\n' +
+                'Silakan upload bukti baru di menu *Tagihan Saya*.';
+
+            kirimChatOtomatis('ID_TK2R_SA-0001', tagihan.idUser, isiChat, {
+                jenisTransaksi: 'bayar-sewa-rejected',
+                idTagihan: idTagihan,
+                alasan: alasan
+            });
+        }
+    } catch (e) {}
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idAdmin, 'Tolak Bayar Sewa',
+            'Tagihan ' + idTagihan + ' ditolak. Alasan: ' + alasan);
+    }
+
+    return { sukses: true, tagihan: tagihan };
+}
+
+// ═════════════════════════════════════════════════════════════
+// (504) Aktivasi akun terisolir (dari SA)
+// ═════════════════════════════════════════════════════════════
+function aktivasiAkunTersuspendGlobal(idUser, idAdmin, catatan) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (!idAdmin) return { sukses: false, pesan: 'ID admin tidak valid.' };
+
+    var statusSewa = getStatusSewaAkunGlobal(idUser);
+    if (!statusSewa.adaData) {
+        return { sukses: false, pesan: 'Akun tidak punya data sewa.' };
+    }
+
+    if (statusSewa.data.status !== 'suspend') {
+        return { sukses: false, pesan: 'Akun tidak dalam status suspend.' };
+    }
+
+    updateStatusSewaAkunGlobal(idUser, { status: 'aktif' });
+
+    // Update log isolir
+    try {
+        var logIsolir = JSON.parse(localStorage.getItem('dataIsolirAkun_' + idUser) || 'null');
+        if (logIsolir) {
+            logIsolir.statusIsolir = 'aktif';
+            logIsolir.tanggalAktivasi = new Date().toISOString();
+            logIsolir.aktivasiOleh = idAdmin;
+            logIsolir.catatanAktivasi = catatan || 'Diaktivasi manual oleh SA';
+            localStorage.setItem('dataIsolirAkun_' + idUser, JSON.stringify(logIsolir));
+        }
+    } catch (e) {}
+
+    // Chat notif
+    try {
+        if (typeof kirimChatOtomatis === 'function') {
+            var isiChat = '✅ *AKUN ANDA DIAKTIFKAN*\n\n' +
+                'Akun Anda telah diaktivasi kembali oleh SuperAdmin.\n' +
+                (catatan ? 'Catatan: ' + catatan + '\n\n' : '') +
+                'Semua fitur sudah bisa dipakai kembali.';
+
+            kirimChatOtomatis('ID_TK2R_SA-0001', idUser, isiChat, {
+                jenisTransaksi: 'aktivasi-sewa',
+                catatan: catatan || ''
+            });
+        }
+    } catch (e) {}
+
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idAdmin, 'Aktivasi Akun Tersuspend',
+            'Akun ' + idUser + ' diaktivasi. Catatan: ' + (catatan || '-'));
+    }
+
+    return { sukses: true };
+}
+
+// ═════════════════════════════════════════════════════════════
+// (505) CEK OTOMATIS saat login (MAIN TRIGGER)
+// ------------------------------------------------------------
+// Panggil dari masukDasbor() — setelah user login.
+// Alur:
+// 1. Auto-generate tagihan bulanan (kalau tgl 5+)
+// 2. Auto-suspend akun terlambat (kalau tgl 10+)
+// ═════════════════════════════════════════════════════════════
+function cekOtomatisSewaAplikasiGlobal(idUser) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    var hasil = {
+        sukses: true,
+        generate: null,
+        suspend: null,
+        diSuspendSekarang: false
+    };
+
+    try {
+        // 1. Auto-generate tagihan
+        var g = autoGenerateTagihanBulananGlobal(idUser);
+        if (g.sukses && !g.skip) {
+            hasil.generate = g.tagihan;
+            console.log('📄 Auto-generate tagihan: ' + g.tagihan.id);
+        }
+
+        // 2. Auto-suspend
+        var s = autoSuspendTerlambatGlobal(idUser);
+        if (s.sukses && s.diSuspend) {
+            hasil.suspend = s.tagihan;
+            hasil.diSuspendSekarang = true;
+            console.log('⚠️ Auto-suspend akun: ' + idUser);
+        }
+
+        // 3. Update status online
+        if (typeof catatWaktuOnline === 'function') {
+            catatWaktuOnline(idUser);
+        }
+    } catch (e) {
+        console.error('cekOtomatisSewaAplikasiGlobal error:', e);
+        hasil.sukses = false;
+        hasil.pesan = e.message;
+    }
+
+    return hasil;
+}
+
+console.log('✅ Fungsi global Sewa Aplikasi FASE 2 (496-505) terpasang:');
+console.log('   (496) getTagihanSewaUserGlobal');
+console.log('   (497) getTagihanAktifSewaUserGlobal');
+console.log('   (498) autoGenerateTagihanBulananGlobal');
+console.log('   (499) autoSuspendTerlambatGlobal');
+console.log('   (500) isAkunTersuspendGlobal');
+console.log('   (501) uploadBuktiBayarSewaGlobal');
+console.log('   (502) approveBuktiBayarSewaGlobal');
+console.log('   (503) tolakBuktiBayarSewaGlobal');
+console.log('   (504) aktivasiAkunTersuspendGlobal');
+console.log('   (505) cekOtomatisSewaAplikasiGlobal');
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR FUNGSI GLOBAL SEWA APLIKASI FASE 2 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 01.0 (459-466) + 10.30 NOTEPAD+ — PATCH LENGKAP -->
