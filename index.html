@@ -5106,20 +5106,13 @@ function hitungStatistikPersetujuan() {
 }
 
 // ============================================================
-// BLOK R 01.0 (78) – CEK DUPLIKAT AKUN GLOBAL
+// BLOK R 01.0 (78) – HITUNG STATISTIK PERSETUJUAN PER ROLE
 // ------------------------------------------------------------
-// Cek duplikat username, email, hp, nik di dataLoginUser,
-// dataAkunAktif, dan dataPengajuanBukaAkun
-// (termasuk akun Pending/Ditolak).
+// Breakdown jumlah akun Pending per role.
+// Dipakai oleh Persetujuan Akun (BLOK R 10.4) untuk tampilkan
+// counter per role termasuk Jasa / DP / DLR / FIN.
 //
-// Prioritas cek: Username → Email → HP → NIK
-//
-// Parameter `data`:
-//   { username, email, hp, nik, excludeIdUser? }
-//
-// Return:
-//   { sukses: true }
-//   { sukses: false, field: 'username'|'email'|'hp'|'nik', pesan }
+// Return: { 'Toko': 5, 'Jasa': 3, 'Customer': 1, ... }
 // ============================================================
 function cekDuplikatAkunGlobal(data) {
     data = data || {};
@@ -5315,6 +5308,31 @@ function simpanSettingEkonomiGlobal(data) {
 
     catatAktivitasGlobal(idUser, 'Setting Ekonomi', 'Perubahan setting ekonomi. Log: ' + log.id);
     return { sukses: true, setting: settingBaru, logId: log.id };
+}
+
+// ============================================================
+// BLOK R 01.0 (78) – HITUNG STATISTIK PERSETUJUAN PER ROLE
+// ------------------------------------------------------------
+// Breakdown jumlah akun Pending per role.
+// Dipakai oleh Persetujuan Akun (BLOK R 10.4) untuk tampilkan
+// counter per role termasuk Jasa / DP / DLR / FIN.
+//
+// Return: { 'Toko': 5, 'Jasa': 3, 'Customer': 1, ... }
+// ============================================================
+function hitungStatistikPersetujuanPerRole() {
+    var result = {};
+
+    (dataLoginUser || []).forEach(function(u) {
+        if (!u) return;
+        var status = u.statusVerifikasi || u.status || '';
+        if (status !== 'Pending') return;
+
+        var role = u.role || 'Unknown';
+        if (!result[role]) result[role] = 0;
+        result[role]++;
+    });
+
+    return result;
 }
 
 // ============================================================
@@ -28446,604 +28464,1094 @@ function tampilkanToastKelolaAkun(pesan, tipe) {
 </div>
 
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 10.4 (HTML) ===== -->
+<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN SUPERADMIN (HTML) ==== -->
+<!-- ============================================================ -->
+
+<div id="persetujuanAkunContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ SUB-BLOK 10.4.H1 — HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-user-check me-2"></i>Persetujuan Akun
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Dashboard follow-up CS — verifikasi & setujui akun baru.
+                </small>
+            </div>
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H2 — STATISTIK ══════════ -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-user-clock fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanPending">0</h4>
+                        <small class="text-muted">Menunggu Follow-up</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanDisetujui">0</h4>
+                        <small class="text-muted">Disetujui Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-times-circle fa-2x mb-2 text-danger"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanDitolak">0</h4>
+                        <small class="text-muted">Ditolak Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-paper-plane fa-2x mb-2 text-info"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanPengajuan">0</h4>
+                        <small class="text-muted">Via "Ajukan"</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H3 — BREAKDOWN PER ROLE ══════════ -->
+        <div id="saBreakdownPerRolePersetujuan" class="mb-3"></div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H4 — FILTER & PENCARIAN ══════════ -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4">
+                        <label class="fw-bold">
+                            <i class="fas fa-search me-1"></i>Cari Akun
+                        </label>
+                        <input type="text" id="cariPersetujuanAkun" class="form-control"
+                               placeholder="Nama / ID / Username / HP / Email..."
+                               onkeyup="renderTabelPersetujuanAkun(1)">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold">
+                            <i class="fas fa-filter me-1"></i>Filter Role
+                        </label>
+                        <select id="filterRolePersetujuanAkun" class="form-select"
+                                onchange="renderTabelPersetujuanAkun(1)">
+                            <option value="">Semua Role</option>
+                            <optgroup label="— Seller —">
+                                <option value="Toko">Toko</option>
+                                <option value="Pedagang Pasar">Pedagang Pasar</option>
+                                <option value="Pedagang Makanan">Pedagang Makanan</option>
+                                <option value="COD Seller">COD Seller</option>
+                                <option value="Grosir">Grosir</option>
+                                <option value="Distributor">Distributor</option>
+                            </optgroup>
+                            <optgroup label="— Transport —">
+                                <option value="Ojek">Ojek</option>
+                            </optgroup>
+                            <optgroup label="— Profesional / Bisnis Baru —">
+                                <option value="Jasa">⚙️ Jasa (Butuh Verifikasi)</option>
+                                <option value="Developer Properti">Developer Properti</option>
+                                <option value="Dealer dan Showroom">Dealer dan Showroom</option>
+                                <option value="Finance Multifinance">Finance Multifinance</option>
+                            </optgroup>
+                            <optgroup label="— Customer —">
+                                <option value="Customer">Customer</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold">
+                            <i class="fas fa-filter me-1"></i>Sumber
+                        </label>
+                        <select id="filterSumberPersetujuanAkun" class="form-select"
+                                onchange="renderTabelPersetujuanAkun(1)">
+                            <option value="">Semua</option>
+                            <option value="Daftar">Daftar</option>
+                            <option value="Ajukan">Ajukan</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 text-end">
+                        <button class="btn btn-outline-secondary w-100"
+                                onclick="resetFilterPersetujuanAkun()">
+                            <i class="fas fa-undo me-1"></i> Reset
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Tombol bulk -->
+                <div class="mt-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span class="badge bg-dark fs-6" id="infoJumlahPersetujuanAkun">
+                        0 Data
+                    </span>
+                    <button class="btn btn-sm btn-outline-success"
+                            onclick="setujuiSemuaTerfilterPersetujuan()">
+                        <i class="fas fa-check-double me-1"></i>
+                        Setujui Semua Terfilter
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H5 — TABEL ══════════ -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background-color: #1976D2;">
+                <span>
+                    <i class="fas fa-list me-2"></i>
+                    Daftar Akun Menunggu Follow-up
+                </span>
+                <span class="badge bg-light text-dark" id="totalPersetujuanAkun">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th>Nama / ID</th>
+                                <th>Role</th>
+                                <th>Username</th>
+                                <th style="width:180px;">
+                                    No. HP
+                                    <i class="fas fa-phone text-primary ms-1"></i>
+                                </th>
+                                <th style="width:100px;">Sumber</th>
+                                <th>Tgl Daftar</th>
+                                <th>Durasi</th>
+                                <th style="width:160px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelPersetujuanAkun">
+                            <tr>
+                                <td colspan="9" class="text-center text-muted py-4">
+                                    Memuat data...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted" id="infoPaginationPersetujuanAkun">
+                        Halaman 1 dari 1
+                    </span>
+                </div>
+                <div>
+                    <button class="btn btn-outline-secondary btn-sm me-1"
+                            id="btnPrevPersetujuanAkun"
+                            onclick="ubahHalamanPersetujuanAkun('prev')" disabled>
+                        <i class="fas fa-chevron-left"></i> Sebelumnya
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm"
+                            id="btnNextPersetujuanAkun"
+                            onclick="ubahHalamanPersetujuanAkun('next')">
+                        Selanjutnya <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.4.H6 — MODAL DETAIL ══════════ -->
+<div class="modal fade" id="modalDetailPersetujuanAkun" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-user-circle me-2"></i>Detail Akun Menunggu Follow-up
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalDetailPersetujuanBody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-danger"
+                        onclick="bukaModalTolakPersetujuanDariDetail()">
+                    <i class="fas fa-times me-1"></i> Tolak
+                </button>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        Tutup
+                    </button>
+                    <button type="button" class="btn btn-success"
+                            onclick="setujuiAkunDariDetail()">
+                        <i class="fas fa-check me-1"></i> Setujui
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.4.H7 — MODAL ALASAN TOLAK ══════════ -->
+<div class="modal fade" id="modalAlasanTolakPersetujuan" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title">
+                    <i class="fas fa-times-circle me-2"></i>Alasan Penolakan Akun
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="tolakPersetujuanUserId" value="">
+                <div class="mb-3">
+                    <label class="fw-bold">Nama Pemohon</label>
+                    <input type="text" id="tolakPersetujuanNama"
+                           class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold">
+                        Alasan Penolakan <span class="text-danger">*</span>
+                    </label>
+                    <textarea id="tolakPersetujuanAlasan" class="form-control" rows="4"
+                              placeholder="Contoh: Data KTP tidak sesuai / Foto blur / NIK tidak valid..."
+                              minlength="10" required></textarea>
+                    <small class="text-muted">
+                        Minimal 10 karakter. Alasan akan disimpan di audit log.
+                    </small>
+                </div>
+                <div class="alert alert-warning small mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Akun yang ditolak <strong>tidak dapat login</strong>.
+                    Pemohon dapat mengajukan ulang pendaftaran.
+                </div>
+                <div id="notifTolakPersetujuan" class="alert d-none mt-3"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    Batal
+                </button>
+                <button type="button" class="btn btn-danger"
+                        onclick="konfirmasiTolakPersetujuan()">
+                    <i class="fas fa-check me-1"></i> Konfirmasi Tolak
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.4 (HTML) ============================= -->
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
-<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN SUPERADMIN (JS) ===== -->
+<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN SUPERADMIN (JS) ====== -->
 <!-- ============================================================ -->
 <script>
-// ============================================================
-// BLOK R 10.4 – JS PERSETUJUAN AKUN SUPERADMIN
-// ------------------------------------------------------------
-// Fungsi global yang dipakai:
-//   loadDataPendingAkun()          -> BLOK R 01.0 (74)
-//   setujuiAkunGlobal()            -> BLOK R 01.0 (75)
-//   tolakAkunGlobal()              -> BLOK R 01.0 (76)
-//   hitungStatistikPersetujuan()   -> BLOK R 01.0 (77)
-//   getDataIdUser()                -> BLOK R 01.0 (2)
-//   getFotoProfilAkun()            -> BLOK R 01.0 (16)
-//   catatAktivitasGlobal()         -> BLOK R 01.0 (21)
-//   tutupMenu()                    -> BLOK R 01.0 (5)
-//   kembaliKeDasbor()              -> BLOK R 01.0 (54)
-//   tampilkanPlaceholderMenu()     -> BLOK R 01.0 (11)
-// ============================================================
-
-// ── State lokal blok ──
-var currentPagePersetujuan = 1;
-var itemsPerPagePersetujuan = 10;
-var currentDetailPersetujuanId = null;
-
-// ============================================================
-// BLOK R 10.4 (1) – TAMPILKAN HALAMAN
-// ============================================================
-function tampilkanPersetujuanAkun() {
-    var konten = document.getElementById('kontenDasbor');
-    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
-    var container = document.getElementById('persetujuanAkunContainer');
-
-    if (container) {
-        konten.innerHTML = container.innerHTML;
-        currentPagePersetujuan = 1;
-        renderStatistikPersetujuan();
-        renderTabelPersetujuanAkun(1);
-        tutupMenu();
-    } else {
-        tampilkanPlaceholderMenu('Persetujuan Akun', '10.4');
+(function BLOK_R_10_4_PERSETUJUAN_AKUN() {
+    // ── Guard idempotency ──
+    if (window._blokR104Done) {
+        console.log('ℹ️ BLOK R 10.4 sudah terpasang — dilewati.');
+        return;
     }
-}
+    window._blokR104Done = true;
 
-// ============================================================
-// BLOK R 10.4 (2) – RENDER STATISTIK
-// ============================================================
-function renderStatistikPersetujuan() {
-    var stat = hitungStatistikPersetujuan();
+    // ═══════════════════════════════════════════════════════════
+    // STATE LOKAL
+    // ═══════════════════════════════════════════════════════════
+    var currentPagePersetujuan = 1;
+    var itemsPerPagePersetujuan = 10;
+    var currentDetailPersetujuanId = null;
 
-    var elPending = document.getElementById('statPersetujuanPending');
-    if (elPending) elPending.textContent = stat.pending;
+    // ═══════════════════════════════════════════════════════════
+    // HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function paEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
 
-    var elDisetujui = document.getElementById('statPersetujuanDisetujui');
-    if (elDisetujui) elDisetujui.textContent = stat.disetujuiHariIni;
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (1) — TAMPILKAN HALAMAN
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanPersetujuanAkun = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
 
-    var elDitolak = document.getElementById('statPersetujuanDitolak');
-    if (elDitolak) elDitolak.textContent = stat.ditolakHariIni;
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.error('❌ #kontenDasbor tidak ditemukan');
+                return;
+            }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
 
-    // Hitung berapa yang dari "Ajukan"
-    var semuaPending = loadDataPendingAkun();
-    var jumlahAjukan = semuaPending.filter(function(u) {
-        return u.sumber === 'Ajukan';
-    }).length;
+            // Cache template & remove container
+            if (!window._tplPersetujuanAkun) {
+                var c = document.getElementById('persetujuanAkunContainer');
+                if (!c) {
+                    console.error('❌ Container persetujuanAkunContainer tidak ada');
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Persetujuan Akun', '10.4');
+                    }
+                    return;
+                }
+                window._tplPersetujuanAkun = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Persetujuan Akun di-cache & dihapus');
+            }
 
-    var elPengajuan = document.getElementById('statPersetujuanPengajuan');
-    if (elPengajuan) elPengajuan.textContent = jumlahAjukan;
-}
+            konten.innerHTML = window._tplPersetujuanAkun;
 
-// ============================================================
-// BLOK R 10.4 (3) – WARNA BADGE PER ROLE
-// ============================================================
-function getWarnaRolePersetujuan(role) {
-    var map = {
-        'Toko':              'bg-warning text-dark',
-        'Pedagang Pasar':    'bg-success',
-        'Pedagang Makanan':  'bg-warning text-dark',
-        'COD Seller':        'bg-info text-dark',
-        'Ojek':              'bg-danger',
-        'Grosir':            'bg-info text-dark',
-        'Distributor':       'bg-primary',
-        'Customer':          'bg-secondary'
+            currentPagePersetujuan = 1;
+
+            setTimeout(function() {
+                renderStatistikPersetujuan();
+                renderBreakdownPerRolePersetujuan();
+                renderTabelPersetujuanAkun(1);
+                console.log('✅ BLOK R 10.4 — Persetujuan Akun rendered');
+            }, 200);
+        } catch (e) {
+            console.error('BLOK R 10.4 (1) error:', e);
+        }
     };
-    return map[role] || 'bg-secondary';
-}
 
-// ============================================================
-// BLOK R 10.4 (4) – DURASI PENDING
-// ============================================================
-function hitungDurasiPendingPersetujuan(createdAt) {
-    if (!createdAt) return '-';
-    var t = new Date(createdAt).getTime();
-    if (isNaN(t)) return '-';
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (2) — RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.renderStatistikPersetujuan = function() {
+        try {
+            var stat = (typeof hitungStatistikPersetujuan === 'function')
+                ? hitungStatistikPersetujuan()
+                : { pending: 0, disetujuiHariIni: 0, ditolakHariIni: 0 };
 
-    var diff = Date.now() - t;
-    if (diff < 0) return 'Baru saja';
+            var elPending = document.getElementById('statPersetujuanPending');
+            if (elPending) elPending.textContent = stat.pending;
 
-    var menit = Math.floor(diff / 60000);
-    if (menit < 1)  return 'Baru saja';
-    if (menit < 60) return menit + ' menit lalu';
+            var elDisetujui = document.getElementById('statPersetujuanDisetujui');
+            if (elDisetujui) elDisetujui.textContent = stat.disetujuiHariIni;
 
-    var jam = Math.floor(menit / 60);
-    if (jam < 24)   return jam + ' jam lalu';
+            var elDitolak = document.getElementById('statPersetujuanDitolak');
+            if (elDitolak) elDitolak.textContent = stat.ditolakHariIni;
 
-    var hari = Math.floor(jam / 24);
-    return hari + ' hari lalu';
-}
+            // Hitung yang dari "Ajukan"
+            var semuaPending = (typeof loadDataPendingAkun === 'function')
+                ? loadDataPendingAkun() : [];
+            var jumlahAjukan = semuaPending.filter(function(u) {
+                return u.sumber === 'Ajukan';
+            }).length;
 
-// ============================================================
-// BLOK R 10.4 (5) – RENDER TABEL
-// ============================================================
-function renderTabelPersetujuanAkun(hal) {
-    currentPagePersetujuan = hal || 1;
-    var tbody = document.getElementById('tabelPersetujuanAkun');
-    if (!tbody) return;
+            var elPengajuan = document.getElementById('statPersetujuanPengajuan');
+            if (elPengajuan) elPengajuan.textContent = jumlahAjukan;
+        } catch (e) {
+            console.error('BLOK R 10.4 (2) renderStatistikPersetujuan error:', e);
+        }
+    };
 
-    var allData = loadDataPendingAkun();
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (3) — WARNA BADGE PER ROLE
+    // ------------------------------------------------------------
+    // Support 12 role: seller + transport + profesional + customer
+    // ═══════════════════════════════════════════════════════════
+    window.getWarnaRolePersetujuan = function(role) {
+        var map = {
+            // ── Seller ──
+            'Toko':                 'bg-warning text-dark',
+            'Pedagang Pasar':       'bg-success',
+            'Pedagang Makanan':     'bg-warning text-dark',
+            'COD Seller':           'bg-info text-dark',
+            'Grosir':               'bg-info text-dark',
+            'Distributor':          'bg-primary',
+            // ── Transport ──
+            'Ojek':                 'bg-danger',
+            // ── Profesional / Bisnis Baru ──
+            'Jasa':                 'bg-danger',
+            'Developer Properti':   'bg-dark',
+            'Dealer dan Showroom':  'bg-dark',
+            'Finance Multifinance': 'bg-dark',
+            // ── Customer ──
+            'Customer':             'bg-secondary'
+        };
+        return map[role] || 'bg-secondary';
+    };
 
-    // ── Filter ──
-    var cari        = (document.getElementById('cariPersetujuanAkun')?.value || '').toLowerCase().trim();
-    var filterRole  = document.getElementById('filterRolePersetujuanAkun')?.value || '';
-    var filterSumber= document.getElementById('filterSumberPersetujuanAkun')?.value || '';
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (4) — DURASI PENDING (RELATIVE TIME)
+    // ═══════════════════════════════════════════════════════════
+    window.hitungDurasiPendingPersetujuan = function(createdAt) {
+        if (!createdAt) return '-';
+        var t = new Date(createdAt).getTime();
+        if (isNaN(t)) return '-';
 
-    var dataFilter = allData.filter(function(u) {
-        var matchCari = cari === '' ||
-            (u.nama || '').toLowerCase().includes(cari) ||
-            (u.idUser || '').toLowerCase().includes(cari) ||
-            (u.username || '').toLowerCase().includes(cari) ||
-            (u.hp || '').toLowerCase().includes(cari) ||
-            (u.email || '').toLowerCase().includes(cari);
+        var diff = Date.now() - t;
+        if (diff < 0) return 'Baru saja';
 
-        var matchRole   = filterRole === ''   || u.role === filterRole;
-        var matchSumber = filterSumber === '' || u.sumber === filterSumber;
+        var menit = Math.floor(diff / 60000);
+        if (menit < 1)  return 'Baru saja';
+        if (menit < 60) return menit + ' menit lalu';
 
-        return matchCari && matchRole && matchSumber;
-    });
+        var jam = Math.floor(menit / 60);
+        if (jam < 24)   return jam + ' jam lalu';
 
-    // ── Badge info ──
-    var elInfo = document.getElementById('infoJumlahPersetujuanAkun');
-    if (elInfo) elInfo.textContent = dataFilter.length + ' Data';
+        var hari = Math.floor(jam / 24);
+        return hari + ' hari lalu';
+    };
 
-    var elTotal = document.getElementById('totalPersetujuanAkun');
-    if (elTotal) elTotal.textContent = dataFilter.length;
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (5) — RENDER BREAKDOWN PER ROLE (CHIPS)
+    // ------------------------------------------------------------
+    // Chip counter per role yang pending.
+    // Chip Jasa ditaruh paling depan.
+    // ═══════════════════════════════════════════════════════════
+    window.renderBreakdownPerRolePersetujuan = function() {
+        try {
+            var container = document.getElementById('saBreakdownPerRolePersetujuan');
+            if (!container) return;
 
-    // ── Pagination ──
-    var totalPages = Math.ceil(dataFilter.length / itemsPerPagePersetujuan) || 1;
-    if (currentPagePersetujuan > totalPages) currentPagePersetujuan = totalPages;
-    if (currentPagePersetujuan < 1) currentPagePersetujuan = 1;
+            // Ambil breakdown via fungsi global
+            var breakdown = (typeof hitungStatistikPersetujuanPerRole === 'function')
+                ? hitungStatistikPersetujuanPerRole()
+                : {};
 
-    var start = (currentPagePersetujuan - 1) * itemsPerPagePersetujuan;
-    var end   = start + itemsPerPagePersetujuan;
-    var dataPaged = dataFilter.slice(start, end);
+            var roles = Object.keys(breakdown);
+            if (roles.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
 
-    var elInfoPage = document.getElementById('infoPaginationPersetujuanAkun');
-    if (elInfoPage) {
-        elInfoPage.textContent = 'Halaman ' + currentPagePersetujuan + ' dari ' + totalPages;
-    }
+            // Sort: Jasa duluan, lalu terbanyak, lalu alfabetis
+            roles.sort(function(a, b) {
+                if (a === 'Jasa' && b !== 'Jasa') return -1;
+                if (b === 'Jasa' && a !== 'Jasa') return 1;
+                if (breakdown[b] !== breakdown[a]) return breakdown[b] - breakdown[a];
+                return a.localeCompare(b);
+            });
 
-    var btnPrev = document.getElementById('btnPrevPersetujuanAkun');
-    if (btnPrev) btnPrev.disabled = (currentPagePersetujuan === 1);
+            var html = '' +
+                '<div class="card border-0 shadow-sm bg-white">' +
+                    '<div class="card-body py-2">' +
+                        '<div class="d-flex align-items-center flex-wrap gap-2">' +
+                            '<small class="fw-bold text-muted me-2">' +
+                                '<i class="fas fa-layer-group me-1"></i>Pending per Role:' +
+                            '</small>';
 
-    var btnNext = document.getElementById('btnNextPersetujuanAkun');
-    if (btnNext) btnNext.disabled = (currentPagePersetujuan === totalPages);
+            roles.forEach(function(role) {
+                var jumlah = breakdown[role];
+                var kelasWarna = getWarnaRolePersetujuan(role);
+                var ikon = role === 'Jasa' ? '⚙️ ' : '';
+                var roleEsc = role.replace(/'/g, "\\'");
 
-    // ── Kosong ──
-    if (dataPaged.length === 0) {
-        tbody.innerHTML =
-            '<tr><td colspan="9" class="text-center text-muted py-4">' +
-            '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
-            'Tidak ada pengajuan ditemukan.' +
-            '</td></tr>';
-        return;
-    }
+                html +=
+                    '<button type="button" class="btn btn-sm ' + kelasWarna + '" ' +
+                            'style="font-size:12px;" ' +
+                            'onclick="saFilterRoleCepat(\'' + roleEsc + '\')">' +
+                        ikon + paEsc(role) +
+                        ' <span class="badge bg-light text-dark ms-1">' + jumlah + '</span>' +
+                    '</button>';
+            });
 
-    // ── Render baris ──
-    var html = '';
-    dataPaged.forEach(function(u, index) {
-        var nomor = start + index + 1;
-        var warnaRole = getWarnaRolePersetujuan(u.role);
+            html += '</div></div></div>';
+            container.innerHTML = html;
+        } catch (e) {
+            console.error('BLOK R 10.4 (5) renderBreakdownPerRole error:', e);
+        }
+    };
 
-        // Tanggal & durasi
-        var tglDaftar = u.createdAt
-            ? new Date(u.createdAt).toLocaleString('id-ID', { hour12: false })
-            : '-';
-        var durasi = hitungDurasiPendingPersetujuan(u.createdAt);
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (6) — FILTER CEPAT VIA CHIP
+    // ═══════════════════════════════════════════════════════════
+    window.saFilterRoleCepat = function(role) {
+        try {
+            var sel = document.getElementById('filterRolePersetujuanAkun');
+            if (sel) sel.value = role;
+            renderTabelPersetujuanAkun(1);
+        } catch (e) {
+            console.error('saFilterRoleCepat error:', e);
+        }
+    };
 
-        // Badge sumber
-        var warnaSumber = u.sumber === 'Ajukan'
-            ? 'bg-warning text-dark'
-            : 'bg-secondary';
-        var ikonSumber = u.sumber === 'Ajukan' ? 'fa-paper-plane' : 'fa-user-plus';
-        var labelSumber = u.sumber === 'Ajukan' ? 'Ajukan' : 'Daftar';
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (7) — RENDER TABEL
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelPersetujuanAkun = function(hal) {
+        try {
+            currentPagePersetujuan = hal || 1;
 
-        // HP copy-able
-        var hpBersih = (u.hp || '').toString().replace(/\D/g, '');
-        var hpDisplay = hpBersih
-            ? '<a href="javascript:void(0)" onclick="copyHpPersetujuan(\'' + hpBersih + '\')" ' +
-              'class="fw-bold text-decoration-none" title="Klik untuk copy">' +
-              '<i class="fas fa-copy me-1 text-primary"></i>' + u.hp +
-              '</a>'
-            : '<span class="text-muted">-</span>';
+            var tbody = document.getElementById('tabelPersetujuanAkun');
+            if (!tbody) return;
 
-        html += '<tr>' +
-            '<td>' + nomor + '</td>' +
+            var allData = (typeof loadDataPendingAkun === 'function')
+                ? loadDataPendingAkun() : [];
 
-            // Nama + ID
-            '<td>' +
-                '<strong>' + (u.nama || '-') + '</strong><br>' +
-                '<small class="text-muted">' + (u.idUser || '-') + '</small>' +
-            '</td>' +
+            // ── Filter ──
+            var cari = (document.getElementById('cariPersetujuanAkun')?.value || '')
+                .toLowerCase().trim();
+            var filterRole = document.getElementById('filterRolePersetujuanAkun')?.value || '';
+            var filterSumber = document.getElementById('filterSumberPersetujuanAkun')?.value || '';
 
-            // Role
-            '<td><span class="badge ' + warnaRole + '">' + (u.role || '-') + '</span></td>' +
+            var dataFilter = allData.filter(function(u) {
+                var matchCari = cari === '' ||
+                    (u.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.idUser || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.username || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.hp || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.email || '').toLowerCase().indexOf(cari) !== -1;
 
-            // Username
-            '<td><small>' + (u.username || '-') + '</small></td>' +
+                var matchRole = filterRole === '' || u.role === filterRole;
+                var matchSumber = filterSumber === '' || u.sumber === filterSumber;
 
-            // No. HP
-            '<td>' + hpDisplay + '</td>' +
+                return matchCari && matchRole && matchSumber;
+            });
 
-            // Sumber
-            '<td>' +
-                '<span class="badge ' + warnaSumber + '">' +
-                    '<i class="fas ' + ikonSumber + ' me-1"></i>' + labelSumber +
-                '</span>' +
-            '</td>' +
+            // ── Badge info ──
+            var elInfo = document.getElementById('infoJumlahPersetujuanAkun');
+            if (elInfo) elInfo.textContent = dataFilter.length + ' Data';
 
-            // Tgl daftar
-            '<td><small>' + tglDaftar + '</small></td>' +
+            var elTotal = document.getElementById('totalPersetujuanAkun');
+            if (elTotal) elTotal.textContent = dataFilter.length;
 
-            // Durasi
-            '<td><small class="text-muted">' + durasi + '</small></td>' +
+            // ── Pagination ──
+            var totalPages = Math.ceil(dataFilter.length / itemsPerPagePersetujuan) || 1;
+            if (currentPagePersetujuan > totalPages) currentPagePersetujuan = totalPages;
+            if (currentPagePersetujuan < 1) currentPagePersetujuan = 1;
 
-            // Aksi
-            '<td>' +
-                '<button class="btn btn-sm btn-outline-info me-1" ' +
-                    'onclick="bukaModalDetailPersetujuan(\'' + u.idUser + '\')" title="Detail">' +
-                    '<i class="fas fa-eye"></i>' +
-                '</button>' +
-                '<button class="btn btn-sm btn-outline-success me-1" ' +
-                    'onclick="setujuiAkunPersetujuan(\'' + u.idUser + '\')" title="Setujui">' +
-                    '<i class="fas fa-check"></i>' +
-                '</button>' +
-                '<button class="btn btn-sm btn-outline-danger" ' +
-                    'onclick="bukaModalTolakPersetujuan(\'' + u.idUser + '\')" title="Tolak">' +
-                    '<i class="fas fa-times"></i>' +
-                '</button>' +
-            '</td>' +
-        '</tr>';
-    });
+            var start = (currentPagePersetujuan - 1) * itemsPerPagePersetujuan;
+            var end = start + itemsPerPagePersetujuan;
+            var dataPaged = dataFilter.slice(start, end);
 
-    tbody.innerHTML = html;
-}
+            var elInfoPage = document.getElementById('infoPaginationPersetujuanAkun');
+            if (elInfoPage) {
+                elInfoPage.textContent = 'Halaman ' + currentPagePersetujuan +
+                    ' dari ' + totalPages;
+            }
 
-// ============================================================
-// BLOK R 10.4 (6) – NAVIGASI PAGINATION
-// ============================================================
-function ubahHalamanPersetujuanAkun(arah) {
-    if (arah === 'prev' && currentPagePersetujuan > 1) {
-        renderTabelPersetujuanAkun(currentPagePersetujuan - 1);
-    } else if (arah === 'next') {
-        renderTabelPersetujuanAkun(currentPagePersetujuan + 1);
-    }
-}
+            var btnPrev = document.getElementById('btnPrevPersetujuanAkun');
+            if (btnPrev) btnPrev.disabled = (currentPagePersetujuan === 1);
 
-// ============================================================
-// BLOK R 10.4 (7) – RESET FILTER
-// ============================================================
-function resetFilterPersetujuanAkun() {
-    var elCari   = document.getElementById('cariPersetujuanAkun');
-    var elRole   = document.getElementById('filterRolePersetujuanAkun');
-    var elSumber = document.getElementById('filterSumberPersetujuanAkun');
-    if (elCari)   elCari.value = '';
-    if (elRole)   elRole.value = '';
-    if (elSumber) elSumber.value = '';
-    renderTabelPersetujuanAkun(1);
-}
+            var btnNext = document.getElementById('btnNextPersetujuanAkun');
+            if (btnNext) btnNext.disabled = (currentPagePersetujuan === totalPages);
 
-// ============================================================
-// BLOK R 10.4 (8) – MODAL DETAIL
-// ============================================================
-function bukaModalDetailPersetujuan(idUser) {
-    var allData = loadDataPendingAkun();
-    var item = allData.find(function(u) { return u.idUser === idUser; });
-    if (!item) {
-        alert('Data tidak ditemukan.');
-        return;
-    }
+            // ── Kosong ──
+            if (dataPaged.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Tidak ada pengajuan ditemukan.' +
+                    '</td></tr>';
+                return;
+            }
 
-    currentDetailPersetujuanId = idUser;
+            // ── Render baris ──
+            var html = '';
+            dataPaged.forEach(function(u, index) {
+                var nomor = start + index + 1;
+                var warnaRole = getWarnaRolePersetujuan(u.role);
 
-    // Foto profil
-    var fotoUrl = (typeof getFotoProfilAkun === 'function' ? getFotoProfilAkun(idUser) : '') ||
-                  'https://placehold.co/120x120/FF8C00/ffffff?text=' + (item.role || 'U').split(' ')[0];
+                // Tanggal & durasi
+                var tglDaftar = u.createdAt
+                    ? new Date(u.createdAt).toLocaleString('id-ID', { hour12: false })
+                    : '-';
+                var durasi = hitungDurasiPendingPersetujuan(u.createdAt);
 
-    // Koordinat
-    var koordinat = '-';
-    if (item.lat && item.lng) {
-        koordinat = '<a href="https://www.google.com/maps?q=' + item.lat + ',' + item.lng + '" ' +
-                    'target="_blank" rel="noopener">' +
-                    parseFloat(item.lat).toFixed(6) + ', ' + parseFloat(item.lng).toFixed(6) +
+                // Badge sumber
+                var warnaSumber = u.sumber === 'Ajukan'
+                    ? 'bg-warning text-dark'
+                    : 'bg-secondary';
+                var ikonSumber = u.sumber === 'Ajukan' ? 'fa-paper-plane' : 'fa-user-plus';
+                var labelSumber = u.sumber === 'Ajukan' ? 'Ajukan' : 'Daftar';
+
+                // Icon role Jasa
+                var ikonRole = u.role === 'Jasa' ? '⚙️ ' : '';
+
+                // HP copy-able
+                var hpBersih = (u.hp || '').toString().replace(/\D/g, '');
+                var hpDisplay = hpBersih
+                    ? '<a href="javascript:void(0)" onclick="copyHpPersetujuan(\'' +
+                      hpBersih + '\')" class="fw-bold text-decoration-none" ' +
+                      'title="Klik untuk copy">' +
+                      '<i class="fas fa-copy me-1 text-primary"></i>' + paEsc(u.hp) +
+                      '</a>'
+                    : '<span class="text-muted">-</span>';
+
+                html += '<tr>' +
+                    '<td>' + nomor + '</td>' +
+
+                    '<td>' +
+                        '<strong>' + paEsc(u.nama || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + paEsc(u.idUser || '-') + '</small>' +
+                    '</td>' +
+
+                    '<td><span class="badge ' + warnaRole + '">' +
+                        ikonRole + paEsc(u.role || '-') + '</span></td>' +
+
+                    '<td><small>' + paEsc(u.username || '-') + '</small></td>' +
+
+                    '<td>' + hpDisplay + '</td>' +
+
+                    '<td>' +
+                        '<span class="badge ' + warnaSumber + '">' +
+                            '<i class="fas ' + ikonSumber + ' me-1"></i>' + labelSumber +
+                        '</span>' +
+                    '</td>' +
+
+                    '<td><small>' + paEsc(tglDaftar) + '</small></td>' +
+
+                    '<td><small class="text-muted">' + paEsc(durasi) + '</small></td>' +
+
+                    '<td>' +
+                        '<button class="btn btn-sm btn-outline-info me-1" ' +
+                            'onclick="bukaModalDetailPersetujuan(\'' + u.idUser + '\')" ' +
+                            'title="Detail">' +
+                            '<i class="fas fa-eye"></i>' +
+                        '</button>' +
+                        '<button class="btn btn-sm btn-outline-success me-1" ' +
+                            'onclick="setujuiAkunPersetujuan(\'' + u.idUser + '\')" ' +
+                            'title="Setujui">' +
+                            '<i class="fas fa-check"></i>' +
+                        '</button>' +
+                        '<button class="btn btn-sm btn-outline-danger" ' +
+                            'onclick="bukaModalTolakPersetujuan(\'' + u.idUser + '\')" ' +
+                            'title="Tolak">' +
+                            '<i class="fas fa-times"></i>' +
+                        '</button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('BLOK R 10.4 (7) renderTabel error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (8) — NAVIGASI PAGINATION
+    // ═══════════════════════════════════════════════════════════
+    window.ubahHalamanPersetujuanAkun = function(arah) {
+        if (arah === 'prev' && currentPagePersetujuan > 1) {
+            renderTabelPersetujuanAkun(currentPagePersetujuan - 1);
+        } else if (arah === 'next') {
+            renderTabelPersetujuanAkun(currentPagePersetujuan + 1);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (9) — RESET FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterPersetujuanAkun = function() {
+        var elCari = document.getElementById('cariPersetujuanAkun');
+        var elRole = document.getElementById('filterRolePersetujuanAkun');
+        var elSumber = document.getElementById('filterSumberPersetujuanAkun');
+        if (elCari) elCari.value = '';
+        if (elRole) elRole.value = '';
+        if (elSumber) elSumber.value = '';
+        renderTabelPersetujuanAkun(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (10) — MODAL DETAIL
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalDetailPersetujuan = function(idUser) {
+        try {
+            var allData = loadDataPendingAkun();
+            var item = allData.find(function(u) { return u.idUser === idUser; });
+            if (!item) {
+                alert('Data tidak ditemukan.');
+                return;
+            }
+
+            currentDetailPersetujuanId = idUser;
+
+            // Foto profil
+            var fotoUrl = (typeof getFotoProfilAkun === 'function'
+                ? getFotoProfilAkun(idUser) : '') ||
+                'https://placehold.co/120x120/FF8C00/ffffff?text=' +
+                (item.role || 'U').split(' ')[0];
+
+            // Koordinat
+            var koordinat = '-';
+            if (item.lat && item.lng) {
+                koordinat = '<a href="https://www.google.com/maps?q=' +
+                    item.lat + ',' + item.lng + '" target="_blank" rel="noopener">' +
+                    parseFloat(item.lat).toFixed(6) + ', ' +
+                    parseFloat(item.lng).toFixed(6) +
                     ' <i class="fas fa-external-link-alt ms-1"></i></a>';
-    }
+            }
 
-    var warnaRole = getWarnaRolePersetujuan(item.role);
+            var warnaRole = getWarnaRolePersetujuan(item.role);
+            var ikonRole = item.role === 'Jasa' ? '⚙️ ' : '';
 
-    // Badge sumber
-    var badgeSumber = item.sumber === 'Ajukan'
-        ? '<span class="badge bg-warning text-dark"><i class="fas fa-paper-plane me-1"></i>Ajukan</span>'
-        : '<span class="badge bg-secondary"><i class="fas fa-user-plus me-1"></i>Daftar</span>';
+            // Badge sumber
+            var badgeSumber = item.sumber === 'Ajukan'
+                ? '<span class="badge bg-warning text-dark"><i class="fas fa-paper-plane me-1"></i>Ajukan</span>'
+                : '<span class="badge bg-secondary"><i class="fas fa-user-plus me-1"></i>Daftar</span>';
 
-    // HP copy-able di modal
-    var hpBersih = (item.hp || '').toString().replace(/\D/g, '');
-    var hpRow = hpBersih
-        ? '<a href="javascript:void(0)" onclick="copyHpPersetujuan(\'' + hpBersih + '\')" ' +
-          'class="fw-bold text-decoration-none">' +
-          '<i class="fas fa-copy me-1 text-primary"></i>' + item.hp + '</a>'
-        : '-';
+            // HP copy-able
+            var hpBersih = (item.hp || '').toString().replace(/\D/g, '');
+            var hpRow = hpBersih
+                ? '<a href="javascript:void(0)" onclick="copyHpPersetujuan(\'' +
+                  hpBersih + '\')" class="fw-bold text-decoration-none">' +
+                  '<i class="fas fa-copy me-1 text-primary"></i>' + paEsc(item.hp) + '</a>'
+                : '-';
 
-    var html =
-        '<div class="row g-3">' +
-            '<div class="col-md-4 text-center">' +
-                '<img src="' + fotoUrl + '" class="rounded-circle mb-2" ' +
-                    'style="width:120px;height:120px;object-fit:cover;border:4px solid #FF8C00;">' +
-                '<h6 class="fw-bold mb-1">' + (item.nama || '-') + '</h6>' +
-                '<span class="badge ' + warnaRole + '">' + (item.role || '-') + '</span>' +
-                '<div class="mt-2">' + badgeSumber + '</div>' +
-            '</div>' +
-            '<div class="col-md-8">' +
-                '<table class="table table-sm table-borderless mb-0">' +
-                    '<tr><td class="fw-bold text-muted" style="width:150px;">ID User</td>' +
-                        '<td>' + (item.idUser || '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Username</td>' +
-                        '<td>' + (item.username || '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">NIK KTP</td>' +
-                        '<td>' + (item.nik_ktp || '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Email</td>' +
-                        '<td>' + (item.email || '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">No. HP</td>' +
-                        '<td>' + hpRow + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Alamat</td>' +
-                        '<td>' + (item.alamat || '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Alamat KTP</td>' +
-                        '<td>' + (item.alamatKtp || '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Koordinat</td>' +
-                        '<td>' + koordinat + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Tanggal Daftar</td>' +
-                        '<td>' + (item.createdAt ? new Date(item.createdAt).toLocaleString('id-ID', {hour12:false}) : '-') + '</td></tr>' +
-                    '<tr><td class="fw-bold text-muted">Durasi Pending</td>' +
-                        '<td>' + hitungDurasiPendingPersetujuan(item.createdAt) + '</td></tr>' +
-                '</table>' +
-            '</div>' +
-        '</div>';
+            var html = '' +
+                '<div class="row g-3">' +
+                    '<div class="col-md-4 text-center">' +
+                        '<img src="' + fotoUrl + '" class="rounded-circle mb-2" ' +
+                            'style="width:120px;height:120px;object-fit:cover;' +
+                            'border:4px solid #FF8C00;">' +
+                        '<h6 class="fw-bold mb-1">' + paEsc(item.nama || '-') + '</h6>' +
+                        '<span class="badge ' + warnaRole + '">' +
+                            ikonRole + paEsc(item.role || '-') + '</span>' +
+                        '<div class="mt-2">' + badgeSumber + '</div>' +
+                    '</div>' +
+                    '<div class="col-md-8">' +
+                        '<table class="table table-sm table-borderless mb-0">' +
+                            '<tr><td class="fw-bold text-muted" style="width:150px;">ID User</td>' +
+                                '<td>' + paEsc(item.idUser || '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Username</td>' +
+                                '<td>' + paEsc(item.username || '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">NIK KTP</td>' +
+                                '<td>' + paEsc(item.nik_ktp || '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Email</td>' +
+                                '<td>' + paEsc(item.email || '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">No. HP</td>' +
+                                '<td>' + hpRow + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Alamat</td>' +
+                                '<td>' + paEsc(item.alamat || '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Alamat KTP</td>' +
+                                '<td>' + paEsc(item.alamatKtp || '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Koordinat</td>' +
+                                '<td>' + koordinat + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Tanggal Daftar</td>' +
+                                '<td>' + (item.createdAt
+                                    ? new Date(item.createdAt).toLocaleString('id-ID', { hour12: false })
+                                    : '-') + '</td></tr>' +
+                            '<tr><td class="fw-bold text-muted">Durasi Pending</td>' +
+                                '<td>' + hitungDurasiPendingPersetujuan(item.createdAt) + '</td></tr>' +
+                        '</table>' +
+                    '</div>' +
+                '</div>';
 
-    var body = document.getElementById('modalDetailPersetujuanBody');
-    if (body) body.innerHTML = html;
+            var body = document.getElementById('modalDetailPersetujuanBody');
+            if (body) body.innerHTML = html;
 
-    var modal = new bootstrap.Modal(document.getElementById('modalDetailPersetujuanAkun'));
-    modal.show();
-}
-
-// ============================================================
-// BLOK R 10.4 (9) – SETUJUI DARI TABEL
-// ============================================================
-function setujuiAkunPersetujuan(idUser) {
-    var allData = loadDataPendingAkun();
-    var item = allData.find(function(u) { return u.idUser === idUser; });
-    var nama = item ? (item.nama || idUser) : idUser;
-
-    if (!confirm('Setujui akun "' + nama + '"?\n\nAkun ini akan langsung aktif dan bisa login.')) {
-        return;
-    }
-
-    var hasil = setujuiAkunGlobal(idUser, 'Disetujui via menu Persetujuan Akun');
-    if (hasil.sukses) {
-        renderStatistikPersetujuan();
-        renderTabelPersetujuanAkun(currentPagePersetujuan);
-        tampilkanToastPersetujuan('✅ Akun "' + nama + '" berhasil disetujui!', 'success');
-    } else {
-        alert('❌ ' + hasil.pesan);
-    }
-}
-
-// ============================================================
-// BLOK R 10.4 (10) – SETUJUI DARI MODAL DETAIL
-// ============================================================
-function setujuiAkunDariDetail() {
-    if (!currentDetailPersetujuanId) return;
-
-    var modalEl = document.getElementById('modalDetailPersetujuanAkun');
-    var modal = bootstrap.Modal.getInstance(modalEl);
-    if (modal) modal.hide();
-
-    setujuiAkunPersetujuan(currentDetailPersetujuanId);
-}
-
-// ============================================================
-// BLOK R 10.4 (11) – BUKA MODAL TOLAK
-// ============================================================
-function bukaModalTolakPersetujuan(idUser) {
-    var allData = loadDataPendingAkun();
-    var item = allData.find(function(u) { return u.idUser === idUser; });
-    if (!item) {
-        alert('Data tidak ditemukan.');
-        return;
-    }
-
-    currentDetailPersetujuanId = idUser;
-
-    var elId    = document.getElementById('tolakPersetujuanUserId');
-    var elNama  = document.getElementById('tolakPersetujuanNama');
-    var elAlasan= document.getElementById('tolakPersetujuanAlasan');
-    var notif   = document.getElementById('notifTolakPersetujuan');
-
-    if (elId)     elId.value = idUser;
-    if (elNama)   elNama.value = item.nama || '-';
-    if (elAlasan) elAlasan.value = '';
-    if (notif)    notif.classList.add('d-none');
-
-    var modal = new bootstrap.Modal(document.getElementById('modalAlasanTolakPersetujuan'));
-    modal.show();
-}
-
-// ============================================================
-// BLOK R 10.4 (12) – BUKA MODAL TOLAK DARI DETAIL
-// ============================================================
-function bukaModalTolakPersetujuanDariDetail() {
-    if (!currentDetailPersetujuanId) return;
-
-    var modalEl = document.getElementById('modalDetailPersetujuanAkun');
-    var modal = bootstrap.Modal.getInstance(modalEl);
-    if (modal) modal.hide();
-
-    setTimeout(function() {
-        bukaModalTolakPersetujuan(currentDetailPersetujuanId);
-    }, 300);
-}
-
-// ============================================================
-// BLOK R 10.4 (13) – KONFIRMASI TOLAK
-// ============================================================
-function konfirmasiTolakPersetujuan() {
-    var idUser = document.getElementById('tolakPersetujuanUserId')?.value;
-    var alasan = document.getElementById('tolakPersetujuanAlasan')?.value || '';
-    var notif  = document.getElementById('notifTolakPersetujuan');
-
-    if (!idUser) {
-        if (notif) {
-            notif.className = 'alert alert-danger';
-            notif.innerHTML = 'ID user tidak valid.';
-            notif.classList.remove('d-none');
+            var modal = new bootstrap.Modal(
+                document.getElementById('modalDetailPersetujuanAkun')
+            );
+            modal.show();
+        } catch (e) {
+            console.error('bukaModalDetailPersetujuan error:', e);
         }
-        return;
-    }
+    };
 
-    if (alasan.trim().length < 10) {
-        if (notif) {
-            notif.className = 'alert alert-warning';
-            notif.innerHTML = '⚠️ Alasan minimal 10 karakter.';
-            notif.classList.remove('d-none');
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (11) — SETUJUI DARI TABEL
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiAkunPersetujuan = function(idUser) {
+        try {
+            var allData = loadDataPendingAkun();
+            var item = allData.find(function(u) { return u.idUser === idUser; });
+            var nama = item ? (item.nama || idUser) : idUser;
+            var role = item ? (item.role || '-') : '-';
+
+            var pesanKonfirmasi =
+                '✅ Setujui akun ini?\n\n' +
+                'Nama: ' + nama + '\n' +
+                'Role: ' + role + '\n\n' +
+                'Akun akan langsung aktif dan bisa login.';
+
+            if (!confirm(pesanKonfirmasi)) return;
+
+            var hasil = setujuiAkunGlobal(idUser,
+                'Disetujui via menu Persetujuan Akun');
+
+            if (hasil.sukses) {
+                renderStatistikPersetujuan();
+                renderBreakdownPerRolePersetujuan();
+                renderTabelPersetujuanAkun(currentPagePersetujuan);
+                tampilkanToastPersetujuan(
+                    '✅ Akun "' + nama + '" berhasil disetujui!',
+                    'success'
+                );
+            } else {
+                alert('❌ ' + hasil.pesan);
+            }
+        } catch (e) {
+            console.error('setujuiAkunPersetujuan error:', e);
         }
-        return;
-    }
+    };
 
-    var hasil = tolakAkunGlobal(idUser, alasan);
-    if (hasil.sukses) {
-        var modalEl = document.getElementById('modalAlasanTolakPersetujuan');
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (12) — SETUJUI DARI MODAL DETAIL
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiAkunDariDetail = function() {
+        if (!currentDetailPersetujuanId) return;
+
+        var modalEl = document.getElementById('modalDetailPersetujuanAkun');
         var modal = bootstrap.Modal.getInstance(modalEl);
         if (modal) modal.hide();
 
-        renderStatistikPersetujuan();
-        renderTabelPersetujuanAkun(currentPagePersetujuan);
-        tampilkanToastPersetujuan('❌ Akun "' + (hasil.user.nama || idUser) + '" ditolak.', 'danger');
-    } else {
-        if (notif) {
-            notif.className = 'alert alert-danger';
-            notif.innerHTML = '❌ ' + hasil.pesan;
-            notif.classList.remove('d-none');
+        setujuiAkunPersetujuan(currentDetailPersetujuanId);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (13) — BUKA MODAL TOLAK
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalTolakPersetujuan = function(idUser) {
+        try {
+            var allData = loadDataPendingAkun();
+            var item = allData.find(function(u) { return u.idUser === idUser; });
+            if (!item) {
+                alert('Data tidak ditemukan.');
+                return;
+            }
+
+            currentDetailPersetujuanId = idUser;
+
+            var elId = document.getElementById('tolakPersetujuanUserId');
+            var elNama = document.getElementById('tolakPersetujuanNama');
+            var elAlasan = document.getElementById('tolakPersetujuanAlasan');
+            var notif = document.getElementById('notifTolakPersetujuan');
+
+            if (elId) elId.value = idUser;
+            if (elNama) elNama.value = item.nama || '-';
+            if (elAlasan) elAlasan.value = '';
+            if (notif) notif.classList.add('d-none');
+
+            var modal = new bootstrap.Modal(
+                document.getElementById('modalAlasanTolakPersetujuan')
+            );
+            modal.show();
+        } catch (e) {
+            console.error('bukaModalTolakPersetujuan error:', e);
         }
-    }
-}
+    };
 
-// ============================================================
-// BLOK R 10.4 (14) – BULK APPROVE
-// ============================================================
-function setujuiSemuaTerfilterPersetujuan() {
-    var cari        = (document.getElementById('cariPersetujuanAkun')?.value || '').toLowerCase().trim();
-    var filterRole  = document.getElementById('filterRolePersetujuanAkun')?.value || '';
-    var filterSumber= document.getElementById('filterSumberPersetujuanAkun')?.value || '';
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (14) — BUKA MODAL TOLAK DARI DETAIL
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalTolakPersetujuanDariDetail = function() {
+        if (!currentDetailPersetujuanId) return;
 
-    var allData = loadDataPendingAkun();
+        var modalEl = document.getElementById('modalDetailPersetujuanAkun');
+        var modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
 
-    var dataFilter = allData.filter(function(u) {
-        var matchCari = cari === '' ||
-            (u.nama || '').toLowerCase().includes(cari) ||
-            (u.idUser || '').toLowerCase().includes(cari) ||
-            (u.username || '').toLowerCase().includes(cari) ||
-            (u.hp || '').toLowerCase().includes(cari) ||
-            (u.email || '').toLowerCase().includes(cari);
-        var matchRole   = filterRole === ''   || u.role === filterRole;
-        var matchSumber = filterSumber === '' || u.sumber === filterSumber;
-        return matchCari && matchRole && matchSumber;
-    });
-
-    if (dataFilter.length === 0) {
-        alert('Tidak ada akun terfilter untuk disetujui.');
-        return;
-    }
-
-    if (!confirm('Setujui SEMUA ' + dataFilter.length + ' akun terfilter?\n\n' +
-                 'Tindakan ini tidak dapat dibatalkan.')) {
-        return;
-    }
-
-    var sukses = 0, gagal = 0;
-    dataFilter.forEach(function(u) {
-        var hasil = setujuiAkunGlobal(u.idUser, 'Disetujui massal via Persetujuan Akun');
-        if (hasil.sukses) sukses++;
-        else gagal++;
-    });
-
-    renderStatistikPersetujuan();
-    renderTabelPersetujuanAkun(1);
-
-    if (gagal === 0) {
-        tampilkanToastPersetujuan('✅ ' + sukses + ' akun berhasil disetujui!', 'success');
-    } else {
-        tampilkanToastPersetujuan('⚠️ ' + sukses + ' disetujui, ' + gagal + ' gagal.', 'warning');
-    }
-}
-
-// ============================================================
-// BLOK R 10.4 (15) – COPY NOMOR HP
-// ============================================================
-function copyHpPersetujuan(hp) {
-    if (!hp) return;
-    var teks = hp;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(teks).then(function() {
-            tampilkanToastPersetujuan('✅ No. HP di-copy: ' + teks, 'success');
-        }).catch(function() {
-            fallbackCopyHpPersetujuan(teks);
-        });
-    } else {
-        fallbackCopyHpPersetujuan(teks);
-    }
-}
-
-function fallbackCopyHpPersetujuan(teks) {
-    var ta = document.createElement('textarea');
-    ta.value = teks;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    try {
-        document.execCommand('copy');
-        tampilkanToastPersetujuan('✅ No. HP di-copy: ' + teks, 'success');
-    } catch (e) {
-        alert('Gagal copy. Nomor HP: ' + teks);
-    }
-    document.body.removeChild(ta);
-}
-
-// ============================================================
-// BLOK R 10.4 (16) – TOAST NOTIFIKASI
-// ============================================================
-function tampilkanToastPersetujuan(pesan, tipe) {
-    var warna = {
-        success: '#28A745',
-        danger:  '#DC3545',
-        warning: '#FFC107',
-        info:    '#17A2B8'
-    }[tipe] || '#28A745';
-
-    var toast = document.createElement('div');
-    toast.textContent = pesan;
-    toast.style.cssText =
-        'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
-        'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
-        'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
-        'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
-    document.body.appendChild(toast);
-
-    setTimeout(function() {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(20px)';
         setTimeout(function() {
-            if (toast.parentNode) document.body.removeChild(toast);
+            bukaModalTolakPersetujuan(currentDetailPersetujuanId);
         }, 300);
-    }, 2500);
-}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (15) — KONFIRMASI TOLAK
+    // ═══════════════════════════════════════════════════════════
+    window.konfirmasiTolakPersetujuan = function() {
+        try {
+            var idUser = document.getElementById('tolakPersetujuanUserId')?.value;
+            var alasan = document.getElementById('tolakPersetujuanAlasan')?.value || '';
+            var notif = document.getElementById('notifTolakPersetujuan');
+
+            if (!idUser) {
+                if (notif) {
+                    notif.className = 'alert alert-danger';
+                    notif.innerHTML = 'ID user tidak valid.';
+                    notif.classList.remove('d-none');
+                }
+                return;
+            }
+
+            if (alasan.trim().length < 10) {
+                if (notif) {
+                    notif.className = 'alert alert-warning';
+                    notif.innerHTML = '⚠️ Alasan minimal 10 karakter.';
+                    notif.classList.remove('d-none');
+                }
+                return;
+            }
+
+            var hasil = tolakAkunGlobal(idUser, alasan);
+            if (hasil.sukses) {
+                var modalEl = document.getElementById('modalAlasanTolakPersetujuan');
+                var modal = bootstrap.Modal.getInstance(modalEl);
+                if (modal) modal.hide();
+
+                renderStatistikPersetujuan();
+                renderBreakdownPerRolePersetujuan();
+                renderTabelPersetujuanAkun(currentPagePersetujuan);
+
+                tampilkanToastPersetujuan(
+                    '❌ Akun "' + (hasil.user.nama || idUser) + '" ditolak.',
+                    'danger'
+                );
+            } else {
+                if (notif) {
+                    notif.className = 'alert alert-danger';
+                    notif.innerHTML = '❌ ' + hasil.pesan;
+                    notif.classList.remove('d-none');
+                }
+            }
+        } catch (e) {
+            console.error('konfirmasiTolakPersetujuan error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (16) — BULK APPROVE (SETUJUI SEMUA TERFILTER)
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiSemuaTerfilterPersetujuan = function() {
+        try {
+            var cari = (document.getElementById('cariPersetujuanAkun')?.value || '')
+                .toLowerCase().trim();
+            var filterRole = document.getElementById('filterRolePersetujuanAkun')?.value || '';
+            var filterSumber = document.getElementById('filterSumberPersetujuanAkun')?.value || '';
+
+            var allData = loadDataPendingAkun();
+
+            var dataFilter = allData.filter(function(u) {
+                var matchCari = cari === '' ||
+                    (u.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.idUser || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.username || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.hp || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.email || '').toLowerCase().indexOf(cari) !== -1;
+
+                var matchRole = filterRole === '' || u.role === filterRole;
+                var matchSumber = filterSumber === '' || u.sumber === filterSumber;
+
+                return matchCari && matchRole && matchSumber;
+            });
+
+            if (dataFilter.length === 0) {
+                alert('Tidak ada akun terfilter untuk disetujui.');
+                return;
+            }
+
+            if (!confirm(
+                'Setujui SEMUA ' + dataFilter.length + ' akun terfilter?\n\n' +
+                'Tindakan ini tidak dapat dibatalkan.'
+            )) return;
+
+            var sukses = 0, gagal = 0;
+            dataFilter.forEach(function(u) {
+                var hasil = setujuiAkunGlobal(u.idUser,
+                    'Disetujui massal via Persetujuan Akun');
+                if (hasil.sukses) sukses++;
+                else gagal++;
+            });
+
+            renderStatistikPersetujuan();
+            renderBreakdownPerRolePersetujuan();
+            renderTabelPersetujuanAkun(1);
+
+            if (gagal === 0) {
+                tampilkanToastPersetujuan(
+                    '✅ ' + sukses + ' akun berhasil disetujui!',
+                    'success'
+                );
+            } else {
+                tampilkanToastPersetujuan(
+                    '⚠️ ' + sukses + ' disetujui, ' + gagal + ' gagal.',
+                    'warning'
+                );
+            }
+        } catch (e) {
+            console.error('setujuiSemuaTerfilterPersetujuan error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (17) — COPY NOMOR HP
+    // ═══════════════════════════════════════════════════════════
+    window.copyHpPersetujuan = function(hp) {
+        if (!hp) return;
+        var teks = hp;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(teks).then(function() {
+                tampilkanToastPersetujuan('✅ No. HP di-copy: ' + teks, 'success');
+            }).catch(function() {
+                fallbackCopyHpPersetujuan(teks);
+            });
+        } else {
+            fallbackCopyHpPersetujuan(teks);
+        }
+    };
+
+    function fallbackCopyHpPersetujuan(teks) {
+        var ta = document.createElement('textarea');
+        ta.value = teks;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            tampilkanToastPersetujuan('✅ No. HP di-copy: ' + teks, 'success');
+        } catch (e) {
+            alert('Gagal copy. Nomor HP: ' + teks);
+        }
+        document.body.removeChild(ta);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (18) — TOAST NOTIFIKASI
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanToastPersetujuan = function(pesan, tipe) {
+        var warna = {
+            success: '#28A745',
+            danger:  '#DC3545',
+            warning: '#FFC107',
+            info:    '#17A2B8'
+        }[tipe] || '#28A745';
+
+        var toast = document.createElement('div');
+        toast.textContent = pesan;
+        toast.style.cssText =
+            'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+            'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+            'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+            'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
+        document.body.appendChild(toast);
+
+        setTimeout(function() {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            setTimeout(function() {
+                if (toast.parentNode) document.body.removeChild(toast);
+            }, 300);
+        }, 2500);
+    };
+
+    console.log('✅ BLOK R 10.4 – Persetujuan Akun terpasang.');
+    console.log('   Sub-blok JS:');
+    console.log('   (1)  tampilkanPersetujuanAkun');
+    console.log('   (2)  renderStatistikPersetujuan');
+    console.log('   (3)  getWarnaRolePersetujuan (12 role)');
+    console.log('   (4)  hitungDurasiPendingPersetujuan');
+    console.log('   (5)  renderBreakdownPerRolePersetujuan');
+    console.log('   (6)  saFilterRoleCepat');
+    console.log('   (7)  renderTabelPersetujuanAkun');
+    console.log('   (8)  ubahHalamanPersetujuanAkun');
+    console.log('   (9)  resetFilterPersetujuanAkun');
+    console.log('   (10) bukaModalDetailPersetujuan');
+    console.log('   (11) setujuiAkunPersetujuan');
+    console.log('   (12) setujuiAkunDariDetail');
+    console.log('   (13) bukaModalTolakPersetujuan');
+    console.log('   (14) bukaModalTolakPersetujuanDariDetail');
+    console.log('   (15) konfirmasiTolakPersetujuan');
+    console.log('   (16) setujuiSemuaTerfilterPersetujuan');
+    console.log('   (17) copyHpPersetujuan');
+    console.log('   (18) tampilkanToastPersetujuan');
+})();
 </script>
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 10.4 (JS) ===== -->
+<!-- ===== AKHIR BLOK R 10.4 (JS) =============================== -->
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
