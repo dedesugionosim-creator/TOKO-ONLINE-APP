@@ -20787,7 +20787,522 @@ console.log('   (458) getFullConfigSnapshotGlobal');
     ],
     updatedAt, updatedBy
 }
--->
+
+<!-- ============================================================ -->
+<!-- ===== PATCH BLOK R 10.45 V3 – FUNGSI MISSING ============== -->
+<!-- ------------------------------------------------------------ -->
+<!-- Menambahkan 2 fungsi yang belum terpasang:                 -->
+<!--   • renderCheckboxRoleSewa                                  -->
+<!--   • renderTabelHargaPerRole                                 -->
+<!-- + redefine renderSewaAplikasiSetting (memastikan panggil)  -->
+<!-- ============================================================ -->
+<script>
+(function PATCH_R_10_45_V3() {
+    // ── Guard baru V3 (beda dari V2) ──
+    if (window._patchR1045V3Done) {
+        console.log('ℹ️ Patch R 10.45 V3 sudah terpasang — dilewati.');
+        return;
+    }
+    window._patchR1045V3Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    var KODE_PAKET = ['1_bulan', '3_bulan', '6_bulan', '12_bulan'];
+
+    function seEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 1 — RENDER CHECKBOX ROLE
+    // ------------------------------------------------------------
+    // Bangun UI checkbox role yang kena sewa dari
+    // getDaftarRoleBisaSewa(), dikelompokkan per kategori.
+    // ═══════════════════════════════════════════════════════════
+    window.renderCheckboxRoleSewa = function(setting) {
+        try {
+            var container = document.getElementById('saSewaRoleCheckboxContainer');
+            if (!container) {
+                console.warn('⚠️ #saSewaRoleCheckboxContainer tidak ada di HTML.');
+                return;
+            }
+
+            if (!setting && typeof getSewaAplikasiSettingGlobal === 'function') {
+                setting = getSewaAplikasiSettingGlobal();
+            }
+            if (!setting) setting = { roleKenaSewa: [] };
+
+            if (typeof getDaftarRoleBisaSewa !== 'function') {
+                container.innerHTML =
+                    '<p class="text-muted small">Fungsi getDaftarRoleBisaSewa belum tersedia.</p>';
+                return;
+            }
+
+            var list = getDaftarRoleBisaSewa();
+            var roleKena = setting.roleKenaSewa || [];
+
+            // Group by kategori
+            var grup = {};
+            list.forEach(function(item) {
+                if (!grup[item.kategori]) grup[item.kategori] = [];
+                grup[item.kategori].push(item);
+            });
+
+            var html = '';
+            Object.keys(grup).forEach(function(kat) {
+                var items = grup[kat];
+
+                html += '<div class="mb-3">';
+                html += '  <div class="text-muted small fw-bold mb-1">' +
+                        '<i class="fas fa-folder me-1"></i>' + seEsc(kat) +
+                        '</div>';
+                html += '  <div class="row g-2">';
+
+                items.forEach(function(item) {
+                    var checked = roleKena.indexOf(item.role) !== -1 ? 'checked' : '';
+                    var idSafe = 'saSewaRole_' + item.role.replace(/[^a-zA-Z0-9]/g, '_');
+                    var roleEsc = item.role.replace(/'/g, "\\'");
+
+                    html +=
+                        '<div class="col-md-4 col-6">' +
+                            '<div class="form-check border rounded p-2" ' +
+                                 'style="background:#f8f9fa;">' +
+                                '<input class="form-check-input sa-sewa-role-checkbox" ' +
+                                       'type="checkbox" ' +
+                                       'value="' + seEsc(item.role) + '" ' +
+                                       'id="' + idSafe + '" ' +
+                                       checked + ' ' +
+                                       'onchange="saOnToggleRoleSewa(\'' + roleEsc + '\', this.checked)">' +
+                                '<label class="form-check-label small" ' +
+                                       'for="' + idSafe + '" ' +
+                                       'style="cursor:pointer;">' +
+                                    '<i class="' + item.ikon + ' me-1"></i>' +
+                                    seEsc(item.role) +
+                                '</label>' +
+                            '</div>' +
+                        '</div>';
+                });
+
+                html += '  </div>';
+                html += '</div>';
+            });
+
+            container.innerHTML = html;
+            console.log('✅ renderCheckboxRoleSewa — ' + list.length + ' role dirender');
+        } catch (e) {
+            console.error('renderCheckboxRoleSewa error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 2 — RENDER TABEL HARGA PER ROLE
+    // ------------------------------------------------------------
+    // Tabel grid: kolom = 1/3/6/12 bulan, baris = role yang dicentang.
+    // Input number per sel, kosong = pakai harga default.
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelHargaPerRole = function(setting) {
+        try {
+            var container = document.getElementById('saSewaPaketPerRoleContainer');
+            if (!container) {
+                console.warn('⚠️ #saSewaPaketPerRoleContainer tidak ada di HTML.');
+                return;
+            }
+
+            if (!setting && typeof getSewaAplikasiSettingGlobal === 'function') {
+                setting = getSewaAplikasiSettingGlobal();
+            }
+            if (!setting) setting = { roleKenaSewa: [], paketPerRole: {} };
+
+            var roleKena = setting.roleKenaSewa || [];
+
+            if (roleKena.length === 0) {
+                container.innerHTML =
+                    '<p class="text-muted small mb-0">' +
+                    '<i class="fas fa-info-circle me-1"></i>' +
+                    'Centang role dulu di Section 1 untuk mengatur harga khusus.</p>';
+                return;
+            }
+
+            var paketPerRole = setting.paketPerRole || {};
+
+            // Map role → kategori (dari getDaftarRoleBisaSewa)
+            var kategoriMap = {};
+            if (typeof getDaftarRoleBisaSewa === 'function') {
+                getDaftarRoleBisaSewa().forEach(function(item) {
+                    kategoriMap[item.role] = item.kategori;
+                });
+            }
+
+            // Sort: Profesional dulu, lalu Seller, Transport
+            var urutanKat = { 'Profesional': 1, 'Seller': 2, 'Transport': 3 };
+            var sortedRoles = roleKena.slice().sort(function(a, b) {
+                var ka = urutanKat[kategoriMap[a]] || 99;
+                var kb = urutanKat[kategoriMap[b]] || 99;
+                if (ka !== kb) return ka - kb;
+                return a.localeCompare(b);
+            });
+
+            var html = '' +
+                '<div class="table-responsive">' +
+                    '<table class="table table-sm table-bordered align-middle mb-0">' +
+                        '<thead class="table-light">' +
+                            '<tr>' +
+                                '<th style="width:22%;">Role</th>' +
+                                '<th class="text-center" style="width:19%;">1 Bulan</th>' +
+                                '<th class="text-center" style="width:19%;">3 Bulan</th>' +
+                                '<th class="text-center" style="width:19%;">6 Bulan</th>' +
+                                '<th class="text-center" style="width:21%;">1 Tahun</th>' +
+                            '</tr>' +
+                        '</thead>' +
+                        '<tbody>';
+
+            sortedRoles.forEach(function(role) {
+                var kategori = kategoriMap[role] || '-';
+                var hargaRole = paketPerRole[role] || {};
+
+                html += '<tr>';
+                html += '<td>' +
+                    '<div class="fw-bold small">' + seEsc(role) + '</div>' +
+                    '<div class="text-muted" style="font-size:10px;">' +
+                        seEsc(kategori) +
+                    '</div>' +
+                '</td>';
+
+                KODE_PAKET.forEach(function(kode) {
+                    var val = (typeof hargaRole[kode] === 'number')
+                        ? hargaRole[kode]
+                        : '';
+
+                    html += '<td>' +
+                        '<div class="input-group input-group-sm">' +
+                            '<span class="input-group-text" style="font-size:10px;">Rp</span>' +
+                            '<input type="number" class="form-control form-control-sm ' +
+                                   'sa-harga-per-role" ' +
+                                   'data-role="' + seEsc(role) + '" ' +
+                                   'data-kode="' + kode + '" ' +
+                                   'min="0" step="1000" ' +
+                                   'placeholder="default" ' +
+                                   'value="' + val + '" ' +
+                                   'oninput="saUpdatePreviewProyeksiLive()">' +
+                        '</div>' +
+                    '</td>';
+                });
+
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+            console.log('✅ renderTabelHargaPerRole — ' + sortedRoles.length + ' role dirender');
+        } catch (e) {
+            console.error('renderTabelHargaPerRole error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 3 — HANDLER TOGGLE ROLE
+    // ------------------------------------------------------------
+    // Kalau belum ada, define. Auto re-render tabel harga.
+    // ═══════════════════════════════════════════════════════════
+    if (typeof window.saOnToggleRoleSewa !== 'function') {
+        window.saOnToggleRoleSewa = function(role, checked) {
+            try {
+                var setting = (typeof getSewaAplikasiSettingGlobal === 'function')
+                    ? getSewaAplikasiSettingGlobal()
+                    : { roleKenaSewa: [], paketPerRole: {} };
+
+                var roleKena = (setting.roleKenaSewa || []).slice();
+
+                if (checked) {
+                    if (roleKena.indexOf(role) === -1) roleKena.push(role);
+                } else {
+                    roleKena = roleKena.filter(function(r) { return r !== role; });
+                }
+
+                setting.roleKenaSewa = roleKena;
+                renderTabelHargaPerRole(setting);
+                saUpdatePreviewProyeksiLive();
+            } catch (e) {
+                console.error('saOnToggleRoleSewa error:', e);
+            }
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 4 — UPDATE PREVIEW PROYEKSI (LIVE)
+    // ------------------------------------------------------------
+    // Helper internal — kumpulkan data dari form & hitung preview.
+    // ═══════════════════════════════════════════════════════════
+    window.saUpdatePreviewProyeksiLive = function() {
+        try {
+            var container = document.getElementById('saSewaPreviewProyeksi');
+            if (!container) return;
+
+            // Kumpulkan role dari checkbox
+            var roleKena = [];
+            document.querySelectorAll('.sa-sewa-role-checkbox').forEach(function(cb) {
+                if (cb.checked) roleKena.push(cb.value);
+            });
+
+            // Harga paket default
+            var defaultHarga = {
+                '1_bulan': parseInt(document.getElementById('saHarga1Bulan')?.value, 10) || 0,
+                '3_bulan': parseInt(document.getElementById('saHarga3Bulan')?.value, 10) || 0,
+                '6_bulan': parseInt(document.getElementById('saHarga6Bulan')?.value, 10) || 0,
+                '12_bulan': parseInt(document.getElementById('saHarga12Bulan')?.value, 10) || 0
+            };
+
+            // Harga khusus per role
+            var paketPerRole = {};
+            document.querySelectorAll('.sa-harga-per-role').forEach(function(inp) {
+                var role = inp.dataset.role;
+                var kode = inp.dataset.kode;
+                var val = inp.value;
+
+                if (!role || !kode) return;
+                if (val === '' || val === null) return;
+
+                var harga = parseInt(val, 10);
+                if (isNaN(harga) || harga < 0) return;
+
+                if (!paketPerRole[role]) paketPerRole[role] = {};
+                paketPerRole[role][kode] = harga;
+            });
+
+            // Hitung
+            var totalAkun = 0;
+            var totalProyeksi = 0;
+            var akunData = [];
+
+            roleKena.forEach(function(role) {
+                var akunCount = (dataAkunAktif || []).filter(function(a) {
+                    return a && a.role === role &&
+                        (a.statusVerifikasi === 'Aktif' || a.status === 'Aktif');
+                }).length;
+
+                var harga = defaultHarga['1_bulan'];
+                if (paketPerRole[role] &&
+                    typeof paketPerRole[role]['1_bulan'] === 'number') {
+                    harga = paketPerRole[role]['1_bulan'];
+                }
+
+                var subtotal = akunCount * harga;
+                totalAkun += akunCount;
+                totalProyeksi += subtotal;
+
+                akunData.push({
+                    role: role,
+                    akunCount: akunCount,
+                    harga: harga,
+                    subtotal: subtotal,
+                    pakaiCustom: !!(paketPerRole[role] &&
+                        typeof paketPerRole[role]['1_bulan'] === 'number')
+                });
+            });
+
+            akunData.sort(function(a, b) { return b.subtotal - a.subtotal; });
+
+            // Build HTML
+            var html = '';
+
+            html += '' +
+                '<div class="row g-2 mb-3">' +
+                    '<div class="col-md-6 col-6">' +
+                        '<div class="card border-0 bg-light">' +
+                            '<div class="card-body py-2 text-center">' +
+                                '<i class="fas fa-users fa-lg mb-1 text-primary"></i>' +
+                                '<h5 class="fw-bold mb-0">' + totalAkun + '</h5>' +
+                                '<small class="text-muted">Total Akun Kena Sewa</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-6 col-6">' +
+                        '<div class="card border-0" style="background:#E8F5E9;">' +
+                            '<div class="card-body py-2 text-center">' +
+                                '<i class="fas fa-money-bill-wave fa-lg mb-1 text-success"></i>' +
+                                '<h5 class="fw-bold mb-0 text-success">' +
+                                    'Rp ' + totalProyeksi.toLocaleString('id-ID') +
+                                '</h5>' +
+                                '<small class="text-muted">Proyeksi Income / Bulan</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            if (akunData.length > 0) {
+                html += '' +
+                    '<div class="table-responsive">' +
+                        '<table class="table table-sm table-bordered mb-0">' +
+                            '<thead class="table-light">' +
+                                '<tr>' +
+                                    '<th>Role</th>' +
+                                    '<th class="text-center" style="width:70px;">Akun</th>' +
+                                    '<th class="text-end" style="width:130px;">Harga/Bln</th>' +
+                                    '<th class="text-end" style="width:140px;">Subtotal</th>' +
+                                '</tr>' +
+                            '</thead>' +
+                            '<tbody>';
+
+                akunData.forEach(function(item) {
+                    var badgeCustom = item.pakaiCustom
+                        ? ' <span class="badge bg-warning text-dark" ' +
+                          'style="font-size:9px;">custom</span>'
+                        : '';
+
+                    html += '<tr>' +
+                        '<td><strong>' + seEsc(item.role) + '</strong>' + badgeCustom + '</td>' +
+                        '<td class="text-center">' + item.akunCount + '</td>' +
+                        '<td class="text-end">Rp ' + item.harga.toLocaleString('id-ID') + '</td>' +
+                        '<td class="text-end fw-bold text-success">' +
+                            'Rp ' + item.subtotal.toLocaleString('id-ID') + '</td>' +
+                    '</tr>';
+                });
+
+                html += '</tbody></table></div>';
+            } else {
+                html += '<p class="text-muted small text-center mb-0">' +
+                    'Belum ada role kena sewa.</p>';
+            }
+
+            container.innerHTML = html;
+        } catch (e) {
+            console.error('saUpdatePreviewProyeksiLive error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 5 — WRAPPER renderSewaAplikasiSetting
+    // ------------------------------------------------------------
+    // Re-define supaya memanggil fungsi baru + fallback ke lama.
+    // ═══════════════════════════════════════════════════════════
+    var _renderSewaOriginal = window.renderSewaAplikasiSetting;
+
+    window.renderSewaAplikasiSetting = function() {
+        try {
+            if (typeof getSewaAplikasiSettingGlobal !== 'function') {
+                console.warn('⚠️ getSewaAplikasiSettingGlobal belum ada');
+                return;
+            }
+
+            var s = getSewaAplikasiSettingGlobal();
+
+            // 1. Render checkbox role (BARU)
+            renderCheckboxRoleSewa(s);
+
+            // 2. Harga paket default
+            var el;
+            el = document.getElementById('saHarga1Bulan');
+            if (el) el.value = s.paket['1_bulan'].harga;
+            el = document.getElementById('saHarga3Bulan');
+            if (el) el.value = s.paket['3_bulan'].harga;
+            el = document.getElementById('saHarga6Bulan');
+            if (el) el.value = s.paket['6_bulan'].harga;
+            el = document.getElementById('saHarga12Bulan');
+            if (el) el.value = s.paket['12_bulan'].harga;
+
+            // 3. Jadwal
+            el = document.getElementById('saTglTerbit');
+            if (el) el.value = s.tanggalTerbitTagihan;
+            el = document.getElementById('saTglSuspend');
+            if (el) el.value = s.tanggalSuspend;
+
+            var grace = Math.max(0, s.tanggalSuspend - s.tanggalTerbitTagihan);
+            var elGrace = document.getElementById('saInfoGrace');
+            if (elGrace) elGrace.textContent = grace;
+
+            // 4. Tabel harga per role (BARU)
+            renderTabelHargaPerRole(s);
+
+            // 5. Preview proyeksi
+            saUpdatePreviewProyeksiLive();
+
+            // 6. Reset notif
+            var notif = document.getElementById('saNotif');
+            if (notif) notif.classList.add('d-none');
+
+            console.log('✅ renderSewaAplikasiSetting V3 — semua section rendered');
+        } catch (e) {
+            console.error('renderSewaAplikasiSetting V3 error:', e);
+            // Fallback ke versi lama kalau ada
+            if (typeof _renderSewaOriginal === 'function') {
+                try { _renderSewaOriginal(); } catch (err) {}
+            }
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 6 — WRAPPER updatePreviewProyeksiSewa (alias)
+    // ------------------------------------------------------------
+    // Supaya pemanggil lama tetap jalan.
+    // ═══════════════════════════════════════════════════════════
+    if (typeof window.updatePreviewProyeksiSewa !== 'function') {
+        window.updatePreviewProyeksiSewa = saUpdatePreviewProyeksiLive;
+    } else {
+        // Override dengan versi baru (yang lebih lengkap)
+        window.updatePreviewProyeksiSewa = saUpdatePreviewProyeksiLive;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNGSI 7 — AUTO-LISTEN INPUT PERUBAHAN
+    // ------------------------------------------------------------
+    // Setiap input di form sewa → update preview real-time.
+    // ═══════════════════════════════════════════════════════════
+    document.addEventListener('input', function(e) {
+        if (!e.target) return;
+
+        // Paket default berubah
+        if (e.target.id === 'saHarga1Bulan' ||
+            e.target.id === 'saHarga3Bulan' ||
+            e.target.id === 'saHarga6Bulan' ||
+            e.target.id === 'saHarga12Bulan') {
+            saUpdatePreviewProyeksiLive();
+        }
+
+        // Harga per role
+        if (e.target.classList && e.target.classList.contains('sa-harga-per-role')) {
+            saUpdatePreviewProyeksiLive();
+        }
+
+        // Tanggal
+        if (e.target.id === 'saTglTerbit' || e.target.id === 'saTglSuspend') {
+            var tglTerbit = parseInt(document.getElementById('saTglTerbit')?.value, 10) || 5;
+            var tglSuspend = parseInt(document.getElementById('saTglSuspend')?.value, 10) || 10;
+            var grace = Math.max(0, tglSuspend - tglTerbit);
+            var elGrace = document.getElementById('saInfoGrace');
+            if (elGrace) elGrace.textContent = grace;
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // AUTO-JALAN kalau halaman setting ekonomi sudah terbuka
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        var container = document.getElementById('settingEkonomiCoinContainer');
+        if (container || document.getElementById('saSewaRoleCheckboxContainer')) {
+            console.log('🔄 Auto-render Setting Sewa Aplikasi...');
+            if (typeof window.renderSewaAplikasiSetting === 'function') {
+                window.renderSewaAplikasiSetting();
+            }
+        }
+    }, 500);
+
+    console.log('✅ PATCH R 10.45 V3 – terpasang:');
+    console.log('   (1) renderCheckboxRoleSewa');
+    console.log('   (2) renderTabelHargaPerRole');
+    console.log('   (3) saOnToggleRoleSewa');
+    console.log('   (4) saUpdatePreviewProyeksiLive');
+    console.log('   (5) renderSewaAplikasiSetting (redefined)');
+    console.log('   (6) updatePreviewProyeksiSewa (alias)');
+    console.log('   (7) Auto-listener input');
+})();
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR PATCH BLOK R 10.45 V3 ========================= -->
+<!-- ============================================================ -->
+
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
 // ============================================================
@@ -33544,750 +34059,1078 @@ function tolakVerifikasiDokumenFromModal() {
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
-<!-- ===== BLOK R 10.19 – MENU CHAT SUPERADMIN (JS) ===== -->
+<!-- ===== BLOK R 10.19 – MENU CHAT SUPERADMIN (JS V2) ======== -->
 <!-- ============================================================ -->
 <script>
-// ============================================================
-// BLOK R 10.19 – JS MENU CHAT SUPERADMIN
-// ------------------------------------------------------------
-// FIX dari versi sebelumnya:
-//   BUG 1: updateStatistikChatSA — pakai userAktif.idUser (string)
-//   BUG 2: renderChatPribadiSA — pakai userAktif.idUser (string)
-//   BUG 3: bukaChatPribadiDariKontak — pindah tab via link
-//   + Toast (bukan alert)
-//   + Auto-refresh chat 5 detik
-//   + Reset currentChatUserSA saat tutup
-// ============================================================
-
-// ── State lokal ──
-var currentChatUserSA = null;
-var chatAutoRefreshTimer = null;
-
-// ============================================================
-// BLOK R 10.19 (1) – TAMPILKAN HALAMAN
-// ============================================================
-function tampilkanMenuChatSuperAdmin() {
-    var konten = document.getElementById('kontenDasbor');
-    if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
-
-    var container = document.getElementById('menuChatSuperAdminContainer');
-    if (container) {
-        konten.innerHTML = container.innerHTML;
-        renderTabelKontakSA();
-        renderRiwayatBroadcastSA();
-        isiDropdownUserChatSA();
-        isiDropdownGifSA();
-        updateStatistikChatSA();
-        tutupMenu();
-    } else {
-        tampilkanPlaceholderMenu('Menu Chat SuperAdmin', '10.19');
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (2) – UPDATE STATISTIK  [FIX BUG 1]
-// ============================================================
-function updateStatistikChatSA() {
-    var kontak = loadKontakTersimpan();
-    var broadcast = [];
-    try {
-        broadcast = JSON.parse(localStorage.getItem('dataBroadcast') || '[]');
-        if (!Array.isArray(broadcast)) broadcast = [];
-    } catch (e) { broadcast = []; }
-
-    var pesanBelumDibaca = getTotalPesanBelumDibaca();
-
-    // ✅ FIX: pakai userAktif.idUser (string), bukan getDataIdUser() yang return object
-    var idSA = userAktif ? userAktif.idUser : null;
-    var riwayatChat = idSA ? getPesanAntarUser(idSA, 'all') : [];
-
-    var elKontak = document.getElementById('totalKontakSA');
-    if (elKontak) elKontak.textContent = kontak.length;
-
-    var elBroadcast = document.getElementById('totalBroadcastSA');
-    if (elBroadcast) elBroadcast.textContent = broadcast.length;
-
-    var elUnread = document.getElementById('totalPesanBelumDibacaSA');
-    if (elUnread) elUnread.textContent = pesanBelumDibaca;
-
-    var elRiwayat = document.getElementById('totalRiwayatChatSA');
-    if (elRiwayat) elRiwayat.textContent = riwayatChat.length;
-}
-
-// ============================================================
-// BLOK R 10.19 (3) – RENDER TABEL KONTAK
-// ============================================================
-function renderTabelKontakSA() {
-    var tbody = document.getElementById('tabelKontakTersimpanSA');
-    if (!tbody) return;
-
-    var kontak = loadKontakTersimpan();
-
-    if (kontak.length === 0) {
-        tbody.innerHTML =
-            '<tr><td colspan="6" class="text-center text-muted py-4">' +
-            '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
-            'Belum ada kontak tersimpan.' +
-            '</td></tr>';
+(function BLOK_R_10_19_MENU_CHAT_SA() {
+    // ── Guard idempotency ──
+    if (window._blokR1019V2Done) {
+        console.log('ℹ️ BLOK R 10.19 V2 sudah terpasang — dilewati.');
         return;
     }
+    window._blokR1019V2Done = true;
 
-    var html = '';
-    kontak.forEach(function(item, index) {
-        html += '<tr>' +
-            '<td>' + (index + 1) + '</td>' +
-            '<td><small>' + (item.idUser || '-') + '</small></td>' +
-            '<td><strong>' + (item.nama || '-') + '</strong></td>' +
-            '<td><span class="badge bg-secondary">' + (item.role || '-') + '</span></td>' +
-            '<td><small>' + (item.tanggalSimpan || '-') + '</small></td>' +
-            '<td>' +
-                '<button class="btn btn-sm btn-outline-primary me-1" ' +
-                    'onclick="bukaChatPribadiDariKontak(\'' + item.idUser + '\')">' +
-                    '<i class="fas fa-comment"></i> Chat' +
-                '</button>' +
-                '<button class="btn btn-sm btn-outline-danger" ' +
-                    'onclick="hapusKontakSA(\'' + item.idUser + '\')">' +
-                    '<i class="fas fa-trash"></i>' +
-                '</button>' +
-            '</td>' +
-        '</tr>';
-    });
-    tbody.innerHTML = html;
-}
+    // ── State lokal ──
+    var currentChatUserSA = null;
+    var chatAutoRefreshTimer = null;
 
-// ============================================================
-// BLOK R 10.19 (4) – TAMPILKAN MODAL TAMBAH KONTAK
-// ============================================================
-function tampilkanModalTambahKontakSA() {
-    var modal = document.getElementById('modalTambahKontakSA');
-    if (!modal) return;
-
-    document.getElementById('inputKontakIdSA').value = '';
-    document.getElementById('inputKontakNamaSA').value = '';
-    document.getElementById('notifTambahKontakSA').classList.add('d-none');
-
-    var bsModal = new bootstrap.Modal(modal);
-    bsModal.show();
-}
-
-// ============================================================
-// BLOK R 10.19 (5) – SIMPAN KONTAK
-// ============================================================
-function simpanKontakSA() {
-    var idUser = document.getElementById('inputKontakIdSA').value.trim();
-    var nama = document.getElementById('inputKontakNamaSA').value.trim();
-    var notif = document.getElementById('notifTambahKontakSA');
-
-    if (!idUser || !nama) {
-        notif.className = 'alert alert-warning';
-        notif.innerHTML = '⚠️ ID User dan Nama wajib diisi!';
-        notif.classList.remove('d-none');
-        return;
+    // ═══════════════════════════════════════════════════════════
+    // HELPER
+    // ═══════════════════════════════════════════════════════════
+    function saEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
     }
 
-    var hasil = simpanKontak(idUser, nama);
-    if (hasil.sukses) {
-        renderTabelKontakSA();
-        updateStatistikChatSA();
-
-        var modal = bootstrap.Modal.getInstance(document.getElementById('modalTambahKontakSA'));
-        if (modal) modal.hide();
-
-        tampilkanToastChatSA('✅ Kontak berhasil disimpan!', 'success');
-    } else {
-        notif.className = 'alert alert-danger';
-        notif.innerHTML = '❌ ' + hasil.pesan;
-        notif.classList.remove('d-none');
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (6) – HAPUS KONTAK
-// ============================================================
-function hapusKontakSA(idUser) {
-    if (!confirm('Hapus kontak ini?')) return;
-
-    var hasil = hapusKontak(idUser);
-    if (hasil.sukses) {
-        renderTabelKontakSA();
-        updateStatistikChatSA();
-        tampilkanToastChatSA('✅ Kontak berhasil dihapus.', 'success');
-    } else {
-        alert('❌ ' + hasil.pesan);
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (7) – RENDER RIWAYAT BROADCAST
-// ============================================================
-function renderRiwayatBroadcastSA() {
-    var tbody = document.getElementById('tabelRiwayatBroadcastSA');
-    var totalSpan = document.getElementById('totalBroadcastTable');
-    if (!tbody) return;
-
-    var broadcast = [];
-    try {
-        broadcast = JSON.parse(localStorage.getItem('dataBroadcast') || '[]');
-        if (!Array.isArray(broadcast)) broadcast = [];
-    } catch (e) { broadcast = []; }
-
-    if (totalSpan) totalSpan.textContent = broadcast.length;
-
-    if (broadcast.length === 0) {
-        tbody.innerHTML =
-            '<tr><td colspan="5" class="text-center text-muted py-4">' +
-            'Belum ada broadcast.' +
-            '</td></tr>';
-        return;
+    function saSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
     }
 
-    var html = '';
-    broadcast.slice().reverse().forEach(function(item) {
-        var target = item.targetRole ? ('Role: ' + item.targetRole) : 'Semua User';
-        var tgl = item.tanggal
-            ? new Date(item.tanggal).toLocaleString('id-ID', { hour12: false })
-            : '-';
-
-        html += '<tr>' +
-            '<td><small>' + tgl + '</small></td>' +
-            '<td><span class="badge bg-secondary">' + target + '</span></td>' +
-            '<td><small>' + (item.isi || '-') + '</small></td>' +
-            '<td><strong>' + (item.jumlahUser || '-') + '</strong></td>' +
-            '<td>' +
-                '<button class="btn btn-sm btn-outline-danger" ' +
-                    'onclick="hapusBroadcastSA(\'' + item.id + '\')" title="Hapus">' +
-                    '<i class="fas fa-trash"></i>' +
-                '</button>' +
-            '</td>' +
-        '</tr>';
-    });
-    tbody.innerHTML = html;
-}
-
-// ============================================================
-// BLOK R 10.19 (8) – HAPUS BROADCAST
-// ============================================================
-function hapusBroadcastSA(id) {
-    if (!confirm('Hapus broadcast ini?')) return;
-
-    var broadcast = JSON.parse(localStorage.getItem('dataBroadcast') || '[]');
-    if (!Array.isArray(broadcast)) broadcast = [];
-
-    broadcast = broadcast.filter(function(b) { return b.id !== id; });
-    localStorage.setItem('dataBroadcast', JSON.stringify(broadcast));
-
-    renderRiwayatBroadcastSA();
-    updateStatistikChatSA();
-    tampilkanToastChatSA('✅ Broadcast dihapus.', 'success');
-}
-
-// ============================================================
-// BLOK R 10.19 (9) – KIRIM CHAT MASSAL PER ROLE
-// ============================================================
-function kirimChatMassalPerRoleSA() {
-    var role = document.getElementById('pilihRoleChatMassalSA').value;
-    var isi = document.getElementById('isiChatMassalSA').value.trim();
-    var notif = document.getElementById('notifChatMassalSA');
-
-    if (!role) {
-        notif.className = 'alert alert-warning';
-        notif.innerHTML = '⚠️ Pilih role terlebih dahulu!';
-        notif.classList.remove('d-none');
-        return;
-    }
-    if (!isi) {
-        notif.className = 'alert alert-warning';
-        notif.innerHTML = '⚠️ Isi pesan wajib diisi!';
-        notif.classList.remove('d-none');
-        return;
-    }
-
-    var hasil = kirimChatMassalPerRole(role, isi, 'broadcast');
-    if (hasil.sukses) {
-        notif.className = 'alert alert-success';
-        notif.innerHTML = '✅ Pesan berhasil dikirim ke ' + hasil.jumlahUser +
-                          ' user dengan role <strong>' + role + '</strong>!';
-        notif.classList.remove('d-none');
-
-        renderRiwayatBroadcastSA();
-        updateStatistikChatSA();
-        document.getElementById('isiChatMassalSA').value = '';
-
-        setTimeout(function(){ notif.classList.add('d-none'); }, 5000);
-    } else {
-        notif.className = 'alert alert-danger';
-        notif.innerHTML = '❌ ' + hasil.pesan;
-        notif.classList.remove('d-none');
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (10) – RESET FORM CHAT MASSAL
-// ============================================================
-function resetFormChatMassalSA() {
-    document.getElementById('pilihRoleChatMassalSA').value = '';
-    document.getElementById('isiChatMassalSA').value = '';
-    document.getElementById('notifChatMassalSA').classList.add('d-none');
-}
-
-// ============================================================
-// BLOK R 10.19 (11) – KIRIM CHAT KE SEMUA
-// ============================================================
-function kirimChatSemuaUserSA() {
-    var isi = document.getElementById('isiChatSemuaSA').value.trim();
-    var notif = document.getElementById('notifChatSemuaSA');
-
-    if (!isi) {
-        notif.className = 'alert alert-warning';
-        notif.innerHTML = '⚠️ Isi pesan wajib diisi!';
-        notif.classList.remove('d-none');
-        return;
-    }
-
-    var hasil = kirimChatSemuaUser(isi, 'broadcast');
-    if (hasil.sukses) {
-        notif.className = 'alert alert-success';
-        notif.innerHTML = '✅ Pesan berhasil dikirim ke ' + hasil.jumlahUser + ' user!';
-        notif.classList.remove('d-none');
-
-        renderRiwayatBroadcastSA();
-        updateStatistikChatSA();
-        document.getElementById('isiChatSemuaSA').value = '';
-
-        setTimeout(function(){ notif.classList.add('d-none'); }, 5000);
-    } else {
-        notif.className = 'alert alert-danger';
-        notif.innerHTML = '❌ ' + hasil.pesan;
-        notif.classList.remove('d-none');
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (12) – RESET FORM CHAT KE SEMUA
-// ============================================================
-function resetFormChatSemuaSA() {
-    document.getElementById('isiChatSemuaSA').value = '';
-    document.getElementById('notifChatSemuaSA').classList.add('d-none');
-}
-
-// ============================================================
-// BLOK R 10.19 (13) – ISI DROPDOWN USER CHAT
-// ============================================================
-function isiDropdownUserChatSA() {
-    var select = document.getElementById('pilihUserChatSA');
-    if (!select) return;
-
-    select.innerHTML = '<option value="">-- Pilih User --</option>';
-
-    var daftarUser = (dataLoginUser || []).slice();
-    daftarUser.sort(function(a, b) {
-        return (a.nama || '').localeCompare(b.nama || '');
-    });
-
-    daftarUser.forEach(function(user) {
-        if (user.role !== 'SuperAdmin') {
-            var option = document.createElement('option');
-            option.value = user.idUser;
-            option.textContent = user.nama + ' (' + user.role + ')';
-            select.appendChild(option);
-        }
-    });
-}
-
-// ============================================================
-// BLOK R 10.19 (14) – BUKA CHAT PRIBADI
-// ============================================================
-function bukaChatPribadiSA() {
-    var select = document.getElementById('pilihUserChatSA');
-    var idUser = select ? select.value : '';
-    if (!idUser) return;
-
-    currentChatUserSA = idUser;
-    updateStatusChatSA();
-    renderChatPribadiSA();
-    mulaiAutoRefreshChatSA();
-}
-
-// ============================================================
-// BLOK R 10.19 (15) – BUKA CHAT DARI KONTAK  [FIX BUG 3]
-// ============================================================
-function bukaChatPribadiDariKontak(idUser) {
-    currentChatUserSA = idUser;
-
-    var select = document.getElementById('pilihUserChatSA');
-    if (select) select.value = idUser;
-
-    // ✅ FIX: Bootstrap Tab butuh element <a class="nav-link">, bukan <div class="tab-pane">
-    var tabLink = document.querySelector('a[href="#tabChatPribadiSA"]');
-    if (tabLink && typeof bootstrap !== 'undefined' && bootstrap.Tab) {
+    // ═══════════════════════════════════════════════════════════
+    // (1) TAMPILKAN HALAMAN
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanMenuChatSuperAdmin = function() {
         try {
-            var tab = new bootstrap.Tab(tabLink);
-            tab.show();
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplMenuChatSAV2) {
+                var c = document.getElementById('menuChatSuperAdminContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Menu Chat SuperAdmin', '10.19');
+                    }
+                    return;
+                }
+                window._tplMenuChatSAV2 = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Menu Chat SA V2 di-cache');
+            }
+
+            konten.innerHTML = window._tplMenuChatSAV2;
+
+            setTimeout(function() {
+                renderTabelKontakSA();
+                renderRiwayatBroadcastSA();
+                isiDropdownUserChatSA();
+                isiDropdownGifSA();
+                saIsiDropdownRoleChatMassal();
+                updateStatistikChatSA();
+                renderBreakdownKontakChatSA();
+                console.log('✅ BLOK R 10.19 V2 — Menu Chat SA rendered');
+            }, 200);
         } catch (e) {
-            tabLink.click();
+            console.error('BLOK R 10.19 (1) error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) ISI DROPDOWN ROLE CHAT MASSAL
+    // ═══════════════════════════════════════════════════════════
+    function saIsiDropdownRoleChatMassal() {
+        try {
+            var sel = document.getElementById('pilihRoleChatMassalSA');
+            if (!sel) return;
+
+            var daftar = (typeof getDaftarRoleChatSA === 'function')
+                ? getDaftarRoleChatSA()
+                : [];
+
+            if (daftar.length === 0) {
+                sel.innerHTML = '<option value="">-- Tidak ada role --</option>';
+                return;
+            }
+
+            var grup = {};
+            daftar.forEach(function(item) {
+                if (!grup[item.grup]) grup[item.grup] = [];
+                grup[item.grup].push(item);
+            });
+
+            var html = '<option value="">-- Pilih Role --</option>';
+            var urutanGrup = ['Profesional', 'Seller', 'Transport', 'Customer', 'Internal'];
+            urutanGrup.forEach(function(namaGrup) {
+                var items = grup[namaGrup];
+                if (!items || items.length === 0) return;
+
+                html += '<optgroup label="— ' + namaGrup + ' —">';
+                items.forEach(function(item) {
+                    var ikon = item.ikon ? item.ikon + ' ' : '';
+                    html += '<option value="' + saEsc(item.role) + '">' +
+                        ikon + saEsc(item.role) +
+                        '</option>';
+                });
+                html += '</optgroup>';
+            });
+
+            sel.innerHTML = html;
+
+            sel.onchange = function() {
+                saUpdateInfoJumlahTarget();
+            };
+
+            console.log('✅ Dropdown role chat massal di-populate (' +
+                daftar.length + ' role)');
+        } catch (e) {
+            console.error('saIsiDropdownRoleChatMassal error:', e);
         }
     }
 
-    updateStatusChatSA();
-    renderChatPribadiSA();
-    mulaiAutoRefreshChatSA();
-}
+    // ═══════════════════════════════════════════════════════════
+    // (3) UPDATE INFO JUMLAH TARGET
+    // ═══════════════════════════════════════════════════════════
+    function saUpdateInfoJumlahTarget() {
+        try {
+            var sel = document.getElementById('pilihRoleChatMassalSA');
+            var infoEl = document.getElementById('infoJumlahTargetRoleSA');
+            if (!sel || !infoEl) return;
 
-// ============================================================
-// BLOK R 10.19 (16) – UPDATE STATUS CHAT
-// ============================================================
-function updateStatusChatSA() {
-    var el = document.getElementById('statusChatSA');
-    if (!el) return;
+            var role = sel.value;
+            if (!role) {
+                infoEl.textContent = 'Pilih role untuk melihat jumlah target.';
+                infoEl.className = 'text-muted';
+                return;
+            }
 
-    if (!currentChatUserSA) {
-        el.innerHTML = '<i class="fas fa-circle text-secondary me-1" style="font-size:8px;"></i>Belum ada chat aktif';
-        return;
+            var jumlah = (dataAkunAktif || []).filter(function(a) {
+                return a && a.role === role &&
+                    (a.statusVerifikasi === 'Aktif' || a.status === 'Aktif');
+            }).length;
+
+            infoEl.innerHTML = '<i class="fas fa-users me-1 text-primary"></i>' +
+                '<strong>' + jumlah + '</strong> user aktif dengan role ' +
+                '<strong>' + saEsc(role) + '</strong>';
+            infoEl.className = 'text-primary';
+        } catch (e) {
+            console.error('saUpdateInfoJumlahTarget error:', e);
+        }
     }
 
-    var user = getDataIdUser(currentChatUserSA);
-    var nama = user ? user.nama : currentChatUserSA;
-    var statusOnline = (typeof getStatusOnlineAkun === 'function')
-        ? getStatusOnlineAkun(currentChatUserSA)
-        : 'Offline';
+    // ═══════════════════════════════════════════════════════════
+    // (4) RENDER BREAKDOWN KONTAK PER ROLE (CHIPS)
+    // ═══════════════════════════════════════════════════════════
+    window.renderBreakdownKontakChatSA = function() {
+        try {
+            var container = document.getElementById('saBreakdownKontakChatSA');
+            if (!container) return;
 
-    var warna = statusOnline === 'Online' ? 'text-success' : 'text-secondary';
-    el.innerHTML = '<i class="fas fa-circle ' + warna + ' me-1" style="font-size:8px;"></i>' +
-                   'Chat dengan <strong>' + nama + '</strong>';
-}
+            var stat = (typeof hitungKontakChatPerRoleGlobal === 'function')
+                ? hitungKontakChatPerRoleGlobal()
+                : { perRole: {}, total: 0 };
 
-// ============================================================
-// BLOK R 10.19 (17) – RENDER CHAT PRIBADI  [FIX BUG 2]
-// ============================================================
-function renderChatPribadiSA() {
-    var area = document.getElementById('areaChatPribadiSA');
-    if (!area) return;
+            var perRole = stat.perRole || {};
+            var roles = Object.keys(perRole);
 
-    // ✅ FIX: pakai userAktif.idUser (string) — bukan getDataIdUser() yang return object
-    var idUserSA = userAktif ? userAktif.idUser : null;
-    if (!idUserSA) {
-        area.innerHTML = '<p class="text-center text-muted mb-0">User tidak valid.</p>';
-        return;
-    }
+            if (roles.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
 
-    if (!currentChatUserSA) {
-        area.innerHTML =
-            '<p class="text-center text-muted mb-0">' +
-            '<i class="fas fa-comments fa-3x d-block mb-2 opacity-25"></i>' +
-            'Pilih user di atas untuk mulai chat.' +
-            '</p>';
-        return;
-    }
+            roles.sort(function(a, b) {
+                if (a === 'Jasa' && b !== 'Jasa') return -1;
+                if (b === 'Jasa' && a !== 'Jasa') return 1;
+                return perRole[b] - perRole[a];
+            });
 
-    var daftarPesan = getPesanAntarUser(idUserSA, currentChatUserSA);
+            var html = '' +
+                '<div class="card border-0 shadow-sm bg-white">' +
+                    '<div class="card-body py-2">' +
+                        '<div class="d-flex align-items-center flex-wrap gap-2">' +
+                            '<small class="fw-bold text-muted me-2">' +
+                                '<i class="fas fa-address-book me-1"></i>' +
+                                'Kontak per Role:' +
+                            '</small>';
 
-    if (daftarPesan.length === 0) {
-        var targetUser = getDataIdUser(currentChatUserSA);
-        var namaTarget = targetUser ? targetUser.nama : currentChatUserSA;
-        area.innerHTML =
-            '<p class="text-center text-muted mb-0">' +
-            '<i class="fas fa-comment-dots fa-3x d-block mb-2 opacity-25"></i>' +
-            'Belum ada pesan dengan <strong>' + namaTarget + '</strong>.<br>' +
-            '<small>Kirim pesan pertama di bawah.</small>' +
-            '</p>';
-        return;
-    }
+            roles.forEach(function(role) {
+                var jumlah = perRole[role];
+                var warna = (typeof getWarnaRoleChatSA === 'function')
+                    ? getWarnaRoleChatSA(role)
+                    : '#6C757D';
+                var ikon = role === 'Jasa' ? '⚙️ ' : '';
+                var roleEsc = role.replace(/'/g, "\\'");
 
-    var html = '';
-    daftarPesan.forEach(function(pesan) {
-        var isPengirim = pesan.idPengirim === idUserSA;
-        var waktu = pesan.waktu
-            ? new Date(pesan.waktu).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
-            : '-';
+                html +=
+                    '<button type="button" class="btn btn-sm text-white" ' +
+                            'style="background:' + warna + ';font-size:12px;" ' +
+                            'onclick="saFilterKontakRoleCepat(\'' + roleEsc + '\')">' +
+                        ikon + saEsc(role) +
+                        ' <span class="badge bg-light text-dark ms-1">' +
+                            jumlah + '</span>' +
+                    '</button>';
+            });
 
-        var konten = '';
-        if (pesan.tipe === 'gif' && pesan.gifGambar) {
-            konten = '<img src="' + pesan.gifGambar + '" ' +
-                     'style="max-width:200px;border-radius:8px;" alt="GIF">';
-        } else if (pesan.tipe === 'foto' && pesan.gambar) {
-            konten = '<img src="' + pesan.gambar + '" ' +
-                     'style="max-width:200px;border-radius:8px;" alt="Foto">';
-        } else if (pesan.tipe === 'video' && pesan.video) {
-            konten = '<video src="' + pesan.video + '" ' +
-                     'style="max-width:200px;border-radius:8px;" controls></video>';
-        } else {
-            konten = escapeHtmlChatSA(pesan.isi || '');
+            html += '</div></div></div>';
+            container.innerHTML = html;
+        } catch (e) {
+            console.error('BLOK R 10.19 (4) renderBreakdownKontak error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) FILTER KONTAK PER ROLE (CHIP)
+    // ═══════════════════════════════════════════════════════════
+    window.saFilterKontakRoleCepat = function(role) {
+        try {
+            var tabLink = document.querySelector('a[href="#tabKontakSA"]');
+            if (tabLink && typeof bootstrap !== 'undefined') {
+                try {
+                    new bootstrap.Tab(tabLink).show();
+                } catch (e) {
+                    tabLink.click();
+                }
+            }
+            setTimeout(function() {
+                var el = document.getElementById('cariKontakSA');
+                if (el) el.value = role;
+                renderTabelKontakSA();
+            }, 300);
+        } catch (e) {
+            console.error('saFilterKontakRoleCepat error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) UPDATE STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.updateStatistikChatSA = function() {
+        try {
+            var kontak = loadKontakTersimpan();
+            var broadcast = [];
+            try {
+                broadcast = JSON.parse(localStorage.getItem('dataBroadcast') || '[]');
+                if (!Array.isArray(broadcast)) broadcast = [];
+            } catch (e) { broadcast = []; }
+
+            var pesanBelumDibaca = (typeof getTotalPesanBelumDibaca === 'function')
+                ? getTotalPesanBelumDibaca() : 0;
+
+            var idSA = userAktif ? userAktif.idUser : null;
+            var riwayatChat = idSA && typeof getPesanAntarUser === 'function'
+                ? getPesanAntarUser(idSA, 'all') : [];
+
+            saSetText('totalKontakSA', kontak.length);
+            saSetText('totalBroadcastSA', broadcast.length);
+            saSetText('totalPesanBelumDibacaSA', pesanBelumDibaca);
+            saSetText('totalRiwayatChatSA', riwayatChat.length);
+        } catch (e) {
+            console.error('updateStatistikChatSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) RENDER TABEL KONTAK
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelKontakSA = function() {
+        try {
+            var tbody = document.getElementById('tabelKontakTersimpanSA');
+            if (!tbody) return;
+
+            var kontak = loadKontakTersimpan();
+
+            var cari = (document.getElementById('cariKontakSA')?.value || '')
+                .toLowerCase().trim();
+
+            var dataFilter = kontak;
+            if (cari) {
+                dataFilter = kontak.filter(function(k) {
+                    return (k.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+                           (k.idUser || '').toLowerCase().indexOf(cari) !== -1 ||
+                           (k.role || '').toLowerCase().indexOf(cari) !== -1;
+                });
+            }
+
+            if (dataFilter.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="6" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    (kontak.length === 0
+                        ? 'Belum ada kontak tersimpan.'
+                        : 'Tidak ada kontak cocok filter.') +
+                    '</td></tr>';
+                return;
+            }
+
+            var html = '';
+            dataFilter.forEach(function(item, index) {
+                var warna = (typeof getWarnaRoleChatSA === 'function')
+                    ? getWarnaRoleChatSA(item.role)
+                    : '#6C757D';
+                var ikon = item.role === 'Jasa' ? '⚙️ ' : '';
+
+                html += '<tr>' +
+                    '<td>' + (index + 1) + '</td>' +
+                    '<td><small>' + saEsc(item.idUser || '-') + '</small></td>' +
+                    '<td><strong>' + saEsc(item.nama || '-') + '</strong></td>' +
+                    '<td><span class="badge" style="background:' + warna + ';">' +
+                        ikon + saEsc(item.role || '-') + '</span></td>' +
+                    '<td><small>' + saEsc(item.tanggalSimpan || '-') + '</small></td>' +
+                    '<td>' +
+                        '<button class="btn btn-sm btn-outline-primary me-1" ' +
+                            'onclick="bukaChatPribadiDariKontak(\'' + item.idUser + '\')">' +
+                            '<i class="fas fa-comment"></i> Chat' +
+                        '</button>' +
+                        '<button class="btn btn-sm btn-outline-danger" ' +
+                            'onclick="hapusKontakSA(\'' + item.idUser + '\')">' +
+                            '<i class="fas fa-trash"></i>' +
+                        '</button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('renderTabelKontakSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) TAMPILKAN MODAL TAMBAH KONTAK
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanModalTambahKontakSA = function() {
+        var modal = document.getElementById('modalTambahKontakSA');
+        if (!modal) return;
+
+        document.getElementById('inputKontakIdSA').value = '';
+        document.getElementById('inputKontakNamaSA').value = '';
+        document.getElementById('notifTambahKontakSA').classList.add('d-none');
+
+        new bootstrap.Modal(modal).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) SIMPAN KONTAK
+    // ═══════════════════════════════════════════════════════════
+    window.simpanKontakSA = function() {
+        var idUser = document.getElementById('inputKontakIdSA').value.trim();
+        var nama = document.getElementById('inputKontakNamaSA').value.trim();
+        var notif = document.getElementById('notifTambahKontakSA');
+
+        if (!idUser || !nama) {
+            notif.className = 'alert alert-warning';
+            notif.innerHTML = '⚠️ ID User dan Nama wajib diisi!';
+            notif.classList.remove('d-none');
+            return;
         }
 
-        html +=
-            '<div class="d-flex mb-2 ' + (isPengirim ? 'justify-content-end' : 'justify-content-start') + '">' +
-                '<div class="p-2 rounded ' + (isPengirim ? 'bg-primary text-white' : 'bg-white border') + '" ' +
-                     'style="max-width:70%;box-shadow:0 1px 3px rgba(0,0,0,0.08);">' +
-                    '<div style="font-size:13px;word-break:break-word;">' + konten + '</div>' +
-                    '<small class="d-block text-end mt-1" ' +
-                          'style="font-size:10px;opacity:0.7;">' + waktu + '</small>' +
-                '</div>' +
-            '</div>';
-    });
+        var hasil = (typeof simpanKontak === 'function')
+            ? simpanKontak(idUser, nama)
+            : { sukses: false, pesan: 'Fungsi simpanKontak tidak tersedia.' };
 
-    area.innerHTML = html;
-    area.scrollTop = area.scrollHeight;
-}
-
-// ============================================================
-// BLOK R 10.19 (18) – ESCAPE HTML (anti XSS)
-// ============================================================
-function escapeHtmlChatSA(teks) {
-    var div = document.createElement('div');
-    div.textContent = teks;
-    return div.innerHTML;
-}
-
-// ============================================================
-// BLOK R 10.19 (19) – KIRIM CHAT PRIBADI
-// ============================================================
-function kirimChatPribadiSA() {
-    var input = document.getElementById('inputChatPribadiSA');
-    var isi = input ? input.value.trim() : '';
-
-    if (!currentChatUserSA) {
-        tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
-        return;
-    }
-    if (!isi) {
-        tampilkanToastChatSA('⚠️ Pesan tidak boleh kosong!', 'warning');
-        return;
-    }
-
-    var hasil = kirimPesan(currentChatUserSA, isi, 'text');
-    if (hasil.sukses) {
-        input.value = '';
-        renderChatPribadiSA();
-        updateStatistikChatSA();
-    } else {
-        tampilkanToastChatSA('❌ ' + hasil.pesan, 'danger');
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (20) – RESET CHAT PRIBADI
-// ============================================================
-function resetChatPribadiSA() {
-    currentChatUserSA = null;
-
-    var select = document.getElementById('pilihUserChatSA');
-    if (select) select.value = '';
-
-    hentikanAutoRefreshChatSA();
-    updateStatusChatSA();
-    renderChatPribadiSA();
-}
-
-// ============================================================
-// BLOK R 10.19 (21) – AUTO REFRESH CHAT
-// ============================================================
-function mulaiAutoRefreshChatSA() {
-    hentikanAutoRefreshChatSA();
-    chatAutoRefreshTimer = setInterval(function() {
-        if (currentChatUserSA) renderChatPribadiSA();
-    }, 5000);
-}
-
-function hentikanAutoRefreshChatSA() {
-    if (chatAutoRefreshTimer) {
-        clearInterval(chatAutoRefreshTimer);
-        chatAutoRefreshTimer = null;
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (22) – ISI DROPDOWN GIF
-// ============================================================
-function isiDropdownGifSA() {
-    var select = document.getElementById('pilihGifKirimSA');
-    if (!select) return;
-
-    select.innerHTML = '<option value="">-- Pilih GIF --</option>';
-
-    var masterGif = [];
-    try {
-        masterGif = JSON.parse(localStorage.getItem('dataGifR2Coin') || '[]');
-        if (!Array.isArray(masterGif)) masterGif = [];
-    } catch (e) { masterGif = []; }
-
-    masterGif.forEach(function(gif) {
-        if (gif.status === 'Aktif') {
-            var option = document.createElement('option');
-            option.value = gif.id;
-            option.textContent = gif.nama + ' (' + (gif.hargaR2Coin || 0) + ' R2Coin)';
-            select.appendChild(option);
-        }
-    });
-}
-
-// ============================================================
-// BLOK R 10.19 (23) – BUKA MODAL KIRIM GIF
-// ============================================================
-function bukaModalKirimGifSA() {
-    if (!currentChatUserSA) {
-        tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
-        return;
-    }
-    var modal = document.getElementById('modalKirimGifSA');
-    if (!modal) return;
-
-    isiDropdownGifSA();
-    var bsModal = new bootstrap.Modal(modal);
-    bsModal.show();
-}
-
-// ============================================================
-// BLOK R 10.19 (24) – KIRIM GIF
-// ============================================================
-function kirimGifDariModalSA() {
-    var select = document.getElementById('pilihGifKirimSA');
-    var gifId = select ? select.value : '';
-
-    if (!gifId) {
-        tampilkanToastChatSA('⚠️ Pilih GIF terlebih dahulu!', 'warning');
-        return;
-    }
-
-    var hasil = kirimGif(currentChatUserSA, gifId);
-    if (hasil.sukses) {
-        var modal = bootstrap.Modal.getInstance(document.getElementById('modalKirimGifSA'));
-        if (modal) modal.hide();
-
-        renderChatPribadiSA();
-        updateStatistikChatSA();
-        tampilkanToastChatSA('✅ GIF berhasil dikirim!', 'success');
-    } else {
-        tampilkanToastChatSA('❌ ' + hasil.pesan, 'danger');
-    }
-}
-
-// ============================================================
-// BLOK R 10.19 (25) – BUKA MODAL KIRIM FOTO
-// ============================================================
-function bukaModalKirimFotoSA() {
-    if (!currentChatUserSA) {
-        tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
-        return;
-    }
-    var modal = document.getElementById('modalKirimFotoSA');
-    if (!modal) return;
-    document.getElementById('inputFotoKirimSA').value = '';
-    var bsModal = new bootstrap.Modal(modal);
-    bsModal.show();
-}
-
-// ============================================================
-// BLOK R 10.19 (26) – KIRIM FOTO
-// ============================================================
-function kirimFotoDariModalSA() {
-    var input = document.getElementById('inputFotoKirimSA');
-    var file = input ? input.files[0] : null;
-
-    if (!file) {
-        tampilkanToastChatSA('⚠️ Pilih foto terlebih dahulu!', 'warning');
-        return;
-    }
-    if (file.size > 2 * 1024 * 1024) {
-        tampilkanToastChatSA('⚠️ Ukuran foto maksimal 2MB!', 'warning');
-        return;
-    }
-
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var hasil = kirimFoto(currentChatUserSA, e.target.result);
         if (hasil.sukses) {
-            var modal = bootstrap.Modal.getInstance(document.getElementById('modalKirimFotoSA'));
+            renderTabelKontakSA();
+            updateStatistikChatSA();
+            renderBreakdownKontakChatSA();
+
+            var modal = bootstrap.Modal.getInstance(document.getElementById('modalTambahKontakSA'));
             if (modal) modal.hide();
 
+            tampilkanToastChatSA('✅ Kontak berhasil disimpan!', 'success');
+        } else {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + hasil.pesan;
+            notif.classList.remove('d-none');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) HAPUS KONTAK
+    // ═══════════════════════════════════════════════════════════
+    window.hapusKontakSA = function(idUser) {
+        if (!confirm('Hapus kontak ini?')) return;
+
+        var hasil = (typeof hapusKontak === 'function')
+            ? hapusKontak(idUser)
+            : { sukses: false, pesan: 'Fungsi hapusKontak tidak tersedia.' };
+
+        if (hasil.sukses) {
+            renderTabelKontakSA();
+            updateStatistikChatSA();
+            renderBreakdownKontakChatSA();
+            tampilkanToastChatSA('✅ Kontak berhasil dihapus.', 'success');
+        } else {
+            alert('❌ ' + hasil.pesan);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (11) RENDER RIWAYAT BROADCAST
+    // ═══════════════════════════════════════════════════════════
+    window.renderRiwayatBroadcastSA = function() {
+        try {
+            var tbody = document.getElementById('tabelRiwayatBroadcastSA');
+            var totalSpan = document.getElementById('totalBroadcastTable');
+            if (!tbody) return;
+
+            var broadcast = [];
+            try {
+                broadcast = JSON.parse(localStorage.getItem('dataBroadcast') || '[]');
+                if (!Array.isArray(broadcast)) broadcast = [];
+            } catch (e) { broadcast = []; }
+
+            if (totalSpan) totalSpan.textContent = broadcast.length;
+
+            if (broadcast.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="5" class="text-center text-muted py-4">' +
+                    'Belum ada broadcast.</td></tr>';
+                return;
+            }
+
+            var html = '';
+            broadcast.slice().reverse().forEach(function(item) {
+                var target = item.targetRole ? ('Role: ' + item.targetRole) : 'Semua User';
+                var tgl = item.tanggal
+                    ? new Date(item.tanggal).toLocaleString('id-ID', { hour12: false })
+                    : '-';
+
+                html += '<tr>' +
+                    '<td><small>' + saEsc(tgl) + '</small></td>' +
+                    '<td><span class="badge bg-secondary">' + saEsc(target) + '</span></td>' +
+                    '<td><small>' + saEsc(item.isi || '-') + '</small></td>' +
+                    '<td><strong>' + (item.jumlahUser || '-') + '</strong></td>' +
+                    '<td>' +
+                        '<button class="btn btn-sm btn-outline-danger" ' +
+                            'onclick="hapusBroadcastSA(\'' + item.id + '\')" title="Hapus">' +
+                            '<i class="fas fa-trash"></i>' +
+                        '</button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('renderRiwayatBroadcastSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (12) HAPUS BROADCAST
+    // ═══════════════════════════════════════════════════════════
+    window.hapusBroadcastSA = function(id) {
+        if (!confirm('Hapus broadcast ini?')) return;
+
+        var broadcast = [];
+        try {
+            broadcast = JSON.parse(localStorage.getItem('dataBroadcast') || '[]');
+            if (!Array.isArray(broadcast)) broadcast = [];
+        } catch (e) { broadcast = []; }
+
+        broadcast = broadcast.filter(function(b) { return b.id !== id; });
+        localStorage.setItem('dataBroadcast', JSON.stringify(broadcast));
+
+        renderRiwayatBroadcastSA();
+        updateStatistikChatSA();
+        tampilkanToastChatSA('✅ Broadcast dihapus.', 'success');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (13) KIRIM CHAT MASSAL PER ROLE
+    // ═══════════════════════════════════════════════════════════
+    window.kirimChatMassalPerRoleSA = function() {
+        try {
+            var role = document.getElementById('pilihRoleChatMassalSA').value;
+            var isi = document.getElementById('isiChatMassalSA').value.trim();
+            var notif = document.getElementById('notifChatMassalSA');
+
+            if (!role) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = '⚠️ Pilih role terlebih dahulu!';
+                notif.classList.remove('d-none');
+                return;
+            }
+            if (!isi) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = '⚠️ Isi pesan wajib diisi!';
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            var targetCount = (dataAkunAktif || []).filter(function(a) {
+                return a && a.role === role &&
+                    (a.statusVerifikasi === 'Aktif' || a.status === 'Aktif');
+            }).length;
+
+            if (targetCount === 0) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = '⚠️ Tidak ada user aktif dengan role ' + saEsc(role) + '.';
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            if (!confirm('Kirim pesan ke ' + targetCount + ' user role ' + role + '?')) {
+                return;
+            }
+
+            var hasil = (typeof kirimChatMassalPerRole === 'function')
+                ? kirimChatMassalPerRole(role, isi, 'broadcast')
+                : { sukses: false, pesan: 'Fungsi kirimChatMassalPerRole tidak tersedia.' };
+
+            if (hasil.sukses) {
+                notif.className = 'alert alert-success';
+                notif.innerHTML = '✅ Pesan berhasil dikirim ke <strong>' +
+                    hasil.jumlahUser + '</strong> user dengan role <strong>' +
+                    saEsc(role) + '</strong>!';
+                notif.classList.remove('d-none');
+
+                renderRiwayatBroadcastSA();
+                updateStatistikChatSA();
+                document.getElementById('isiChatMassalSA').value = '';
+                saSetText('counterIsiChatMassalSA', '0');
+
+                setTimeout(function() { notif.classList.add('d-none'); }, 5000);
+            } else {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = '❌ ' + hasil.pesan;
+                notif.classList.remove('d-none');
+            }
+        } catch (e) {
+            console.error('kirimChatMassalPerRoleSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (14) RESET FORM CHAT MASSAL
+    // ═══════════════════════════════════════════════════════════
+    window.resetFormChatMassalSA = function() {
+        document.getElementById('pilihRoleChatMassalSA').value = '';
+        document.getElementById('isiChatMassalSA').value = '';
+        document.getElementById('notifChatMassalSA').classList.add('d-none');
+        saSetText('counterIsiChatMassalSA', '0');
+        saUpdateInfoJumlahTarget();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (15) KIRIM CHAT KE SEMUA
+    // ═══════════════════════════════════════════════════════════
+    window.kirimChatSemuaUserSA = function() {
+        try {
+            var isi = document.getElementById('isiChatSemuaSA').value.trim();
+            var notif = document.getElementById('notifChatSemuaSA');
+
+            if (!isi) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = '⚠️ Isi pesan wajib diisi!';
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            var totalTarget = (dataAkunAktif || []).filter(function(a) {
+                return a && a.role !== 'SuperAdmin' &&
+                    (a.statusVerifikasi === 'Aktif' || a.status === 'Aktif');
+            }).length;
+
+            if (!confirm('⚠️ Kirim pesan ke SEMUA ' + totalTarget + ' user?\n\n' +
+                         'Tindakan ini akan mengirim ke banyak user sekaligus.')) {
+                return;
+            }
+
+            var hasil = (typeof kirimChatSemuaUser === 'function')
+                ? kirimChatSemuaUser(isi, 'broadcast')
+                : { sukses: false, pesan: 'Fungsi kirimChatSemuaUser tidak tersedia.' };
+
+            if (hasil.sukses) {
+                notif.className = 'alert alert-success';
+                notif.innerHTML = '✅ Pesan berhasil dikirim ke <strong>' +
+                    hasil.jumlahUser + '</strong> user!';
+                notif.classList.remove('d-none');
+
+                renderRiwayatBroadcastSA();
+                updateStatistikChatSA();
+                document.getElementById('isiChatSemuaSA').value = '';
+                saSetText('counterIsiChatSemuaSA', '0');
+
+                setTimeout(function() { notif.classList.add('d-none'); }, 5000);
+            } else {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = '❌ ' + hasil.pesan;
+                notif.classList.remove('d-none');
+            }
+        } catch (e) {
+            console.error('kirimChatSemuaUserSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (16) RESET FORM CHAT KE SEMUA
+    // ═══════════════════════════════════════════════════════════
+    window.resetFormChatSemuaSA = function() {
+        document.getElementById('isiChatSemuaSA').value = '';
+        document.getElementById('notifChatSemuaSA').classList.add('d-none');
+        saSetText('counterIsiChatSemuaSA', '0');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (17) ISI DROPDOWN USER CHAT PRIBADI
+    // ═══════════════════════════════════════════════════════════
+    window.isiDropdownUserChatSA = function() {
+        try {
+            var select = document.getElementById('pilihUserChatSA');
+            if (!select) return;
+
+            select.innerHTML = '<option value="">-- Pilih User --</option>';
+
+            var daftarUser = (dataLoginUser || []).filter(function(u) {
+                return u && u.role !== 'SuperAdmin';
+            });
+
+            var grup = {};
+            daftarUser.forEach(function(u) {
+                var role = u.role || 'Lainnya';
+                if (!grup[role]) grup[role] = [];
+                grup[role].push(u);
+            });
+
+            var roleOrder = Object.keys(grup).sort();
+            roleOrder.forEach(function(role) {
+                var users = grup[role];
+                users.sort(function(a, b) {
+                    return (a.nama || '').localeCompare(b.nama || '');
+                });
+
+                var optgroup = document.createElement('optgroup');
+                optgroup.label = role;
+
+                users.forEach(function(user) {
+                    var option = document.createElement('option');
+                    option.value = user.idUser;
+                    option.textContent = user.nama + ' (' + user.role + ')';
+                    optgroup.appendChild(option);
+                });
+
+                select.appendChild(optgroup);
+            });
+
+            console.log('✅ Dropdown user chat di-populate (' +
+                daftarUser.length + ' user)');
+        } catch (e) {
+            console.error('isiDropdownUserChatSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (18) BUKA CHAT PRIBADI
+    // ═══════════════════════════════════════════════════════════
+    window.bukaChatPribadiSA = function() {
+        try {
+            var select = document.getElementById('pilihUserChatSA');
+            var idUser = select ? select.value : '';
+            if (!idUser) return;
+
+            currentChatUserSA = idUser;
+            updateStatusChatSA();
+            renderChatPribadiSA();
+            mulaiAutoRefreshChatSA();
+        } catch (e) {
+            console.error('bukaChatPribadiSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (19) BUKA CHAT DARI KONTAK
+    // ═══════════════════════════════════════════════════════════
+    window.bukaChatPribadiDariKontak = function(idUser) {
+        try {
+            currentChatUserSA = idUser;
+
+            var select = document.getElementById('pilihUserChatSA');
+            if (select) select.value = idUser;
+
+            var tabLink = document.querySelector('a[href="#tabChatPribadiSA"]');
+            if (tabLink && typeof bootstrap !== 'undefined') {
+                try {
+                    new bootstrap.Tab(tabLink).show();
+                } catch (e) {
+                    tabLink.click();
+                }
+            }
+
+            setTimeout(function() {
+                updateStatusChatSA();
+                renderChatPribadiSA();
+                mulaiAutoRefreshChatSA();
+            }, 300);
+        } catch (e) {
+            console.error('bukaChatPribadiDariKontak error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (20) UPDATE STATUS CHAT
+    // ═══════════════════════════════════════════════════════════
+    function updateStatusChatSA() {
+        var el = document.getElementById('statusChatSA');
+        if (!el) return;
+
+        if (!currentChatUserSA) {
+            el.innerHTML = '<i class="fas fa-circle text-secondary me-1" ' +
+                'style="font-size:8px;"></i>Belum ada chat aktif';
+            return;
+        }
+
+        var user = getDataIdUser(currentChatUserSA);
+        var nama = user ? user.nama : currentChatUserSA;
+        var statusOnline = (typeof getStatusOnlineAkun === 'function')
+            ? getStatusOnlineAkun(currentChatUserSA)
+            : 'Offline';
+
+        var warna = statusOnline === 'Online' ? 'text-success' : 'text-secondary';
+        el.innerHTML = '<i class="fas fa-circle ' + warna + ' me-1" ' +
+            'style="font-size:8px;"></i>' +
+            'Chat dengan <strong>' + saEsc(nama) + '</strong> ' +
+            '<span class="badge bg-secondary ms-1">' +
+            saEsc(user ? user.role : '-') + '</span>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (21) RENDER CHAT PRIBADI
+    // ═══════════════════════════════════════════════════════════
+    function renderChatPribadiSA() {
+        var area = document.getElementById('areaChatPribadiSA');
+        if (!area) return;
+
+        var idUserSA = userAktif ? userAktif.idUser : null;
+        if (!idUserSA) {
+            area.innerHTML = '<p class="text-center text-muted mb-0">User tidak valid.</p>';
+            return;
+        }
+
+        if (!currentChatUserSA) {
+            area.innerHTML =
+                '<p class="text-center text-muted mb-0">' +
+                '<i class="fas fa-comments fa-3x d-block mb-2 opacity-25"></i>' +
+                'Pilih user di atas untuk mulai chat.</p>';
+            return;
+        }
+
+        var daftarPesan = getPesanAntarUser(idUserSA, currentChatUserSA);
+
+        if (daftarPesan.length === 0) {
+            var targetUser = getDataIdUser(currentChatUserSA);
+            var namaTarget = targetUser ? targetUser.nama : currentChatUserSA;
+            area.innerHTML =
+                '<p class="text-center text-muted mb-0">' +
+                '<i class="fas fa-comment-dots fa-3x d-block mb-2 opacity-25"></i>' +
+                'Belum ada pesan dengan <strong>' + saEsc(namaTarget) + '</strong>.<br>' +
+                '<small>Kirim pesan pertama di bawah.</small></p>';
+            return;
+        }
+
+        var html = '';
+        daftarPesan.forEach(function(pesan) {
+            var isPengirim = pesan.idPengirim === idUserSA;
+            var waktu = pesan.waktu
+                ? new Date(pesan.waktu).toLocaleTimeString('id-ID',
+                    { hour: '2-digit', minute: '2-digit' })
+                : '-';
+
+            var konten = '';
+            if (pesan.tipe === 'gif' && pesan.gifGambar) {
+                konten = '<img src="' + pesan.gifGambar + '" ' +
+                         'style="max-width:200px;border-radius:8px;" alt="GIF">';
+            } else if (pesan.tipe === 'foto' && pesan.gambar) {
+                konten = '<img src="' + pesan.gambar + '" ' +
+                         'style="max-width:200px;border-radius:8px;" alt="Foto">';
+            } else if (pesan.tipe === 'video' && pesan.video) {
+                konten = '<video src="' + pesan.video + '" ' +
+                         'style="max-width:200px;border-radius:8px;" controls></video>';
+            } else {
+                konten = saEsc(pesan.isi || '');
+            }
+
+            html +=
+                '<div class="d-flex mb-2 ' +
+                    (isPengirim ? 'justify-content-end' : 'justify-content-start') + '">' +
+                    '<div class="p-2 rounded ' +
+                        (isPengirim ? 'bg-primary text-white' : 'bg-white border') + '" ' +
+                         'style="max-width:70%;box-shadow:0 1px 3px rgba(0,0,0,0.08);">' +
+                        '<div style="font-size:13px;word-break:break-word;">' +
+                            konten + '</div>' +
+                        '<small class="d-block text-end mt-1" ' +
+                              'style="font-size:10px;opacity:0.7;">' + waktu + '</small>' +
+                    '</div>' +
+                '</div>';
+        });
+
+        area.innerHTML = html;
+        area.scrollTop = area.scrollHeight;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (22) KIRIM CHAT PRIBADI
+    // ═══════════════════════════════════════════════════════════
+    window.kirimChatPribadiSA = function() {
+        var input = document.getElementById('inputChatPribadiSA');
+        var isi = input ? input.value.trim() : '';
+
+        if (!currentChatUserSA) {
+            tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
+            return;
+        }
+        if (!isi) {
+            tampilkanToastChatSA('⚠️ Pesan tidak boleh kosong!', 'warning');
+            return;
+        }
+
+        var hasil = kirimPesan(currentChatUserSA, isi, 'text');
+        if (hasil.sukses) {
+            input.value = '';
             renderChatPribadiSA();
             updateStatistikChatSA();
-            tampilkanToastChatSA('✅ Foto berhasil dikirim!', 'success');
         } else {
             tampilkanToastChatSA('❌ ' + hasil.pesan, 'danger');
         }
     };
-    reader.readAsDataURL(file);
-}
 
-// ============================================================
-// BLOK R 10.19 (27) – BUKA MODAL KIRIM VIDEO
-// ============================================================
-function bukaModalKirimVideoSA() {
-    if (!currentChatUserSA) {
-        tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
-        return;
-    }
-    var modal = document.getElementById('modalKirimVideoSA');
-    if (!modal) return;
-    document.getElementById('inputVideoKirimSA').value = '';
-    var bsModal = new bootstrap.Modal(modal);
-    bsModal.show();
-}
+    // ═══════════════════════════════════════════════════════════
+    // (23) RESET CHAT PRIBADI
+    // ═══════════════════════════════════════════════════════════
+    window.resetChatPribadiSA = function() {
+        currentChatUserSA = null;
 
-// ============================================================
-// BLOK R 10.19 (28) – KIRIM VIDEO
-// ============================================================
-function kirimVideoDariModalSA() {
-    var input = document.getElementById('inputVideoKirimSA');
-    var file = input ? input.files[0] : null;
+        var select = document.getElementById('pilihUserChatSA');
+        if (select) select.value = '';
 
-    if (!file) {
-        tampilkanToastChatSA('⚠️ Pilih video terlebih dahulu!', 'warning');
-        return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-        tampilkanToastChatSA('⚠️ Ukuran video maksimal 5MB!', 'warning');
-        return;
+        hentikanAutoRefreshChatSA();
+        updateStatusChatSA();
+        renderChatPribadiSA();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (24) AUTO REFRESH
+    // ═══════════════════════════════════════════════════════════
+    function mulaiAutoRefreshChatSA() {
+        hentikanAutoRefreshChatSA();
+        chatAutoRefreshTimer = setInterval(function() {
+            if (currentChatUserSA) renderChatPribadiSA();
+        }, 5000);
     }
 
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var hasil = kirimVideo(currentChatUserSA, e.target.result);
+    function hentikanAutoRefreshChatSA() {
+        if (chatAutoRefreshTimer) {
+            clearInterval(chatAutoRefreshTimer);
+            chatAutoRefreshTimer = null;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (25) ISI DROPDOWN GIF
+    // ═══════════════════════════════════════════════════════════
+    window.isiDropdownGifSA = function() {
+        var select = document.getElementById('pilihGifKirimSA');
+        if (!select) return;
+
+        select.innerHTML = '<option value="">-- Pilih GIF --</option>';
+
+        var masterGif = [];
+        try {
+            masterGif = JSON.parse(localStorage.getItem('dataGifR2Coin') || '[]');
+            if (!Array.isArray(masterGif)) masterGif = [];
+        } catch (e) { masterGif = []; }
+
+        masterGif.forEach(function(gif) {
+            if (gif.status === 'Aktif') {
+                var option = document.createElement('option');
+                option.value = gif.id;
+                option.textContent = gif.nama + ' (' + (gif.hargaR2Coin || 0) + ' R2Coin)';
+                select.appendChild(option);
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (26) BUKA MODAL KIRIM GIF
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalKirimGifSA = function() {
+        if (!currentChatUserSA) {
+            tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
+            return;
+        }
+        var modal = document.getElementById('modalKirimGifSA');
+        if (!modal) return;
+
+        isiDropdownGifSA();
+        new bootstrap.Modal(modal).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (27) KIRIM GIF
+    // ═══════════════════════════════════════════════════════════
+    window.kirimGifDariModalSA = function() {
+        var select = document.getElementById('pilihGifKirimSA');
+        var gifId = select ? select.value : '';
+
+        if (!gifId) {
+            tampilkanToastChatSA('⚠️ Pilih GIF terlebih dahulu!', 'warning');
+            return;
+        }
+
+        var hasil = kirimGif(currentChatUserSA, gifId);
         if (hasil.sukses) {
-            var modal = bootstrap.Modal.getInstance(document.getElementById('modalKirimVideoSA'));
+            var modal = bootstrap.Modal.getInstance(document.getElementById('modalKirimGifSA'));
             if (modal) modal.hide();
 
             renderChatPribadiSA();
             updateStatistikChatSA();
-            tampilkanToastChatSA('✅ Video berhasil dikirim!', 'success');
+            tampilkanToastChatSA('✅ GIF berhasil dikirim!', 'success');
         } else {
             tampilkanToastChatSA('❌ ' + hasil.pesan, 'danger');
         }
     };
-    reader.readAsDataURL(file);
-}
 
-// ============================================================
-// BLOK R 10.19 (29) – TOAST NOTIFIKASI
-// ============================================================
-function tampilkanToastChatSA(pesan, tipe) {
-    var warna = {
-        success: '#28A745',
-        danger:  '#DC3545',
-        warning: '#FFC107',
-        info:    '#17A2B8'
-    }[tipe] || '#28A745';
+    // ═══════════════════════════════════════════════════════════
+    // (28) BUKA MODAL KIRIM FOTO
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalKirimFotoSA = function() {
+        if (!currentChatUserSA) {
+            tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
+            return;
+        }
+        var modal = document.getElementById('modalKirimFotoSA');
+        if (!modal) return;
 
-    var toast = document.createElement('div');
-    toast.textContent = pesan;
-    toast.style.cssText =
-        'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
-        'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
-        'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
-        'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
-    document.body.appendChild(toast);
+        var input = document.getElementById('inputFotoKirimSA');
+        if (input) input.value = '';
 
-    setTimeout(function() {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(20px)';
+        new bootstrap.Modal(modal).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (29) KIRIM FOTO
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFotoDariModalSA = function() {
+        var input = document.getElementById('inputFotoKirimSA');
+        var file = input ? input.files[0] : null;
+
+        if (!file) {
+            tampilkanToastChatSA('⚠️ Pilih foto terlebih dahulu!', 'warning');
+            return;
+        }
+        if (file.size > 2 * 1024 * 1024) {
+            tampilkanToastChatSA('⚠️ Ukuran foto maksimal 2MB!', 'warning');
+            return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var hasil = kirimFoto(currentChatUserSA, e.target.result);
+            if (hasil.sukses) {
+                var modal = bootstrap.Modal.getInstance(document.getElementById('modalKirimFotoSA'));
+                if (modal) modal.hide();
+
+                renderChatPribadiSA();
+                updateStatistikChatSA();
+                tampilkanToastChatSA('✅ Foto berhasil dikirim!', 'success');
+            } else {
+                tampilkanToastChatSA('❌ ' + hasil.pesan, 'danger');
+            }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (30) BUKA MODAL KIRIM VIDEO
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalKirimVideoSA = function() {
+        if (!currentChatUserSA) {
+            tampilkanToastChatSA('⚠️ Pilih user terlebih dahulu!', 'warning');
+            return;
+        }
+        var modal = document.getElementById('modalKirimVideoSA');
+        if (!modal) return;
+
+        var input = document.getElementById('inputVideoKirimSA');
+        if (input) input.value = '';
+
+        new bootstrap.Modal(modal).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (31) KIRIM VIDEO
+    // ═══════════════════════════════════════════════════════════
+    window.kirimVideoDariModalSA = function() {
+        var input = document.getElementById('inputVideoKirimSA');
+        var file = input ? input.files[0] : null;
+
+        if (!file) {
+            tampilkanToastChatSA('⚠️ Pilih video terlebih dahulu!', 'warning');
+            return;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+            tampilkanToastChatSA('⚠️ Ukuran video maksimal 5MB!', 'warning');
+            return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var hasil = kirimVideo(currentChatUserSA, e.target.result);
+            if (hasil.sukses) {
+                var modal = bootstrap.Modal.getInstance(document.getElementById('modalKirimVideoSA'));
+                if (modal) modal.hide();
+
+                renderChatPribadiSA();
+                updateStatistikChatSA();
+                tampilkanToastChatSA('✅ Video berhasil dikirim!', 'success');
+            } else {
+                tampilkanToastChatSA('❌ ' + hasil.pesan, 'danger');
+            }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (32) TOAST
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanToastChatSA = function(pesan, tipe) {
+        var warna = {
+            success: '#28A745',
+            danger:  '#DC3545',
+            warning: '#FFC107',
+            info:    '#17A2B8'
+        }[tipe] || '#28A745';
+
+        var toast = document.createElement('div');
+        toast.textContent = pesan;
+        toast.style.cssText =
+            'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+            'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+            'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+            'transition:opacity 0.3s, transform 0.3s; transform: translateY(0);';
+        document.body.appendChild(toast);
+
         setTimeout(function() {
-            if (toast.parentNode) document.body.removeChild(toast);
-        }, 300);
-    }, 2500);
-}
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            setTimeout(function() {
+                if (toast.parentNode) document.body.removeChild(toast);
+            }, 300);
+        }, 2500);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (33) PASANG LISTENER COUNTER TEKS
+    // ═══════════════════════════════════════════════════════════
+    document.addEventListener('input', function(e) {
+        if (!e.target) return;
+        if (e.target.id === 'isiChatMassalSA') {
+            saSetText('counterIsiChatMassalSA', e.target.value.length);
+        }
+        if (e.target.id === 'isiChatSemuaSA') {
+            saSetText('counterIsiChatSemuaSA', e.target.value.length);
+        }
+    });
+
+    console.log('✅ BLOK R 10.19 V2 – Menu Chat SuperAdmin terpasang.');
+    console.log('   Sub-blok JS: 33 fungsi');
+    console.log('   • Role Jasa + 19 role lain di dropdown Chat Massal');
+    console.log('   • Dropdown user chat pribadi dengan optgroup per role');
+    console.log('   • Tombol Kembali 2× (header + footer)');
+})();
 </script>
 <!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 10.19 (JS) ===== -->
+<!-- ===== AKHIR BLOK R 10.19 (JS V2) ========================= -->
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
@@ -42245,6 +43088,845 @@ function renderDasborGrosirAdmin() {
 </script>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 10.64 – JAVASCRIPT ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.65 – RIWAYAT PENJUALAN COIN (HTML) ======= -->
+<!-- ============================================================ -->
+<div id="riwayatPenjualanCoinContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- SUB-BLOK 10.65.H1 — HEADER -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-chart-line me-2"></i>Riwayat Penjualan Coin
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Semua Top-Up Lunas — pendapatan platform dari penjualan R2Coin.
+                </small>
+            </div>
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- SUB-BLOK 10.65.H2 — STATISTIK -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-coins fa-2x mb-2 text-warning"></i>
+                        <h5 class="fw-bold mb-0" id="rpcStatCoin">0</h5>
+                        <small class="text-muted">Total Coin Terjual</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-money-bill-wave fa-2x mb-2 text-success"></i>
+                        <h5 class="fw-bold mb-0" id="rpcStatRp">Rp 0</h5>
+                        <small class="text-muted">Total Pendapatan</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-tag fa-2x mb-2 text-primary"></i>
+                        <h5 class="fw-bold mb-0" id="rpcStatRata">Rp 0</h5>
+                        <small class="text-muted">Rata-rata / Coin</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-receipt fa-2x mb-2 text-info"></i>
+                        <h5 class="fw-bold mb-0" id="rpcStatTrx">0</h5>
+                        <small class="text-muted">Total Transaksi</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SUB-BLOK 10.65.H3 — BREAKDOWN PER ROLE -->
+        <div id="rpcBreakdownPerRole" class="mb-3"></div>
+
+        <!-- SUB-BLOK 10.65.H4 — FILTER -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-3">
+                        <label class="fw-bold">
+                            <i class="fas fa-calendar me-1"></i>Periode
+                        </label>
+                        <select id="rpcFilterPeriode" class="form-select"
+                                onchange="onPeriodePenjualanCoinChange()">
+                            <option value="hari-ini">Hari Ini</option>
+                            <option value="7-hari">7 Hari Terakhir</option>
+                            <option value="30-hari" selected>30 Hari Terakhir</option>
+                            <option value="bulan-ini">Bulan Ini</option>
+                            <option value="custom">Custom</option>
+                            <option value="semua">Semua Waktu</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2" id="rpcFilterDariWrap" style="display:none;">
+                        <label class="fw-bold">Dari</label>
+                        <input type="date" id="rpcFilterDari" class="form-control"
+                               onchange="renderRiwayatPenjualanCoin()">
+                    </div>
+                    <div class="col-md-2" id="rpcFilterSampaiWrap" style="display:none;">
+                        <label class="fw-bold">Sampai</label>
+                        <input type="date" id="rpcFilterSampai" class="form-control"
+                               onchange="renderRiwayatPenjualanCoin()">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold">
+                            <i class="fas fa-user-tag me-1"></i>Role
+                        </label>
+                        <select id="rpcFilterRole" class="form-select"
+                                onchange="renderRiwayatPenjualanCoin()">
+                            <option value="">Semua Role</option>
+                            <optgroup label="— Seller —">
+                                <option value="Toko">Toko</option>
+                                <option value="Pedagang Pasar">Pedagang Pasar</option>
+                                <option value="Pedagang Makanan">Pedagang Makanan</option>
+                                <option value="COD Seller">COD Seller</option>
+                                <option value="Grosir">Grosir</option>
+                                <option value="Distributor">Distributor</option>
+                            </optgroup>
+                            <optgroup label="— Transport —">
+                                <option value="Ojek">Ojek</option>
+                            </optgroup>
+                            <optgroup label="— Profesional / Bisnis Baru —">
+                                <option value="Jasa">⚙️ Jasa</option>
+                                <option value="Developer Properti">Developer Properti</option>
+                                <option value="Dealer dan Showroom">Dealer dan Showroom</option>
+                                <option value="Finance Multifinance">Finance Multifinance</option>
+                            </optgroup>
+                            <optgroup label="— Customer —">
+                                <option value="Customer">Customer</option>
+                            </optgroup>
+                            <optgroup label="— Staf & Internal —">
+                                <option value="Kasir">Kasir</option>
+                                <option value="Staf Admin">Staf Admin</option>
+                                <option value="Customer Service">Customer Service</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold">
+                            <i class="fas fa-credit-card me-1"></i>Metode
+                        </label>
+                        <select id="rpcFilterMetode" class="form-select"
+                                onchange="renderRiwayatPenjualanCoin()">
+                            <option value="">Semua Metode</option>
+                            <option value="Transfer Bank">Transfer Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="Cash">Cash</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold">
+                            <i class="fas fa-search me-1"></i>Cari
+                        </label>
+                        <input type="text" id="rpcFilterCari" class="form-control"
+                               placeholder="Nama / ID / ID Tagihan..."
+                               oninput="renderRiwayatPenjualanCoin()">
+                    </div>
+                </div>
+
+                <div class="mt-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span class="badge bg-dark fs-6" id="rpcTotalDataBadge">0 Data</span>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary"
+                                onclick="resetFilterPenjualanCoin()">
+                            <i class="fas fa-undo me-1"></i> Reset
+                        </button>
+                        <button class="btn btn-sm btn-success"
+                                onclick="exportCSVPenjualanCoin()">
+                            <i class="fas fa-file-csv me-1"></i> Export CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SUB-BLOK 10.65.H5 — TABEL -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background-color:#1976D2;">
+                <span>
+                    <i class="fas fa-list me-2"></i>Riwayat Penjualan Coin
+                </span>
+                <span class="badge bg-light text-dark" id="rpcTotalData">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th>Tanggal</th>
+                                <th>User</th>
+                                <th>Role</th>
+                                <th class="text-end">Coin</th>
+                                <th class="text-end">Harga/Coin</th>
+                                <th class="text-end">Total Rp</th>
+                                <th>Metode</th>
+                                <th>ID Tagihan</th>
+                                <th style="width:80px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rpcTabel">
+                            <tr><td colspan="10" class="text-center text-muted py-4">
+                                Memuat data...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="text-muted" id="rpcInfoPagination">Halaman 1 dari 1</span>
+                </div>
+                <div>
+                    <button class="btn btn-outline-secondary btn-sm me-1"
+                            id="rpcBtnPrev"
+                            onclick="ubahHalamanPenjualanCoin('prev')" disabled>
+                        <i class="fas fa-chevron-left"></i> Sebelumnya
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm"
+                            id="rpcBtnNext"
+                            onclick="ubahHalamanPenjualanCoin('next')">
+                        Selanjutnya <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- SUB-BLOK 10.65.H6 — FOOTER KEMBALI -->
+        <div class="text-center mt-4 border-top pt-3">
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+    </div>
+</div>
+
+<!-- SUB-BLOK 10.65.H7 — MODAL DETAIL -->
+<div class="modal fade" id="modalDetailPenjualanCoin" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-info-circle me-2"></i>Detail Penjualan Coin
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalDetailPenjualanCoinBody">
+                <p class="text-muted text-center py-3">Memuat...</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Tutup</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.65 – RIWAYAT PENJUALAN COIN (HTML) ======= -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.65 – RIWAYAT PENJUALAN COIN (JS) ========= -->
+<!-- ============================================================ -->
+<script>
+(function BLOK_R_10_65_RIWAYAT_PENJUALAN_COIN() {
+    // ── Guard idempotency ──
+    if (window._blokR1065Done) {
+        console.log('ℹ️ BLOK R 10.65 sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR1065Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════════════
+    var rpcCurrentPage = 1;
+    var rpcItemsPerPage = 10;
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER
+    // ═══════════════════════════════════════════════════════════
+    function rpcEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function rpcRupiah(n) {
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+
+    function rpcSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function rpcWarnaRole(role) {
+        var m = {
+            'Toko':                 '#FF8C00',
+            'Pedagang Pasar':       '#28A745',
+            'Pedagang Makanan':     '#FFC107',
+            'COD Seller':           '#17A2B8',
+            'Grosir':               '#17A2B8',
+            'Distributor':          '#6F42C1',
+            'Ojek':                 '#DC3545',
+            'Jasa':                 '#FF5500',
+            'Developer Properti':   '#8B4513',
+            'Dealer dan Showroom':  '#003366',
+            'Finance Multifinance': '#046A38',
+            'Customer':             '#6C757D',
+            'Kasir':                '#198754',
+            'Staf Admin':           '#0D6EFD',
+            'Staf Marketing':       '#0D6EFD',
+            'Staf Penagihan':       '#0D6EFD',
+            'Customer Service':     '#0D6EFD',
+            'Event Organizer':      '#6C757D',
+            'Organisasi':           '#6C757D',
+            'Individu':             '#6C757D',
+            'Staf Owner Toko':      '#198754',
+            'Staf Owner Ojek':      '#198754'
+        };
+        return m[role] || '#6C757D';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) TAMPILKAN HALAMAN
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanRiwayatPenjualanCoin = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplRiwayatPenjualanCoin) {
+                var c = document.getElementById('riwayatPenjualanCoinContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Riwayat Penjualan Coin', '10.65');
+                    }
+                    return;
+                }
+                window._tplRiwayatPenjualanCoin = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Riwayat Penjualan Coin di-cache');
+            }
+
+            konten.innerHTML = window._tplRiwayatPenjualanCoin;
+
+            rpcCurrentPage = 1;
+
+            setTimeout(function() {
+                renderStatistikPenjualanCoin();
+                renderBreakdownPerRolePenjualanCoin();
+                renderRiwayatPenjualanCoin();
+                console.log('✅ BLOK R 10.65 — Riwayat Penjualan Coin rendered');
+            }, 200);
+        } catch (e) {
+            console.error('BLOK R 10.65 (1) error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) FILTER PERIODE CHANGE
+    // ═══════════════════════════════════════════════════════════
+    window.onPeriodePenjualanCoinChange = function() {
+        var periode = document.getElementById('rpcFilterPeriode')?.value;
+        var isCustom = periode === 'custom';
+        var wrapDari = document.getElementById('rpcFilterDariWrap');
+        var wrapSampai = document.getElementById('rpcFilterSampaiWrap');
+        if (wrapDari) wrapDari.style.display = isCustom ? 'block' : 'none';
+        if (wrapSampai) wrapSampai.style.display = isCustom ? 'block' : 'none';
+        renderRiwayatPenjualanCoin();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) GET FILTER AKTIF
+    // ═══════════════════════════════════════════════════════════
+    function rpcGetFilter() {
+        return {
+            periode: document.getElementById('rpcFilterPeriode')?.value || '30-hari',
+            dari:    document.getElementById('rpcFilterDari')?.value || null,
+            sampai:  document.getElementById('rpcFilterSampai')?.value || null,
+            role:    document.getElementById('rpcFilterRole')?.value || '',
+            metode:  document.getElementById('rpcFilterMetode')?.value || '',
+            cari:    (document.getElementById('rpcFilterCari')?.value || '')
+                        .toLowerCase().trim()
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.renderStatistikPenjualanCoin = function() {
+        try {
+            var f = rpcGetFilter();
+
+            var stat = (typeof hitungStatistikPenjualanCoinGlobal === 'function')
+                ? hitungStatistikPenjualanCoinGlobal(f.periode, f.dari, f.sampai)
+                : { totalCoin: 0, totalRp: 0, totalTrx: 0, rataHarga: 0 };
+
+            rpcSetText('rpcStatCoin', stat.totalCoin.toLocaleString('id-ID'));
+            rpcSetText('rpcStatRp',   rpcRupiah(stat.totalRp));
+            rpcSetText('rpcStatRata', rpcRupiah(stat.rataHarga));
+            rpcSetText('rpcStatTrx',  stat.totalTrx);
+        } catch (e) {
+            console.error('BLOK R 10.65 (4) renderStatistik error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) RENDER BREAKDOWN PER ROLE (CHIPS)
+    // ═══════════════════════════════════════════════════════════
+    window.renderBreakdownPerRolePenjualanCoin = function() {
+        try {
+            var container = document.getElementById('rpcBreakdownPerRole');
+            if (!container) return;
+
+            var f = rpcGetFilter();
+
+            var stat = (typeof hitungPenjualanCoinPerRoleGlobal === 'function')
+                ? hitungPenjualanCoinPerRoleGlobal(f.periode, f.dari, f.sampai)
+                : { perRole: {} };
+
+            var perRole = stat.perRole || {};
+            var roles = Object.keys(perRole);
+
+            if (roles.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            roles.sort(function(a, b) {
+                if (a === 'Jasa' && b !== 'Jasa') return -1;
+                if (b === 'Jasa' && a !== 'Jasa') return 1;
+                return perRole[b].coin - perRole[a].coin;
+            });
+
+            var html = '' +
+                '<div class="card border-0 shadow-sm bg-white">' +
+                    '<div class="card-body py-2">' +
+                        '<div class="d-flex align-items-center flex-wrap gap-2">' +
+                            '<small class="fw-bold text-muted me-2">' +
+                                '<i class="fas fa-layer-group me-1"></i>' +
+                                'Penjualan per Role (klik untuk filter):' +
+                            '</small>';
+
+            roles.forEach(function(role) {
+                var d = perRole[role];
+                var warna = rpcWarnaRole(role);
+                var ikon = role === 'Jasa' ? '⚙️ ' : '';
+                var roleEsc = role.replace(/'/g, "\\'");
+
+                html +=
+                    '<button type="button" class="btn btn-sm text-white" ' +
+                            'style="background:' + warna + ';font-size:12px;" ' +
+                            'title="Trx: ' + d.trx + ' | Coin: ' +
+                                Math.round(d.coin) + ' | Rp: ' +
+                                Math.round(d.rp).toLocaleString('id-ID') + '" ' +
+                            'onclick="rpcFilterRoleCepat(\'' + roleEsc + '\')">' +
+                        ikon + rpcEsc(role) +
+                        ' <span class="badge bg-light text-dark ms-1">' +
+                            Math.round(d.coin) + ' Coin</span>' +
+                        ' <span class="badge bg-light text-dark ms-1">' +
+                            d.trx + ' trx</span>' +
+                    '</button>';
+            });
+
+            html += '</div></div></div>';
+            container.innerHTML = html;
+        } catch (e) {
+            console.error('BLOK R 10.65 (5) renderBreakdownPerRole error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) FILTER CEPAT VIA CHIP
+    // ═══════════════════════════════════════════════════════════
+    window.rpcFilterRoleCepat = function(role) {
+        try {
+            var sel = document.getElementById('rpcFilterRole');
+            if (sel) sel.value = role;
+            renderRiwayatPenjualanCoin();
+        } catch (e) {
+            console.error('rpcFilterRoleCepat error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) RENDER TABEL
+    // ═══════════════════════════════════════════════════════════
+    window.renderRiwayatPenjualanCoin = function() {
+        try {
+            var tbody = document.getElementById('rpcTabel');
+            if (!tbody) return;
+
+            var f = rpcGetFilter();
+
+            var allData = (typeof loadRiwayatPenjualanCoinAll === 'function')
+                ? loadRiwayatPenjualanCoinAll()
+                : [];
+
+            // Filter periode
+            var dataPeriode = allData;
+            if (f.periode && f.periode !== 'semua') {
+                var range = (typeof _hitungRangeTanggalPendapatan === 'function')
+                    ? _hitungRangeTanggalPendapatan(f.periode, f.dari, f.sampai)
+                    : null;
+                if (range) {
+                    dataPeriode = allData.filter(function(t) {
+                        var tgl = new Date(t.verifiedAt || t.createdAt || 0);
+                        if (range.dari && tgl < range.dari) return false;
+                        if (range.sampai && tgl > range.sampai) return false;
+                        return true;
+                    });
+                }
+            }
+
+            // Filter tambahan
+            var dataFilter = dataPeriode.filter(function(t) {
+                var matchRole = f.role === '' || t.role === f.role;
+                var matchMetode = f.metode === '' ||
+                    (t.metode || '').toLowerCase().indexOf(f.metode.toLowerCase()) !== -1;
+                var matchCari = f.cari === '' ||
+                    (t.namaPembeli || '').toLowerCase().indexOf(f.cari) !== -1 ||
+                    (t.idUser || '').toLowerCase().indexOf(f.cari) !== -1 ||
+                    (t.id || '').toLowerCase().indexOf(f.cari) !== -1;
+
+                return matchRole && matchMetode && matchCari;
+            });
+
+            // Sort
+            dataFilter.sort(function(a, b) {
+                return new Date(b.verifiedAt || b.createdAt || 0) -
+                       new Date(a.verifiedAt || a.createdAt || 0);
+            });
+
+            renderStatistikPenjualanCoin();
+            renderBreakdownPerRolePenjualanCoin();
+
+            rpcSetText('rpcTotalData', dataFilter.length);
+            rpcSetText('rpcTotalDataBadge', dataFilter.length + ' Data');
+
+            // Pagination
+            var totalPages = Math.ceil(dataFilter.length / rpcItemsPerPage) || 1;
+            if (rpcCurrentPage > totalPages) rpcCurrentPage = totalPages;
+            if (rpcCurrentPage < 1) rpcCurrentPage = 1;
+
+            var start = (rpcCurrentPage - 1) * rpcItemsPerPage;
+            var end = start + rpcItemsPerPage;
+            var dataPaged = dataFilter.slice(start, end);
+
+            rpcSetText('rpcInfoPagination',
+                'Halaman ' + rpcCurrentPage + ' dari ' + totalPages);
+
+            var btnPrev = document.getElementById('rpcBtnPrev');
+            if (btnPrev) btnPrev.disabled = (rpcCurrentPage === 1);
+
+            var btnNext = document.getElementById('rpcBtnNext');
+            if (btnNext) btnNext.disabled = (rpcCurrentPage === totalPages);
+
+            if (dataPaged.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="10" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Tidak ada data penjualan coin.</td></tr>';
+                return;
+            }
+
+            var html = '';
+            dataPaged.forEach(function(t, i) {
+                var nomor = start + i + 1;
+                var coin = parseInt(t.jumlahKoin, 10) || 0;
+                var rp = parseFloat(t.totalRupiah) || 0;
+                var hargaPerCoin = coin > 0 ? Math.round(rp / coin) : 0;
+
+                var warnaRole = rpcWarnaRole(t.role);
+                var ikonRole = t.role === 'Jasa' ? '⚙️ ' : '';
+                var tgl = t.verifiedAt
+                    ? new Date(t.verifiedAt).toLocaleString('id-ID', {
+                        day: '2-digit', month: 'short', year: '2-digit',
+                        hour: '2-digit', minute: '2-digit', hour12: false
+                    })
+                    : (t.tanggal || '-');
+
+                var metodeBadge = 'bg-secondary';
+                var metodeTxt = t.metode || '-';
+                if (metodeTxt.toLowerCase().indexOf('transfer') !== -1) metodeBadge = 'bg-primary';
+                else if (metodeTxt.toLowerCase().indexOf('wallet') !== -1) metodeBadge = 'bg-success';
+                else if (metodeTxt.toLowerCase().indexOf('cash') !== -1) metodeBadge = 'bg-warning text-dark';
+
+                html += '<tr>' +
+                    '<td>' + nomor + '</td>' +
+                    '<td><small>' + rpcEsc(tgl) + '</small></td>' +
+                    '<td>' +
+                        '<strong>' + rpcEsc(t.namaPembeli || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + rpcEsc(t.idUser || '-') + '</small>' +
+                    '</td>' +
+                    '<td><span class="badge" style="background:' + warnaRole + ';">' +
+                        ikonRole + rpcEsc(t.role || '-') + '</span></td>' +
+                    '<td class="text-end fw-bold text-warning">' +
+                        coin.toLocaleString('id-ID') + '</td>' +
+                    '<td class="text-end">' + rpcRupiah(hargaPerCoin) + '</td>' +
+                    '<td class="text-end fw-bold text-success">' +
+                        rpcRupiah(rp) + '</td>' +
+                    '<td><span class="badge ' + metodeBadge + '">' +
+                        rpcEsc(metodeTxt) + '</span></td>' +
+                    '<td><small>' + rpcEsc(t.id || '-') + '</small></td>' +
+                    '<td>' +
+                        '<button class="btn btn-sm btn-outline-primary" ' +
+                            'onclick="rpcBukaDetail(\'' + t.id + '\')" title="Detail">' +
+                            '<i class="fas fa-eye"></i>' +
+                        '</button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('BLOK R 10.65 (7) renderTabel error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) NAVIGASI PAGINATION
+    // ═══════════════════════════════════════════════════════════
+    window.ubahHalamanPenjualanCoin = function(arah) {
+        if (arah === 'prev' && rpcCurrentPage > 1) {
+            rpcCurrentPage--;
+            renderRiwayatPenjualanCoin();
+        } else if (arah === 'next') {
+            rpcCurrentPage++;
+            renderRiwayatPenjualanCoin();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) RESET FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterPenjualanCoin = function() {
+        var elP = document.getElementById('rpcFilterPeriode');
+        if (elP) elP.value = '30-hari';
+
+        var elD = document.getElementById('rpcFilterDari');
+        if (elD) elD.value = '';
+        var elS = document.getElementById('rpcFilterSampai');
+        if (elS) elS.value = '';
+
+        var elR = document.getElementById('rpcFilterRole');
+        if (elR) elR.value = '';
+        var elM = document.getElementById('rpcFilterMetode');
+        if (elM) elM.value = '';
+        var elC = document.getElementById('rpcFilterCari');
+        if (elC) elC.value = '';
+
+        var wD = document.getElementById('rpcFilterDariWrap');
+        if (wD) wD.style.display = 'none';
+        var wS = document.getElementById('rpcFilterSampaiWrap');
+        if (wS) wS.style.display = 'none';
+
+        rpcCurrentPage = 1;
+        renderRiwayatPenjualanCoin();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) DETAIL TRANSAKSI
+    // ═══════════════════════════════════════════════════════════
+    window.rpcBukaDetail = function(idTransaksi) {
+        try {
+            var allData = (typeof loadRiwayatPenjualanCoinAll === 'function')
+                ? loadRiwayatPenjualanCoinAll() : [];
+            var t = allData.find(function(x) { return x.id === idTransaksi; });
+            if (!t) { alert('Data tidak ditemukan.'); return; }
+
+            var coin = parseInt(t.jumlahKoin, 10) || 0;
+            var rp = parseFloat(t.totalRupiah) || 0;
+            var hargaPerCoin = coin > 0 ? Math.round(rp / coin) : 0;
+
+            var warnaRole = rpcWarnaRole(t.role);
+            var ikonRole = t.role === 'Jasa' ? '⚙️ ' : '';
+
+            var html = '' +
+                '<table class="table table-sm table-borderless mb-0">' +
+                    '<tr><td class="fw-bold text-muted" style="width:200px;">ID Top-Up</td>' +
+                        '<td>' + rpcEsc(t.id || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Tanggal</td>' +
+                        '<td>' + (t.verifiedAt
+                            ? new Date(t.verifiedAt).toLocaleString('id-ID', { hour12: false })
+                            : '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">User</td>' +
+                        '<td><strong>' + rpcEsc(t.namaPembeli || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + rpcEsc(t.idUser || '-') + '</small></td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Role</td>' +
+                        '<td><span class="badge" style="background:' + warnaRole + ';">' +
+                        ikonRole + rpcEsc(t.role || '-') + '</span></td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Jumlah Coin</td>' +
+                        '<td class="fw-bold text-warning fs-5">' +
+                        coin.toLocaleString('id-ID') + ' Coin</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Harga per Coin</td>' +
+                        '<td>' + rpcRupiah(hargaPerCoin) + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Total Rupiah</td>' +
+                        '<td class="fw-bold text-success fs-5">' + rpcRupiah(rp) + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Metode</td>' +
+                        '<td>' + rpcEsc(t.metode || '-') + '</td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Kode Verifikasi</td>' +
+                        '<td><code>' + rpcEsc(t.kodeVerifikasi || '-') + '</code></td></tr>' +
+                    '<tr><td class="fw-bold text-muted">Diverifikasi Oleh</td>' +
+                        '<td><code>' + rpcEsc(t.verifiedBy || '-') + '</code></td></tr>';
+
+            if (t.keterangan) {
+                html += '<tr><td class="fw-bold text-muted">Keterangan</td>' +
+                        '<td>' + rpcEsc(t.keterangan) + '</td></tr>';
+            }
+
+            html += '</table>';
+
+            if (t.buktiTransfer) {
+                html += '<hr>' +
+                    '<h6 class="fw-bold mb-2">' +
+                        '<i class="fas fa-image me-1"></i>Bukti Transfer' +
+                    '</h6>' +
+                    '<div class="text-center">' +
+                        '<img src="' + t.buktiTransfer + '" ' +
+                             'class="img-fluid rounded border" ' +
+                             'style="max-height:400px;">' +
+                    '</div>';
+            }
+
+            var bodyEl = document.getElementById('modalDetailPenjualanCoinBody');
+            if (bodyEl) bodyEl.innerHTML = html;
+
+            new bootstrap.Modal(document.getElementById('modalDetailPenjualanCoin')).show();
+        } catch (e) {
+            console.error('rpcBukaDetail error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (11) EXPORT CSV
+    // ═══════════════════════════════════════════════════════════
+    window.exportCSVPenjualanCoin = function() {
+        try {
+            var f = rpcGetFilter();
+            var allData = loadRiwayatPenjualanCoinAll();
+
+            var dataPeriode = allData;
+            if (f.periode && f.periode !== 'semua') {
+                var range = (typeof _hitungRangeTanggalPendapatan === 'function')
+                    ? _hitungRangeTanggalPendapatan(f.periode, f.dari, f.sampai)
+                    : null;
+                if (range) {
+                    dataPeriode = allData.filter(function(t) {
+                        var tgl = new Date(t.verifiedAt || t.createdAt || 0);
+                        if (range.dari && tgl < range.dari) return false;
+                        if (range.sampai && tgl > range.sampai) return false;
+                        return true;
+                    });
+                }
+            }
+
+            var dataFilter = dataPeriode.filter(function(t) {
+                var matchRole = f.role === '' || t.role === f.role;
+                var matchMetode = f.metode === '' ||
+                    (t.metode || '').toLowerCase().indexOf(f.metode.toLowerCase()) !== -1;
+                var matchCari = f.cari === '' ||
+                    (t.namaPembeli || '').toLowerCase().indexOf(f.cari) !== -1 ||
+                    (t.idUser || '').toLowerCase().indexOf(f.cari) !== -1 ||
+                    (t.id || '').toLowerCase().indexOf(f.cari) !== -1;
+                return matchRole && matchMetode && matchCari;
+            });
+
+            if (dataFilter.length === 0) {
+                alert('⚠️ Tidak ada data untuk diexport.');
+                return;
+            }
+
+            var headers = ['No', 'Tanggal', 'User', 'ID User', 'Role',
+                           'Coin', 'Harga/Coin', 'Total Rp', 'Metode',
+                           'ID Top-Up', 'Kode Verifikasi', 'Verified By'];
+            var csv = headers.join(';') + '\n';
+
+            dataFilter.forEach(function(t, i) {
+                var coin = parseInt(t.jumlahKoin, 10) || 0;
+                var rp = parseFloat(t.totalRupiah) || 0;
+                var hpc = coin > 0 ? Math.round(rp / coin) : 0;
+                var tgl = t.verifiedAt
+                    ? new Date(t.verifiedAt).toLocaleString('id-ID', { hour12: false })
+                    : '-';
+
+                var row = [
+                    i + 1, tgl, t.namaPembeli || '-', t.idUser || '-',
+                    t.role || '-', coin, hpc, rp, t.metode || '-',
+                    t.id || '-', t.kodeVerifikasi || '-', t.verifiedBy || '-'
+                ];
+
+                csv += row.map(function(v) {
+                    return '"' + String(v).replace(/"/g, '""') + '"';
+                }).join(';') + '\n';
+            });
+
+            var blob = new Blob(['\uFEFF' + csv], {
+                type: 'text/csv;charset=utf-8;'
+            });
+            var link = document.createElement('a');
+            var url = URL.createObjectURL(blob);
+            link.href = url;
+            link.download = 'penjualan_coin_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            console.error('exportCSVPenjualanCoin error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (12) HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanRiwayatPenjualanCoin'] = function() {
+        if (typeof window.tampilkanRiwayatPenjualanCoin === 'function') {
+            window.tampilkanRiwayatPenjualanCoin();
+        }
+    };
+
+    console.log('✅ BLOK R 10.65 – Riwayat Penjualan Coin terpasang.');
+    console.log('   (1)  tampilkanRiwayatPenjualanCoin');
+    console.log('   (2)  onPeriodePenjualanCoinChange');
+    console.log('   (3)  rpcGetFilter (internal)');
+    console.log('   (4)  renderStatistikPenjualanCoin');
+    console.log('   (5)  renderBreakdownPerRolePenjualanCoin');
+    console.log('   (6)  rpcFilterRoleCepat');
+    console.log('   (7)  renderRiwayatPenjualanCoin');
+    console.log('   (8)  ubahHalamanPenjualanCoin');
+    console.log('   (9)  resetFilterPenjualanCoin');
+    console.log('   (10) rpcBukaDetail');
+    console.log('   (11) exportCSVPenjualanCoin');
+    console.log('   (12) Handler menu');
+})();
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.65 (JS) ============================ -->
 <!-- ============================================================ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
