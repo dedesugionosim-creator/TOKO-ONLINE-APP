@@ -28767,7 +28767,2372 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
 <!-- AKHIR BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK KE TRANSAKSI -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function INTEGRASI_PRECHECK_TRANSAKSI() {
+    if (window._integrasiPrecheckDone) {
+        console.log('ℹ️ Integrasi pre-check sudah terpasang — dilewati.');
+        return;
+    }
+    window._integrasiPrecheckDone = true;
 
+    // ═══════════════════════════════════════════════════════════
+    // 591 — HELPER: WRAP FUNGSI DENGAN PRE-CHECK + POST-CHECK
+    // ------------------------------------------------------------
+    // preCheck(args, context) → { boleh, pesan, kode }
+    // postCheck(args, hasil, context) → optional
+    // ═══════════════════════════════════════════════════════════
+    function wrapFungsi(namaFungsi, preCheck, postCheck) {
+        var original = window[namaFungsi];
+        if (typeof original !== 'function') {
+            console.warn('⚠️ ' + namaFungsi + ' belum ada — wrap ditunda.');
+            return false;
+        }
+
+        // Cegah double wrap
+        if (original._antiHackWrapped) {
+            console.log('ℹ️ ' + namaFungsi + ' sudah di-wrap.');
+            return true;
+        }
+
+        var wrapped = function() {
+            var args = Array.prototype.slice.call(arguments);
+            var ctx = this;
+
+            // ── PRE-CHECK ──
+            if (typeof preCheck === 'function') {
+                try {
+                    var pre = preCheck(args, ctx);
+                    if (pre && pre.boleh === false) {
+                        // Log block attempt
+                        try {
+                            if (typeof catatAktivitasGlobal === 'function') {
+                                catatAktivitasGlobal(
+                                    (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SYSTEM',
+                                    'BLOCKED ' + namaFungsi,
+                                    'Pre-check tolak: ' + pre.kode + ' — ' + pre.pesan
+                                );
+                            }
+                        } catch (e) {}
+
+                        return {
+                            sukses: false,
+                            pesan: pre.pesan || 'Diblokir oleh sistem keamanan.',
+                            kode: pre.kode || 'BLOCKED',
+                            severity: pre.severity || 'high'
+                        };
+                    }
+                } catch (e) {
+                    console.warn('Pre-check ' + namaFungsi + ' error:', e);
+                }
+            }
+
+            // ── CALL ORIGINAL ──
+            var hasil;
+            try {
+                hasil = original.apply(ctx, args);
+            } catch (e) {
+                console.error(namaFungsi + ' error:', e);
+                return { sukses: false, pesan: e.message };
+            }
+
+            // ── POST-CHECK ──
+            if (typeof postCheck === 'function') {
+                try {
+                    postCheck(args, hasil, ctx);
+                } catch (e) {
+                    console.warn('Post-check ' + namaFungsi + ' error:', e);
+                }
+            }
+
+            return hasil;
+        };
+
+        wrapped._antiHackWrapped = true;
+        wrapped._original = original;
+
+        window[namaFungsi] = wrapped;
+        console.log('✅ Wrap: ' + namaFungsi);
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 592 — WRAP: transferCoin
+    // ------------------------------------------------------------
+    // Signature: transferCoin(idPengirim, idPenerima, jumlah, keterangan)
+    // ═══════════════════════════════════════════════════════════
+    function preTransferCoin(args) {
+        var idPengirim = args[0];
+        var idPenerima = args[1];
+        var jumlah = parseFloat(args[2]) || 0;
+
+        if (!idPengirim || !idPenerima) {
+            return { boleh: false, kode: 'INVALID', pesan: 'ID pengirim/penerima tidak valid.' };
+        }
+
+        // Cek self-transfer
+        if (idPengirim === idPenerima) {
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(idPengirim, 'SELF-TRANSFER DETECTED',
+                        'User ' + idPengirim + ' mencoba transfer ke diri sendiri');
+                }
+            } catch (e) {}
+
+            return {
+                boleh: false,
+                kode: 'SELF_TRANSFER',
+                pesan: '⛔ Tidak bisa transfer ke diri sendiri.',
+                severity: 'critical'
+            };
+        }
+
+        // Pre-check coin
+        if (typeof cekSebelumTransaksiCoin === 'function') {
+            return cekSebelumTransaksiCoin(idPengirim, 'transfer', jumlah);
+        }
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 593 — WRAP: kurangSaldoDompet
+    // ------------------------------------------------------------
+    // Signature: kurangSaldoDompet(idUser, jumlah, keterangan, meta)
+    // ------------------------------------------------------------
+    // ATURAN KHUSUS: Hanya blokir kalau meta.tipeTransaksi BUKAN
+    // internal rollback/auto. Rollback harus tetap bisa jalan.
+    // ═══════════════════════════════════════════════════════════
+    function preKurangSaldoDompet(args) {
+        var idUser = args[0];
+        var meta = args[3] || {};
+        var tipeInternal = meta.tipeTransaksi || '';
+
+        // Rollback / auto-system boleh lewat
+        if (tipeInternal === 'rollback' ||
+            tipeInternal === 'withdraw-hold' ||
+            tipeInternal === 'withdraw-refund' ||
+            tipeInternal === 'order-ojek' ||
+            tipeInternal === 'biaya-jasa-ojek' ||
+            tipeInternal === 'intervensi') {
+            return { boleh: true, _skip: true };
+        }
+
+        // Cek dompet frozen
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idUser)) {
+            var f = getDompetFrozen(idUser);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet Anda dibekukan. Alasan: ' + (f.alasanFreeze || '-'),
+                severity: f.severity || 'high'
+            };
+        }
+
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 594 — WRAP: prosesBelanjaDenganCoin
+    // ------------------------------------------------------------
+    // Signature: prosesBelanjaDenganCoin(idPembeli, idPenjual, jumlahCoin, idTransaksi, keterangan)
+    // ═══════════════════════════════════════════════════════════
+    function preProsesBelanjaDenganCoin(args) {
+        var idPembeli = args[0];
+        var idPenjual = args[1];
+        var jumlahCoin = parseInt(args[2], 10) || 0;
+
+        if (!idPembeli || !idPenjual) {
+            return { boleh: false, kode: 'INVALID', pesan: 'Data tidak valid.' };
+        }
+
+        // Cek pembeli coin palsu
+        if (typeof cekSebelumTransaksiCoin === 'function') {
+            var cek = cekSebelumTransaksiCoin(idPembeli, 'belanja', jumlahCoin);
+            if (!cek.boleh) return cek;
+        }
+
+        // Cek penjual juga tidak frozen (untuk terima reward)
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idPenjual)) {
+            return {
+                boleh: false,
+                kode: 'PENJUAL_FROZEN',
+                pesan: '⛔ Penjual sedang dibekukan. Transaksi dibatalkan.',
+                severity: 'high'
+            };
+        }
+
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 595 — WRAP: konversiGifKeR2Coin
+    // ------------------------------------------------------------
+    // Signature: konversiGifKeR2Coin(idUser, giftId, jumlahGif)
+    // Pre-check: cekGifSebelumKonversi
+    // Post-check: kurangi dari registri GIF
+    // ═══════════════════════════════════════════════════════════
+    function preKonversiGif(args) {
+        var idUser = args[0];
+        var giftId = args[1];
+        var jumlahGif = parseInt(args[2], 10) || 0;
+
+        if (!idUser || !giftId) {
+            return { boleh: false, kode: 'INVALID', pesan: 'Data tidak valid.' };
+        }
+
+        if (typeof cekGifSebelumKonversi === 'function') {
+            return cekGifSebelumKonversi(idUser, giftId, jumlahGif);
+        }
+        return { boleh: true };
+    }
+
+    function postKonversiGif(args, hasil) {
+        // Kalau konversi sukses → kurangi dari registri
+        if (!hasil || !hasil.sukses) return;
+
+        var idUser = args[0];
+        var giftId = args[1];
+        // jumlah yang BENAR-BENAR terpakai (bukan yang diminta)
+        var jumlahTerpakai = hasil.jumlahTerpakai || args[2];
+
+        try {
+            if (typeof kurangiUnitGifDariRegistri === 'function') {
+                kurangiUnitGifDariRegistri(idUser, giftId, jumlahTerpakai);
+            }
+        } catch (e) {
+            console.warn('postKonversiGif: gagal update registri', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 596 — WRAP: kirimGiftSawer
+    // ------------------------------------------------------------
+    // Signature: kirimGiftSawer(idPengirim, idPenerima, giftId, jumlahGif, catatan)
+    // Pre-check: wallet frozen + asal GIF pengirim
+    // Post-check: update registri (kurang dari pengirim, tambah ke penerima)
+    // ═══════════════════════════════════════════════════════════
+    function preKirimGiftSawer(args) {
+        var idPengirim = args[0];
+        var idPenerima = args[1];
+        var giftId = args[2];
+        var jumlahGif = parseInt(args[3], 10) || 0;
+
+        if (!idPengirim || !idPenerima || !giftId) {
+            return { boleh: false, kode: 'INVALID', pesan: 'Data tidak valid.' };
+        }
+
+        // Self-send
+        if (idPengirim === idPenerima) {
+            return {
+                boleh: false,
+                kode: 'SELF_SEND',
+                pesan: '⛔ Tidak bisa kirim gift ke diri sendiri.',
+                severity: 'critical'
+            };
+        }
+
+        // Cek wallet frozen
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idPengirim)) {
+            var f = getDompetFrozen(idPengirim);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet Anda dibekukan. Alasan: ' + (f.alasanFreeze || '-'),
+                severity: f.severity || 'high'
+            };
+        }
+
+        // Cek stok GIF pengirim tidak frozen
+        if (typeof isStokGifFrozen === 'function' && isStokGifFrozen(idPengirim)) {
+            return {
+                boleh: false,
+                kode: 'GIF_FROZEN',
+                pesan: '⛔ Stok GIF Anda dibekukan.',
+                severity: 'high'
+            };
+        }
+
+        // Cek katalog global
+        if (typeof isKatalogGifFrozen === 'function' && isKatalogGifFrozen()) {
+            return {
+                boleh: false,
+                kode: 'KATALOG_FROZEN',
+                pesan: '⏸️ Kirim gift ditangguhkan sementara.',
+                severity: 'critical'
+            };
+        }
+
+        return { boleh: true };
+    }
+
+    function postKirimGiftSawer(args, hasil) {
+        if (!hasil || !hasil.sukses) return;
+
+        var idPengirim = args[0];
+        var idPenerima = args[1];
+        var giftId = args[2];
+        var jumlahTerkirim = hasil.jumlahTerkirim || 0;
+
+        try {
+            // 1. Generate unit IDs unik
+            var unitIds = generateUnitIdsGif(giftId, hasil.idRiwayat || ('GIFT-' + Date.now()), jumlahTerkirim);
+
+            // 2. Kurangi dari registri pengirim
+            if (typeof kurangiUnitGifDariRegistri === 'function') {
+                var kurangi = kurangiUnitGifDariRegistri(idPengirim, giftId, jumlahTerkirim);
+                if (!kurangi.sukses) {
+                    console.warn('postKirimGiftSawer: gagal kurangi registri pengirim', kurangi.pesan);
+                }
+            }
+
+            // 3. Tambah ke registri penerima
+            var pengirim = (typeof getDataIdUser === 'function') ? getDataIdUser(idPengirim) : null;
+            var hash = hitungHashValidasiGif(hasil.idRiwayat || '', idPengirim, giftId, jumlahTerkirim);
+
+            if (typeof tambahUnitGifKeRegistri === 'function') {
+                tambahUnitGifKeRegistri(idPenerima, giftId, unitIds, {
+                    asalUserId:       idPengirim,
+                    asalUserName:     pengirim ? pengirim.nama : '-',
+                    idTransaksiKirim: hasil.idRiwayat || null,
+                    hashValidasi:     hash,
+                    statusAsal:       'valid',
+                    namaGift:         hasil.giftNama || '-',
+                    icon:             hasil.giftIcon || '🎁'
+                });
+            }
+        } catch (e) {
+            console.warn('postKirimGiftSawer error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 597 — WRAP: ajukanWithdraw
+    // ------------------------------------------------------------
+    // Signature: ajukanWithdraw(idUser, jumlahKoin, rekeningTujuan, keterangan)
+    // ═══════════════════════════════════════════════════════════
+    function preAjukanWithdraw(args) {
+        var idUser = args[0];
+        var jumlahKoin = parseInt(args[1], 10) || 0;
+
+        if (!idUser) return { boleh: false, kode: 'INVALID', pesan: 'User tidak valid.' };
+
+        // Cek dompet frozen
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idUser)) {
+            var f = getDompetFrozen(idUser);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet Anda dibekukan. Tidak bisa withdraw. Alasan: ' + (f.alasanFreeze || '-'),
+                severity: f.severity || 'high'
+            };
+        }
+
+        // Cek pre-transaksi
+        if (typeof cekSebelumTransaksiCoin === 'function') {
+            var cek = cekSebelumTransaksiCoin(idUser, 'withdraw', jumlahKoin);
+            if (!cek.boleh) return cek;
+        }
+
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 598 — WRAP: tambahSaldoDompet (LOG SUMBER)
+    // ------------------------------------------------------------
+    // Tidak block — hanya log untuk tracking asal coin.
+    // Kecuali meta.tipeTransaksi === 'unknown' → flag!
+    // ═══════════════════════════════════════════════════════════
+    function postTambahSaldoDompet(args, hasil) {
+        if (!hasil || !hasil.sukses) return;
+
+        var idUser = args[0];
+        var jumlah = parseFloat(args[1]) || 0;
+        var keterangan = args[2] || '';
+        var meta = args[3] || {};
+
+        var tipe = meta.tipeTransaksi || '';
+
+        // Kalau tipe kosong atau 'unknown' → suspicious
+        if (!tipe || tipe === 'unknown') {
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal('SYSTEM_AUTO', 'SUSPICIOUS CREDIT',
+                        'User ' + idUser + ' terima ' + jumlah + ' coin tanpa tipe transaksi jelas. Ket: ' + keterangan);
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 599 — HOOK: kurangStokGif (CEK FREEZE)
+    // ------------------------------------------------------------
+    // Jangan sampai user frozen bisa manipulasi stok
+    // ═══════════════════════════════════════════════════════════
+    function preKurangStokGif(args) {
+        var idUser = args[0];
+        if (!idUser) return { boleh: false, kode: 'INVALID', pesan: 'User tidak valid.' };
+
+        // Cek katalog global frozen (blokir semua pengurangan)
+        if (typeof isKatalogGifFrozen === 'function' && isKatalogGifFrozen()) {
+            return {
+                boleh: false,
+                kode: 'KATALOG_FROZEN',
+                pesan: '⏸️ Sistem sedang maintenance GIF. Coba lagi nanti.',
+                severity: 'critical'
+            };
+        }
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 600 — WRAP: kirimChatOtomatis (SCAN CHAT DARI SISTEM)
+    // ------------------------------------------------------------
+    // Supaya pesan sistem yang mencurigakan (mis. dari hacker) tetap
+    // ter-flag. Skip kalau pengirim = SA atau SYSTEM.
+    // ═══════════════════════════════════════════════════════════
+    function postKirimChatOtomatis(args) {
+        var idPengirim = args[0];
+        if (idPengirim === 'ID_TK2R_SA-0001' || idPengirim === 'SYSTEM_AUTO') return;
+
+        // Kalau ada chat dari user yang di-frozen → flag
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idPengirim)) {
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal('SYSTEM_AUTO', 'CHAT FROM FROZEN USER',
+                        'User ' + idPengirim + ' chat meski frozen');
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 601 — APPLY SEMUA WRAP (DENGAN RETRY)
+    // ═══════════════════════════════════════════════════════════
+    function applyAllWraps() {
+        var results = {
+            transferCoin:                wrapFungsi('transferCoin', preTransferCoin),
+            kurangSaldoDompet:           wrapFungsi('kurangSaldoDompet', preKurangSaldoDompet),
+            prosesBelanjaDenganCoin:     wrapFungsi('prosesBelanjaDenganCoin', preProsesBelanjaDenganCoin),
+            konversiGifKeR2Coin:         wrapFungsi('konversiGifKeR2Coin', preKonversiGif, postKonversiGif),
+            kirimGiftSawer:              wrapFungsi('kirimGiftSawer', preKirimGiftSawer, postKirimGiftSawer),
+            ajukanWithdraw:              wrapFungsi('ajukanWithdraw', preAjukanWithdraw),
+            tambahSaldoDompet:           wrapFungsi('tambahSaldoDompet', null, postTambahSaldoDompet),
+            kurangStokGif:               wrapFungsi('kurangStokGif', preKurangStokGif),
+            kirimChatOtomatis:           wrapFungsi('kirimChatOtomatis', null, postKirimChatOtomatis)
+        };
+
+        var total = 0, sukses = 0;
+        Object.keys(results).forEach(function(k) {
+            total++;
+            if (results[k]) sukses++;
+        });
+
+        return { total: total, sukses: sukses, detail: results };
+    }
+
+    // ── Apply pertama ──
+    var apply1 = applyAllWraps();
+    console.log('📦 Wrap pass 1: ' + apply1.sukses + '/' + apply1.total + ' fungsi');
+
+    // ── Retry via setTimeout untuk fungsi yang belum ada ──
+    var retryCount = 0;
+    var maxRetry = 5;
+    var retryInterval = setInterval(function() {
+        retryCount++;
+
+        var missing = [];
+        ['transferCoin', 'kurangSaldoDompet', 'prosesBelanjaDenganCoin',
+         'konversiGifKeR2Coin', 'kirimGiftSawer', 'ajukanWithdraw',
+         'tambahSaldoDompet', 'kurangStokGif', 'kirimChatOtomatis']
+        .forEach(function(nama) {
+            var fn = window[nama];
+            if (typeof fn === 'function' && !fn._antiHackWrapped) {
+                missing.push(nama);
+            }
+        });
+
+        if (missing.length === 0 || retryCount >= maxRetry) {
+            clearInterval(retryInterval);
+            if (missing.length === 0) {
+                console.log('✅ Semua wrap selesai di retry ke-' + retryCount);
+            } else {
+                console.warn('⚠️ Wrap gagal untuk: ' + missing.join(', '));
+            }
+            return;
+        }
+
+        console.log('🔄 Retry wrap (ke-' + retryCount + '): ' + missing.length + ' fungsi');
+        applyAllWraps();
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // 602 — HELPER: CEK STATUS WRAP
+    // ═══════════════════════════════════════════════════════════
+    window.cekStatusWrapAntiHack = function() {
+        var daftar = [
+            'transferCoin', 'kurangSaldoDompet', 'prosesBelanjaDenganCoin',
+            'konversiGifKeR2Coin', 'kirimGiftSawer', 'ajukanWithdraw',
+            'tambahSaldoDompet', 'kurangStokGif', 'kirimChatOtomatis'
+        ];
+        var hasil = { total: daftar.length, wrapped: 0, list: {} };
+
+        daftar.forEach(function(nama) {
+            var fn = window[nama];
+            var isWrapped = typeof fn === 'function' && fn._antiHackWrapped === true;
+            hasil.list[nama] = {
+                ada: typeof fn === 'function',
+                wrapped: isWrapped
+            };
+            if (isWrapped) hasil.wrapped++;
+        });
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 603 — EMERGENCY UNWRAP (untuk debug)
+    // ------------------------------------------------------------
+    // Kalau wrap malah bikin bug, panggil ini untuk revert ke original.
+    // ═══════════════════════════════════════════════════════════
+    window.emergencyUnwrapAntiHack = function() {
+        var count = 0;
+        var daftar = [
+            'transferCoin', 'kurangSaldoDompet', 'prosesBelanjaDenganCoin',
+            'konversiGifKeR2Coin', 'kirimGiftSawer', 'ajukanWithdraw',
+            'tambahSaldoDompet', 'kurangStokGif', 'kirimChatOtomatis'
+        ];
+
+        daftar.forEach(function(nama) {
+            var fn = window[nama];
+            if (typeof fn === 'function' && fn._antiHackWrapped && fn._original) {
+                window[nama] = fn._original;
+                count++;
+                console.log('↩️ Reverted:', nama);
+            }
+        });
+
+        console.log('⚠️ EMERGENCY UNWRAP selesai. ' + count + ' fungsi dikembalikan.');
+        return { sukses: true, direvert: count };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 604 — LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK terpasang.');
+    console.log('   🔗 Wrap fungsi: 9 (transfer, belanja, gif, withdraw, dll)');
+    console.log('   🛠️  Helper: 2 (cekStatusWrap, emergencyUnwrap)');
+    console.log('   📊 Wrap awal: ' + apply1.sukses + '/' + apply1.total);
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (621–650) — NOTIFIKASI SA REAL-TIME ANTI-HACK -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function NOTIFIKASI_SA_REALTIME() {
+    if (window._notifSARealtimeDone) {
+        console.log('ℹ️ Notifikasi SA Real-Time sudah terpasang — dilewati.');
+        return;
+    }
+    window._notifSARealtimeDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // 621 — KONFIGURASI NOTIF SA
+    // ═══════════════════════════════════════════════════════════
+    window.NOTIF_SA_CONFIG = {
+        STORAGE_KEY:           'dataNotifAntiHackSA',
+        MAX_HISTORY:           100,
+        AUTO_REFRESH_BELL_MS:  10000,       // 10 detik
+        TOAST_DURATION_MS:     8000,
+        SOUND_ENABLED:         true,
+        SOUND_URL:             'data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQBvT18AAAA=',  // placeholder — bisa diganti
+        AGGREGATE_WINDOW_MS:   60000        // 1 menit
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 622 — HITUNG NOTIF ANTI-HACK BELUM DIBACA
+    // ═══════════════════════════════════════════════════════════
+    window.getTotalNotifAntiHackBelumDibaca = function() {
+        try {
+            var raw = localStorage.getItem(NOTIF_SA_CONFIG.STORAGE_KEY);
+            if (!raw) return 0;
+            var list = JSON.parse(raw);
+            if (!Array.isArray(list)) return 0;
+            return list.filter(function(n) { return !n.dibaca; }).length;
+        } catch (e) {
+            return 0;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 623 — SIMPAN NOTIF ANTI-HACK
+    // ═══════════════════════════════════════════════════════════
+    window.simpanNotifAntiHack = function(notif) {
+        try {
+            var list = [];
+            var raw = localStorage.getItem(NOTIF_SA_CONFIG.STORAGE_KEY);
+            if (raw) {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) list = parsed;
+            }
+
+            // Dedup: kalau notif dengan idUser + tipe sama sudah ada <1 menit, update
+            var now = Date.now();
+            var existing = list.find(function(n) {
+                return n.idUser === notif.idUser &&
+                       n.tipe === notif.tipe &&
+                       (now - new Date(n.waktu).getTime()) < NOTIF_SA_CONFIG.AGGREGATE_WINDOW_MS;
+            });
+
+            if (existing) {
+                existing.jumlahKejadian = (existing.jumlahKejadian || 1) + 1;
+                existing.waktu = new Date().toISOString();
+                existing.dibaca = false; // Reset kalau baru
+                if (notif.severity && existing.severity !== 'critical') {
+                    existing.severity = notif.severity;
+                }
+            } else {
+                notif.id = notif.id || ('NOTIF-AH-' + Date.now() + '-' + Math.floor(Math.random() * 1000));
+                notif.waktu = notif.waktu || new Date().toISOString();
+                notif.dibaca = false;
+                notif.jumlahKejadian = 1;
+                list.unshift(notif);
+            }
+
+            // Batasi max
+            if (list.length > NOTIF_SA_CONFIG.MAX_HISTORY) {
+                list = list.slice(0, NOTIF_SA_CONFIG.MAX_HISTORY);
+            }
+
+            localStorage.setItem(NOTIF_SA_CONFIG.STORAGE_KEY, JSON.stringify(list));
+            return { sukses: true, notif: notif };
+        } catch (e) {
+            console.warn('simpanNotifAntiHack error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 624 — BACA SEMUA NOTIF ANTI-HACK
+    // ═══════════════════════════════════════════════════════════
+    window.loadNotifAntiHack = function() {
+        try {
+            var raw = localStorage.getItem(NOTIF_SA_CONFIG.STORAGE_KEY);
+            if (!raw) return [];
+            var list = JSON.parse(raw);
+            return Array.isArray(list) ? list : [];
+        } catch (e) {
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 625 — TANDAI SATU NOTIF DIBACA
+    // ═══════════════════════════════════════════════════════════
+    window.tandaiNotifAntiHackDibaca = function(idNotif) {
+        try {
+            var list = loadNotifAntiHack();
+            var idx = list.findIndex(function(n) { return n.id === idNotif; });
+            if (idx === -1) return { sukses: false };
+
+            list[idx].dibaca = true;
+            list[idx].dibacaPada = new Date().toISOString();
+            localStorage.setItem(NOTIF_SA_CONFIG.STORAGE_KEY, JSON.stringify(list));
+
+            renderBadgeAntiHack();
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 626 — TANDAI SEMUA NOTIF DIBACA
+    // ═══════════════════════════════════════════════════════════
+    window.tandaiSemuaNotifAntiHackDibaca = function() {
+        try {
+            var list = loadNotifAntiHack();
+            var now = new Date().toISOString();
+            list.forEach(function(n) {
+                if (!n.dibaca) {
+                    n.dibaca = true;
+                    n.dibacaPada = now;
+                }
+            });
+            localStorage.setItem(NOTIF_SA_CONFIG.STORAGE_KEY, JSON.stringify(list));
+            renderBadgeAntiHack();
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 627 — HAPUS SATU NOTIF
+    // ═══════════════════════════════════════════════════════════
+    window.hapusNotifAntiHack = function(idNotif) {
+        try {
+            var list = loadNotifAntiHack();
+            list = list.filter(function(n) { return n.id !== idNotif; });
+            localStorage.setItem(NOTIF_SA_CONFIG.STORAGE_KEY, JSON.stringify(list));
+            renderBadgeAntiHack();
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 628 — HAPUS SEMUA NOTIF
+    // ═══════════════════════════════════════════════════════════
+    window.hapusSemuaNotifAntiHack = function() {
+        try {
+            localStorage.setItem(NOTIF_SA_CONFIG.STORAGE_KEY, '[]');
+            renderBadgeAntiHack();
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 629 — RENDER BADGE ANTI-HACK (DI BELL SA)
+    // ------------------------------------------------------------
+    // Menampilkan total notif anti-hack + notif umum.
+    // ═══════════════════════════════════════════════════════════
+    window.renderBadgeAntiHack = function() {
+        try {
+            var totalAntiHack = getTotalNotifAntiHackBelumDibaca();
+            var totalUmum = (typeof getTotalNotifBelumDibaca === 'function')
+                ? getTotalNotifBelumDibaca() : 0;
+            var total = totalAntiHack + totalUmum;
+
+            // Update badge global
+            var badges = document.querySelectorAll('.notifBadge, #notifBadgeGlobal');
+            badges.forEach(function(b) {
+                if (total > 0) {
+                    b.textContent = total > 99 ? '99+' : total;
+                    b.style.display = 'inline-block';
+                    // Merah kalau ada anti-hack
+                    if (totalAntiHack > 0) {
+                        b.style.background = '#DC3545';
+                        b.style.animation = 'pulse 1.5s infinite';
+                    }
+                } else {
+                    b.style.display = 'none';
+                }
+            });
+
+            // Update badge khusus anti-hack (kalau ada)
+            var badgeAH = document.querySelectorAll('#notifBadgeAntiHack');
+            badgeAH.forEach(function(b) {
+                if (totalAntiHack > 0) {
+                    b.textContent = totalAntiHack > 99 ? '99+' : totalAntiHack;
+                    b.style.display = 'inline-block';
+                } else {
+                    b.style.display = 'none';
+                }
+            });
+        } catch (e) {
+            console.warn('renderBadgeAntiHack error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 630 — RENDER DROPDOWN ANTI-HACK
+    // ------------------------------------------------------------
+    // Gabungkan ke dropdown notif existing (kalau ada).
+    // ═══════════════════════════════════════════════════════════
+    window.renderDropdownAntiHack = function() {
+        try {
+            var container = document.getElementById('dropdownNotifBody');
+            if (!container) return;
+
+            var list = loadNotifAntiHack().slice(0, 5);
+
+            if (list.length === 0) return;
+
+            var html = '<div class="dropdown-header text-danger fw-bold">' +
+                '<i class="fas fa-shield-alt me-1"></i>⚠️ Anti-Hack Alert</div>';
+
+            list.forEach(function(n) {
+                var warna = n.severity === 'critical' ? '#DC3545' :
+                            n.severity === 'high' ? '#FD7E14' : '#FFC107';
+
+                var bgKelas = n.dibaca ? 'bg-white' : 'bg-light';
+                var badgeKejadian = n.jumlahKejadian > 1
+                    ? ' <span class="badge bg-danger ms-1">' + n.jumlahKejadian + '×</span>'
+                    : '';
+
+                html += '<a href="#" class="dropdown-item ' + bgKelas + ' p-2 ' +
+                        'notif-item-ah" style="border-left:3px solid ' + warna + ';" ' +
+                        'onclick="event.preventDefault();bukaNotifAntiHack(\'' + n.id + '\')">' +
+                    '<div class="d-flex gap-2 align-items-start">' +
+                        '<i class="' + (n.ikon || 'fas fa-shield-alt') + '" ' +
+                            'style="color:' + warna + ';font-size:18px;margin-top:2px;"></i>' +
+                        '<div style="flex:1;min-width:0;">' +
+                            '<strong style="font-size:13px;display:block;">' +
+                                (n.judul || 'Alert') + badgeKejadian + '</strong>' +
+                            '<small style="color:#666;display:block;overflow:hidden;' +
+                                'text-overflow:ellipsis;white-space:nowrap;">' +
+                                (n.pesan || '') + '</small>' +
+                            '<small style="color:#999;font-size:11px;">' +
+                                new Date(n.waktu).toLocaleTimeString('id-ID', { hour12: false }) +
+                                ' • ' + (n.namaUser || '-') + '</small>' +
+                        '</div>' +
+                    '</div>' +
+                '</a>';
+            });
+
+            html += '<div class="dropdown-divider"></div>';
+
+            // Prepend ke container
+            container.innerHTML = html + container.innerHTML;
+
+        } catch (e) {
+            console.warn('renderDropdownAntiHack error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 631 — BUKA DETAIL NOTIF ANTI-HACK
+    // ═══════════════════════════════════════════════════════════
+    window.bukaNotifAntiHack = function(idNotif) {
+        try {
+            var list = loadNotifAntiHack();
+            var notif = list.find(function(n) { return n.id === idNotif; });
+            if (!notif) return;
+
+            // Tandai dibaca
+            tandaiNotifAntiHackDibaca(idNotif);
+
+            // Tutup dropdown
+            try {
+                var dropdown = bootstrap.Dropdown.getInstance(
+                    document.getElementById('dropdownNotifToggle')
+                );
+                if (dropdown) dropdown.hide();
+            } catch (e) {}
+
+            // Tampilkan modal detail
+            _tampilkanModalAntiHack(notif);
+        } catch (e) {
+            console.warn('bukaNotifAntiHack error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 632 — TOAST ANTI-HACK (REAL-TIME)
+    // ------------------------------------------------------------
+    // Muncul di pojok layar SA saat event terdeteksi.
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanToastAntiHack = function(notif) {
+        try {
+            if (!notif) return;
+
+            var warna = notif.severity === 'critical' ? '#DC3545' :
+                        notif.severity === 'high' ? '#FD7E14' : '#FFC107';
+            var warnaText = notif.severity === 'high' ? '#fff' : '#fff';
+
+            // Container
+            var container = document.getElementById('toastAntiHackContainer');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toastAntiHackContainer';
+                container.style.cssText =
+                    'position:fixed;top:80px;right:20px;z-index:99999;' +
+                    'max-width:400px;pointer-events:none;';
+                document.body.appendChild(container);
+            }
+
+            // Toast element
+            var toast = document.createElement('div');
+            toast.style.cssText =
+                'background:' + warna + ';color:' + warnaText + ';padding:16px;' +
+                'border-radius:12px;margin-bottom:10px;box-shadow:0 8px 24px rgba(0,0,0,0.3);' +
+                'animation:slideInRight 0.3s ease-out;pointer-events:auto;' +
+                'font-family:inherit;position:relative;';
+
+            var icon = notif.tipe === 'gif-hack' ? 'fas fa-gift' : 'fas fa-shield-alt';
+
+            toast.innerHTML =
+                '<div style="display:flex;gap:12px;align-items:start;">' +
+                    '<i class="' + icon + '" style="font-size:28px;margin-top:2px;"></i>' +
+                    '<div style="flex:1;min-width:0;">' +
+                        '<div style="font-weight:700;font-size:14px;margin-bottom:4px;">' +
+                            '🚨 ' + (notif.judul || 'ANTI-HACK ALERT') + '</div>' +
+                        '<div style="font-size:13px;opacity:0.95;">' +
+                            (notif.pesan || '') + '</div>' +
+                        '<div style="font-size:11px;opacity:0.75;margin-top:6px;">' +
+                            '👤 ' + (notif.namaUser || '-') + ' (' + (notif.roleUser || '-') + ')' +
+                        '</div>' +
+                        '<button onclick="bukaNotifAntiHack(\'' + notif.id + '\'); this.closest(\'div[style]\').parentElement.remove();" ' +
+                                'style="margin-top:10px;background:rgba(255,255,255,0.25);' +
+                                'border:none;color:white;padding:5px 12px;border-radius:6px;' +
+                                'font-size:12px;cursor:pointer;font-weight:600;">' +
+                            '🔍 Lihat Detail' +
+                        '</button>' +
+                    '</div>' +
+                    '<button onclick="this.parentElement.parentElement.remove()" ' +
+                            'style="background:none;border:none;color:white;font-size:20px;' +
+                            'cursor:pointer;line-height:1;">×</button>' +
+                '</div>';
+
+            container.appendChild(toast);
+
+            // Auto-remove
+            setTimeout(function() {
+                if (toast.parentElement) {
+                    toast.style.opacity = '0';
+                    toast.style.transition = 'opacity 0.3s';
+                    setTimeout(function() {
+                        if (toast.parentElement) toast.remove();
+                    }, 300);
+                }
+            }, NOTIF_SA_CONFIG.TOAST_DURATION_MS);
+
+        } catch (e) {
+            console.warn('tampilkanToastAntiHack error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 633 — SOUND ALERT (WEB AUDIO API — NO FILE)
+    // ------------------------------------------------------------
+    // Beep 2 nada — dibuat via Web Audio, tanpa file.
+    // ═══════════════════════════════════════════════════════════
+    window.mainkanSoundAntiHack = function() {
+        try {
+            if (!NOTIF_SA_CONFIG.SOUND_ENABLED) return;
+
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtx) return;
+
+            var ctx = new AudioCtx();
+
+            // Beep 1: 800 Hz
+            var osc1 = ctx.createOscillator();
+            var gain1 = ctx.createGain();
+            osc1.connect(gain1);
+            gain1.connect(ctx.destination);
+            osc1.frequency.value = 800;
+            osc1.type = 'square';
+            gain1.gain.value = 0.15;
+            osc1.start();
+            osc1.stop(ctx.currentTime + 0.15);
+
+            // Beep 2: 1000 Hz (naik)
+            var osc2 = ctx.createOscillator();
+            var gain2 = ctx.createGain();
+            osc2.connect(gain2);
+            gain2.connect(ctx.destination);
+            osc2.frequency.value = 1000;
+            osc2.type = 'square';
+            gain2.gain.value = 0.15;
+            osc2.start(ctx.currentTime + 0.2);
+            osc2.stop(ctx.currentTime + 0.4);
+        } catch (e) {
+            // Silent — sound tidak wajib
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 634 — MODAL DETAIL NOTIF ANTI-HACK
+    // ═══════════════════════════════════════════════════════════
+    function _tampilkanModalAntiHack(notif) {
+        var modalId = 'modalNotifAntiHack';
+
+        // Buat modal kalau belum ada
+        var modal = document.getElementById(modalId);
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = modalId;
+            modal.className = 'modal fade';
+            modal.tabIndex = -1;
+            modal.innerHTML =
+                '<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">' +
+                    '<div class="modal-content">' +
+                        '<div class="modal-header text-white" style="background:#DC3545;">' +
+                            '<h5 class="modal-title">' +
+                                '<i class="fas fa-shield-alt me-2"></i>Anti-Hack Alert' +
+                            '</h5>' +
+                            '<button type="button" class="btn-close btn-close-white" ' +
+                                    'data-bs-dismiss="modal"></button>' +
+                        '</div>' +
+                        '<div class="modal-body" id="modalNotifAntiHackBody"></div>' +
+                        '<div class="modal-footer">' +
+                            '<button type="button" class="btn btn-secondary" ' +
+                                    'data-bs-dismiss="modal">Tutup</button>' +
+                            '<button type="button" class="btn btn-warning" ' +
+                                    'id="modalNotifAntiHackBtnAksi">' +
+                                '<i class="fas fa-arrow-right me-1"></i>Buka Menu' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            document.body.appendChild(modal);
+        }
+
+        var isCritical = notif.severity === 'critical';
+        var isGif = notif.tipe === 'gif-hack';
+
+        var warna = isCritical ? '#DC3545' :
+                    notif.severity === 'high' ? '#FD7E14' : '#FFC107';
+
+        var html = '' +
+            '<div class="alert" style="background:' + warna + ';color:white;">' +
+                '<div class="d-flex align-items-center">' +
+                    '<i class="' + (notif.ikon || 'fas fa-shield-alt') + ' fa-2x me-3"></i>' +
+                    '<div>' +
+                        '<h6 class="fw-bold mb-1">' + (notif.judul || 'Alert') + '</h6>' +
+                        '<small>Severity: <strong>' + (notif.severity || '-').toUpperCase() + '</strong>' +
+                        ' • Waktu: ' + new Date(notif.waktu).toLocaleString('id-ID') + '</small>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            '<table class="table table-sm table-borderless">' +
+                '<tr><td class="fw-bold text-muted" style="width:180px;">User</td>' +
+                    '<td><strong>' + (notif.namaUser || '-') + '</strong> (' + (notif.roleUser || '-') + ')' +
+                    '<br><small class="text-muted">' + (notif.idUser || '-') + '</small></td></tr>' +
+                '<tr><td class="fw-bold text-muted">Jenis</td>' +
+                    '<td><span class="badge bg-dark">' + (notif.tipe || '-') + '</span></td></tr>';
+
+        if (notif.coinPalsu) {
+            html += '<tr><td class="fw-bold text-muted">Coin Palsu</td>' +
+                    '<td><strong class="text-danger">' + notif.coinPalsu + ' R2Coin</strong></td></tr>';
+        }
+        if (notif.jumlahGifPalsu) {
+            html += '<tr><td class="fw-bold text-muted">GIF Palsu</td>' +
+                    '<td><strong class="text-danger">' + notif.jumlahGifPalsu + ' unit</strong></td></tr>';
+        }
+        if (notif.alasan) {
+            html += '<tr><td class="fw-bold text-muted">Alasan</td>' +
+                    '<td>' + notif.alasan + '</td></tr>';
+        }
+        if (notif.jumlahKejadian > 1) {
+            html += '<tr><td class="fw-bold text-muted">Terjadi</td>' +
+                    '<td><span class="badge bg-danger">' + notif.jumlahKejadian + '×</span></td></tr>';
+        }
+
+        html += '</table>';
+
+        // Aksi otomatis yang sudah dilakukan
+        html += '<div class="alert alert-warning">' +
+                '<strong><i class="fas fa-check-circle me-1"></i>Aksi Otomatis:</strong>' +
+                '<ul class="mb-0 mt-1 small">' +
+                    '<li>✅ Dompet' + (isGif ? ' & Stok GIF' : '') + ' user <strong>DIBEKUKAN</strong></li>' +
+                    '<li>✅ Semua transaksi keluar <strong>DIBLOKIR</strong></li>' +
+                    '<li>✅ User menerima notifikasi chat</li>' +
+                '</ul>' +
+            '</div>';
+
+        html += '<div class="alert alert-info small">' +
+                '<strong>🔍 Rekomendasi:</strong> Buka menu <strong>' +
+                (isGif ? 'Penukaran GIF ke R2Coin' : 'Dompet R2Coin SA') +
+                '</strong> untuk unfreeze atau kurangi coin palsu.' +
+            '</div>';
+
+        document.getElementById('modalNotifAntiHackBody').innerHTML = html;
+
+        // Tombol aksi
+        var btn = document.getElementById('modalNotifAntiHackBtnAksi');
+        btn.onclick = function() {
+            var targetAksi = isGif ? 'tampilkanPenukaranGifR2Coin' : 'tampilkanDompetR2CoinSA';
+            var m = bootstrap.Modal.getInstance(modal);
+            if (m) m.hide();
+            if (typeof menuHandlers !== 'undefined' && menuHandlers[targetAksi]) {
+                menuHandlers[targetAksi]();
+            }
+        };
+
+        new bootstrap.Modal(modal).show();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 635 — BROADCAST NOTIF KE SEMUA TAB (CROSS-TAB SYNC)
+    // ------------------------------------------------------------
+    // Kalau ada 2 tab SA, freeze di tab 1 → notif muncul di tab 2.
+    // ═══════════════════════════════════════════════════════════
+    window.broadcastNotifAntiHack = function(notif) {
+        try {
+            localStorage.setItem('notifAntiHackBroadcast', JSON.stringify({
+                notif: notif,
+                waktu: Date.now(),
+                nonce: Math.random()
+            }));
+        } catch (e) {}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 636 — HANDLE NOTIF ANTI-HACK (MAIN DISPATCHER)
+    // ------------------------------------------------------------
+    // Fungsi ini yang dipanggil dari FASE 1 saat freeze.
+    // Menggantikan versi lama di FASE 1 (kalau ada).
+    // ═══════════════════════════════════════════════════════════
+    window.dispatchNotifAntiHack = function(idUser, tipe, detail) {
+        try {
+            detail = detail || {};
+            var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+            var nama = user ? user.nama : (detail.nama || idUser);
+            var role = user ? user.role : (detail.role || '-');
+
+            var notif = {
+                idUser:          idUser,
+                namaUser:        nama,
+                roleUser:        role,
+                tipe:            tipe,                             // 'coin-hack' | 'gif-hack'
+                judul:           tipe === 'gif-hack' ? '🎁 GIF HACK TERDETEKSI' : '🚨 COIN HACK TERDETEKSI',
+                pesan:           detail.alasan || 'Aktivitas mencurigakan terdeteksi',
+                severity:        detail.severity || 'high',
+                ikon:            tipe === 'gif-hack' ? 'fas fa-gift' : 'fas fa-shield-alt',
+                coinPalsu:       detail.coinPalsu || 0,
+                jumlahGifPalsu:  detail.jumlahGifPalsu || 0,
+                alasan:          detail.alasan || '-',
+                link:            tipe === 'gif-hack' ? 'tampilkanPenukaranGifR2Coin' : 'tampilkanDompetR2CoinSA'
+            };
+
+            // 1. Simpan ke storage
+            simpanNotifAntiHack(notif);
+
+            // 2. Update bell badge
+            renderBadgeAntiHack();
+
+            // 3. Update dropdown (kalau terbuka)
+            renderDropdownAntiHack();
+
+            // 4. Toast (hanya kalau SA sedang login dan tidak di halaman lain)
+            var isSA = (typeof userAktif !== 'undefined' && userAktif && userAktif.role === 'SuperAdmin');
+            if (isSA) {
+                tampilkanToastAntiHack(notif);
+                mainkanSoundAntiHack();
+            }
+
+            // 5. Broadcast ke tab lain
+            broadcastNotifAntiHack(notif);
+
+            console.log('📢 Notif anti-hack dispatched:', notif.judul);
+            return { sukses: true, notif: notif };
+        } catch (e) {
+            console.warn('dispatchNotifAntiHack error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 637 — HOOK NOTIF SA COIN HACK (OVERRIDE FASE 1)
+    // ═══════════════════════════════════════════════════════════
+    var _origNotifCoin = window.notifSAAdaCoinHack;
+    window.notifSAAdaCoinHack = function(idUser, detailFreeze) {
+        // Panggil original (chat + bell dari sistem lain)
+        if (typeof _origNotifCoin === 'function') {
+            try { _origNotifCoin(idUser, detailFreeze); } catch (e) {}
+        }
+
+        // Tambah dispatcher notif anti-hack
+        detailFreeze = detailFreeze || {};
+        dispatchNotifAntiHack(idUser, 'coin-hack', {
+            severity: detailFreeze.severity || 'high',
+            alasan: detailFreeze.alasanFreeze || 'Coin palsu terdeteksi',
+            coinPalsu: detailFreeze.coinPalsu || 0
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 638 — HOOK NOTIF SA GIF HACK
+    // ═══════════════════════════════════════════════════════════
+    var _origNotifGif = window.notifSAAdaGifHack;
+    window.notifSAAdaGifHack = function(idUser, detailFreeze) {
+        if (typeof _origNotifGif === 'function') {
+            try { _origNotifGif(idUser, detailFreeze); } catch (e) {}
+        }
+
+        detailFreeze = detailFreeze || {};
+        dispatchNotifAntiHack(idUser, 'gif-hack', {
+            severity: detailFreeze.severity || 'high',
+            alasan: detailFreeze.alasanFreeze || 'GIF palsu terdeteksi',
+            jumlahGifPalsu: detailFreeze.jumlahGifPalsu || 0
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 639 — CROSS-TAB SYNC (LISTENER)
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('storage', function(e) {
+        if (e.key === 'notifAntiHackBroadcast' && e.newValue) {
+            try {
+                var data = JSON.parse(e.newValue);
+                if (data.notif) {
+                    renderBadgeAntiHack();
+                    renderDropdownAntiHack();
+
+                    var isSA = (typeof userAktif !== 'undefined' && userAktif && userAktif.role === 'SuperAdmin');
+                    if (isSA) {
+                        tampilkanToastAntiHack(data.notif);
+                    }
+                }
+            } catch (err) {}
+        }
+
+        // Sync kalau ada dompet frozen baru
+        if (e.key && e.key.indexOf('dompetFrozen_') === 0) {
+            renderBadgeAntiHack();
+        }
+
+        // Sync kalau ada stok gif frozen baru
+        if (e.key && e.key.indexOf('stokGifFrozen_') === 0) {
+            renderBadgeAntiHack();
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // 640 — AUTO-REFRESH BELL BADGE (SETIAP 10 DETIK)
+    // ═══════════════════════════════════════════════════════════
+    window.startAutoRefreshBadgeAntiHack = function() {
+        if (window._autoRefreshBadgeInterval) {
+            clearInterval(window._autoRefreshBadgeInterval);
+        }
+
+        window._autoRefreshBadgeInterval = setInterval(function() {
+            try {
+                renderBadgeAntiHack();
+            } catch (e) {}
+        }, NOTIF_SA_CONFIG.AUTO_REFRESH_BELL_MS);
+
+        console.log('✅ Auto-refresh badge aktif setiap ' +
+                    (NOTIF_SA_CONFIG.AUTO_REFRESH_BELL_MS / 1000) + ' detik');
+    };
+
+    window.stopAutoRefreshBadgeAntiHack = function() {
+        if (window._autoRefreshBadgeInterval) {
+            clearInterval(window._autoRefreshBadgeInterval);
+            window._autoRefreshBadgeInterval = null;
+            console.log('⏹️ Auto-refresh badge dihentikan.');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 641 — INJECT CSS ANIMASI + TOAST CONTAINER
+    // ═══════════════════════════════════════════════════════════
+    (function injectCSSAntiHack() {
+        if (document.getElementById('cssAntiHack')) return;
+
+        var css = '' +
+            '@keyframes slideInRight {' +
+                'from { transform: translateX(400px); opacity: 0; }' +
+                'to { transform: translateX(0); opacity: 1; }' +
+            '}' +
+            '@keyframes pulse {' +
+                '0% { transform: scale(1); }' +
+                '50% { transform: scale(1.2); }' +
+                '100% { transform: scale(1); }' +
+            '}' +
+            '.notif-item-ah:hover {' +
+                'background: #FFF5F5 !important;' +
+            '}';
+
+        var style = document.createElement('style');
+        style.id = 'cssAntiHack';
+        style.appendChild(document.createTextNode(css));
+        document.head.appendChild(style);
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    // 642 — HALAMAN KHUSUS: NOTIF ANTI-HACK (FULL PAGE)
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanHalamanNotifAntiHack = function() {
+        if (typeof tutupMenu === 'function') tutupMenu();
+
+        var konten = document.getElementById('kontenDasbor');
+        if (!konten) return;
+        if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+        var list = loadNotifAntiHack();
+        var total = getTotalNotifAntiHackBelumDibaca();
+
+        var html = '' +
+        '<div class="container-fluid px-4 py-4">' +
+            '<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">' +
+                '<div>' +
+                    '<h4 class="fw-bold text-white mb-0">' +
+                        '<i class="fas fa-shield-alt me-2"></i>Notifikasi Anti-Hack' +
+                    '</h4>' +
+                    '<small class="text-white-50">' +
+                        total + ' belum dibaca • ' + list.length + ' total' +
+                    '</small>' +
+                '</div>' +
+                '<div class="d-flex gap-2">' +
+                    '<button class="btn btn-outline-light btn-sm" ' +
+                            'onclick="tandaiSemuaNotifAntiHackDibaca();tampilkanHalamanNotifAntiHack();">' +
+                        '<i class="fas fa-check-double me-1"></i>Tandai Semua</button>' +
+                    '<button class="btn btn-outline-danger btn-sm" ' +
+                            'onclick="if(confirm(\'Hapus semua?\')){hapusSemuaNotifAntiHack();tampilkanHalamanNotifAntiHack();}">' +
+                        '<i class="fas fa-trash me-1"></i>Hapus Semua</button>' +
+                    '<button class="btn btn-outline-light btn-sm" ' +
+                            'onclick="kembaliKeDasbor()">' +
+                        '<i class="fas fa-arrow-left me-1"></i>Kembali</button>' +
+                '</div>' +
+            '</div>';
+
+        if (list.length === 0) {
+            html += '<div class="card border-0 shadow">' +
+                '<div class="card-body text-center py-5">' +
+                    '<i class="fas fa-shield-alt fa-4x text-muted opacity-25 mb-3"></i>' +
+                    '<h4 class="text-muted">Belum Ada Alert</h4>' +
+                    '<p class="text-muted small">Semua aktivitas coin & GIF aman.</p>' +
+                '</div></div>';
+        } else {
+            html += '<div class="row g-3">';
+            list.forEach(function(n) {
+                var warna = n.severity === 'critical' ? '#DC3545' :
+                            n.severity === 'high' ? '#FD7E14' : '#FFC107';
+                var bg = n.dibaca ? 'bg-white' : 'bg-light';
+                var isGif = n.tipe === 'gif-hack';
+
+                html += '<div class="col-12">' +
+                    '<div class="card border-0 shadow-sm ' + bg + '" ' +
+                         'style="border-left:5px solid ' + warna + ' !important;">' +
+                        '<div class="card-body">' +
+                            '<div class="d-flex justify-content-between align-items-start">' +
+                                '<div class="d-flex gap-3 align-items-start" style="flex:1;min-width:0;">' +
+                                    '<i class="' + (n.ikon || 'fas fa-shield-alt') + ' fa-2x" ' +
+                                        'style="color:' + warna + ';"></i>' +
+                                    '<div style="flex:1;min-width:0;">' +
+                                        '<div class="d-flex gap-2 align-items-center mb-1">' +
+                                            '<h6 class="fw-bold mb-0">' + (n.judul || 'Alert') + '</h6>' +
+                                            (n.jumlahKejadian > 1 ?
+                                                '<span class="badge bg-danger">' + n.jumlahKejadian + '×</span>' : '') +
+                                            (!n.dibaca ?
+                                                '<span class="badge bg-primary">BARU</span>' : '') +
+                                        '</div>' +
+                                        '<div class="small text-muted mb-1">' +
+                                            '👤 <strong>' + (n.namaUser || '-') + '</strong> ' +
+                                            '(' + (n.roleUser || '-') + ')' +
+                                        '</div>' +
+                                        '<div class="small mb-2">' + (n.pesan || '-') + '</div>' +
+                                        '<div class="small text-muted">' +
+                                            '<i class="fas fa-clock me-1"></i>' +
+                                            new Date(n.waktu).toLocaleString('id-ID', { hour12: false }) +
+                                        '</div>' +
+                                    '</div>' +
+                                '</div>' +
+                                '<div class="d-flex flex-column gap-1 ms-2">' +
+                                    '<button class="btn btn-sm btn-primary" ' +
+                                            'onclick="bukaNotifAntiHack(\'' + n.id + '\')">' +
+                                        '<i class="fas fa-eye"></i></button>' +
+                                    (isGif ?
+                                        '<button class="btn btn-sm btn-info" ' +
+                                                'onclick="tampilkanPenukaranGifR2Coin()" ' +
+                                                'title="Menu GIF"><i class="fas fa-gift"></i></button>' :
+                                        '<button class="btn btn-sm btn-info" ' +
+                                                'onclick="tampilkanDompetR2CoinSA()" ' +
+                                                'title="Menu Dompet"><i class="fas fa-wallet"></i></button>') +
+                                    '<button class="btn btn-sm btn-outline-danger" ' +
+                                            'onclick="hapusNotifAntiHack(\'' + n.id + '\');' +
+                                            'tampilkanHalamanNotifAntiHack();">' +
+                                        '<i class="fas fa-trash"></i></button>' +
+                                '</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            });
+            html += '</div>';
+        }
+
+        html += '</div>';
+        konten.innerHTML = html;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 643 — STARTUP: AUTO-REFRESH + RENDER BADGE
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        renderBadgeAntiHack();
+        startAutoRefreshBadgeAntiHack();
+    }, 500);
+
+    // ═══════════════════════════════════════════════════════════
+    // 644 — HOOK KE DROPDOWN NOTIF EXISTING
+    // ------------------------------------------------------------
+    // Setiap dropdown notif dibuka → tambah section anti-hack
+    // ═══════════════════════════════════════════════════════════
+    (function hookDropdownNotif() {
+        var dropdownToggle = document.getElementById('dropdownNotifToggle');
+        if (!dropdownToggle) {
+            setTimeout(hookDropdownNotif, 1000);
+            return;
+        }
+
+        dropdownToggle.addEventListener('click', function() {
+            setTimeout(renderDropdownAntiHack, 100);
+        });
+
+        console.log('✅ Hook dropdown notif terpasang');
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    // 645 — HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanHalamanNotifAntiHack'] = function() {
+        if (typeof window.tampilkanHalamanNotifAntiHack === 'function') {
+            window.tampilkanHalamanNotifAntiHack();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 646 — LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 01.0 (621–650) — NOTIFIKASI SA REAL-TIME terpasang.');
+    console.log('   📢 Notif storage: dataNotifAntiHackSA');
+    console.log('   🔔 Bell badge   : renderBadgeAntiHack');
+    console.log('   🍞 Toast        : tampilkanToastAntiHack');
+    console.log('   🔊 Sound        : mainkanSoundAntiHack');
+    console.log('   📄 Halaman      : tampilkanHalamanNotifAntiHack');
+    console.log('   🔄 Auto-refresh : setiap ' +
+                (NOTIF_SA_CONFIG.AUTO_REFRESH_BELL_MS / 1000) + ' detik');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 01.0 (621–650) — NOTIFIKASI SA REAL-TIME -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (651–680) — AUTO-RECOVERY & MAINTENANCE -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function AUTO_RECOVERY_ANTI_HACK() {
+    if (window._autoRecoveryDone) {
+        console.log('ℹ️ Auto-Recovery sudah terpasang — dilewati.');
+        return;
+    }
+    window._autoRecoveryDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // 651 — KONFIGURASI AUTO-RECOVERY
+    // ═══════════════════════════════════════════════════════════
+    window.RECOVERY_CONFIG = {
+        STORAGE_LAST_RUN:       'autoRecoveryLastRun',
+        STORAGE_LOG:            'autoRecoveryLog',
+        REVIEW_HARI:            7,
+        AUTO_CLEAR_HARI:        30,
+        REKONSILIASI_HARI:      1,
+        LAPORAN_MINGGU_HARI:    7,
+        MAX_LOG:                50,
+
+        // Scan otomatis (bisa diaktifkan SA)
+        AUTO_SCAN_ENABLED:      true,
+        SCAN_INTERVAL_MENIT:    60,
+        DAILY_CHECK_INTERVAL_MS: 3600000      // cek tiap 1 jam
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 652 — HELPER: LOG RECOVERY
+    // ═══════════════════════════════════════════════════════════
+    function _logRecovery(tipe, pesan, detail) {
+        try {
+            var list = [];
+            var raw = localStorage.getItem(RECOVERY_CONFIG.STORAGE_LOG);
+            if (raw) {
+                var p = JSON.parse(raw);
+                if (Array.isArray(p)) list = p;
+            }
+            list.unshift({
+                id: 'REC-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                tipe: tipe,
+                pesan: pesan,
+                detail: detail || null,
+                waktu: new Date().toISOString()
+            });
+            if (list.length > RECOVERY_CONFIG.MAX_LOG) {
+                list = list.slice(0, RECOVERY_CONFIG.MAX_LOG);
+            }
+            localStorage.setItem(RECOVERY_CONFIG.STORAGE_LOG, JSON.stringify(list));
+        } catch (e) {}
+    }
+
+    window.loadLogAutoRecovery = function() {
+        try {
+            var raw = localStorage.getItem(RECOVERY_CONFIG.STORAGE_LOG);
+            if (!raw) return [];
+            var p = JSON.parse(raw);
+            return Array.isArray(p) ? p : [];
+        } catch (e) { return []; }
+    };
+
+    window.hapusLogAutoRecovery = function() {
+        localStorage.removeItem(RECOVERY_CONFIG.STORAGE_LOG);
+        return { sukses: true };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 653 — HELPER: HITUNG UMUR FREEZE (HARI)
+    // ═══════════════════════════════════════════════════════════
+    function _umurHari(isoDate) {
+        if (!isoDate) return 0;
+        try {
+            var ms = Date.now() - new Date(isoDate).getTime();
+            return Math.floor(ms / (1000 * 60 * 60 * 24));
+        } catch (e) { return 0; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 654 — AUTO-REVIEW: FREEZE > 7 HARI
+    // ------------------------------------------------------------
+    // Kalau freeze sudah > 7 hari tapi belum di-review SA,
+    // tandai sebagai "review" (bukan auto-unfreeze).
+    // ═══════════════════════════════════════════════════════════
+    window.autoReviewFreezeLama = function() {
+        var hasil = { diperiksa: 0, ditandai: 0, list: [] };
+
+        try {
+            // Scan dompet
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('dompetFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (!d || d.statusFreeze !== 'frozen') return;
+
+                    hasil.diperiksa++;
+                    var umur = _umurHari(d.tanggalFreeze);
+
+                    if (umur >= RECOVERY_CONFIG.REVIEW_HARI && !d._autoReviewMarked) {
+                        d.statusFreeze = 'review';
+                        d._autoReviewMarked = true;
+                        d.autoReviewAt = new Date().toISOString();
+                        d.alasanReview = 'Frozen sudah ' + umur + ' hari — perlu keputusan SA';
+
+                        localStorage.setItem(k, JSON.stringify(d));
+                        hasil.ditandai++;
+                        hasil.list.push({
+                            idUser: d.idUser,
+                            nama: d.nama,
+                            jenis: 'coin',
+                            umur: umur,
+                            alasan: d.alasanFreeze
+                        });
+                    }
+                } catch (e) {}
+            });
+
+            // Scan GIF
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('stokGifFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (!d || d.statusFreeze !== 'frozen') return;
+
+                    hasil.diperiksa++;
+                    var umur = _umurHari(d.tanggalFreeze);
+
+                    if (umur >= RECOVERY_CONFIG.REVIEW_HARI && !d._autoReviewMarked) {
+                        d.statusFreeze = 'review';
+                        d._autoReviewMarked = true;
+                        d.autoReviewAt = new Date().toISOString();
+                        d.alasanReview = 'Frozen sudah ' + umur + ' hari — perlu keputusan SA';
+
+                        localStorage.setItem(k, JSON.stringify(d));
+                        hasil.ditandai++;
+                        hasil.list.push({
+                            idUser: d.idUser,
+                            nama: d.nama,
+                            jenis: 'gif',
+                            umur: umur,
+                            alasan: d.alasanFreeze
+                        });
+                    }
+                } catch (e) {}
+            });
+
+            if (hasil.ditandai > 0) {
+                _logRecovery('auto-review',
+                    hasil.ditandai + ' freeze ditandai review (> ' + RECOVERY_CONFIG.REVIEW_HARI + ' hari)',
+                    hasil.list);
+
+                // Notif ke SA
+                try {
+                    if (typeof dispatchNotifAntiHack === 'function') {
+                        dispatchNotifAntiHack('SYSTEM', 'auto-review', {
+                            severity: 'medium',
+                            alasan: hasil.ditandai + ' freeze lama perlu keputusan SA',
+                            jumlahGifPalsu: 0
+                        });
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {
+            console.warn('autoReviewFreezeLama error:', e);
+        }
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 655 — AUTO-CLEAR: FREEZE > 30 HARI TANPA LAPORAN
+    // ------------------------------------------------------------
+    // Kalau freeze > 30 hari & tidak ada aktivitas mencurigakan baru,
+    // auto-clear (unfreeze tanpa campur tangan SA).
+    // ═══════════════════════════════════════════════════════════
+    window.autoClearFreezeLama = function() {
+        var hasil = { diperiksa: 0, diClear: 0, list: [] };
+
+        try {
+            // Scan dompet
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('dompetFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (!d || (d.statusFreeze !== 'frozen' && d.statusFreeze !== 'review')) return;
+
+                    hasil.diperiksa++;
+                    var umur = _umurHari(d.tanggalFreeze);
+
+                    if (umur >= RECOVERY_CONFIG.AUTO_CLEAR_HARI) {
+                        // Cek dulu: user masih ada?
+                        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(d.idUser) : null;
+                        if (!user) {
+                            // User sudah dihapus → hapus freeze data
+                            localStorage.removeItem(k);
+                            continue;
+                        }
+
+                        d.statusFreeze = 'cleared';
+                        d.tanggalUnfreeze = new Date().toISOString();
+                        d.unfreezeBy = 'SYSTEM_AUTO';
+                        d.catatanSA = 'Auto-clear: freeze > ' + umur + ' hari tanpa aktivitas baru';
+                        localStorage.setItem(k, JSON.stringify(d));
+
+                        hasil.diClear++;
+                        hasil.list.push({
+                            idUser: d.idUser,
+                            nama: d.nama,
+                            jenis: 'coin',
+                            umur: umur
+                        });
+
+                        // Notif user
+                        try {
+                            if (typeof notifUserDompetUnfrozen === 'function') {
+                                notifUserDompetUnfrozen(d.idUser,
+                                    'Auto-clear sistem setelah ' + umur + ' hari');
+                            }
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+            });
+
+            // Scan GIF
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('stokGifFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (!d || (d.statusFreeze !== 'frozen' && d.statusFreeze !== 'review')) return;
+
+                    hasil.diperiksa++;
+                    var umur = _umurHari(d.tanggalFreeze);
+
+                    if (umur >= RECOVERY_CONFIG.AUTO_CLEAR_HARI) {
+                        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(d.idUser) : null;
+                        if (!user) {
+                            localStorage.removeItem(k);
+                            continue;
+                        }
+
+                        d.statusFreeze = 'cleared';
+                        d.tanggalUnfreeze = new Date().toISOString();
+                        d.unfreezeBy = 'SYSTEM_AUTO';
+                        d.catatanSA = 'Auto-clear: freeze > ' + umur + ' hari tanpa aktivitas baru';
+                        localStorage.setItem(k, JSON.stringify(d));
+
+                        hasil.diClear++;
+                        hasil.list.push({
+                            idUser: d.idUser,
+                            nama: d.nama,
+                            jenis: 'gif',
+                            umur: umur
+                        });
+
+                        try {
+                            if (typeof notifUserStokGifUnfrozen === 'function') {
+                                notifUserStokGifUnfrozen(d.idUser,
+                                    'Auto-clear sistem setelah ' + umur + ' hari');
+                            }
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+            });
+
+            if (hasil.diClear > 0) {
+                _logRecovery('auto-clear',
+                    hasil.diClear + ' freeze di-clear otomatis (> ' + RECOVERY_CONFIG.AUTO_CLEAR_HARI + ' hari)',
+                    hasil.list);
+            }
+        } catch (e) {
+            console.warn('autoClearFreezeLama error:', e);
+        }
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 656 — REKONSILIASI DATA HARIAN
+    // ------------------------------------------------------------
+    // Cek konsistensi:
+    //   - Total coin beredar vs SUM balance
+    //   - Total GIF beredar vs SUM stokGif
+    //   - Dompet frozen vs status user
+    // ═══════════════════════════════════════════════════════════
+    window.rekonsiliasiDataHarian = function() {
+        var hasil = {
+            tanggal: new Date().toISOString(),
+            coin: { totalBeredar: 0, totalFrozen: 0, mismatch: 0, detail: [] },
+            gif: { totalBeredar: 0, totalFrozen: 0, mismatch: 0, detail: [] },
+            freeze: { dompetAktif: 0, gifAktif: 0, tidakValid: [] }
+        };
+
+        try {
+            var akunList = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif : [];
+
+            // 1. Coin — hitung total
+            akunList.forEach(function(a) {
+                if (!a || !a.id) return;
+                try {
+                    var saldo = (typeof getSaldoDompet === 'function') ? getSaldoDompet(a.id) : 0;
+                    if (saldo < 0) {
+                        hasil.coin.detail.push({
+                            idUser: a.id,
+                            nama: a.nama,
+                            masalah: 'Saldo minus: ' + saldo
+                        });
+                        hasil.coin.mismatch++;
+                    }
+                    hasil.coin.totalBeredar += Math.max(saldo, 0);
+
+                    if (typeof isDompetFrozen === 'function' && isDompetFrozen(a.id)) {
+                        hasil.coin.totalFrozen += Math.max(saldo, 0);
+                    }
+                } catch (e) {}
+            });
+
+            // 2. GIF — hitung total
+            akunList.forEach(function(a) {
+                if (!a || !a.id) return;
+                try {
+                    var stokList = (typeof loadStokGifUser === 'function')
+                        ? loadStokGifUser(a.id) : [];
+                    if (!Array.isArray(stokList)) return;
+
+                    var totalUser = 0;
+                    stokList.forEach(function(s) {
+                        totalUser += parseInt(s.jumlah, 10) || 0;
+                    });
+
+                    hasil.gif.totalBeredar += totalUser;
+
+                    if (typeof isStokGifFrozen === 'function' && isStokGifFrozen(a.id)) {
+                        hasil.gif.totalFrozen += totalUser;
+                    }
+                } catch (e) {}
+            });
+
+            // 3. Freeze — verifikasi user masih ada
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('dompetFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (d && d.statusFreeze === 'frozen') {
+                        hasil.freeze.dompetAktif++;
+                        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(d.idUser) : null;
+                        if (!user) {
+                            hasil.freeze.tidakValid.push({ jenis: 'coin', idUser: d.idUser });
+                        }
+                    }
+                } catch (e) {}
+            });
+
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('stokGifFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (d && d.statusFreeze === 'frozen') {
+                        hasil.freeze.gifAktif++;
+                        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(d.idUser) : null;
+                        if (!user) {
+                            hasil.freeze.tidakValid.push({ jenis: 'gif', idUser: d.idUser });
+                        }
+                    }
+                } catch (e) {}
+            });
+
+            // 4. Audit mismatch: coin beredar vs total dompet.transactions
+            try {
+                if (typeof loadLogAktivitasCoinGlobal === 'function') {
+                    var log = loadLogAktivitasCoinGlobal();
+                    var totalCredit = 0, totalDebit = 0;
+                    log.forEach(function(l) {
+                        var j = parseFloat(l.jumlah) || 0;
+                        if (l.tipe === 'credit') totalCredit += j;
+                        else if (l.tipe === 'debit') totalDebit += j;
+                    });
+                    var hitungBeredar = Math.round((totalCredit - totalDebit) * 100) / 100;
+                    var selisih = Math.abs(hitungBeredar - hasil.coin.totalBeredar);
+                    if (selisih > 100) {
+                        hasil.coin.mismatch++;
+                        hasil.coin.detail.push({
+                            masalah: 'Mismatch: hitung log (' + hitungBeredar +
+                                     ') vs total beredar (' + hasil.coin.totalBeredar +
+                                     '), selisih ' + selisih
+                        });
+                    }
+                }
+            } catch (e) {}
+
+            // Simpan hasil
+            try {
+                localStorage.setItem('autoRecoveryRekonsiliasiTerakhir', JSON.stringify(hasil));
+            } catch (e) {}
+
+            var adaMasalah = hasil.coin.mismatch > 0 ||
+                             hasil.gif.mismatch > 0 ||
+                             hasil.freeze.tidakValid.length > 0;
+
+            _logRecovery('rekonsiliasi',
+                'Rekonsiliasi selesai: ' + hasil.coin.totalBeredar + ' Coin, ' +
+                hasil.gif.totalBeredar + ' GIF' +
+                (adaMasalah ? ' — ada masalah!' : ' — OK'),
+                hasil);
+
+            if (adaMasalah) {
+                try {
+                    if (typeof dispatchNotifAntiHack === 'function') {
+                        dispatchNotifAntiHack('SYSTEM', 'rekonsiliasi-warning', {
+                            severity: 'high',
+                            alasan: 'Rekonsiliasi menemukan ' +
+                                    (hasil.coin.mismatch + hasil.gif.mismatch +
+                                     hasil.freeze.tidakValid.length) + ' masalah'
+                        });
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {
+            console.warn('rekonsiliasiDataHarian error:', e);
+        }
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 657 — GET HASIL REKONSILIASI TERAKHIR
+    // ═══════════════════════════════════════════════════════════
+    window.getRekonsiliasiTerakhir = function() {
+        try {
+            var raw = localStorage.getItem('autoRecoveryRekonsiliasiTerakhir');
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 658 — LAPORAN MINGGUAN
+    // ------------------------------------------------------------
+    // Ringkasan 7 hari terakhir:
+    //   - Freeze baru
+    //   - Auto-review
+    //   - Auto-clear
+    //   - Rekonsiliasi
+    // ═══════════════════════════════════════════════════════════
+    window.generateLaporanMingguan = function() {
+        var laporan = {
+            periode: {
+                dari: null,
+                sampai: new Date().toISOString()
+            },
+            freezeBaru: 0,
+            autoReview: 0,
+            autoClear: 0,
+            userTerdampak: [],
+            rekonsiliasiTerakhir: null,
+            criticalCount: 0,
+            highCount: 0,
+            logRecovery: []
+        };
+
+        try {
+            var tujuhHariLalu = new Date();
+            tujuhHariLalu.setDate(tujuhHariLalu.getDate() - RECOVERY_CONFIG.LAPORAN_MINGGU_HARI);
+            laporan.periode.dari = tujuhHariLalu.toISOString();
+
+            // Scan freeze yang dibuat 7 hari terakhir
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('dompetFrozen_') !== 0 && k.indexOf('stokGifFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (!d) return;
+                    if (!d.tanggalFreeze) return;
+
+                    var tgl = new Date(d.tanggalFreeze).getTime();
+                    if (tgl >= tujuhHariLalu.getTime()) {
+                        laporan.freezeBaru++;
+                        laporan.userTerdampak.push({
+                            idUser: d.idUser,
+                            nama: d.nama,
+                            role: d.role,
+                            severity: d.severity,
+                            jenis: k.indexOf('dompetFrozen_') === 0 ? 'coin' : 'gif',
+                            tanggal: d.tanggalFreeze
+                        });
+
+                        if (d.severity === 'critical') laporan.criticalCount++;
+                        else if (d.severity === 'high') laporan.highCount++;
+                    }
+                } catch (e) {}
+            });
+
+            // Log recovery 7 hari terakhir
+            var log = loadLogAutoRecovery();
+            log.forEach(function(l) {
+                if (l.tipe === 'auto-review' && new Date(l.waktu).getTime() >= tujuhHariLalu.getTime()) {
+                    laporan.autoReview++;
+                }
+                if (l.tipe === 'auto-clear' && new Date(l.waktu).getTime() >= tujuhHariLalu.getTime()) {
+                    laporan.autoClear++;
+                }
+                if (new Date(l.waktu).getTime() >= tujuhHariLalu.getTime()) {
+                    laporan.logRecovery.push(l);
+                }
+            });
+
+            // Rekonsiliasi terakhir
+            laporan.rekonsiliasiTerakhir = getRekonsiliasiTerakhir();
+        } catch (e) {
+            console.warn('generateLaporanMingguan error:', e);
+        }
+
+        return laporan;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 659 — KIRIM LAPORAN MINGGUAN KE SA
+    // ═══════════════════════════════════════════════════════════
+    window.kirimLaporanMingguanKeSA = function() {
+        try {
+            var lap = generateLaporanMingguan();
+
+            var isi = '📊 *LAPORAN ANTI-HACK MINGGUAN*\n\n' +
+                '🗓️ Periode: ' + new Date(lap.periode.dari).toLocaleDateString('id-ID') +
+                ' → ' + new Date(lap.periode.sampai).toLocaleDateString('id-ID') + '\n\n' +
+                '📌 *Ringkasan:*\n' +
+                '• Freeze baru: *' + lap.freezeBaru + '*\n' +
+                '• Auto-review: *' + lap.autoReview + '*\n' +
+                '• Auto-clear: *' + lap.autoClear + '*\n' +
+                '• Critical: *' + lap.criticalCount + '*\n' +
+                '• High: *' + lap.highCount + '*\n\n';
+
+            if (lap.rekonsiliasiTerakhir) {
+                isi += '💰 *Rekonsiliasi Terakhir:*\n' +
+                    '• Coin beredar: ' + Math.round(lap.rekonsiliasiTerakhir.coin.totalBeredar) + '\n' +
+                    '• GIF beredar: ' + lap.rekonsiliasiTerakhir.gif.totalBeredar + '\n' +
+                    '• Mismatch: ' + (lap.rekonsiliasiTerakhir.coin.mismatch +
+                                       lap.rekonsiliasiTerakhir.gif.mismatch) + '\n\n';
+            }
+
+            if (lap.userTerdampak.length > 0) {
+                isi += '👥 *User Terdampak (' + lap.userTerdampak.length + '):*\n';
+                lap.userTerdampak.slice(0, 10).forEach(function(u) {
+                    isi += '• ' + u.nama + ' (' + u.role + ') — ' + u.severity + '\n';
+                });
+                if (lap.userTerdampak.length > 10) {
+                    isi += '...dan ' + (lap.userTerdampak.length - 10) + ' lainnya\n';
+                }
+            }
+
+            isi += '\n🔗 Buka menu *Dompet Terbeku* untuk detail.';
+
+            if (typeof kirimChatOtomatis === 'function') {
+                kirimChatOtomatis('SYSTEM_AUTO', 'ID_TK2R_SA-0001', isi, {
+                    jenisTransaksi: 'laporan-mingguan-antihack'
+                });
+            }
+
+            if (typeof kirimNotifikasi === 'function') {
+                kirimNotifikasi('SA',
+                    '📊 Laporan Anti-Hack Mingguan',
+                    lap.freezeBaru + ' freeze baru • ' + lap.criticalCount + ' critical',
+                    {
+                        tipe: 'laporan-antihack',
+                        ikon: 'fas fa-chart-line',
+                        warna: '#1976D2',
+                        link: 'tampilkanDompetTerbeku'
+                    }
+                );
+            }
+
+            _logRecovery('laporan-mingguan', 'Laporan mingguan dikirim ke SA', lap);
+
+            return { sukses: true, laporan: lap };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 660 — CLEANUP FREEZE INVALID (user dihapus)
+    // ═══════════════════════════════════════════════════════════
+    window.cleanupFreezeInvalid = function() {
+        var hasil = { dihapus: 0, list: [] };
+
+        try {
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('dompetFrozen_') !== 0 && k.indexOf('stokGifFrozen_') !== 0) return;
+                try {
+                    var d = JSON.parse(localStorage.getItem(k));
+                    if (!d || !d.idUser) {
+                        localStorage.removeItem(k);
+                        hasil.dihapus++;
+                        hasil.list.push(k);
+                        return;
+                    }
+
+                    var user = (typeof getDataIdUser === 'function') ? getDataIdUser(d.idUser) : null;
+                    if (!user) {
+                        localStorage.removeItem(k);
+                        hasil.dihapus++;
+                        hasil.list.push({ k: k, idUser: d.idUser });
+                    }
+                } catch (e) {}
+            });
+
+            if (hasil.dihapus > 0) {
+                _logRecovery('cleanup-freeze',
+                    hasil.dihapus + ' data freeze invalid dihapus', hasil.list);
+            }
+        } catch (e) {}
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 661 — AUTO-RECOVERY RUN (MAIN ORCHESTRATOR)
+    // ------------------------------------------------------------
+    // Dijalankan oleh scheduler harian.
+    // ═══════════════════════════════════════════════════════════
+    window.runAutoRecovery = function() {
+        var hasil = {
+            waktu: new Date().toISOString(),
+            review: null,
+            clear: null,
+            rekonsiliasi: null,
+            cleanup: null,
+            laporan: null
+        };
+
+        try {
+            // 1. Cleanup freeze invalid
+            hasil.cleanup = cleanupFreezeInvalid();
+
+            // 2. Auto-review (freeze > 7 hari)
+            hasil.review = autoReviewFreezeLama();
+
+            // 3. Auto-clear (freeze > 30 hari)
+            hasil.clear = autoClearFreezeLama();
+
+            // 4. Rekonsiliasi harian
+            hasil.rekonsiliasi = rekonsiliasiDataHarian();
+
+            // 5. Cek apakah perlu laporan mingguan
+            var lastLaporan = localStorage.getItem('autoRecoveryLastLaporan');
+            var mingguMs = RECOVERY_CONFIG.LAPORAN_MINGGU_HARI * 24 * 60 * 60 * 1000;
+            if (!lastLaporan || (Date.now() - new Date(lastLaporan).getTime()) > mingguMs) {
+                hasil.laporan = kirimLaporanMingguanKeSA();
+                localStorage.setItem('autoRecoveryLastLaporan', new Date().toISOString());
+            }
+
+            // Update timestamp
+            localStorage.setItem(RECOVERY_CONFIG.STORAGE_LAST_RUN, new Date().toISOString());
+
+            console.log('✅ Auto-recovery selesai:',
+                hasil.review.ditandai, 'review,',
+                hasil.clear.diClear, 'clear,',
+                hasil.cleanup.dihapus, 'cleanup');
+
+        } catch (e) {
+            console.warn('runAutoRecovery error:', e);
+        }
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 662 — CEK APAKAH PERLU RUN HARI INI
+    // ═══════════════════════════════════════════════════════════
+    window.cekAutoRecoveryPerluRun = function() {
+        try {
+            var lastRun = localStorage.getItem(RECOVERY_CONFIG.STORAGE_LAST_RUN);
+            if (!lastRun) return true;
+
+            var selisih = Date.now() - new Date(lastRun).getTime();
+            var batas = 23 * 60 * 60 * 1000; // 23 jam — biar nggak dobel
+            return selisih > batas;
+        } catch (e) {
+            return true;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 663 — SCHEDULER: CEK TIAP JAM
+    // ═══════════════════════════════════════════════════════════
+    window.startSchedulerAutoRecovery = function() {
+        if (window._schedulerAutoRecoveryId) {
+            clearInterval(window._schedulerAutoRecoveryId);
+        }
+
+        // Cek langsung saat start
+        if (cekAutoRecoveryPerluRun()) {
+            console.log('🔄 Auto-recovery: perlu run, menjalankan...');
+            setTimeout(runAutoRecovery, 2000);
+        }
+
+        // Jadwalkan cek berkala
+        window._schedulerAutoRecoveryId = setInterval(function() {
+            if (cekAutoRecoveryPerluRun()) {
+                console.log('🔄 Auto-recovery: jadwal harian tiba, menjalankan...');
+                runAutoRecovery();
+            }
+        }, RECOVERY_CONFIG.DAILY_CHECK_INTERVAL_MS);
+
+        console.log('✅ Scheduler auto-recovery aktif — cek tiap ' +
+            (RECOVERY_CONFIG.DAILY_CHECK_INTERVAL_MS / 3600000) + ' jam');
+    };
+
+    window.stopSchedulerAutoRecovery = function() {
+        if (window._schedulerAutoRecoveryId) {
+            clearInterval(window._schedulerAutoRecoveryId);
+            window._schedulerAutoRecoveryId = null;
+            console.log('⏹️ Scheduler auto-recovery dihentikan.');
+            return { sukses: true };
+        }
+        return { sukses: false, pesan: 'Tidak ada scheduler aktif.' };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 664 — PAGE: LAPORAN AUTO-RECOVERY
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanLaporanAutoRecovery = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            var lap = generateLaporanMingguan();
+            var lastRun = localStorage.getItem(RECOVERY_CONFIG.STORAGE_LAST_RUN);
+
+            var html = '' +
+            '<div class="container-fluid px-4 py-4">' +
+                '<div class="d-flex justify-content-between align-items-center mb-4">' +
+                    '<div>' +
+                        '<h4 class="fw-bold text-white mb-0">' +
+                            '<i class="fas fa-chart-line me-2"></i>Laporan Auto-Recovery' +
+                        '</h4>' +
+                        '<small class="text-white-50">Periode 7 hari terakhir</small>' +
+                    '</div>' +
+                    '<div class="d-flex gap-2">' +
+                        '<button class="btn btn-success btn-sm" onclick="runAutoRecovery();tampilkanLaporanAutoRecovery();">' +
+                            '<i class="fas fa-play me-1"></i>Run Sekarang</button>' +
+                        '<button class="btn btn-warning btn-sm" onclick="kirimLaporanMingguanKeSA();">' +
+                            '<i class="fas fa-paper-plane me-1"></i>Kirim ke SA</button>' +
+                        '<button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">' +
+                            '<i class="fas fa-arrow-left"></i></button>' +
+                    '</div>' +
+                '</div>' +
+
+                '<div class="row mb-4 g-3">' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-user-shield fa-2x mb-2 text-danger"></i>' +
+                                '<h4 class="fw-bold mb-0">' + lap.freezeBaru + '</h4>' +
+                                '<small class="text-muted">Freeze Baru (7 hari)</small>' +
+                            '</div></div></div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-search fa-2x mb-2 text-warning"></i>' +
+                                '<h4 class="fw-bold mb-0">' + lap.autoReview + '</h4>' +
+                                '<small class="text-muted">Auto-Review</small>' +
+                            '</div></div></div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-unlock fa-2x mb-2 text-success"></i>' +
+                                '<h4 class="fw-bold mb-0">' + lap.autoClear + '</h4>' +
+                                '<small class="text-muted">Auto-Clear</small>' +
+                            '</div></div></div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-fire fa-2x mb-2 text-dark"></i>' +
+                                '<h4 class="fw-bold mb-0">' + lap.criticalCount + '</h4>' +
+                                '<small class="text-muted">Critical Events</small>' +
+                            '</div></div></div>' +
+                '</div>';
+
+            // Info last run
+            html += '<div class="alert alert-info mb-3">' +
+                '<strong><i class="fas fa-clock me-1"></i>Auto-Recovery terakhir:</strong> ' +
+                (lastRun ? new Date(lastRun).toLocaleString('id-ID') : 'Belum pernah') +
+                ' • Scheduler: <span class="badge bg-success">AKTIF</span>' +
+                '</div>';
+
+            // Rekonsiliasi terakhir
+            if (lap.rekonsiliasiTerakhir) {
+                var r = lap.rekonsiliasiTerakhir;
+                html += '<div class="card border-0 shadow mb-3">' +
+                    '<div class="card-header text-white" style="background:#1976D2;">' +
+                        '<i class="fas fa-balance-scale me-2"></i>Rekonsiliasi Terakhir' +
+                    '</div>' +
+                    '<div class="card-body">' +
+                        '<div class="row g-3">' +
+                            '<div class="col-md-4"><strong>Coin Beredar:</strong><br>' +
+                                '<span class="text-primary fw-bold">' + Math.round(r.coin.totalBeredar) + ' Coin</span></div>' +
+                            '<div class="col-md-4"><strong>Coin Frozen:</strong><br>' +
+                                '<span class="text-danger fw-bold">' + Math.round(r.coin.totalFrozen) + ' Coin</span></div>' +
+                            '<div class="col-md-4"><strong>Mismatch Coin:</strong><br>' +
+                                '<span class="text-warning fw-bold">' + r.coin.mismatch + '</span></div>' +
+                            '<div class="col-md-4"><strong>GIF Beredar:</strong><br>' +
+                                '<span class="text-success fw-bold">' + r.gif.totalBeredar + ' Unit</span></div>' +
+                            '<div class="col-md-4"><strong>GIF Frozen:</strong><br>' +
+                                '<span class="text-danger fw-bold">' + r.gif.totalFrozen + ' Unit</span></div>' +
+                            '<div class="col-md-4"><strong>Dompet Frozen Aktif:</strong><br>' +
+                                '<span class="text-dark fw-bold">' + r.freeze.dompetAktif + '</span></div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            }
+
+            // User terdampak
+            if (lap.userTerdampak.length > 0) {
+                html += '<div class="card border-0 shadow mb-3">' +
+                    '<div class="card-header text-white" style="background:#DC3545;">' +
+                        '<i class="fas fa-users me-2"></i>User Terdampak (' + lap.userTerdampak.length + ')' +
+                    '</div>' +
+                    '<div class="card-body p-0">' +
+                        '<div class="table-responsive">' +
+                            '<table class="table table-hover mb-0">' +
+                                '<thead class="table-light"><tr>' +
+                                    '<th>User</th><th>Role</th><th>Jenis</th><th>Severity</th><th>Tanggal</th>' +
+                                '</tr></thead>' +
+                                '<tbody>';
+
+                lap.userTerdampak.slice(0, 20).forEach(function(u) {
+                    html += '<tr>' +
+                        '<td><strong>' + u.nama + '</strong><br><small>' + u.idUser + '</small></td>' +
+                        '<td>' + u.role + '</td>' +
+                        '<td><span class="badge bg-' + (u.jenis === 'coin' ? 'primary' : 'warning') + '">' + u.jenis.toUpperCase() + '</span></td>' +
+                        '<td>' + (u.severity || '-') + '</td>' +
+                        '<td><small>' + new Date(u.tanggal).toLocaleDateString('id-ID') + '</small></td>' +
+                    '</tr>';
+                });
+                html += '</tbody></table></div></div></div>';
+            }
+
+            // Log recovery
+            var log = loadLogAutoRecovery();
+            if (log.length > 0) {
+                html += '<div class="card border-0 shadow">' +
+                    '<div class="card-header text-white d-flex justify-content-between align-items-center" style="background:#6C757D;">' +
+                        '<span><i class="fas fa-history me-2"></i>Log Auto-Recovery</span>' +
+                        '<div>' +
+                            '<span class="badge bg-light text-dark me-2">' + log.length + '</span>' +
+                            '<button class="btn btn-sm btn-outline-light" onclick="if(confirm(\'Hapus semua log?\')){hapusLogAutoRecovery();tampilkanLaporanAutoRecovery();}">' +
+                                '<i class="fas fa-trash"></i>' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="card-body p-0" style="max-height:400px;overflow-y:auto;">' +
+                        '<div class="list-group list-group-flush">';
+
+                log.slice(0, 30).forEach(function(l) {
+                    var warna = l.tipe === 'auto-clear' ? 'success' :
+                                l.tipe === 'auto-review' ? 'warning' :
+                                l.tipe === 'rekonsiliasi' ? 'info' : 'secondary';
+                    html += '<div class="list-group-item">' +
+                        '<div class="d-flex justify-content-between">' +
+                            '<div>' +
+                                '<span class="badge bg-' + warna + '">' + l.tipe + '</span> ' +
+                                '<strong>' + l.pesan + '</strong>' +
+                            '</div>' +
+                            '<small class="text-muted">' + new Date(l.waktu).toLocaleString('id-ID') + '</small>' +
+                        '</div>' +
+                    '</div>';
+                });
+
+                html += '</div></div></div>';
+            }
+
+            html += '</div>';
+            konten.innerHTML = html;
+
+        } catch (e) {
+            console.error('tampilkanLaporanAutoRecovery error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 665 — HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanLaporanAutoRecovery'] = window.tampilkanLaporanAutoRecovery;
+
+    // ═══════════════════════════════════════════════════════════
+    // 666 — AUTO-INJECT MENU SA
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        if (typeof menuConfig === 'undefined' || !menuConfig['SA']) return;
+        var menuSA = menuConfig['SA'].menu;
+        var sudah = menuSA.some(function(m) { return m.aksi === 'tampilkanLaporanAutoRecovery'; });
+        if (sudah) return;
+
+        var idx = menuSA.findIndex(function(m) { return m.blok === '10.79'; });
+        if (idx === -1) idx = menuSA.length - 1;
+
+        menuSA.splice(idx + 1, 0, {
+            nama: 'Laporan Auto-Recovery',
+            ikon: 'fas fa-chart-line',
+            blok: '10.81',
+            aksi: 'tampilkanLaporanAutoRecovery'
+        });
+        console.log('✅ Menu "Laporan Auto-Recovery" di-inject');
+    }, 400);
+
+    // ═══════════════════════════════════════════════════════════
+    // 667 — STARTUP: JALANKAN SCHEDULER
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        startSchedulerAutoRecovery();
+    }, 3000);
+
+    // ═══════════════════════════════════════════════════════════
+    // 668 — LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 01.0 (651–680) — AUTO-RECOVERY terpasang.');
+    console.log('   🔄 Review (>7 hari)  : autoReviewFreezeLama');
+    console.log('   🧹 Clear (>30 hari)  : autoClearFreezeLama');
+    console.log('   ⚖️  Rekonsiliasi     : rekonsiliasiDataHarian');
+    console.log('   📊 Laporan mingguan  : generateLaporanMingguan');
+    console.log('   ⏰ Scheduler aktif   : cek tiap jam');
+    console.log('   Total: 17 fungsi + 1 halaman UI');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 01.0 (651–680) — AUTO-RECOVERY -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 01.0 (append) ===== -->
@@ -49584,6 +51949,1006 @@ function tampilkanPenukaranGifR2Coin() {
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- AKHIR BLOK R 10.78 – AKTIVASI AKUN TERISOLIR (JS) -->
 <!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 10.79 – DOMPET TERBEKU (HTML) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div id="dompetTerbekuContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- HEADER -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-shield-alt me-2"></i>Dompet Terbeku
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Kelola user yang di-frozen karena aktivitas mencurigakan.
+                </small>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-warning btn-sm" onclick="dtRefreshData()">
+                    <i class="fas fa-sync me-1"></i> Refresh
+                </button>
+                <button class="btn btn-success btn-sm" onclick="dtScanGlobal()">
+                    <i class="fas fa-search me-1"></i> Scan Global
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- STATISTIK -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-wallet fa-2x mb-2 text-danger"></i>
+                        <h5 class="fw-bold mb-0" id="dtStatDompetFrozen">0</h5>
+                        <small class="text-muted">Dompet Coin Frozen</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-gift fa-2x mb-2 text-warning"></i>
+                        <h5 class="fw-bold mb-0" id="dtStatGifFrozen">0</h5>
+                        <small class="text-muted">Stok GIF Frozen</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-fire fa-2x mb-2 text-danger"></i>
+                        <h5 class="fw-bold mb-0" id="dtStatCritical">0</h5>
+                        <small class="text-muted">Critical</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-clock fa-2x mb-2 text-info"></i>
+                        <h5 class="fw-bold mb-0" id="dtStatHariIni">0</h5>
+                        <small class="text-muted">Frozen Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- KATALOG GLOBAL WARNING -->
+        <div id="dtKatalogWarning" class="alert alert-danger d-none">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-exclamation-triangle me-2 fa-lg"></i>
+                    <strong>KATALOG GIF GLOBAL FROZEN!</strong>
+                    <div class="small mt-1" id="dtKatalogWarningDetail">-</div>
+                </div>
+                <button class="btn btn-light btn-sm" onclick="dtUnfreezeKatalog()">
+                    <i class="fas fa-unlock me-1"></i> Buka Katalog
+                </button>
+            </div>
+        </div>
+
+        <!-- TAB NAVIGASI -->
+        <ul class="nav nav-tabs mb-3" id="dtTabs">
+            <li class="nav-item">
+                <a class="nav-link active" href="#" data-dt-tab="coin" onclick="event.preventDefault();dtSetTab('coin');">
+                    <i class="fas fa-coins me-1"></i> Dompet Coin
+                    <span class="badge bg-danger ms-1" id="dtBadgeCoin">0</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-dt-tab="gif" onclick="event.preventDefault();dtSetTab('gif');">
+                    <i class="fas fa-gift me-1"></i> Stok GIF
+                    <span class="badge bg-warning text-dark ms-1" id="dtBadgeGif">0</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-dt-tab="user" onclick="event.preventDefault();dtSetTab('user');">
+                    <i class="fas fa-user-secret me-1"></i> User Mencurigakan
+                    <span class="badge bg-secondary ms-1" id="dtBadgeUser">0</span>
+                </a>
+            </li>
+        </ul>
+
+        <!-- FILTER -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-3">
+                        <label class="fw-bold small"><i class="fas fa-search me-1"></i>Cari</label>
+                        <input type="text" id="dtFilterCari" class="form-control form-control-sm"
+                               placeholder="Nama / ID / alasan..." oninput="dtRenderTabel()">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small"><i class="fas fa-shield-alt me-1"></i>Severity</label>
+                        <select id="dtFilterSeverity" class="form-select form-select-sm" onchange="dtRenderTabel()">
+                            <option value="">Semua</option>
+                            <option value="critical">🔴 Critical</option>
+                            <option value="high">🟠 High</option>
+                            <option value="medium">🟡 Medium</option>
+                            <option value="low">🔵 Low</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small"><i class="fas fa-user-tag me-1"></i>Role</label>
+                        <select id="dtFilterRole" class="form-select form-select-sm" onchange="dtRenderTabel()">
+                            <option value="">Semua</option>
+                            <option value="Toko">Toko</option>
+                            <option value="Pedagang Pasar">Pedagang Pasar</option>
+                            <option value="Pedagang Makanan">Pedagang Makanan</option>
+                            <option value="COD Seller">COD Seller</option>
+                            <option value="Ojek">Ojek</option>
+                            <option value="Grosir">Grosir</option>
+                            <option value="Distributor">Distributor</option>
+                            <option value="Jasa">Jasa</option>
+                            <option value="Developer Properti">Developer Properti</option>
+                            <option value="Dealer dan Showroom">Dealer dan Showroom</option>
+                            <option value="Finance Multifinance">Finance Multifinance</option>
+                            <option value="Customer">Customer</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small"><i class="fas fa-calendar me-1"></i>Tanggal</label>
+                        <input type="date" id="dtFilterTanggal" class="form-control form-control-sm" onchange="dtRenderTabel()">
+                    </div>
+                    <div class="col-md-3 text-end">
+                        <button class="btn btn-outline-secondary btn-sm w-100" onclick="dtResetFilter()">
+                            <i class="fas fa-undo me-1"></i> Reset Filter
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-2 d-flex justify-content-between align-items-center">
+                    <span class="badge bg-dark" id="dtInfoJumlah">0 Data</span>
+                    <small class="text-muted">Auto-refresh: <span id="dtLastRefresh">-</span></small>
+                </div>
+            </div>
+        </div>
+
+        <!-- TABEL -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center" style="background:#DC3545;">
+                <span><i class="fas fa-list me-2"></i>Daftar User Terbeku</span>
+                <span class="badge bg-light text-dark" id="dtBadgeTotal">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height:600px;overflow-y:auto;">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light" style="position:sticky;top:0;z-index:5;">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th>User</th>
+                                <th>Role</th>
+                                <th>Jenis</th>
+                                <th class="text-end">Palsu</th>
+                                <th>Severity</th>
+                                <th>Tgl Freeze</th>
+                                <th style="width:200px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dtTabelBody">
+                            <tr><td colspan="8" class="text-center text-muted py-4">
+                                <i class="fas fa-spinner fa-spin me-2"></i>Memuat...
+                            </td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ MODAL DETAIL FROZEN ═══ -->
+<div class="modal fade" id="modalDTDetail" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#DC3545;">
+                <h5 class="modal-title"><i class="fas fa-shield-alt me-2"></i>Detail Frozen</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="dtDetailBody">
+                <p class="text-muted text-center py-3">Memuat...</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ MODAL UNFREEZE ═══ -->
+<div class="modal fade" id="modalDTUnfreeze" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title"><i class="fas fa-unlock me-2"></i>Unfreeze User</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="dtUnfreezeIdUser">
+                <input type="hidden" id="dtUnfreezeJenis">
+                <div class="alert alert-warning small">
+                    <i class="fas fa-exclamation-triangle me-1"></i>
+                    <strong>Perhatian:</strong> Unfreeze akan mengaktifkan kembali transaksi coin/GIF user ini.
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">User</label>
+                    <input type="text" id="dtUnfreezeNama" class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Catatan Unfreeze (opsional)</label>
+                    <textarea id="dtUnfreezeCatatan" class="form-control" rows="3"
+                              maxlength="200" placeholder="Contoh: Coin palsu sudah dihapus, user sah..."></textarea>
+                </div>
+                <div id="dtUnfreezeNotif" class="alert d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-success" onclick="dtProsesUnfreeze()">
+                    <i class="fas fa-unlock me-1"></i> Unfreeze Sekarang
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ MODAL KURANGI COIN ═══ -->
+<div class="modal fade" id="modalDTKurangiCoin" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#FF8C00;">
+                <h5 class="modal-title"><i class="fas fa-minus-circle me-2"></i>Kurangi Coin Palsu</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="dtKurangiIdUser">
+                <div class="alert alert-warning small">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Akan mengurangi saldo + catat intervensi SA.
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">User</label>
+                    <input type="text" id="dtKurangiNama" class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Saldo Sekarang</label>
+                    <input type="text" id="dtKurangiSaldoNow" class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Jumlah Coin Palsu yang Dikurangi</label>
+                    <input type="number" id="dtKurangiJumlah" class="form-control" min="1" step="0.01"
+                           placeholder="Masukkan jumlah">
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Catatan</label>
+                    <input type="text" id="dtKurangiCatatan" class="form-control"
+                           placeholder="Contoh: Hapus coin palsu hasil inject" maxlength="150">
+                </div>
+                <div id="dtKurangiNotif" class="alert d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn text-white" style="background:#FF8C00;" onclick="dtProsesKurangi()">
+                    <i class="fas fa-check me-1"></i> Kurangi & Unfreeze
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ MODAL BLOKIR PERMANEN ═══ -->
+<div class="modal fade" id="modalDTBlokir" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#000;">
+                <h5 class="modal-title"><i class="fas fa-ban me-2"></i>Blokir Permanen</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="dtBlokirIdUser">
+                <div class="alert alert-danger small">
+                    <i class="fas fa-exclamation-triangle me-1"></i>
+                    <strong>PERINGATAN:</strong> Akun akan diblokir permanen + semua data tidak bisa diakses.
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">User</label>
+                    <input type="text" id="dtBlokirNama" class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Alasan Blokir <span class="text-danger">*</span></label>
+                    <textarea id="dtBlokirAlasan" class="form-control" rows="3" minlength="10"
+                              maxlength="300" placeholder="Minimal 10 karakter, jelaskan mengapa diblokir..."></textarea>
+                </div>
+                <div id="dtBlokirNotif" class="alert d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-dark" onclick="dtProsesBlokir()">
+                    <i class="fas fa-ban me-1"></i> Blokir Permanen
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 10.79 – DOMPET TERBEKU (HTML) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 10.79 – DOMPET TERBEKU (JS) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_10_79_DOMPET_TERBEKU() {
+    if (window._blokR1079Done) return;
+    window._blokR1079Done = true;
+
+    var dtTabAktif = 'coin';
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER
+    // ═══════════════════════════════════════════════════════════
+    function dtEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function dtTgl(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: '2-digit',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            });
+        } catch (e) { return '-'; }
+    }
+
+    function dtSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function dtSeverityBadge(sev) {
+        var map = {
+            critical: ['bg-danger', '🔴 CRITICAL'],
+            high:     ['bg-warning text-dark', '🟠 HIGH'],
+            medium:   ['bg-info text-dark', '🟡 MEDIUM'],
+            low:      ['bg-secondary', '🔵 LOW']
+        };
+        var m = map[sev] || ['bg-light text-dark border', '⚪ NORMAL'];
+        return '<span class="badge ' + m[0] + '" style="font-size:9px;">' + m[1] + '</span>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // AUTO-CLEANUP
+    // ═══════════════════════════════════════════════════════════
+    (function cleanup() {
+        var ids = ['dompetTerbekuContainer', 'modalDTDetail', 'modalDTUnfreeze',
+                   'modalDTKurangiCoin', 'modalDTBlokir'];
+        ids.forEach(function(id) {
+            var els = document.querySelectorAll('[id="' + id + '"]');
+            if (els.length > 1) {
+                for (var i = 0; i < els.length - 1; i++) els[i].remove();
+            }
+        });
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) TAMPILKAN HALAMAN
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanDompetTerbeku = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplDompetTerbeku) {
+                var c = document.getElementById('dompetTerbekuContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Dompet Terbeku', '10.79');
+                    }
+                    return;
+                }
+                window._tplDompetTerbeku = c.innerHTML;
+                c.remove();
+            }
+
+            konten.innerHTML = window._tplDompetTerbeku;
+
+            dtTabAktif = 'coin';
+            setTimeout(function() {
+                dtSetTab('coin');
+                dtRenderStatistik();
+                dtRenderKatalogWarning();
+                dtRenderTabel();
+                dtSetText('dtLastRefresh', new Date().toLocaleTimeString('id-ID', { hour12: false }));
+                console.log('✅ BLOK R 10.79 — Dompet Terbeku rendered');
+            }, 200);
+        } catch (e) {
+            console.error('tampilkanDompetTerbeku error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) SET TAB
+    // ═══════════════════════════════════════════════════════════
+    window.dtSetTab = function(tab) {
+        dtTabAktif = tab || 'coin';
+        var links = document.querySelectorAll('#dtTabs .nav-link');
+        links.forEach(function(a) {
+            if (a.getAttribute('data-dt-tab') === dtTabAktif) a.classList.add('active');
+            else a.classList.remove('active');
+        });
+        dtRenderTabel();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    function dtRenderStatistik() {
+        try {
+            var dompet = (typeof getAllDompetFrozen === 'function') ? getAllDompetFrozen() : [];
+            var gif = (typeof getAllStokGifFrozen === 'function') ? getAllStokGifFrozen() : [];
+
+            dtSetText('dtStatDompetFrozen', dompet.length);
+            dtSetText('dtStatGifFrozen', gif.length);
+
+            var critical = dompet.filter(function(d) { return d.severity === 'critical'; }).length;
+            dtSetText('dtStatCritical', critical);
+
+            var hariIni = new Date().toISOString().substring(0, 10);
+            var countHariIni = dompet.filter(function(d) {
+                return (d.tanggalFreeze || '').substring(0, 10) === hariIni;
+            }).length;
+            countHariIni += gif.filter(function(g) {
+                return (g.tanggalFreeze || '').substring(0, 10) === hariIni;
+            }).length;
+            dtSetText('dtStatHariIni', countHariIni);
+
+            dtSetText('dtBadgeCoin', dompet.length);
+            dtSetText('dtBadgeGif', gif.length);
+
+            var users = (typeof getDaftarUserMencurigakan === 'function')
+                ? getDaftarUserMencurigakan() : [];
+            dtSetText('dtBadgeUser', users.length);
+        } catch (e) {
+            console.error('dtRenderStatistik error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) RENDER KATALOG WARNING
+    // ═══════════════════════════════════════════════════════════
+    function dtRenderKatalogWarning() {
+        try {
+            var warn = document.getElementById('dtKatalogWarning');
+            var detail = document.getElementById('dtKatalogWarningDetail');
+            if (!warn || !detail) return;
+
+            var katalog = (typeof getKatalogGifFrozen === 'function') ? getKatalogGifFrozen() : null;
+            var isFrozen = katalog && (katalog.statusFreeze === 'frozen' || katalog.statusFreeze === 'partial');
+
+            if (isFrozen) {
+                warn.classList.remove('d-none');
+                detail.innerHTML =
+                    'Alasan: ' + dtEsc(katalog.alasanFreeze || '-') + '<br>' +
+                    'User terdampak: <strong>' + (katalog.jumlahUserTerdampak || 0) + '</strong>' +
+                    ' • Aktif sejak: ' + dtTgl(katalog.tanggalFreeze);
+            } else {
+                warn.classList.add('d-none');
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) RENDER TABEL
+    // ═══════════════════════════════════════════════════════════
+    window.dtRenderTabel = function() {
+        try {
+            var tbody = document.getElementById('dtTabelBody');
+            if (!tbody) return;
+
+            var cari = (document.getElementById('dtFilterCari')?.value || '').toLowerCase().trim();
+            var fSev = document.getElementById('dtFilterSeverity')?.value || '';
+            var fRole = document.getElementById('dtFilterRole')?.value || '';
+            var fTgl = document.getElementById('dtFilterTanggal')?.value || '';
+
+            var data = [];
+
+            if (dtTabAktif === 'coin') {
+                data = (typeof getAllDompetFrozen === 'function') ? getAllDompetFrozen() : [];
+            } else if (dtTabAktif === 'gif') {
+                data = (typeof getAllStokGifFrozen === 'function') ? getAllStokGifFrozen() : [];
+            } else if (dtTabAktif === 'user') {
+                var users = (typeof getDaftarUserMencurigakan === 'function') ? getDaftarUserMencurigakan() : [];
+                users.forEach(function(u) {
+                    data.push({
+                        idUser: u.idUser,
+                        nama: u.nama,
+                        role: u.role,
+                        severity: u.level === 'bahaya' ? 'critical' : (u.level === 'waspada' ? 'high' : 'medium'),
+                        tanggalFreeze: new Date().toISOString(),
+                        _skor: u.skor,
+                        _alasanSkor: u.alasan,
+                        _isSkorList: true
+                    });
+                });
+            }
+
+            // Filter
+            var dataFilter = data.filter(function(d) {
+                if (fSev && d.severity !== fSev) return false;
+                if (fRole && d.role !== fRole) return false;
+                if (fTgl) {
+                    var tgl = (d.tanggalFreeze || '').substring(0, 10);
+                    if (tgl !== fTgl) return false;
+                }
+                if (cari) {
+                    var s = [
+                        d.nama || '', d.idUser || '', d.alasanFreeze || '', d.role || ''
+                    ].join(' ').toLowerCase();
+                    if (s.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            dtSetText('dtInfoJumlah', dataFilter.length + ' Data');
+            dtSetText('dtBadgeTotal', dataFilter.length);
+
+            if (dataFilter.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-check-circle fa-2x d-block mb-2 text-success opacity-50"></i>' +
+                    'Tidak ada data. 🎉</td></tr>';
+                return;
+            }
+
+            var html = '';
+            dataFilter.forEach(function(d, i) {
+                var jenisBadge = dtTabAktif === 'coin'
+                    ? '<span class="badge bg-primary">💰 Coin</span>'
+                    : (dtTabAktif === 'gif'
+                        ? '<span class="badge bg-warning text-dark">🎁 GIF</span>'
+                        : '<span class="badge bg-secondary">🕵️ Skor</span>');
+
+                var jumlahPalsu = '';
+                if (dtTabAktif === 'coin') {
+                    jumlahPalsu = (d.coinPalsu || 0) + ' Coin';
+                } else if (dtTabAktif === 'gif') {
+                    jumlahPalsu = (d.jumlahGifPalsu || 0) + ' Unit';
+                } else {
+                    jumlahPalsu = 'Skor: ' + (d._skor || 0);
+                }
+
+                var aksiHtml = '';
+                if (!d._isSkorList) {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-outline-primary me-1" ' +
+                                'onclick="dtBukaDetail(\'' + dtEsc(d.idUser) + '\', \'' + dtTabAktif + '\')" ' +
+                                'title="Detail"><i class="fas fa-eye"></i></button>' +
+                        '<button class="btn btn-sm btn-success me-1" ' +
+                                'onclick="dtBukaUnfreeze(\'' + dtEsc(d.idUser) + '\', \'' + dtTabAktif + '\')" ' +
+                                'title="Unfreeze"><i class="fas fa-unlock"></i></button>';
+
+                    if (dtTabAktif === 'coin') {
+                        aksiHtml +=
+                            '<button class="btn btn-sm btn-warning me-1" ' +
+                                    'onclick="dtBukaKurangiCoin(\'' + dtEsc(d.idUser) + '\')" ' +
+                                    'title="Kurangi Coin Palsu"><i class="fas fa-minus-circle"></i></button>';
+                    }
+
+                    aksiHtml +=
+                        '<button class="btn btn-sm btn-dark" ' +
+                                'onclick="dtBukaBlokir(\'' + dtEsc(d.idUser) + '\')" ' +
+                                'title="Blokir Permanen"><i class="fas fa-ban"></i></button>';
+                } else {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-outline-info" ' +
+                                'onclick="if(typeof lacTraceUser===\'function\') lacTraceUser(\'' + dtEsc(d.idUser) + '\')" ' +
+                                'title="Trace User"><i class="fas fa-user-search"></i></button>';
+                }
+
+                html += '<tr>' +
+                    '<td>' + (i + 1) + '</td>' +
+                    '<td><strong>' + dtEsc(d.nama) + '</strong><br>' +
+                        '<small class="text-muted">' + dtEsc(d.idUser) + '</small></td>' +
+                    '<td><span class="badge bg-secondary">' + dtEsc(d.role) + '</span></td>' +
+                    '<td>' + jenisBadge + '</td>' +
+                    '<td class="text-end fw-bold text-danger">' + jumlahPalsu + '</td>' +
+                    '<td>' + dtSeverityBadge(d.severity) + '</td>' +
+                    '<td><small>' + dtTgl(d.tanggalFreeze) + '</small></td>' +
+                    '<td>' + aksiHtml + '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+
+        } catch (e) {
+            console.error('dtRenderTabel error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) RESET FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.dtResetFilter = function() {
+        ['dtFilterCari', 'dtFilterSeverity', 'dtFilterRole', 'dtFilterTanggal'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        dtRenderTabel();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) REFRESH DATA
+    // ═══════════════════════════════════════════════════════════
+    window.dtRefreshData = function() {
+        dtRenderStatistik();
+        dtRenderKatalogWarning();
+        dtRenderTabel();
+        dtSetText('dtLastRefresh', new Date().toLocaleTimeString('id-ID', { hour12: false }));
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) SCAN GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    window.dtScanGlobal = function() {
+        if (!confirm('Scan SEMUA user untuk coin & GIF palsu?\n\n' +
+                     'Proses ini bisa memakan waktu 5-10 detik.')) return;
+
+        try {
+            var coin = (typeof scanCoinPalsuBerkala === 'function') ? scanCoinPalsuBerkala() : { sukses: false };
+            var gif = (typeof scanGifPalsuBerkala === 'function') ? scanGifPalsuBerkala() : { sukses: false };
+
+            alert('✅ Scan selesai!\n\n' +
+                'Coin: ' + (coin.dibekukanBaru || 0) + ' user baru frozen\n' +
+                'GIF: ' + (gif.dibekukanBaru || 0) + ' user baru frozen');
+            dtRefreshData();
+        } catch (e) {
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) BUKA DETAIL
+    // ═══════════════════════════════════════════════════════════
+    window.dtBukaDetail = function(idUser, jenis) {
+        try {
+            var body = document.getElementById('dtDetailBody');
+            if (!body) return;
+
+            var data = jenis === 'coin'
+                ? (typeof getDompetFrozen === 'function' ? getDompetFrozen(idUser) : null)
+                : (typeof getStokGifFrozen === 'function' ? getStokGifFrozen(idUser) : null);
+
+            if (!data) { alert('Data tidak ditemukan.'); return; }
+
+            var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+            var saldo = (typeof getSaldoDompet === 'function') ? getSaldoDompet(idUser) : 0;
+            var skor = (typeof hitungSkorRisikoCoinUser === 'function')
+                ? hitungSkorRisikoCoinUser(idUser) : { skor: 0, level: '-' };
+
+            var html = '<div class="alert alert-light border mb-3">' +
+                '<strong>' + dtEsc(data.nama || '-') + '</strong> (' + dtEsc(data.role || '-') + ')<br>' +
+                '<small>' + dtEsc(idUser) + '</small>' +
+                '</div>';
+
+            html += '<table class="table table-sm table-borderless">';
+            html += '<tr><td class="fw-bold text-muted" style="width:180px;">Jenis Freeze</td><td>' + jenis.toUpperCase() + '</td></tr>';
+            html += '<tr><td class="fw-bold text-muted">Severity</td><td>' + dtSeverityBadge(data.severity) + '</td></tr>';
+            html += '<tr><td class="fw-bold text-muted">Alasan</td><td>' + dtEsc(data.alasanFreeze) + '</td></tr>';
+            html += '<tr><td class="fw-bold text-muted">Tanggal Freeze</td><td>' + dtTgl(data.tanggalFreeze) + '</td></tr>';
+
+            if (jenis === 'coin') {
+                html += '<tr><td class="fw-bold text-muted">Saldo Saat Freeze</td><td>' + (data.saldoSaatFreeze || 0) + ' Coin</td></tr>';
+                html += '<tr><td class="fw-bold text-muted">Coin Palsu</td><td class="text-danger fw-bold">' + (data.coinPalsu || 0) + ' Coin</td></tr>';
+                html += '<tr><td class="fw-bold text-muted">Saldo Sekarang</td><td>' + saldo + ' Coin</td></tr>';
+            } else {
+                html += '<tr><td class="fw-bold text-muted">Total GIF Palsu</td><td class="text-danger fw-bold">' + (data.jumlahGifPalsu || 0) + ' Unit</td></tr>';
+                if (Array.isArray(data.detailGifPalsu) && data.detailGifPalsu.length > 0) {
+                    html += '<tr><td class="fw-bold text-muted">Detail GIF Palsu</td><td><ul class="mb-0 ps-3">';
+                    data.detailGifPalsu.forEach(function(d) {
+                        html += '<li>' + (d.icon || '🎁') + ' ' + dtEsc(d.namaGift) +
+                                ' — <strong>' + (d.jumlah || 0) + '</strong> unit (' + dtEsc(d.alasan || '-') + ')</li>';
+                    });
+                    html += '</ul></td></tr>';
+                }
+            }
+
+            html += '<tr><td class="fw-bold text-muted">Skor Risiko</td><td><strong>' + skor.skor + '/100</strong> (' + dtEsc(skor.level) + ')</td></tr>';
+            if (data.transaksiPemicu) {
+                html += '<tr><td class="fw-bold text-muted">Transaksi Pemicu</td><td><code>' + dtEsc(data.transaksiPemicu) + '</code></td></tr>';
+            }
+            html += '</table>';
+
+            // Aksi tambahan
+            html += '<hr><div class="d-flex gap-2 flex-wrap">' +
+                '<button class="btn btn-sm btn-info" onclick="if(typeof lacTraceUser===\'function\') lacTraceUser(\'' + dtEsc(idUser) + '\')">' +
+                    '<i class="fas fa-user-search me-1"></i>Trace User</button>' +
+                '<button class="btn btn-sm btn-danger" onclick="if(typeof lacBukaDetail===\'function\' && typeof loadLogAktivitasCoinGlobal===\'function\'){var l=loadLogAktivitasCoinGlobal().find(function(x){return x.idUser===\'' + dtEsc(idUser) + '\'}); if(l) lacBukaDetail(l.id);}">' +
+                    '<i class="fas fa-history me-1"></i>Log Terbaru</button>' +
+                '</div>';
+
+            body.innerHTML = html;
+            new bootstrap.Modal(document.getElementById('modalDTDetail')).show();
+        } catch (e) {
+            console.error('dtBukaDetail error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) BUKA MODAL UNFREEZE
+    // ═══════════════════════════════════════════════════════════
+    window.dtBukaUnfreeze = function(idUser, jenis) {
+        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+        if (!user) { alert('User tidak ditemukan.'); return; }
+
+        document.getElementById('dtUnfreezeIdUser').value = idUser;
+        document.getElementById('dtUnfreezeJenis').value = jenis;
+        document.getElementById('dtUnfreezeNama').value = (user.nama || '-') + ' (' + user.role + ')';
+        document.getElementById('dtUnfreezeCatatan').value = '';
+        document.getElementById('dtUnfreezeNotif').classList.add('d-none');
+
+        new bootstrap.Modal(document.getElementById('modalDTUnfreeze')).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (11) PROSES UNFREEZE
+    // ═══════════════════════════════════════════════════════════
+    window.dtProsesUnfreeze = function() {
+        var notif = document.getElementById('dtUnfreezeNotif');
+        try {
+            var idUser = document.getElementById('dtUnfreezeIdUser').value;
+            var jenis = document.getElementById('dtUnfreezeJenis').value;
+            var catatan = (document.getElementById('dtUnfreezeCatatan').value || '').trim();
+            var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+
+            if (!idUser || !idAdmin) {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = 'Data tidak valid.';
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            var hasil;
+            if (jenis === 'coin') {
+                hasil = (typeof unfreezeDompetR2Coin === 'function')
+                    ? unfreezeDompetR2Coin(idUser, idAdmin, catatan || 'Unfreeze oleh SA')
+                    : { sukses: false, pesan: 'Fungsi tidak tersedia.' };
+            } else {
+                hasil = (typeof unfreezeStokGif === 'function')
+                    ? unfreezeStokGif(idUser, idAdmin, catatan || 'Unfreeze oleh SA')
+                    : { sukses: false, pesan: 'Fungsi tidak tersedia.' };
+            }
+
+            if (hasil.sukses) {
+                var modal = bootstrap.Modal.getInstance(document.getElementById('modalDTUnfreeze'));
+                if (modal) modal.hide();
+
+                dtRefreshData();
+                alert('✅ User berhasil di-unfreeze.');
+            } else {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = '❌ ' + (hasil.pesan || 'Gagal.');
+                notif.classList.remove('d-none');
+            }
+        } catch (e) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + e.message;
+            notif.classList.remove('d-none');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (12) BUKA MODAL KURANGI COIN
+    // ═══════════════════════════════════════════════════════════
+    window.dtBukaKurangiCoin = function(idUser) {
+        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+        if (!user) return;
+
+        var saldo = (typeof getSaldoDompet === 'function') ? getSaldoDompet(idUser) : 0;
+        var f = (typeof getDompetFrozen === 'function') ? getDompetFrozen(idUser) : null;
+
+        document.getElementById('dtKurangiIdUser').value = idUser;
+        document.getElementById('dtKurangiNama').value = (user.nama || '-') + ' (' + user.role + ')';
+        document.getElementById('dtKurangiSaldoNow').value = saldo + ' Coin';
+        document.getElementById('dtKurangiJumlah').value = (f && f.coinPalsu) ? f.coinPalsu : '';
+        document.getElementById('dtKurangiCatatan').value = 'Hapus coin palsu';
+        document.getElementById('dtKurangiNotif').classList.add('d-none');
+
+        new bootstrap.Modal(document.getElementById('modalDTKurangiCoin')).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (13) PROSES KURANGI COIN
+    // ═══════════════════════════════════════════════════════════
+    window.dtProsesKurangi = function() {
+        var notif = document.getElementById('dtKurangiNotif');
+        try {
+            var idUser = document.getElementById('dtKurangiIdUser').value;
+            var jumlah = parseFloat(document.getElementById('dtKurangiJumlah').value) || 0;
+            var catatan = (document.getElementById('dtKurangiCatatan').value || '').trim();
+            var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+
+            if (!idUser || !idAdmin) {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = 'Data tidak valid.';
+                notif.classList.remove('d-none');
+                return;
+            }
+            if (jumlah <= 0) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = 'Jumlah harus > 0.';
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            // Intervensi kurangi coin
+            var hasil = (typeof intervensiCoinSA === 'function')
+                ? intervensiCoinSA(idUser, 'kurang', jumlah, catatan || 'Kurangi coin palsu oleh SA')
+                : { sukses: false, pesan: 'Fungsi intervensi tidak tersedia.' };
+
+            if (!hasil.sukses) {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = '❌ ' + hasil.pesan;
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            // Unfreeze
+            if (typeof unfreezeDompetR2Coin === 'function') {
+                unfreezeDompetR2Coin(idUser, idAdmin, 'Unfreeze setelah kurangi coin palsu');
+            }
+
+            var modal = bootstrap.Modal.getInstance(document.getElementById('modalDTKurangiCoin'));
+            if (modal) modal.hide();
+
+            dtRefreshData();
+            alert('✅ Berhasil kurangi ' + jumlah + ' Coin & unfreeze user.');
+        } catch (e) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + e.message;
+            notif.classList.remove('d-none');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (14) BUKA MODAL BLOKIR
+    // ═══════════════════════════════════════════════════════════
+    window.dtBukaBlokir = function(idUser) {
+        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+        if (!user) return;
+
+        document.getElementById('dtBlokirIdUser').value = idUser;
+        document.getElementById('dtBlokirNama').value = (user.nama || '-') + ' (' + user.role + ')';
+        document.getElementById('dtBlokirAlasan').value = '';
+        document.getElementById('dtBlokirNotif').classList.add('d-none');
+
+        new bootstrap.Modal(document.getElementById('modalDTBlokir')).show();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (15) PROSES BLOKIR
+    // ═══════════════════════════════════════════════════════════
+    window.dtProsesBlokir = function() {
+        var notif = document.getElementById('dtBlokirNotif');
+        try {
+            var idUser = document.getElementById('dtBlokirIdUser').value;
+            var alasan = (document.getElementById('dtBlokirAlasan').value || '').trim();
+            var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+
+            if (alasan.length < 10) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = 'Alasan minimal 10 karakter.';
+                notif.classList.remove('d-none');
+                return;
+            }
+
+            // Blokir akun
+            var hasil = (typeof blokirAkun === 'function')
+                ? blokirAkun(idUser, alasan)
+                : { sukses: false, pesan: 'Fungsi blokir tidak tersedia.' };
+
+            if (!hasil.sukses) {
+                // Fallback: update langsung
+                try {
+                    var akun = (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser))
+                        ? dataLoginUser.find(function(u) { return u.idUser === idUser; }) : null;
+                    if (akun) {
+                        akun.statusVerifikasi = 'Diblokir';
+                        akun.alasanBlokir = alasan;
+                        akun.blokirOleh = idAdmin;
+                        akun.tanggalBlokir = new Date().toISOString();
+                        localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+                        hasil = { sukses: true };
+                    }
+                } catch (e) {}
+            }
+
+            if (hasil.sukses) {
+                var modal = bootstrap.Modal.getInstance(document.getElementById('modalDTBlokir'));
+                if (modal) modal.hide();
+
+                dtRefreshData();
+                alert('✅ User ' + idUser + ' berhasil diblokir permanen.');
+            } else {
+                notif.className = 'alert alert-danger';
+                notif.innerHTML = '❌ ' + hasil.pesan;
+                notif.classList.remove('d-none');
+            }
+        } catch (e) {
+            notif.className = 'alert alert-danger';
+            notif.innerHTML = '❌ ' + e.message;
+            notif.classList.remove('d-none');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (16) UNFREEZE KATALOG GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    window.dtUnfreezeKatalog = function() {
+        if (!confirm('Buka kembali KATALOG GIF GLOBAL?\n\nSemua user akan bisa konversi GIF → Coin lagi.')) return;
+
+        var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+        var hasil = (typeof unfreezeKatalogGifGlobal === 'function')
+            ? unfreezeKatalogGifGlobal(idAdmin, 'Buka katalog via Dompet Terbeku')
+            : { sukses: false, pesan: 'Fungsi tidak tersedia.' };
+
+        if (hasil.sukses) {
+            dtRefreshData();
+            alert('✅ Katalog GIF Global berhasil dibuka.');
+        } else {
+            alert('❌ ' + hasil.pesan);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (17) HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanDompetTerbeku'] = window.tampilkanDompetTerbeku;
+
+    // ═══════════════════════════════════════════════════════════
+    // (18) AUTO-INJECT MENU KE menuConfig['SA']
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        if (typeof menuConfig === 'undefined' || !menuConfig['SA']) return;
+        var menuSA = menuConfig['SA'].menu;
+        var sudah = menuSA.some(function(m) { return m.aksi === 'tampilkanDompetTerbeku'; });
+        if (sudah) return;
+
+        // Insert setelah "Log Aktivitas Coin" (10.53) atau sebelum backup
+        var idx = menuSA.findIndex(function(m) { return m.blok === '10.53'; });
+        if (idx === -1) idx = menuSA.length - 1;
+
+        menuSA.splice(idx + 1, 0, {
+            nama: 'Dompet Terbeku',
+            ikon: 'fas fa-shield-alt',
+            blok: '10.79',
+            aksi: 'tampilkanDompetTerbeku'
+        });
+
+        console.log('✅ Menu "Dompet Terbeku" di-inject ke menuConfig["SA"]');
+    }, 300);
+
+    // ═══════════════════════════════════════════════════════════
+    // (19) LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 10.79 — Dompet Terbeku terpasang.');
+    console.log('   📋 3 tab: Coin / GIF / User Mencurigakan');
+    console.log('   🎯 Fungsi UI: 15');
+    console.log('   🔗 Handler menu: tampilkanDompetTerbeku');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 10.79 – DOMPET TERBEKU (JS) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 35.5 – TAGIHAN SAYA (HTML) -->
