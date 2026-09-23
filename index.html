@@ -32489,6 +32489,11 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
     var MAX_LOG         = 1000;
     var MAX_LAPORAN     = 500;
 
+    // Cache scan auto-flag (FIX #3)
+    var _scanCacheMod = null;
+    var _scanCacheTimeMod = 0;
+    var _SCAN_CACHE_TTL_MS = 5000;
+
     function _safeParseArray(key) {
         try {
             var raw = localStorage.getItem(key);
@@ -32517,17 +32522,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
         return 'MOD-' + String(count + 1).padStart(4, '0');
     }
 
-    // ── [REVISI] Cache untuk scanAutoFlagPostHF (FIX #3) ──
-    var _scanCacheMod = null;
-    var _scanCacheTimeMod = 0;
-    var _SCAN_CACHE_TTL_MS = 5000;
-
-    function _invalidateScanCacheHF() {
-        _scanCacheMod = null;
-        _scanCacheTimeMod = 0;
-    }
-    window.invalidateScanCacheHF = _invalidateScanCacheHF;
-
     function _getIdSA() { return 'ID_TK2R_SA-0001'; }
 
     function _getNamaSA() {
@@ -32536,6 +32530,12 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
         }
         return 'SuperAdmin';
     }
+
+    function _invalidateScanCacheHF() {
+        _scanCacheMod = null;
+        _scanCacheTimeMod = 0;
+    }
+    window.invalidateScanCacheHF = _invalidateScanCacheHF;
 
     // ═════════════════════════════════════════════════════════
     // GROUP A — STORAGE & LOAD (681–685)
@@ -32613,8 +32613,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
     // ═════════════════════════════════════════════════════════
 
     // ── (686) laporPostHF ──
-    // User ajukan laporan terhadap post.
-    // jenis: 'spam' | 'sara' | 'scam' | 'kasar' | 'lainnya'
     window.laporPostHF = function(idPost, jenis, alasan) {
         if (!idPost) return { sukses: false, pesan: 'ID post tidak valid.' };
         if (typeof userAktif === 'undefined' || !userAktif || !userAktif.idUser) {
@@ -32641,7 +32639,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             return { sukses: false, pesan: 'Tidak bisa melaporkan post sendiri.' };
         }
 
-        // Cek duplikat: 1 user 1 post = 1 laporan (aktif)
         var list = window.loadHFLaporan();
         var dup = list.some(function(l) {
             return l.idPelapor === userAktif.idUser &&
@@ -32675,8 +32672,8 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
 
         // Auto-hide check
         try {
-            if (typeof cekAutoHidePostHF === 'function') {
-                cekAutoHidePostHF(idPost);
+            if (typeof window.cekAutoHidePostHF === 'function') {
+                window.cekAutoHidePostHF(idPost);
             }
         } catch (e) { console.warn('Auto-hide check gagal:', e); }
 
@@ -32735,7 +32732,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
     // ═════════════════════════════════════════════════════════
 
     // ── (690) deteksiPelanggaranPost ──
-    // Return: { flag, alasan[], severity, skor, totalLaporan }
     window.deteksiPelanggaranPost = function(post) {
         if (!post) return { flag: false, alasan: [], severity: 'low', skor: 0, totalLaporan: 0 };
 
@@ -32745,7 +32741,7 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
 
         var teks = String(post.teks || '').toLowerCase();
 
-        // 1. Cek keyword terlarang
+        // Keyword terlarang
         var keywords = Array.isArray(setting.autoFlagKeywords) ? setting.autoFlagKeywords : [];
         keywords.forEach(function(kw) {
             if (!kw) return;
@@ -32757,7 +32753,7 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             }
         });
 
-        // 2. Cek shortlink mencurigakan
+        // Shortlink mencurigakan
         var shortlinks = Array.isArray(setting.autoFlagShortlinks) ? setting.autoFlagShortlinks : [];
         shortlinks.forEach(function(sl) {
             if (!sl) return;
@@ -32769,7 +32765,7 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             }
         });
 
-        // 3. Cek banyak laporan
+        // Banyak laporan
         var totalLaporan = window.getTotalLaporanPerPost(post.id);
         var threshold = parseInt(setting.autoHideThreshold, 10) || 5;
         if (totalLaporan >= threshold) {
@@ -32780,7 +32776,7 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             skor += 1;
         }
 
-        // 4. Link eksternal
+        // Link eksternal
         var linkCount = (teks.match(/https?:\/\//g) || []).length;
         if (linkCount > 0) {
             alasan.push('Mengandung ' + linkCount + ' link eksternal');
@@ -32800,11 +32796,10 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
         };
     };
 
-        // ── (691) scanAutoFlagPostHF — [REVISI: FIX #3 cache 5s] ──
+    // ── (691) scanAutoFlagPostHF — dengan cache ──
     window.scanAutoFlagPostHF = function(forceRefresh) {
         var now = Date.now();
 
-        // Return cache kalau masih fresh & tidak dipaksa refresh
         if (!forceRefresh &&
             _scanCacheMod !== null &&
             (now - _scanCacheTimeMod) < _SCAN_CACHE_TTL_MS) {
@@ -32837,7 +32832,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             return b.deteksi.totalLaporan - a.deteksi.totalLaporan;
         });
 
-        // Simpan ke cache
         _scanCacheMod = hasil;
         _scanCacheTimeMod = now;
 
@@ -32853,7 +32847,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
     // GROUP D — MODERASI (693–697)
     // ═════════════════════════════════════════════════════════
 
-    // ── Helper internal: _catatModLog ──
     function _catatModLog(data) {
         try {
             var log = window.loadHFModerasiLog();
@@ -32916,7 +32909,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             alasan: alasan
         });
 
-        // Auto-warn creator
         if (post.creatorId) {
             try {
                 window.warnUserModerasiHF(
@@ -32927,7 +32919,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             } catch (e) { console.warn('Auto-warn gagal:', e); }
         }
 
-        // Tandai semua laporan post ini → Diterima
         var list = window.loadHFLaporan();
         var diubah = 0;
         list.forEach(function(l) {
@@ -32940,6 +32931,8 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             }
         });
         if (diubah > 0) window.simpanHFLaporan(list);
+
+        _invalidateScanCacheHF();
 
         return { sukses: true, idPost: idPost, laporanDiubah: diubah };
     };
@@ -32983,7 +32976,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             alasan: alasan + (counter.sanksi ? ' [sanksi: ' + counter.sanksi + ']' : '')
         });
 
-        // Chat notif
         try {
             if (typeof kirimChatOtomatis === 'function') {
                 var isi = '⚠️ *PERINGATAN MODERATOR*\n\n' +
@@ -33047,7 +33039,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
             return { sukses: false, pesan: e.message };
         }
 
-        // Update warn counter → ban
         var counter = window.getHFWarnCounter(idUser);
         counter.sanksi = 'ban';
         counter.jumlah = (counter.jumlah || 0) + 1;
@@ -33287,11 +33278,10 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
     // BONUS — SETTING MODERASI (3 fungsi)
     // ═════════════════════════════════════════════════════════
 
-    // ── getSettingModerasiHF ──
     window.getSettingModerasiHF = function() {
         var defaults = {
             autoHideThreshold: 5,
-            modeModerasi: 'manual',        // 'manual' | 'auto-hide'
+            modeModerasi: 'manual',
             autoFlagKeywords: [
                 'kata_kasar_1', 'kata_kasar_2', 'spam',
                 'scam', 'penipuan', 'bodong'
@@ -33321,7 +33311,6 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
         }
     };
 
-    // ── saveSettingModerasiHF ──
     window.saveSettingModerasiHF = function(data) {
         var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
         if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
@@ -33354,10 +33343,10 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
         }
     };
 
-    // ── cekAutoHidePostHF ──
-    // Dipanggil otomatis setelah user lapor post
     window.cekAutoHidePostHF = function(idPost) {
-        if (!idPost) return { sukses: false, pesan: 'ID post tidak valid.' };
+        if (!idPost) {
+            return { sukses: false, pesan: 'ID post tidak valid.' };
+        }
 
         var setting = window.getSettingModerasiHF();
         if (setting.modeModerasi !== 'auto-hide') {
@@ -33411,15 +33400,12 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
         });
         window.simpanHFLaporan(list);
 
-        console.log('🚫 Auto-hide post ' + idPost + ' (' + total + ' laporan)');
-        return { sukses: true, diHapus: true, totalLaporan: total };
-    };
-
-        // [REVISI] Invalidate cache scan (post berubah)
         _invalidateScanCacheHF();
 
         console.log('🚫 Auto-hide post ' + idPost + ' (' + total + ' laporan)');
         return { sukses: true, diHapus: true, totalLaporan: total };
+    };
+
     // ═════════════════════════════════════════════════════════
     // LOG KONFIRMASI
     // ═════════════════════════════════════════════════════════
