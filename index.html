@@ -13482,6 +13482,430 @@ function seedKatalogGiftSawerDefault() {
 <!-- AKHIR BLOK R 01.0 (248-252) -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (253-262) — FUNGSI GLOBAL MANAJEMEN POST SA -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function FUNGSI_GLOBAL_MANAJEMEN_POST_SA() {
+    if (window._fungsiGlobalManajemenPostSADone) {
+        console.log('ℹ️ Fungsi global manajemen post SA sudah terpasang.');
+        return;
+    }
+    window._fungsiGlobalManajemenPostSADone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // 253 — GET SEMUA POST (SEMUA USER)
+    // ═══════════════════════════════════════════════════════════
+    window.getSemuaPostGlobal = function(opsi) {
+        opsi = opsi || {};
+        try {
+            var list = (typeof hfLoad === 'function') ? hfLoad('post') : [];
+            if (!Array.isArray(list)) return [];
+
+            // Enrich dengan data user
+            list.forEach(function(p) {
+                if (!p) return;
+                var user = (typeof getDataIdUser === 'function') ? getDataIdUser(p.creatorId) : null;
+                if (user) {
+                    p._creatorNama = user.nama || p.creatorNama || '-';
+                    p._creatorRole = user.role || p.creatorRole || '-';
+                } else {
+                    p._creatorNama = p.creatorNama || '-';
+                    p._creatorRole = p.creatorRole || '-';
+                }
+            });
+
+            // Sort default: terbaru
+            list.sort(function(a, b) {
+                return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+            });
+
+            return list;
+        } catch (e) {
+            console.warn('getSemuaPostGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 254 — FILTER POST GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    window.filterPostGlobal = function(opsi) {
+        opsi = opsi || {};
+        var list = getSemuaPostGlobal();
+
+        return list.filter(function(p) {
+            if (!p) return false;
+
+            // Filter status
+            if (opsi.status && p.status !== opsi.status) return false;
+
+            // Filter kategori
+            if (opsi.kategori && p.kategori !== opsi.kategori) return false;
+
+            // Filter role
+            if (opsi.role && p._creatorRole !== opsi.role) return false;
+
+            // Filter tanggal
+            if (opsi.dari || opsi.sampai) {
+                var t = new Date(p.createdAt || 0).getTime();
+                if (opsi.dari) {
+                    var d = new Date(opsi.dari).getTime();
+                    if (t < d) return false;
+                }
+                if (opsi.sampai) {
+                    var s = new Date(opsi.sampai + 'T23:59:59').getTime();
+                    if (t > s) return false;
+                }
+            }
+
+            // Search
+            if (opsi.cari) {
+                var c = String(opsi.cari).toLowerCase();
+                var str = [
+                    p.teks || '', p._creatorNama || '', p.creatorId || '',
+                    p.id || '', p.kategori || ''
+                ].join(' ').toLowerCase();
+                if (str.indexOf(c) === -1) return false;
+            }
+
+            return true;
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 255 — STATISTIK POST GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    window.getStatistikPostGlobal = function() {
+        var stat = {
+            total: 0, publik: 0, privat: 0, dihapus: 0,
+            totalLike: 0, totalKomentar: 0, totalShare: 0,
+            totalVideo: 0, totalFoto: 0,
+            totalCreator: 0, creatorSet: {}
+        };
+
+        try {
+            var list = getSemuaPostGlobal();
+            stat.total = list.length;
+
+            list.forEach(function(p) {
+                if (!p) return;
+
+                if (p.status === 'publik') stat.publik++;
+                else if (p.status === 'privat') stat.privat++;
+                else if (p.status === 'dihapus') stat.dihapus++;
+
+                if (typeof hfHitungLikePost === 'function') {
+                    stat.totalLike += hfHitungLikePost(p.id);
+                }
+                if (typeof hfGetKomentarPost === 'function') {
+                    stat.totalKomentar += hfGetKomentarPost(p.id).length;
+                }
+                if (typeof hfHitungSharePost === 'function') {
+                    stat.totalShare += hfHitungSharePost(p.id);
+                }
+
+                if (p.video) stat.totalVideo++;
+                if (Array.isArray(p.foto) && p.foto.length > 0) stat.totalFoto++;
+
+                if (p.creatorId) {
+                    stat.creatorSet[p.creatorId] = true;
+                }
+            });
+
+            stat.totalCreator = Object.keys(stat.creatorSet).length;
+        } catch (e) {
+            console.warn('getStatistikPostGlobal error:', e);
+        }
+
+        return stat;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 256 — BULK HAPUS POST (SOFT DELETE)
+    // ═══════════════════════════════════════════════════════════
+    window.bulkHapusPostSA = function(arrayIdPost) {
+        var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+        if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+        if (!Array.isArray(arrayIdPost) || arrayIdPost.length === 0) {
+            return { sukses: false, pesan: 'Tidak ada post dipilih.' };
+        }
+
+        try {
+            var list = hfLoad('post');
+            var berhasil = 0;
+            var now = new Date().toISOString();
+
+            arrayIdPost.forEach(function(id) {
+                var idx = list.findIndex(function(p) { return p.id === id; });
+                if (idx === -1) return;
+
+                list[idx].status = 'dihapus';
+                list[idx].updatedAt = now;
+                list[idx]._dihapusBySA = idUser;
+                berhasil++;
+            });
+
+            hfSave('post', list);
+
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idUser, 'Bulk Hapus Post',
+                    'Hapus ' + berhasil + ' post');
+            }
+
+            return { sukses: true, berhasil: berhasil };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 257 — BULK RESTORE POST
+    // ═══════════════════════════════════════════════════════════
+    window.bulkRestorePostSA = function(arrayIdPost) {
+        var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+        if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+        if (!Array.isArray(arrayIdPost) || arrayIdPost.length === 0) {
+            return { sukses: false, pesan: 'Tidak ada post dipilih.' };
+        }
+
+        try {
+            var list = hfLoad('post');
+            var berhasil = 0;
+            var now = new Date().toISOString();
+
+            arrayIdPost.forEach(function(id) {
+                var idx = list.findIndex(function(p) { return p.id === id; });
+                if (idx === -1) return;
+
+                list[idx].status = 'publik';
+                list[idx].updatedAt = now;
+                list[idx]._restoreBySA = idUser;
+                berhasil++;
+            });
+
+            hfSave('post', list);
+
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idUser, 'Bulk Restore Post',
+                    'Restore ' + berhasil + ' post');
+            }
+
+            return { sukses: true, berhasil: berhasil };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 258 — HAPUS PERMANEN POST (HARD DELETE)
+    // ═══════════════════════════════════════════════════════════
+    window.hapusPermanenPostSA = function(idPost) {
+        var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+        if (!idUser) return { sukses: false, pesan: 'User tidak valid.' };
+        if (!idPost) return { sukses: false, pesan: 'ID post tidak valid.' };
+
+        try {
+            var list = hfLoad('post');
+            var target = list.find(function(p) { return p.id === idPost; });
+            if (!target) return { sukses: false, pesan: 'Post tidak ditemukan.' };
+
+            list = list.filter(function(p) { return p.id !== idPost; });
+            hfSave('post', list);
+
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idUser, 'Hapus Permanen Post',
+                    'Post ' + idPost + ' dihapus permanen');
+            }
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 259 — WARN USER (KIRIM CHAT WARNING)
+    // ═══════════════════════════════════════════════════════════
+    window.warnUserPostSA = function(idUserTarget, idPost, alasan) {
+        var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+        if (!idAdmin) return { sukses: false, pesan: 'Admin tidak valid.' };
+        if (!idUserTarget) return { sukses: false, pesan: 'Target tidak valid.' };
+
+        alasan = (alasan || '').trim();
+        if (alasan.length < 5) {
+            return { sukses: false, pesan: 'Alasan minimal 5 karakter.' };
+        }
+
+        var post = idPost ? hfGetPostById(idPost) : null;
+        var isiTeks = post ? (post.teks || '').substring(0, 80) : '';
+
+        var isiChat = '⚠️ *PERINGATAN ADMIN*\n\n' +
+            'Post Anda dilaporkan melanggar aturan komunitas.\n\n' +
+            '📋 *Alasan:* ' + alasan + '\n' +
+            (idPost ? '🔗 *ID Post:* ' + idPost + '\n' : '') +
+            (isiTeks ? '📝 *Isi:* "' + isiTeks + '..."\n' : '') +
+            '\n⚠️ Harap perbaiki atau hapus post tersebut. ' +
+            'Pelanggaran berulang dapat menyebabkan akun diblokir.\n\n' +
+            'Terima kasih atas kerjasamanya.';
+
+        try {
+            if (typeof kirimChatOtomatis === 'function') {
+                kirimChatOtomatis('ID_TK2R_SA-0001', idUserTarget, isiChat, {
+                    jenisTransaksi: 'warning-admin-post',
+                    idPost: idPost
+                });
+            }
+
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idAdmin, 'Warn User Post',
+                    'Warning ke ' + idUserTarget + ' — ' + alasan);
+            }
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 260 — BLOKIR USER (DARI POST)
+    // ═══════════════════════════════════════════════════════════
+    window.blokirUserDariPostSA = function(idUserTarget, alasan) {
+        var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : null;
+        if (!idAdmin) return { sukses: false, pesan: 'Admin tidak valid.' };
+        if (!idUserTarget) return { sukses: false, pesan: 'Target tidak valid.' };
+
+        alasan = (alasan || '').trim();
+        if (alasan.length < 10) {
+            return { sukses: false, pesan: 'Alasan minimal 10 karakter.' };
+        }
+
+        try {
+            var user = getDataIdUser(idUserTarget);
+            if (!user) return { sukses: false, pesan: 'User tidak ditemukan.' };
+            if (user.role === 'SuperAdmin') {
+                return { sukses: false, pesan: 'Tidak bisa blokir SuperAdmin.' };
+            }
+
+            // Update di dataLoginUser
+            var list1 = (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser))
+                ? dataLoginUser : [];
+            var u1 = list1.find(function(u) { return u.idUser === idUserTarget; });
+            if (u1) {
+                u1.statusVerifikasi = 'Diblokir';
+                u1.status = 'Diblokir';
+                u1.alasanBlokir = alasan;
+                u1.blokirOleh = idAdmin;
+                u1.tanggalBlokir = new Date().toISOString();
+                localStorage.setItem('dataLoginUser', JSON.stringify(list1));
+            }
+
+            // Update di dataAkunAktif
+            var list2 = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif : [];
+            var u2 = list2.find(function(u) { return u.id === idUserTarget; });
+            if (u2) {
+                u2.status = 'Diblokir';
+                u2.statusVerifikasi = 'Diblokir';
+                u2.alasanBlokir = alasan;
+                localStorage.setItem('dataAkunAktif', JSON.stringify(list2));
+            }
+
+            // Kirim chat
+            if (typeof kirimChatOtomatis === 'function') {
+                var isiChat = '🚫 *AKUN DIBLOKIR*\n\n' +
+                    'Akun Anda diblokir oleh SuperAdmin.\n\n' +
+                    '📋 *Alasan:* ' + alasan + '\n\n' +
+                    'Hubungi customer service untuk info lebih lanjut.';
+                kirimChatOtomatis('ID_TK2R_SA-0001', idUserTarget, isiChat, {
+                    jenisTransaksi: 'user-blocked'
+                });
+            }
+
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idAdmin, 'Blokir User',
+                    'Blokir ' + idUserTarget + ' — ' + alasan);
+            }
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 261 — GET DAFTAR KATEGORI POST
+    // ═══════════════════════════════════════════════════════════
+    window.getDaftarKategoriPost = function() {
+        return ['cerita', 'produk', 'promo', 'info', 'lainnya'];
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 262 — EXPORT POST KE CSV
+    // ═══════════════════════════════════════════════════════════
+    window.exportPostSA = function(arrayPost) {
+        if (!Array.isArray(arrayPost) || arrayPost.length === 0) {
+            alert('Tidak ada data untuk di-export.');
+            return;
+        }
+
+        var headers = ['No', 'ID Post', 'Creator', 'ID Creator', 'Role',
+                       'Teks', 'Kategori', 'Status', 'Like', 'Komentar',
+                       'Share', 'Ada Foto', 'Ada Video', 'Tanggal'];
+        var csv = headers.join(';') + '\n';
+
+        arrayPost.forEach(function(p, i) {
+            var teks = (p.teks || '').replace(/;/g, ',').replace(/\n/g, ' ').substring(0, 100);
+            var jumlahFoto = Array.isArray(p.foto) ? p.foto.length : 0;
+
+            var row = [
+                i + 1,
+                p.id || '-',
+                p._creatorNama || p.creatorNama || '-',
+                p.creatorId || '-',
+                p._creatorRole || p.creatorRole || '-',
+                '"' + teks + '"',
+                p.kategori || '-',
+                p.status || '-',
+                (typeof hfHitungLikePost === 'function') ? hfHitungLikePost(p.id) : 0,
+                (typeof hfGetKomentarPost === 'function') ? hfGetKomentarPost(p.id).length : 0,
+                (typeof hfHitungSharePost === 'function') ? hfHitungSharePost(p.id) : 0,
+                jumlahFoto,
+                p.video ? 'Ya' : 'Tidak',
+                p.createdAt ? new Date(p.createdAt).toLocaleString('id-ID') : '-'
+            ];
+            csv += row.join(';') + '\n';
+        });
+
+        var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'post_hf_' + new Date().toISOString().split('T')[0] + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    console.log('✅ BLOK R 01.0 (253–262) — 10 Fungsi Global Manajemen Post SA terpasang:');
+    console.log('   (253) getSemuaPostGlobal');
+    console.log('   (254) filterPostGlobal');
+    console.log('   (255) getStatistikPostGlobal');
+    console.log('   (256) bulkHapusPostSA');
+    console.log('   (257) bulkRestorePostSA');
+    console.log('   (258) hapusPermanenPostSA');
+    console.log('   (259) warnUserPostSA');
+    console.log('   (260) blokirUserDariPostSA');
+    console.log('   (261) getDaftarKategoriPost');
+    console.log('   (262) exportPostSA');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 01.0 (253-262) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 <!-- ============================================================ -->
 <!-- ===== FUNGSI GLOBAL TARIF OJEK ===== -->
 <!-- ============================================================ -->
