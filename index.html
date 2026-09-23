@@ -27151,6 +27151,1622 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
 <!-- AKHIR BLOK R 01.0 (528–560) — FONDASI DATA ANTI-HACK -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (561–590) — DETEKSI REAL-TIME ANTI-HACK -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function DETEKSI_REALTIME_ANTI_HACK() {
+    if (window._deteksiRealtimeDone) {
+        console.log('ℹ️ Deteksi Real-Time sudah terpasang — dilewati.');
+        return;
+    }
+    window._deteksiRealtimeDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // 561 — HITUNG COIN SAH (SUMBER LEGIT)
+    // ------------------------------------------------------------
+    // Coin yang SAH masuk ke user berasal dari:
+    //   1. Top-Up Lunas (disetujui SA)
+    //   2. Intervensi SA (admin ID valid)
+    //   3. Transfer masuk dari user sah
+    //   4. Reward belanja (dari penjual)
+    //   5. Konversi GIF (dengan asal valid)
+    //   6. Reward ojek / biaya jasa
+    // ═══════════════════════════════════════════════════════════
+    window.hitungTotalCoinSahMasuk = function(idUser) {
+        if (!idUser) return 0;
+        var total = 0;
+
+        try {
+            if (typeof loadLogAktivitasCoinGlobal !== 'function') {
+                // Fallback: baca langsung dari dompet
+                var dompet = (typeof getDompetUser === 'function') ? getDompetUser(idUser) : null;
+                if (!dompet || !Array.isArray(dompet.transactions)) return 0;
+
+                dompet.transactions.forEach(function(t) {
+                    if (t.tipe !== 'credit') return;
+                    var sumber = (t.meta && t.meta.tipeTransaksi) || '';
+                    var ket = (t.keterangan || '').toLowerCase();
+
+                    var isSah = false;
+                    if (sumber.indexOf('topup') !== -1 || ket.indexOf('top-up') !== -1) isSah = true;
+                    else if (sumber.indexOf('intervensi') !== -1 || ket.indexOf('intervensi') !== -1) isSah = true;
+                    else if (sumber.indexOf('transfer-masuk') !== -1 || ket.indexOf('transfer dari') !== -1) isSah = true;
+                    else if (sumber.indexOf('reward-masuk') !== -1 || ket.indexOf('reward dari') !== -1) isSah = true;
+                    else if (sumber.indexOf('konversi-gif') !== -1 || ket.indexOf('konversi') !== -1) isSah = true;
+                    else if (sumber.indexOf('ojek') !== -1) isSah = true;
+
+                    if (isSah) total += parseFloat(t.jumlah) || 0;
+                });
+
+                return Math.round(total * 100) / 100;
+            }
+
+            // Pakai log aktivitas coin
+            var log = loadLogAktivitasCoinGlobal();
+            var userLog = log.filter(function(l) {
+                return l.idUser === idUser && l.tipe === 'credit';
+            });
+
+            userLog.forEach(function(l) {
+                var sumber = l.sumber || 'unknown';
+                if (sumber === 'topup' ||
+                    sumber === 'intervensi-SA' ||
+                    sumber === 'transfer' ||
+                    sumber === 'reward' ||
+                    sumber === 'konversi-gif' ||
+                    sumber === 'ojek' ||
+                    sumber === 'rollback') {
+                    total += parseFloat(l.jumlah) || 0;
+                }
+            });
+        } catch (e) {
+            console.warn('hitungTotalCoinSahMasuk error:', e);
+        }
+
+        return Math.round(total * 100) / 100;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 562 — HITUNG COIN KELUAR TOTAL
+    // ═══════════════════════════════════════════════════════════
+    window.hitungTotalCoinKeluar = function(idUser) {
+        if (!idUser) return 0;
+        var total = 0;
+
+        try {
+            var dompet = (typeof getDompetUser === 'function') ? getDompetUser(idUser) : null;
+            if (!dompet || !Array.isArray(dompet.transactions)) return 0;
+
+            dompet.transactions.forEach(function(t) {
+                if (t.tipe === 'debit') {
+                    total += parseFloat(t.jumlah) || 0;
+                }
+            });
+        } catch (e) {}
+
+        return Math.round(total * 100) / 100;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 563 — DETEKSI COIN PALSU DI DOMPET USER
+    // ------------------------------------------------------------
+    // Rumus: coinPalsu = saldoSekarang + totalKeluar - totalMasukSah
+    // Kalau > 0, artinya ada coin masuk yang tidak jelas asalnya.
+    // ═══════════════════════════════════════════════════════════
+    window.deteksiCoinPalsuLanjutan = function(idUser) {
+        if (!idUser) return { adaPalsu: false, jumlah: 0, alasan: [] };
+
+        try {
+            var saldo = (typeof getSaldoDompet === 'function') ? getSaldoDompet(idUser) : 0;
+            var masukSah = hitungTotalCoinSahMasuk(idUser);
+            var keluar = hitungTotalCoinKeluar(idUser);
+
+            // coinPalsu = apa yang ada di dompet + yang sudah keluar - yang sah masuk
+            var coinPalsu = saldo + keluar - masukSah;
+            coinPalsu = Math.round(coinPalsu * 100) / 100;
+
+            if (coinPalsu <= 0.01) {
+                return {
+                    adaPalsu: false,
+                    jumlah: 0,
+                    saldo: saldo,
+                    masukSah: masukSah,
+                    keluar: keluar,
+                    alasan: []
+                };
+            }
+
+            // Kumpulkan detail dari mana asalnya
+            var sumberPalsu = [];
+            try {
+                var log = (typeof loadLogAktivitasCoinGlobal === 'function')
+                    ? loadLogAktivitasCoinGlobal() : [];
+                var userLog = log.filter(function(l) {
+                    return l.idUser === idUser && l.tipe === 'credit' && l.sumber === 'unknown';
+                });
+                userLog.forEach(function(l) {
+                    sumberPalsu.push({
+                        id: l.id,
+                        jumlah: l.jumlah,
+                        waktu: l.waktu,
+                        keterangan: l.keterangan,
+                        severity: l.severityLevel
+                    });
+                });
+            } catch (e) {}
+
+            return {
+                adaPalsu: true,
+                jumlah: coinPalsu,
+                saldo: saldo,
+                masukSah: masukSah,
+                keluar: keluar,
+                sumberPalsu: sumberPalsu,
+                alasan: ['Coin palsu terdeteksi: ' + coinPalsu + ' R2Coin tanpa sumber sah']
+            };
+        } catch (e) {
+            console.warn('deteksiCoinPalsuLanjutan error:', e);
+            return { adaPalsu: false, jumlah: 0, alasan: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 564 — DETEKSI 10 POLA FRAUD COIN
+    // ═══════════════════════════════════════════════════════════
+    window.deteksiPolaCoinMencurigakan = function(idUser, tipeTransaksi, jumlah) {
+        var pola = [];
+        var cfg = window.ANTI_HACK_CONFIG || {};
+        var jumlahNum = parseFloat(jumlah) || 0;
+
+        try {
+            var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+            if (!user) return pola;
+
+            // ── Pola 1: Coin masuk tanpa sumber sah ──
+            var cek = deteksiCoinPalsuLanjutan(idUser);
+            if (cek.adaPalsu && cek.jumlah > 0) {
+                pola.push({
+                    kode: 'COIN_TANPA_SUMBER',
+                    severity: 'critical',
+                    pesan: 'Coin palsu ' + cek.jumlah + ' R2Coin di dompet',
+                    detail: cek
+                });
+            }
+
+            // ── Pola 2: Top-up tanpa bukti ──
+            try {
+                var topups = (typeof loadTopUpHistory === 'function') ? loadTopUpHistory() : [];
+                var userTopup = topups.filter(function(t) {
+                    return t.idUser === idUser && t.status === 'Lunas';
+                });
+                userTopup.forEach(function(t) {
+                    if (!t.buktiTransfer) {
+                        pola.push({
+                            kode: 'TOPUP_TANPA_BUKTI',
+                            severity: 'high',
+                            pesan: 'Top-up ' + t.id + ' Lunas tanpa bukti transfer',
+                            detail: { idTopUp: t.id }
+                        });
+                    }
+                });
+            } catch (e) {}
+
+            // ── Pola 3: User baru langsung transfer besar ──
+            if (tipeTransaksi === 'transfer' &&
+                user.createdAt &&
+                jumlahNum > (cfg.COIN_TRANSFER_USER_BARU || 500)) {
+                var umurJam = (Date.now() - new Date(user.createdAt).getTime()) / (1000 * 60 * 60);
+                if (umurJam < (cfg.COIN_TRANSFER_UMUR_USER || 24)) {
+                    pola.push({
+                        kode: 'USER_BARU_TRANSFER_BESAR',
+                        severity: 'high',
+                        pesan: 'User baru (' + Math.round(umurJam) + ' jam) transfer ' + jumlahNum + ' Coin',
+                        detail: { umurJam: umurJam, jumlah: jumlahNum }
+                    });
+                }
+            }
+
+            // ── Pola 4: Coin masuk > 10.000 sekaligus ──
+            if (jumlahNum > (cfg.COIN_NOMINAL_BESAR || 10000)) {
+                pola.push({
+                    kode: 'NOMINAL_BESAR',
+                    severity: 'high',
+                    pesan: 'Transaksi ' + jumlahNum + ' Coin melebihi batas wajar',
+                    detail: { jumlah: jumlahNum }
+                });
+            }
+
+            // ── Pola 5: Saldo minus ──
+            var saldo = (typeof getSaldoDompet === 'function') ? getSaldoDompet(idUser) : 0;
+            if (saldo < 0) {
+                pola.push({
+                    kode: 'SALDO_MINUS',
+                    severity: 'critical',
+                    pesan: 'Saldo minus: ' + saldo,
+                    detail: { saldo: saldo }
+                });
+            }
+
+            // ── Pola 6: Belanja pakai coin > saldo sebelum ──
+            if (tipeTransaksi === 'belanja' && jumlahNum > saldo) {
+                pola.push({
+                    kode: 'BELANJA_MELEBIHI_SALDO',
+                    severity: 'high',
+                    pesan: 'Belanja ' + jumlahNum + ' > saldo ' + saldo,
+                    detail: { jumlah: jumlahNum, saldo: saldo }
+                });
+            }
+
+            // ── Pola 7: Frekuensi transaksi tinggi ──
+            try {
+                if (typeof loadLogAktivitasCoinGlobal === 'function') {
+                    var log = loadLogAktivitasCoinGlobal();
+                    var satuJamLalu = Date.now() - (60 * 60 * 1000);
+                    var logUser1Jam = log.filter(function(l) {
+                        return l.idUser === idUser && new Date(l.waktu || 0).getTime() > satuJamLalu;
+                    });
+                    if (logUser1Jam.length >= 30) {
+                        pola.push({
+                            kode: 'FREKUENSI_TINGGI',
+                            severity: 'medium',
+                            pesan: logUser1Jam.length + ' transaksi dalam 1 jam',
+                            detail: { count: logUser1Jam.length }
+                        });
+                    }
+                }
+            } catch (e) {}
+
+            // ── Pola 8: Konversi GIF farming ──
+            if (tipeTransaksi === 'konversi') {
+                var freqKonversi = hitungKonversiGifPerJam(idUser);
+                if (freqKonversi > (cfg.GIF_FARMING_PER_JAM || 50)) {
+                    pola.push({
+                        kode: 'KONVERSI_FARMING',
+                        severity: 'high',
+                        pesan: 'Konversi GIF ' + freqKonversi + '× dalam 1 jam',
+                        detail: { count: freqKonversi }
+                    });
+                }
+            }
+
+            // ── Pola 9: User di-frozen menggunakan fitur ──
+            if (typeof isDompetFrozen === 'function' && isDompetFrozen(idUser)) {
+                pola.push({
+                    kode: 'USER_FROZEN_AKSES',
+                    severity: 'critical',
+                    pesan: 'User yang di-frozen mencoba transaksi',
+                    detail: {}
+                });
+            }
+
+            // ── Pola 10: Self-transfer ──
+            if (tipeTransaksi === 'self-transfer') {
+                pola.push({
+                    kode: 'SELF_TRANSFER',
+                    severity: 'critical',
+                    pesan: 'Transfer ke diri sendiri',
+                    detail: {}
+                });
+            }
+
+        } catch (e) {
+            console.warn('deteksiPolaCoinMencurigakan error:', e);
+        }
+
+        return pola;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 565 — PRE-CHECK SEBELUM TRANSAKSI COIN (MAIN FUNCTION)
+    // ------------------------------------------------------------
+    // Panggil fungsi ini di awal setiap transaksi coin.
+    // Return { boleh, kode, pesan, severity, pola[] }
+    // ═══════════════════════════════════════════════════════════
+    window.cekSebelumTransaksiCoin = function(idUser, tipeTransaksi, jumlah) {
+        if (!idUser) return { boleh: false, kode: 'INVALID_USER', pesan: 'User tidak valid.' };
+
+        // ── 1. Cek dompet frozen ──
+        var cekFrozen = (typeof cekWalletBolehTransaksi === 'function')
+            ? cekWalletBolehTransaksi(idUser, tipeTransaksi)
+            : { boleh: true };
+        if (!cekFrozen.boleh) return cekFrozen;
+
+        // ── 2. Hitung skor risiko ──
+        var skor = (typeof hitungSkorRisikoCoinUser === 'function')
+            ? hitungSkorRisikoCoinUser(idUser)
+            : { skor: 0, level: 'aman', alasan: [] };
+
+        // ── 3. Deteksi pola fraud ──
+        var pola = deteksiPolaCoinMencurigakan(idUser, tipeTransaksi, jumlah);
+
+        // ── 4. Tentukan severity tertinggi ──
+        var severityOrder = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
+        var severityMax = 'normal';
+        pola.forEach(function(p) {
+            if ((severityOrder[p.severity] || 0) > (severityOrder[severityMax] || 0)) {
+                severityMax = p.severity;
+            }
+        });
+
+        // ── 5. Cek auto-freeze threshold ──
+        var cfg = window.ANTI_HACK_CONFIG || {};
+        var autoFreezeList = cfg.COIN_SEVERITY_AUTO_FREEZE || ['critical', 'high'];
+
+        if (autoFreezeList.indexOf(severityMax) !== -1) {
+            // AUTO-FREEZE!
+            var alasan = pola.map(function(p) { return p.pesan; }).join('; ');
+
+            try {
+                if (typeof freezeDompetR2Coin === 'function') {
+                    freezeDompetR2Coin(idUser, alasan, severityMax, null, {
+                        coinPalsu: 0,
+                        logPemicu: pola.map(function(p) { return p.kode; })
+                    });
+                }
+            } catch (e) { console.warn('auto-freeze gagal:', e); }
+
+            return {
+                boleh: false,
+                kode: 'AUTO_FREEZE',
+                pesan: '⛔ Transaksi DIBLOKIR. Dompet Anda dibekukan karena: ' + alasan,
+                severity: severityMax,
+                pola: pola
+            };
+        }
+
+        // ── 6. Kalau hanya ada pola medium, allow tapi flag ──
+        if (severityMax === 'medium') {
+            return {
+                boleh: true,
+                kode: 'FLAGGED',
+                pesan: '⚠️ Transaksi lanjut tapi ter-flag untuk audit.',
+                severity: severityMax,
+                pola: pola,
+                skor: skor
+            };
+        }
+
+        // ── 7. Semua OK ──
+        return {
+            boleh: true,
+            kode: 'OK',
+            skor: skor,
+            pola: pola
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 566 — AUTO-FREEZE WRAPPER (CEK + FREEZE)
+    // ═══════════════════════════════════════════════════════════
+    window.autoFreezeJikaPerlu = function(idUser, alasan, severity, idTrx) {
+        if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+        var cfg = window.ANTI_HACK_CONFIG || {};
+        var autoFreezeList = cfg.COIN_SEVERITY_AUTO_FREEZE || ['critical', 'high'];
+
+        if (autoFreezeList.indexOf(severity) === -1) {
+            return { sukses: true, tidakPerluFreeze: true };
+        }
+
+        try {
+            return freezeDompetR2Coin(idUser, alasan, severity, idTrx);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 567 — CEK ASAL GIF (PROOF OF OWNERSHIP)
+    // ------------------------------------------------------------
+    // Cek apakah GIF yang akan dikonversi/dikirim punya asal valid.
+    // ═══════════════════════════════════════════════════════════
+    window.cekAsalGif = function(idUser, giftId, jumlah) {
+        if (!idUser || !giftId) {
+            return { valid: false, palsu: 0, alasan: ['Data tidak lengkap'] };
+        }
+
+        jumlah = parseInt(jumlah, 10) || 0;
+        if (jumlah <= 0) {
+            return { valid: false, palsu: 0, alasan: ['Jumlah tidak valid'] };
+        }
+
+        try {
+            // 1. Load registri user
+            var reg = loadRegistriGif(idUser);
+            var item = reg.items.find(function(it) { return it.gifId === giftId; });
+
+            if (!item) {
+                return {
+                    valid: false,
+                    palsu: jumlah,
+                    alasan: ['GIF tidak ada di registri asal (kemungkinan palsu)']
+                };
+            }
+
+            // 2. Cek jumlah registri cukup
+            if (item.jumlah < jumlah) {
+                var palsu = jumlah - item.jumlah;
+                return {
+                    valid: false,
+                    palsu: palsu,
+                    alasan: ['Registri kurang: diminta ' + jumlah + ', tercatat ' + item.jumlah]
+                };
+            }
+
+            // 3. Validasi setiap unit punya asal valid
+            var totalValid = 0;
+            var totalPalsu = 0;
+            var masalah = [];
+
+            item.riwayatAsal.forEach(function(blok) {
+                var blokJumlah = blok.unitIds.length;
+                if (blokJumlah === 0) return;
+
+                // Cek asalUserId
+                if (!blok.asalUserId || blok.asalUserId === 'UNKNOWN') {
+                    totalPalsu += blokJumlah;
+                    masalah.push('Blok tanpa asalUserId (' + blokJumlah + ' unit)');
+                    return;
+                }
+
+                // Cek asal user ada
+                var asalUser = (typeof getDataIdUser === 'function') ? getDataIdUser(blok.asalUserId) : null;
+                if (!asalUser) {
+                    totalPalsu += blokJumlah;
+                    masalah.push('Asal user tidak ditemukan: ' + blok.asalUserId);
+                    return;
+                }
+
+                // Cek asal user tidak frozen
+                if (typeof isDompetFrozen === 'function' && isDompetFrozen(blok.asalUserId)) {
+                    totalPalsu += blokJumlah;
+                    masalah.push('Asal user di-frozen: ' + blok.asalUserId);
+                    return;
+                }
+
+                // Validasi hash (kalau ada)
+                if (blok.hashValidasi && blok.idTransaksiKirim) {
+                    var hashCheck = validasiHashGif(
+                        blok.hashValidasi,
+                        blok.idTransaksiKirim,
+                        blok.asalUserId,
+                        giftId,
+                        blokJumlah
+                    );
+                    if (!hashCheck) {
+                        totalPalsu += blokJumlah;
+                        masalah.push('Hash tidak valid: ' + blok.idTransaksiKirim);
+                        return;
+                    }
+                }
+
+                totalValid += blokJumlah;
+            });
+
+            // 4. Cek total valid vs jumlah
+            if (totalValid < jumlah) {
+                return {
+                    valid: false,
+                    palsu: jumlah - totalValid,
+                    alasan: masalah.length > 0 ? masalah : ['Registri valid kurang dari jumlah diminta']
+                };
+            }
+
+            return {
+                valid: true,
+                palsu: totalPalsu,
+                alasan: masalah
+            };
+
+        } catch (e) {
+            console.warn('cekAsalGif error:', e);
+            return { valid: false, palsu: jumlah, alasan: ['Error: ' + e.message] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 568 — TRACE ASAL GIF (CHAIN)
+    // ═══════════════════════════════════════════════════════════
+    window.traceAsalGif = function(idUser, giftId) {
+        if (!idUser || !giftId) return { chain: [], hopCount: 0, isSuspicious: false };
+
+        var chain = [];
+        var visited = {};
+        var currentUser = idUser;
+        var maxHop = (window.ANTI_HACK_CONFIG || {}).GIF_MAX_HOP || 5;
+        var hop = 0;
+
+        while (currentUser && hop <= maxHop) {
+            if (visited[currentUser]) break;
+            visited[currentUser] = true;
+
+            var reg = loadRegistriGif(currentUser);
+            var item = reg.items.find(function(it) { return it.gifId === giftId; });
+            if (!item || !item.riwayatAsal || item.riwayatAsal.length === 0) {
+                // Tidak ada asal → putus chain
+                chain.push({
+                    level: hop,
+                    idUser: currentUser,
+                    nama: '-',
+                    asalUserId: null,
+                    tanggal: null,
+                    isEnd: true,
+                    masalah: 'Tidak ada asal'
+                });
+                break;
+            }
+
+            // Ambil blok asal tertua
+            var blokAsal = item.riwayatAsal[0];
+            var user = (typeof getDataIdUser === 'function') ? getDataIdUser(currentUser) : null;
+
+            chain.push({
+                level: hop,
+                idUser: currentUser,
+                nama: user ? user.nama : currentUser,
+                asalUserId: blokAsal.asalUserId,
+                asalUserName: blokAsal.asalUserName,
+                tanggal: blokAsal.tanggalMasuk,
+                idTrx: blokAsal.idTransaksiKirim,
+                statusAsal: blokAsal.statusAsal
+            });
+
+            // Lanjut ke asal
+            if (blokAsal.asalUserId && blokAsal.asalUserId !== 'UNKNOWN') {
+                currentUser = blokAsal.asalUserId;
+            } else {
+                currentUser = null;
+            }
+
+            hop++;
+        }
+
+        return {
+            chain: chain,
+            hopCount: chain.length,
+            isSuspicious: chain.length > maxHop
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 569 — DETEKSI GIF PALSU DI STOK USER
+    // ═══════════════════════════════════════════════════════════
+    window.deteksiGifPalsuDiStok = function(idUser) {
+        if (!idUser) return { adaPalsu: false, jumlah: 0, detail: [] };
+
+        var detail = [];
+        var totalPalsu = 0;
+
+        try {
+            var stokList = (typeof loadStokGifUser === 'function') ? loadStokGifUser(idUser) : [];
+            if (!Array.isArray(stokList) || stokList.length === 0) {
+                return { adaPalsu: false, jumlah: 0, detail: [] };
+            }
+
+            stokList.forEach(function(s) {
+                var stokAktual = parseInt(s.jumlah, 10) || 0;
+                var cekAsal = cekAsalGif(idUser, s.giftId, stokAktual);
+
+                if (!cekAsal.valid && cekAsal.palsu > 0) {
+                    totalPalsu += cekAsal.palsu;
+                    detail.push({
+                        giftId: s.giftId,
+                        namaGift: s.namaGift || '-',
+                        icon: s.icon || '🎁',
+                        jumlahAktual: stokAktual,
+                        jumlahPalsu: cekAsal.palsu,
+                        alasan: cekAsal.alasan.join('; ')
+                    });
+                }
+            });
+        } catch (e) {
+            console.warn('deteksiGifPalsuDiStok error:', e);
+        }
+
+        return {
+            adaPalsu: totalPalsu > 0,
+            jumlah: totalPalsu,
+            detail: detail
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 570 — DETEKSI GIF PALSU GLOBAL (SEMUA USER)
+    // ═══════════════════════════════════════════════════════════
+    window.deteksiGifPalsuGlobal = function() {
+        var hasil = [];
+        var totalPalsuGlobal = 0;
+
+        try {
+            var akunList = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif : [];
+
+            akunList.forEach(function(a) {
+                if (!a || !a.id) return;
+                var cek = deteksiGifPalsuDiStok(a.id);
+                if (cek.adaPalsu) {
+                    hasil.push({
+                        idUser: a.id,
+                        nama: a.nama,
+                        role: a.role,
+                        jumlahPalsu: cek.jumlah,
+                        detail: cek.detail
+                    });
+                    totalPalsuGlobal += cek.jumlah;
+                }
+            });
+        } catch (e) {
+            console.warn('deteksiGifPalsuGlobal error:', e);
+        }
+
+        return {
+            totalUser: hasil.length,
+            totalPalsu: totalPalsuGlobal,
+            list: hasil
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 571 — FREKUENSI KONVERSI GIF PER JAM
+    // ═══════════════════════════════════════════════════════════
+    window.hitungKonversiGifPerJam = function(idUser) {
+        if (!idUser) return 0;
+
+        try {
+            var key = 'riwayatKonversiGif_' + idUser;
+            var raw = localStorage.getItem(key);
+            if (!raw) return 0;
+
+            var list = JSON.parse(raw);
+            if (!Array.isArray(list)) return 0;
+
+            var satuJamLalu = Date.now() - (60 * 60 * 1000);
+            return list.filter(function(item) {
+                return new Date(item.tanggal || 0).getTime() > satuJamLalu;
+            }).length;
+        } catch (e) {
+            return 0;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 572 — FREKUENSI KIRIM GIF PER JAM
+    // ═══════════════════════════════════════════════════════════
+    window.hitungKirimGifPerJam = function(idUser) {
+        if (!idUser) return 0;
+
+        try {
+            var key = 'riwayatGif_' + idUser;
+            var raw = localStorage.getItem(key);
+            if (!raw) return 0;
+
+            var list = JSON.parse(raw);
+            if (!Array.isArray(list)) return 0;
+
+            var satuJamLalu = Date.now() - (60 * 60 * 1000);
+            return list.filter(function(item) {
+                return item.tipe === 'keluar' &&
+                    new Date(item.tanggal || 0).getTime() > satuJamLalu;
+            }).length;
+        } catch (e) {
+            return 0;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 573 — PRE-CHECK SEBELUM KONVERSI GIF KE COIN
+    // ------------------------------------------------------------
+    // Ini fungsi PALING KETAT. Cek berurutan sebelum konversi.
+    // ═══════════════════════════════════════════════════════════
+    window.cekGifSebelumKonversi = function(idUser, giftId, jumlah) {
+        if (!idUser || !giftId) {
+            return { boleh: false, kode: 'INVALID_DATA', pesan: 'Data tidak lengkap.' };
+        }
+
+        // ── 1. Cek dompet coin frozen ──
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idUser)) {
+            var fCoin = getDompetFrozen(idUser);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet coin Anda dibekukan.',
+                severity: fCoin.severity
+            };
+        }
+
+        // ── 2. Cek stok GIF frozen ──
+        if (typeof isStokGifFrozen === 'function' && isStokGifFrozen(idUser)) {
+            var fGif = getStokGifFrozen(idUser);
+            return {
+                boleh: false,
+                kode: 'GIF_FROZEN',
+                pesan: '⛔ Stok GIF Anda dibekukan.',
+                severity: fGif.severity
+            };
+        }
+
+        // ── 3. Cek katalog global frozen ──
+        if (typeof isKatalogGifFrozen === 'function' && isKatalogGifFrozen()) {
+            return {
+                boleh: false,
+                kode: 'KATALOG_FROZEN',
+                pesan: '⏸️ Konversi GIF ditangguhkan sementara oleh sistem.',
+                severity: 'critical'
+            };
+        }
+
+        // ── 4. Cek stok cukup ──
+        var stok = (typeof getStokGifUser === 'function') ? getStokGifUser(idUser, giftId) : 0;
+        if (stok < jumlah) {
+            return {
+                boleh: false,
+                kode: 'STOK_KURANG',
+                pesan: 'Stok GIF kurang. Tersedia: ' + stok,
+                severity: 'normal'
+            };
+        }
+
+        // ── 5. CEK ASAL GIF ──
+        var cekAsal = cekAsalGif(idUser, giftId, jumlah);
+        if (!cekAsal.valid) {
+            // AUTO-FREEZE
+            var detailPalsu = [{
+                giftId: giftId,
+                namaGift: '-',
+                jumlah: cekAsal.palsu,
+                alasan: cekAsal.alasan.join('; ')
+            }];
+
+            try {
+                if (typeof freezeStokGif === 'function') {
+                    freezeStokGif(idUser, 'Konversi GIF palsu: ' + cekAsal.alasan.join('; '),
+                                  'critical', detailPalsu);
+                }
+            } catch (e) { console.warn('auto-freeze GIF gagal:', e); }
+
+            return {
+                boleh: false,
+                kode: 'GIF_PALSU',
+                pesan: '⛔ GIF palsu terdeteksi. Konversi DIBLOKIR. Dompet & stok GIF dibekukan.',
+                severity: 'critical',
+                detail: cekAsal
+            };
+        }
+
+        // ── 6. Cek chain hop ──
+        var chain = traceAsalGif(idUser, giftId);
+        var maxHop = (window.ANTI_HACK_CONFIG || {}).GIF_MAX_HOP || 5;
+        if (chain.hopCount > maxHop) {
+            try {
+                if (typeof freezeStokGif === 'function') {
+                    freezeStokGif(idUser, 'GIF chain > ' + maxHop + ' hop (' + chain.hopCount + ')',
+                                  'high', [{ giftId: giftId, jumlah: jumlah, alasan: 'Chain terlalu panjang' }]);
+                }
+            } catch (e) {}
+
+            return {
+                boleh: false,
+                kode: 'CHAIN_LONG',
+                pesan: '⛔ Chain GIF terlalu panjang (' + chain.hopCount + ' hop). Diblokir untuk audit.',
+                severity: 'high',
+                chain: chain
+            };
+        }
+
+        // ── 7. Cek frekuensi farming ──
+        var freq = hitungKonversiGifPerJam(idUser);
+        var maxFreq = (window.ANTI_HACK_CONFIG || {}).GIF_FARMING_PER_JAM || 50;
+        if (freq > maxFreq) {
+            try {
+                if (typeof freezeStokGif === 'function') {
+                    freezeStokGif(idUser, 'Konversi farming: ' + freq + '× dalam 1 jam',
+                                  'high', [{ giftId: giftId, jumlah: jumlah, alasan: 'Farming' }]);
+                }
+            } catch (e) {}
+
+            return {
+                boleh: false,
+                kode: 'FARMING',
+                pesan: '⛔ Terdeteksi farming konversi (' + freq + '× /jam). Diblokir.',
+                severity: 'high',
+                freq: freq
+            };
+        }
+
+        // ── 8. Semua OK ──
+        return {
+            boleh: true,
+            kode: 'OK',
+            chain: chain,
+            freq: freq
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 574 — SCAN GIF PALSU BERKALA
+    // ------------------------------------------------------------
+    // Jalankan manual atau otomatis via interval.
+    // Deteksi semua user dengan GIF palsu → freeze otomatis.
+    // ═══════════════════════════════════════════════════════════
+    window.scanGifPalsuBerkala = function() {
+        try {
+            var hasil = deteksiGifPalsuGlobal();
+            var dibekukan = 0;
+
+            hasil.list.forEach(function(item) {
+                // Skip kalau sudah frozen
+                if (typeof isStokGifFrozen === 'function' && isStokGifFrozen(item.idUser)) return;
+
+                try {
+                    if (typeof freezeStokGif === 'function') {
+                        freezeStokGif(item.idUser,
+                            'Scan berkala: ' + item.jumlahPalsu + ' GIF palsu terdeteksi',
+                            'high',
+                            item.detail);
+                        dibekukan++;
+                    }
+                } catch (e) {}
+            });
+
+            return {
+                sukses: true,
+                totalUserTerdampak: hasil.totalUser,
+                totalGifPalsu: hasil.totalPalsu,
+                dibekukanBaru: dibekukan,
+                list: hasil.list
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 575 — SCAN COIN PALSU BERKALA (SEMUA USER)
+    // ═══════════════════════════════════════════════════════════
+    window.scanCoinPalsuBerkala = function() {
+        try {
+            var hasil = [];
+            var totalPalsu = 0;
+            var dibekukan = 0;
+
+            var akunList = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif : [];
+
+            akunList.forEach(function(a) {
+                if (!a || !a.id) return;
+                if (a.role === 'SuperAdmin') return;
+
+                var cek = deteksiCoinPalsuLanjutan(a.id);
+                if (cek.adaPalsu && cek.jumlah > 0) {
+                    hasil.push({
+                        idUser: a.id,
+                        nama: a.nama,
+                        role: a.role,
+                        coinPalsu: cek.jumlah
+                    });
+                    totalPalsu += cek.jumlah;
+
+                    // Auto-freeze
+                    if (typeof isDompetFrozen === 'function' && !isDompetFrozen(a.id)) {
+                        try {
+                            if (typeof freezeDompetR2Coin === 'function') {
+                                freezeDompetR2Coin(a.id,
+                                    'Scan berkala: ' + cek.jumlah + ' Coin palsu terdeteksi',
+                                    'critical',
+                                    null,
+                                    { coinPalsu: cek.jumlah, logPemicu: ['SCAN_BERKALA'] }
+                                );
+                                dibekukan++;
+                            }
+                        } catch (e) {}
+                    }
+                }
+            });
+
+            return {
+                sukses: true,
+                totalUserTerdampak: hasil.length,
+                totalCoinPalsu: Math.round(totalPalsu * 100) / 100,
+                dibekukanBaru: dibekukan,
+                list: hasil
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 576 — DETEKSI COIN HACK GLOBAL (STATISTIK SA)
+    // ═══════════════════════════════════════════════════════════
+    window.getDeteksiGlobalAntiHack = function() {
+        try {
+            var coinScan = scanCoinPalsuBerkala();
+            var gifScan = deteksiGifPalsuGlobal();
+            var freeze = (typeof getStatistikFreeze === 'function')
+                ? getStatistikFreeze()
+                : {};
+
+            return {
+                sukses: true,
+                coin: {
+                    totalUser: coinScan.totalUserTerdampak || 0,
+                    totalPalsu: coinScan.totalCoinPalsu || 0,
+                    dibekukanBaru: coinScan.dibekukanBaru || 0,
+                    list: coinScan.list || []
+                },
+                gif: {
+                    totalUser: gifScan.totalUser || 0,
+                    totalPalsu: gifScan.totalPalsu || 0,
+                    list: gifScan.list || []
+                },
+                freeze: freeze
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 577 — GET SEMUA USER MENCURIGAKAN (SKOR ≥ 40)
+    // ═══════════════════════════════════════════════════════════
+    window.getDaftarUserMencurigakan = function() {
+        var hasil = [];
+        try {
+            var akunList = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif : [];
+
+            akunList.forEach(function(a) {
+                if (!a || !a.id) return;
+                if (a.role === 'SuperAdmin') return;
+
+                var skor = hitungSkorRisikoCoinUser(a.id);
+                if (skor.skor >= 40) {
+                    hasil.push({
+                        idUser: a.id,
+                        nama: a.nama,
+                        role: a.role,
+                        skor: skor.skor,
+                        level: skor.level,
+                        alasan: skor.alasan
+                    });
+                }
+            });
+        } catch (e) {}
+
+        hasil.sort(function(a, b) { return b.skor - a.skor; });
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 578 — AUTO-SCAN INTERVAL (SETIAP 1 JAM)
+    // ------------------------------------------------------------
+    // Optional: jalankan scan otomatis. Cegah double-interval.
+    // ═══════════════════════════════════════════════════════════
+    window.startAutoScanAntiHack = function(intervalMenit) {
+        if (window._autoScanAntiHackInterval) {
+            clearInterval(window._autoScanAntiHackInterval);
+        }
+
+        intervalMenit = parseInt(intervalMenit, 10) || 60;
+        var ms = intervalMenit * 60 * 1000;
+
+        window._autoScanAntiHackInterval = setInterval(function() {
+            try {
+                console.log('🔍 Auto-scan anti-hack berjalan...');
+                var coinScan = scanCoinPalsuBerkala();
+                var gifScan = scanGifPalsuBerkala();
+                console.log('   Coin:', coinScan.dibekukanBaru, 'user baru',
+                            '| GIF:', gifScan.dibekukanBaru, 'user baru');
+            } catch (e) {
+                console.warn('auto-scan error:', e);
+            }
+        }, ms);
+
+        console.log('✅ Auto-scan anti-hack aktif — setiap ' + intervalMenit + ' menit');
+        return { sukses: true, intervalMenit: intervalMenit };
+    };
+
+    window.stopAutoScanAntiHack = function() {
+        if (window._autoScanAntiHackInterval) {
+            clearInterval(window._autoScanAntiHackInterval);
+            window._autoScanAntiHackInterval = null;
+            console.log('⏹️ Auto-scan anti-hack dihentikan.');
+            return { sukses: true };
+        }
+        return { sukses: false, pesan: 'Tidak ada auto-scan aktif.' };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 579 — HELPER: FORMAT PESAN DETEKSI
+    // ═══════════════════════════════════════════════════════════
+    window.formatHasilDeteksi = function(result) {
+        if (!result) return '-';
+        if (result.kode === 'OK') return '✅ OK';
+        if (result.kode === 'FLAGGED') return '⚠️ FLAGGED (' + result.severity + ')';
+        if (result.kode === 'AUTO_FREEZE') return '🔴 AUTO-FREEZE';
+        return '❌ ' + result.kode + ' — ' + (result.pesan || '');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 580 — LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 01.0 (561–590) — DETEKSI REAL-TIME ANTI-HACK terpasang.');
+    console.log('   🔍 Coin detection  : 6 fungsi');
+    console.log('   🎁 GIF detection   : 7 fungsi');
+    console.log('   🌐 Global scan     : 3 fungsi');
+    console.log('   ⏱️  Auto-scan       : 2 fungsi');
+    console.log('   🛠️  Helper          : 2 fungsi');
+    console.log('   Total              : 20 fungsi');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 01.0 (561–590) — DETEKSI REAL-TIME -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK KE TRANSAKSI -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function INTEGRASI_PRECHECK_TRANSAKSI() {
+    if (window._integrasiPrecheckDone) {
+        console.log('ℹ️ Integrasi pre-check sudah terpasang — dilewati.');
+        return;
+    }
+    window._integrasiPrecheckDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // 591 — HELPER: WRAP FUNGSI DENGAN PRE-CHECK + POST-CHECK
+    // ------------------------------------------------------------
+    // preCheck(args, context) → { boleh, pesan, kode }
+    // postCheck(args, hasil, context) → optional
+    // ═══════════════════════════════════════════════════════════
+    function wrapFungsi(namaFungsi, preCheck, postCheck) {
+        var original = window[namaFungsi];
+        if (typeof original !== 'function') {
+            console.warn('⚠️ ' + namaFungsi + ' belum ada — wrap ditunda.');
+            return false;
+        }
+
+        // Cegah double wrap
+        if (original._antiHackWrapped) {
+            console.log('ℹ️ ' + namaFungsi + ' sudah di-wrap.');
+            return true;
+        }
+
+        var wrapped = function() {
+            var args = Array.prototype.slice.call(arguments);
+            var ctx = this;
+
+            // ── PRE-CHECK ──
+            if (typeof preCheck === 'function') {
+                try {
+                    var pre = preCheck(args, ctx);
+                    if (pre && pre.boleh === false) {
+                        // Log block attempt
+                        try {
+                            if (typeof catatAktivitasGlobal === 'function') {
+                                catatAktivitasGlobal(
+                                    (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SYSTEM',
+                                    'BLOCKED ' + namaFungsi,
+                                    'Pre-check tolak: ' + pre.kode + ' — ' + pre.pesan
+                                );
+                            }
+                        } catch (e) {}
+
+                        return {
+                            sukses: false,
+                            pesan: pre.pesan || 'Diblokir oleh sistem keamanan.',
+                            kode: pre.kode || 'BLOCKED',
+                            severity: pre.severity || 'high'
+                        };
+                    }
+                } catch (e) {
+                    console.warn('Pre-check ' + namaFungsi + ' error:', e);
+                }
+            }
+
+            // ── CALL ORIGINAL ──
+            var hasil;
+            try {
+                hasil = original.apply(ctx, args);
+            } catch (e) {
+                console.error(namaFungsi + ' error:', e);
+                return { sukses: false, pesan: e.message };
+            }
+
+            // ── POST-CHECK ──
+            if (typeof postCheck === 'function') {
+                try {
+                    postCheck(args, hasil, ctx);
+                } catch (e) {
+                    console.warn('Post-check ' + namaFungsi + ' error:', e);
+                }
+            }
+
+            return hasil;
+        };
+
+        wrapped._antiHackWrapped = true;
+        wrapped._original = original;
+
+        window[namaFungsi] = wrapped;
+        console.log('✅ Wrap: ' + namaFungsi);
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 592 — WRAP: transferCoin
+    // ------------------------------------------------------------
+    // Signature: transferCoin(idPengirim, idPenerima, jumlah, keterangan)
+    // ═══════════════════════════════════════════════════════════
+    function preTransferCoin(args) {
+        var idPengirim = args[0];
+        var idPenerima = args[1];
+        var jumlah = parseFloat(args[2]) || 0;
+
+        if (!idPengirim || !idPenerima) {
+            return { boleh: false, kode: 'INVALID', pesan: 'ID pengirim/penerima tidak valid.' };
+        }
+
+        // Cek self-transfer
+        if (idPengirim === idPenerima) {
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(idPengirim, 'SELF-TRANSFER DETECTED',
+                        'User ' + idPengirim + ' mencoba transfer ke diri sendiri');
+                }
+            } catch (e) {}
+
+            return {
+                boleh: false,
+                kode: 'SELF_TRANSFER',
+                pesan: '⛔ Tidak bisa transfer ke diri sendiri.',
+                severity: 'critical'
+            };
+        }
+
+        // Pre-check coin
+        if (typeof cekSebelumTransaksiCoin === 'function') {
+            return cekSebelumTransaksiCoin(idPengirim, 'transfer', jumlah);
+        }
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 593 — WRAP: kurangSaldoDompet
+    // ------------------------------------------------------------
+    // Signature: kurangSaldoDompet(idUser, jumlah, keterangan, meta)
+    // ------------------------------------------------------------
+    // ATURAN KHUSUS: Hanya blokir kalau meta.tipeTransaksi BUKAN
+    // internal rollback/auto. Rollback harus tetap bisa jalan.
+    // ═══════════════════════════════════════════════════════════
+    function preKurangSaldoDompet(args) {
+        var idUser = args[0];
+        var meta = args[3] || {};
+        var tipeInternal = meta.tipeTransaksi || '';
+
+        // Rollback / auto-system boleh lewat
+        if (tipeInternal === 'rollback' ||
+            tipeInternal === 'withdraw-hold' ||
+            tipeInternal === 'withdraw-refund' ||
+            tipeInternal === 'order-ojek' ||
+            tipeInternal === 'biaya-jasa-ojek' ||
+            tipeInternal === 'intervensi') {
+            return { boleh: true, _skip: true };
+        }
+
+        // Cek dompet frozen
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idUser)) {
+            var f = getDompetFrozen(idUser);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet Anda dibekukan. Alasan: ' + (f.alasanFreeze || '-'),
+                severity: f.severity || 'high'
+            };
+        }
+
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 594 — WRAP: prosesBelanjaDenganCoin
+    // ------------------------------------------------------------
+    // Signature: prosesBelanjaDenganCoin(idPembeli, idPenjual, jumlahCoin, idTransaksi, keterangan)
+    // ═══════════════════════════════════════════════════════════
+    function preProsesBelanjaDenganCoin(args) {
+        var idPembeli = args[0];
+        var idPenjual = args[1];
+        var jumlahCoin = parseInt(args[2], 10) || 0;
+
+        if (!idPembeli || !idPenjual) {
+            return { boleh: false, kode: 'INVALID', pesan: 'Data tidak valid.' };
+        }
+
+        // Cek pembeli coin palsu
+        if (typeof cekSebelumTransaksiCoin === 'function') {
+            var cek = cekSebelumTransaksiCoin(idPembeli, 'belanja', jumlahCoin);
+            if (!cek.boleh) return cek;
+        }
+
+        // Cek penjual juga tidak frozen (untuk terima reward)
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idPenjual)) {
+            return {
+                boleh: false,
+                kode: 'PENJUAL_FROZEN',
+                pesan: '⛔ Penjual sedang dibekukan. Transaksi dibatalkan.',
+                severity: 'high'
+            };
+        }
+
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 595 — WRAP: konversiGifKeR2Coin
+    // ------------------------------------------------------------
+    // Signature: konversiGifKeR2Coin(idUser, giftId, jumlahGif)
+    // Pre-check: cekGifSebelumKonversi
+    // Post-check: kurangi dari registri GIF
+    // ═══════════════════════════════════════════════════════════
+    function preKonversiGif(args) {
+        var idUser = args[0];
+        var giftId = args[1];
+        var jumlahGif = parseInt(args[2], 10) || 0;
+
+        if (!idUser || !giftId) {
+            return { boleh: false, kode: 'INVALID', pesan: 'Data tidak valid.' };
+        }
+
+        if (typeof cekGifSebelumKonversi === 'function') {
+            return cekGifSebelumKonversi(idUser, giftId, jumlahGif);
+        }
+        return { boleh: true };
+    }
+
+    function postKonversiGif(args, hasil) {
+        // Kalau konversi sukses → kurangi dari registri
+        if (!hasil || !hasil.sukses) return;
+
+        var idUser = args[0];
+        var giftId = args[1];
+        // jumlah yang BENAR-BENAR terpakai (bukan yang diminta)
+        var jumlahTerpakai = hasil.jumlahTerpakai || args[2];
+
+        try {
+            if (typeof kurangiUnitGifDariRegistri === 'function') {
+                kurangiUnitGifDariRegistri(idUser, giftId, jumlahTerpakai);
+            }
+        } catch (e) {
+            console.warn('postKonversiGif: gagal update registri', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 596 — WRAP: kirimGiftSawer
+    // ------------------------------------------------------------
+    // Signature: kirimGiftSawer(idPengirim, idPenerima, giftId, jumlahGif, catatan)
+    // Pre-check: wallet frozen + asal GIF pengirim
+    // Post-check: update registri (kurang dari pengirim, tambah ke penerima)
+    // ═══════════════════════════════════════════════════════════
+    function preKirimGiftSawer(args) {
+        var idPengirim = args[0];
+        var idPenerima = args[1];
+        var giftId = args[2];
+        var jumlahGif = parseInt(args[3], 10) || 0;
+
+        if (!idPengirim || !idPenerima || !giftId) {
+            return { boleh: false, kode: 'INVALID', pesan: 'Data tidak valid.' };
+        }
+
+        // Self-send
+        if (idPengirim === idPenerima) {
+            return {
+                boleh: false,
+                kode: 'SELF_SEND',
+                pesan: '⛔ Tidak bisa kirim gift ke diri sendiri.',
+                severity: 'critical'
+            };
+        }
+
+        // Cek wallet frozen
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idPengirim)) {
+            var f = getDompetFrozen(idPengirim);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet Anda dibekukan. Alasan: ' + (f.alasanFreeze || '-'),
+                severity: f.severity || 'high'
+            };
+        }
+
+        // Cek stok GIF pengirim tidak frozen
+        if (typeof isStokGifFrozen === 'function' && isStokGifFrozen(idPengirim)) {
+            return {
+                boleh: false,
+                kode: 'GIF_FROZEN',
+                pesan: '⛔ Stok GIF Anda dibekukan.',
+                severity: 'high'
+            };
+        }
+
+        // Cek katalog global
+        if (typeof isKatalogGifFrozen === 'function' && isKatalogGifFrozen()) {
+            return {
+                boleh: false,
+                kode: 'KATALOG_FROZEN',
+                pesan: '⏸️ Kirim gift ditangguhkan sementara.',
+                severity: 'critical'
+            };
+        }
+
+        return { boleh: true };
+    }
+
+    function postKirimGiftSawer(args, hasil) {
+        if (!hasil || !hasil.sukses) return;
+
+        var idPengirim = args[0];
+        var idPenerima = args[1];
+        var giftId = args[2];
+        var jumlahTerkirim = hasil.jumlahTerkirim || 0;
+
+        try {
+            // 1. Generate unit IDs unik
+            var unitIds = generateUnitIdsGif(giftId, hasil.idRiwayat || ('GIFT-' + Date.now()), jumlahTerkirim);
+
+            // 2. Kurangi dari registri pengirim
+            if (typeof kurangiUnitGifDariRegistri === 'function') {
+                var kurangi = kurangiUnitGifDariRegistri(idPengirim, giftId, jumlahTerkirim);
+                if (!kurangi.sukses) {
+                    console.warn('postKirimGiftSawer: gagal kurangi registri pengirim', kurangi.pesan);
+                }
+            }
+
+            // 3. Tambah ke registri penerima
+            var pengirim = (typeof getDataIdUser === 'function') ? getDataIdUser(idPengirim) : null;
+            var hash = hitungHashValidasiGif(hasil.idRiwayat || '', idPengirim, giftId, jumlahTerkirim);
+
+            if (typeof tambahUnitGifKeRegistri === 'function') {
+                tambahUnitGifKeRegistri(idPenerima, giftId, unitIds, {
+                    asalUserId:       idPengirim,
+                    asalUserName:     pengirim ? pengirim.nama : '-',
+                    idTransaksiKirim: hasil.idRiwayat || null,
+                    hashValidasi:     hash,
+                    statusAsal:       'valid',
+                    namaGift:         hasil.giftNama || '-',
+                    icon:             hasil.giftIcon || '🎁'
+                });
+            }
+        } catch (e) {
+            console.warn('postKirimGiftSawer error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 597 — WRAP: ajukanWithdraw
+    // ------------------------------------------------------------
+    // Signature: ajukanWithdraw(idUser, jumlahKoin, rekeningTujuan, keterangan)
+    // ═══════════════════════════════════════════════════════════
+    function preAjukanWithdraw(args) {
+        var idUser = args[0];
+        var jumlahKoin = parseInt(args[1], 10) || 0;
+
+        if (!idUser) return { boleh: false, kode: 'INVALID', pesan: 'User tidak valid.' };
+
+        // Cek dompet frozen
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idUser)) {
+            var f = getDompetFrozen(idUser);
+            return {
+                boleh: false,
+                kode: 'WALLET_FROZEN',
+                pesan: '⛔ Dompet Anda dibekukan. Tidak bisa withdraw. Alasan: ' + (f.alasanFreeze || '-'),
+                severity: f.severity || 'high'
+            };
+        }
+
+        // Cek pre-transaksi
+        if (typeof cekSebelumTransaksiCoin === 'function') {
+            var cek = cekSebelumTransaksiCoin(idUser, 'withdraw', jumlahKoin);
+            if (!cek.boleh) return cek;
+        }
+
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 598 — WRAP: tambahSaldoDompet (LOG SUMBER)
+    // ------------------------------------------------------------
+    // Tidak block — hanya log untuk tracking asal coin.
+    // Kecuali meta.tipeTransaksi === 'unknown' → flag!
+    // ═══════════════════════════════════════════════════════════
+    function postTambahSaldoDompet(args, hasil) {
+        if (!hasil || !hasil.sukses) return;
+
+        var idUser = args[0];
+        var jumlah = parseFloat(args[1]) || 0;
+        var keterangan = args[2] || '';
+        var meta = args[3] || {};
+
+        var tipe = meta.tipeTransaksi || '';
+
+        // Kalau tipe kosong atau 'unknown' → suspicious
+        if (!tipe || tipe === 'unknown') {
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal('SYSTEM_AUTO', 'SUSPICIOUS CREDIT',
+                        'User ' + idUser + ' terima ' + jumlah + ' coin tanpa tipe transaksi jelas. Ket: ' + keterangan);
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 599 — HOOK: kurangStokGif (CEK FREEZE)
+    // ------------------------------------------------------------
+    // Jangan sampai user frozen bisa manipulasi stok
+    // ═══════════════════════════════════════════════════════════
+    function preKurangStokGif(args) {
+        var idUser = args[0];
+        if (!idUser) return { boleh: false, kode: 'INVALID', pesan: 'User tidak valid.' };
+
+        // Cek katalog global frozen (blokir semua pengurangan)
+        if (typeof isKatalogGifFrozen === 'function' && isKatalogGifFrozen()) {
+            return {
+                boleh: false,
+                kode: 'KATALOG_FROZEN',
+                pesan: '⏸️ Sistem sedang maintenance GIF. Coba lagi nanti.',
+                severity: 'critical'
+            };
+        }
+        return { boleh: true };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 600 — WRAP: kirimChatOtomatis (SCAN CHAT DARI SISTEM)
+    // ------------------------------------------------------------
+    // Supaya pesan sistem yang mencurigakan (mis. dari hacker) tetap
+    // ter-flag. Skip kalau pengirim = SA atau SYSTEM.
+    // ═══════════════════════════════════════════════════════════
+    function postKirimChatOtomatis(args) {
+        var idPengirim = args[0];
+        if (idPengirim === 'ID_TK2R_SA-0001' || idPengirim === 'SYSTEM_AUTO') return;
+
+        // Kalau ada chat dari user yang di-frozen → flag
+        if (typeof isDompetFrozen === 'function' && isDompetFrozen(idPengirim)) {
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal('SYSTEM_AUTO', 'CHAT FROM FROZEN USER',
+                        'User ' + idPengirim + ' chat meski frozen');
+                }
+            } catch (e) {}
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 601 — APPLY SEMUA WRAP (DENGAN RETRY)
+    // ═══════════════════════════════════════════════════════════
+    function applyAllWraps() {
+        var results = {
+            transferCoin:                wrapFungsi('transferCoin', preTransferCoin),
+            kurangSaldoDompet:           wrapFungsi('kurangSaldoDompet', preKurangSaldoDompet),
+            prosesBelanjaDenganCoin:     wrapFungsi('prosesBelanjaDenganCoin', preProsesBelanjaDenganCoin),
+            konversiGifKeR2Coin:         wrapFungsi('konversiGifKeR2Coin', preKonversiGif, postKonversiGif),
+            kirimGiftSawer:              wrapFungsi('kirimGiftSawer', preKirimGiftSawer, postKirimGiftSawer),
+            ajukanWithdraw:              wrapFungsi('ajukanWithdraw', preAjukanWithdraw),
+            tambahSaldoDompet:           wrapFungsi('tambahSaldoDompet', null, postTambahSaldoDompet),
+            kurangStokGif:               wrapFungsi('kurangStokGif', preKurangStokGif),
+            kirimChatOtomatis:           wrapFungsi('kirimChatOtomatis', null, postKirimChatOtomatis)
+        };
+
+        var total = 0, sukses = 0;
+        Object.keys(results).forEach(function(k) {
+            total++;
+            if (results[k]) sukses++;
+        });
+
+        return { total: total, sukses: sukses, detail: results };
+    }
+
+    // ── Apply pertama ──
+    var apply1 = applyAllWraps();
+    console.log('📦 Wrap pass 1: ' + apply1.sukses + '/' + apply1.total + ' fungsi');
+
+    // ── Retry via setTimeout untuk fungsi yang belum ada ──
+    var retryCount = 0;
+    var maxRetry = 5;
+    var retryInterval = setInterval(function() {
+        retryCount++;
+
+        var missing = [];
+        ['transferCoin', 'kurangSaldoDompet', 'prosesBelanjaDenganCoin',
+         'konversiGifKeR2Coin', 'kirimGiftSawer', 'ajukanWithdraw',
+         'tambahSaldoDompet', 'kurangStokGif', 'kirimChatOtomatis']
+        .forEach(function(nama) {
+            var fn = window[nama];
+            if (typeof fn === 'function' && !fn._antiHackWrapped) {
+                missing.push(nama);
+            }
+        });
+
+        if (missing.length === 0 || retryCount >= maxRetry) {
+            clearInterval(retryInterval);
+            if (missing.length === 0) {
+                console.log('✅ Semua wrap selesai di retry ke-' + retryCount);
+            } else {
+                console.warn('⚠️ Wrap gagal untuk: ' + missing.join(', '));
+            }
+            return;
+        }
+
+        console.log('🔄 Retry wrap (ke-' + retryCount + '): ' + missing.length + ' fungsi');
+        applyAllWraps();
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // 602 — HELPER: CEK STATUS WRAP
+    // ═══════════════════════════════════════════════════════════
+    window.cekStatusWrapAntiHack = function() {
+        var daftar = [
+            'transferCoin', 'kurangSaldoDompet', 'prosesBelanjaDenganCoin',
+            'konversiGifKeR2Coin', 'kirimGiftSawer', 'ajukanWithdraw',
+            'tambahSaldoDompet', 'kurangStokGif', 'kirimChatOtomatis'
+        ];
+        var hasil = { total: daftar.length, wrapped: 0, list: {} };
+
+        daftar.forEach(function(nama) {
+            var fn = window[nama];
+            var isWrapped = typeof fn === 'function' && fn._antiHackWrapped === true;
+            hasil.list[nama] = {
+                ada: typeof fn === 'function',
+                wrapped: isWrapped
+            };
+            if (isWrapped) hasil.wrapped++;
+        });
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 603 — EMERGENCY UNWRAP (untuk debug)
+    // ------------------------------------------------------------
+    // Kalau wrap malah bikin bug, panggil ini untuk revert ke original.
+    // ═══════════════════════════════════════════════════════════
+    window.emergencyUnwrapAntiHack = function() {
+        var count = 0;
+        var daftar = [
+            'transferCoin', 'kurangSaldoDompet', 'prosesBelanjaDenganCoin',
+            'konversiGifKeR2Coin', 'kirimGiftSawer', 'ajukanWithdraw',
+            'tambahSaldoDompet', 'kurangStokGif', 'kirimChatOtomatis'
+        ];
+
+        daftar.forEach(function(nama) {
+            var fn = window[nama];
+            if (typeof fn === 'function' && fn._antiHackWrapped && fn._original) {
+                window[nama] = fn._original;
+                count++;
+                console.log('↩️ Reverted:', nama);
+            }
+        });
+
+        console.log('⚠️ EMERGENCY UNWRAP selesai. ' + count + ' fungsi dikembalikan.');
+        return { sukses: true, direvert: count };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 604 — LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK terpasang.');
+    console.log('   🔗 Wrap fungsi: 9 (transfer, belanja, gif, withdraw, dll)');
+    console.log('   🛠️  Helper: 2 (cekStatusWrap, emergencyUnwrap)');
+    console.log('   📊 Wrap awal: ' + apply1.sukses + '/' + apply1.total);
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 01.0 (591–620) — INTEGRASI PRE-CHECK -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 
 
 <!-- ============================================================ -->
