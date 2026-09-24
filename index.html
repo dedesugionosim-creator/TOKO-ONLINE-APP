@@ -20880,6 +20880,628 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
 <!-- ═══ AKHIR BLOK Fungsi Global Manajemen Rekening R 0.10.41 -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 0.10.61 — DASBOR DISTRIBUTOR (DATA LAYER) ══════ -->
+<!-- ═══ Kumpulan Distributor Terdaftar + Statistik + Produk ═══ -->
+<!-- ═══ Versi: V2 — Multi-Source + Cache + Helper Lengkap ═════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_0_10_61_DISTRIBUTOR_DATA_LAYER() {
+    if (window._blokR01061Done) {
+        console.log('ℹ️ BLOK R 0.10.61 sudah terpasang.');
+        return;
+    }
+    window._blokR01061Done = true;
+
+    var KEY_FAVORIT = 'distributorFavorit';
+    var KEY_PROFIL_PREFIX = 'profil_';
+    var _cacheList = null;
+    var _cacheTime = 0;
+    var CACHE_TTL = 30 * 1000; // 30 detik
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _dstParse(str, fallback) {
+        try {
+            var v = JSON.parse(str);
+            return (v === null || v === undefined) ? fallback : v;
+        } catch (e) { return fallback; }
+    }
+
+    function _dstBacaAkunAktif() {
+        var a = _dstParse(localStorage.getItem('dataAkunAktif') || '[]', []);
+        return Array.isArray(a) ? a : [];
+    }
+
+    function _dstBacaLoginUser() {
+        var a = _dstParse(localStorage.getItem('dataLoginUser') || '[]', []);
+        return Array.isArray(a) ? a : [];
+    }
+
+    function _dstBacaFavorit() {
+        var a = _dstParse(localStorage.getItem(KEY_FAVORIT) || '[]', []);
+        return Array.isArray(a) ? a : [];
+    }
+
+    function _dstSimpanFavorit(list) {
+        try {
+            localStorage.setItem(KEY_FAVORIT, JSON.stringify(list || []));
+            return true;
+        } catch (e) { return false; }
+    }
+
+    function _dstBacaProfil(idUser) {
+        if (!idUser) return null;
+        try {
+            var s = localStorage.getItem(KEY_PROFIL_PREFIX + idUser);
+            return s ? _dstParse(s, null) : null;
+        } catch (e) { return null; }
+    }
+
+    function _dstDeteksiWilayah(lat, lng, alamat) {
+        // Prioritas 1: cari dari koordinat
+        try {
+            if (typeof getWilayahTerdekat === 'function' && lat && lng) {
+                var t = getWilayahTerdekat(parseFloat(lat), parseFloat(lng));
+                if (t && t.wilayah) {
+                    return {
+                        nama: t.wilayah.nama || t.wilayah.kecamatan || '-',
+                        jarak: t.jarakKm != null ? t.jarakKm + ' km' : null,
+                        kecamatan: t.wilayah.kecamatan || null
+                    };
+                }
+            }
+        } catch (e) {}
+
+        // Prioritas 2: cari dari nama kecamatan di alamat
+        try {
+            var wilayahList = _dstParse(localStorage.getItem('dataWilayah') || '[]', []);
+            if (Array.isArray(wilayahList) && alamat) {
+                var aLower = String(alamat).toLowerCase();
+                for (var i = 0; i < wilayahList.length; i++) {
+                    var w = wilayahList[i];
+                    if (!w || !w.kecamatan) continue;
+                    if (aLower.indexOf(w.kecamatan.toLowerCase()) !== -1) {
+                        return {
+                            nama: w.nama || w.kecamatan,
+                            jarak: null,
+                            kecamatan: w.kecamatan
+                        };
+                    }
+                }
+            }
+        } catch (e) {}
+
+        return { nama: '-', jarak: null, kecamatan: null };
+    }
+
+    function _dstAmbilInisial(nama) {
+        if (!nama) return 'D';
+        var parts = String(nama).trim().split(/\s+/);
+        if (parts.length === 0) return 'D';
+        if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+        return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) hitungProdukDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.hitungProdukDistributorGlobal = function(idUser) {
+        if (!idUser) return 0;
+        var total = 0;
+        var keys = [
+            'dataProdukDistributor', 'dataProdukToko',
+            'dataProdukGrosir', 'dataProduk'
+        ];
+
+        keys.forEach(function(k) {
+            try {
+                var arr = _dstParse(localStorage.getItem(k) || '[]', []);
+                if (!Array.isArray(arr)) return;
+                total += arr.filter(function(p) {
+                    return p && (p.idToko === idUser ||
+                                 p.idUser === idUser ||
+                                 p.ownerId === idUser);
+                }).length;
+            } catch (e) {}
+        });
+
+        return total;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) cariWilayahDistributor
+    // ═══════════════════════════════════════════════════════════
+    window.cariWilayahDistributor = function(lat, lng, alamat) {
+        return _dstDeteksiWilayah(lat, lng, alamat);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) getDaftarDistributorGlobal ⭐ (MAIN)
+    // ------------------------------------------------------------
+    // Ambil semua akun role Distributor dari multi-source:
+    //   • dataAkunAktif
+    //   • dataLoginUser
+    //   • profil_<idUser>
+    // Return: array of distributor object (sudah di-merge)
+    // ═══════════════════════════════════════════════════════════
+    window.getDaftarDistributorGlobal = function(opsi) {
+        opsi = opsi || {};
+        var pakaiCache = opsi.pakaiCache !== false;
+
+        // Cek cache
+        if (pakaiCache && _cacheList && (Date.now() - _cacheTime) < CACHE_TTL) {
+            return _cacheList.slice();
+        }
+
+        var hasil = [];
+        var seen = {};
+        var akunAktif = _dstBacaAkunAktif();
+        var loginUser = _dstBacaLoginUser();
+
+        function pushDistributor(src, sumber) {
+            if (!src) return;
+            var id = src.idUser || src.id;
+            if (!id) return;
+
+            if (seen[id]) {
+                // Merge info tambahan ke yang sudah ada
+                var existing = hasil.find(function(x) { return x.idUser === id; });
+                if (existing) {
+                    Object.keys(src).forEach(function(k) {
+                        if (existing[k] === undefined || existing[k] === null ||
+                            existing[k] === '' || existing[k] === '-') {
+                            if (src[k]) existing[k] = src[k];
+                        }
+                    });
+                    if (existing._sumber.indexOf(sumber) === -1) {
+                        existing._sumber.push(sumber);
+                    }
+                }
+                return;
+            }
+            seen[id] = true;
+
+            // Ambil profil lengkap sebagai penyempurna
+            var profil = _dstBacaProfil(id);
+
+            // Merge: src > profil > default
+            var namaFinal = (src.nama || (profil && profil.namaLengkap) ||
+                             (profil && profil.namaDistributor) ||
+                             src.username || id);
+
+            var alamatFinal = src.alamat || (profil && profil.alamat) || '-';
+            var latFinal = src.lat || (profil && profil.lat) || null;
+            var lngFinal = src.lng || (profil && profil.lng) || null;
+
+            var wilayah = _dstDeteksiWilayah(latFinal, lngFinal, alamatFinal);
+
+            hasil.push({
+                idUser: id,
+                nama: namaFinal,
+                username: src.username || (profil && profil.username) || '-',
+                kodeRole: src.kodeRole || 'DST',
+                role: 'Distributor',
+                hp: src.hp || (profil && profil.hp) || '-',
+                email: src.email || (profil && profil.email) || '-',
+                alamat: alamatFinal,
+                alamatKtp: src.alamatKtp || (profil && profil.alamatKtp) || alamatFinal,
+                nik_ktp: src.nik_ktp || src.nikKtp ||
+                         (profil && profil.nikKtp) || '-',
+                lat: latFinal,
+                lng: lngFinal,
+                status: src.status || src.statusVerifikasi || 'Aktif',
+                statusVerifikasi: src.statusVerifikasi || src.status || 'Aktif',
+                statusLangganan: src.statusLangganan || 'Free',
+                fotoUrl: src.fotoUrl || (profil && profil.fotoProfilUrl) || '',
+                fotoCoverUrl: (profil && profil.fotoCoverUrl) || '',
+                bio: (profil && profil.bio) || '',
+                mediaSosial: (profil && profil.mediaSosial) || {},
+                totalProduk: hitungProdukDistributorGlobal(id),
+                wilayah: wilayah.nama,
+                jarakWilayah: wilayah.jarak,
+                kecamatan: wilayah.kecamatan,
+                createdAt: src.createdAt || src.tanggalDaftar || null,
+                _sumber: [sumber],
+                _inisial: _dstAmbilInisial(namaFinal)
+            });
+        }
+
+        // Prioritas 1: dataAkunAktif
+        akunAktif.forEach(function(a) {
+            if (!a || a.role !== 'Distributor') return;
+            pushDistributor(a, 'akunAktif');
+        });
+
+        // Prioritas 2: dataLoginUser
+        loginUser.forEach(function(u) {
+            if (!u || u.role !== 'Distributor') return;
+            pushDistributor(u, 'loginUser');
+        });
+
+        // Sort A-Z by nama
+        hasil.sort(function(a, b) {
+            return (a.nama || '').localeCompare(b.nama || '');
+        });
+
+        // Simpan cache
+        _cacheList = hasil.slice();
+        _cacheTime = Date.now();
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) refreshCacheDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.refreshCacheDistributorGlobal = function() {
+        _cacheList = null;
+        _cacheTime = 0;
+        return getDaftarDistributorGlobal({ pakaiCache: false });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) hitungStatistikDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.hitungStatistikDistributorGlobal = function() {
+        var list = getDaftarDistributorGlobal();
+
+        var totalProduk = 0;
+        var distributorBaru = 0;
+        var distributorAktif = 0;
+        var distributorPending = 0;
+        var denganProduk = 0;
+        var batasBaru = Date.now() - (30 * 24 * 60 * 60 * 1000);
+
+        list.forEach(function(d) {
+            totalProduk += d.totalProduk || 0;
+            if (d.totalProduk > 0) denganProduk++;
+
+            if (d.status === 'Aktif') distributorAktif++;
+            else if (d.status === 'Pending') distributorPending++;
+
+            if (d.createdAt) {
+                var t = new Date(d.createdAt).getTime();
+                if (!isNaN(t) && t > batasBaru) distributorBaru++;
+            }
+        });
+
+        var totalWilayah = 0;
+        try {
+            if (typeof getWilayahAktif === 'function') {
+                totalWilayah = getWilayahAktif().length;
+            } else {
+                var w = _dstParse(localStorage.getItem('dataWilayah') || '[]', []);
+                totalWilayah = Array.isArray(w)
+                    ? w.filter(function(x) { return x && x.status === 'Aktif'; }).length
+                    : 0;
+            }
+        } catch (e) {}
+
+        return {
+            totalDistributor: list.length,
+            distributorAktif: distributorAktif,
+            distributorPending: distributorPending,
+            distributorBaru: distributorBaru,
+            denganProduk: denganProduk,
+            totalProduk: totalProduk,
+            totalWilayah: totalWilayah
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) cariDistributorGlobal
+    // ------------------------------------------------------------
+    // Filter kombinasi: cari, wilayah, status, hanyaFavorit
+    // ═══════════════════════════════════════════════════════════
+    window.cariDistributorGlobal = function(filter) {
+        filter = filter || {};
+        var cari = (filter.cari || '').toLowerCase().trim();
+        var wilayah = filter.wilayah || '';
+        var status = filter.status || '';
+        var hanyaFavorit = filter.hanyaFavorit === true;
+
+        var list = getDaftarDistributorGlobal();
+        var favorit = _dstBacaFavorit();
+
+        return list.filter(function(d) {
+            if (wilayah && d.wilayah !== wilayah) return false;
+            if (status && d.status !== status) return false;
+            if (hanyaFavorit && favorit.indexOf(d.idUser) === -1) return false;
+
+            if (cari) {
+                var haystack = [
+                    d.nama, d.idUser, d.username, d.hp, d.email, d.alamat
+                ].join(' ').toLowerCase();
+                if (haystack.indexOf(cari) === -1) return false;
+            }
+            return true;
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) getDetailDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.getDetailDistributorGlobal = function(idUser) {
+        if (!idUser) return null;
+
+        var list = getDaftarDistributorGlobal();
+        var profil = list.find(function(d) { return d.idUser === idUser; });
+        if (!profil) return null;
+
+        // Ambil produk
+        var produk = [];
+        var keys = [
+            'dataProdukDistributor', 'dataProdukToko',
+            'dataProdukGrosir', 'dataProduk'
+        ];
+
+        keys.forEach(function(k) {
+            try {
+                var arr = _dstParse(localStorage.getItem(k) || '[]', []);
+                if (!Array.isArray(arr)) return;
+                arr.forEach(function(p) {
+                    if (p && (p.idToko === idUser ||
+                              p.idUser === idUser ||
+                              p.ownerId === idUser)) {
+                        produk.push(p);
+                    }
+                });
+            } catch (e) {}
+        });
+
+        return {
+            profil: profil,
+            produk: produk,
+            totalProduk: produk.length,
+            isFavorit: isFavoritDistributorGlobal(idUser)
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) getDaftarWilayahDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.getDaftarWilayahDistributorGlobal = function() {
+        var list = getDaftarDistributorGlobal();
+        var set = {};
+
+        list.forEach(function(d) {
+            if (d.wilayah && d.wilayah !== '-') {
+                set[d.wilayah] = (set[d.wilayah] || 0) + 1;
+            }
+        });
+
+        // Return array of { nama, jumlah } sorted
+        return Object.keys(set).map(function(k) {
+            return { nama: k, jumlah: set[k] };
+        }).sort(function(a, b) {
+            return a.nama.localeCompare(b.nama);
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) toggleFavoritDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.toggleFavoritDistributorGlobal = function(idUser) {
+        if (!idUser) return { sukses: false, pesan: 'ID tidak valid.' };
+
+        var favorit = _dstBacaFavorit();
+        var idx = favorit.indexOf(idUser);
+
+        if (idx === -1) {
+            favorit.push(idUser);
+        } else {
+            favorit.splice(idx, 1);
+        }
+
+        if (!_dstSimpanFavorit(favorit)) {
+            return { sukses: false, pesan: 'Gagal menyimpan favorit.' };
+        }
+
+        return { sukses: true, sudahFavorit: idx === -1 };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) isFavoritDistributorGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.isFavoritDistributorGlobal = function(idUser) {
+        if (!idUser) return false;
+        return _dstBacaFavorit().indexOf(idUser) !== -1;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (11) getDistributorTerbaruGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.getDistributorTerbaruGlobal = function(limit) {
+        limit = parseInt(limit, 10) || 5;
+        var list = getDaftarDistributorGlobal();
+
+        list.sort(function(a, b) {
+            var ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            var tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return tb - ta;
+        });
+
+        return list.slice(0, limit);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (12) getTopDistributorGlobal
+    // ------------------------------------------------------------
+    // Top distributor berdasarkan jumlah produk
+    // ═══════════════════════════════════════════════════════════
+    window.getTopDistributorGlobal = function(limit) {
+        limit = parseInt(limit, 10) || 5;
+        var list = getDaftarDistributorGlobal();
+
+        list.sort(function(a, b) {
+            return (b.totalProduk || 0) - (a.totalProduk || 0);
+        });
+
+        return list.slice(0, limit);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (13) getDistributorByWilayahGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.getDistributorByWilayahGlobal = function(wilayah) {
+        if (!wilayah) return [];
+        return cariDistributorGlobal({ wilayah: wilayah });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (14) exportDistributorCSVGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.exportDistributorCSVGlobal = function(filter) {
+        try {
+            var list = filter
+                ? cariDistributorGlobal(filter)
+                : getDaftarDistributorGlobal();
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 ||
+                    s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = [
+                'No,ID User,Nama,Username,HP,Email,Wilayah,Alamat,' +
+                'NIK KTP,Status,Total Produk,Favorit,Tgl Daftar'
+            ];
+
+            list.forEach(function(d, i) {
+                lines.push([
+                    i + 1,
+                    esc(d.idUser),
+                    esc(d.nama),
+                    esc(d.username),
+                    esc(d.hp),
+                    esc(d.email),
+                    esc(d.wilayah || '-'),
+                    esc((d.alamat || '').substring(0, 150)),
+                    esc(d.nik_ktp || '-'),
+                    esc(d.status),
+                    d.totalProduk || 0,
+                    isFavoritDistributorGlobal(d.idUser) ? 'Ya' : 'Tidak',
+                    esc(d.createdAt
+                        ? new Date(d.createdAt).toLocaleDateString('id-ID')
+                        : '-')
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'daftar_distributor_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+
+            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = namaFile;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            return { sukses: true, namaFile: namaFile, total: list.length };
+        } catch (e) {
+            console.error('exportDistributorCSVGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BONUS — seedDistributorDummyGlobal
+    // ------------------------------------------------------------
+    // Untuk testing kalau belum ada distributor di sistem
+    // ═══════════════════════════════════════════════════════════
+    window.seedDistributorDummyGlobal = function(jumlah) {
+        jumlah = parseInt(jumlah, 10) || 3;
+
+        try {
+            var akun = _dstBacaAkunAktif();
+            var wilayahList = _dstParse(localStorage.getItem('dataWilayah') || '[]', []);
+            var names = [
+                'PT Sinar Jaya Distribusi',
+                'CV Berkah Abadi Sentosa',
+                'PT Mitra Niaga Nusantara',
+                'UD Sumber Rezeki',
+                'PT Bintang Terang'
+            ];
+
+            var berhasil = 0;
+            for (var i = 0; i < jumlah; i++) {
+                var w = wilayahList[i % wilayahList.length] || {};
+                var idUser = 'ID_TK2R_DST-TEST' + String(i + 1).padStart(3, '0');
+                var nama = names[i % names.length];
+
+                // Cek duplikat
+                if (akun.some(function(a) { return a && a.id === idUser; })) continue;
+
+                akun.push({
+                    id: idUser,
+                    nama: nama,
+                    role: 'Distributor',
+                    kodeRole: 'DST',
+                    username: 'dist_test' + (i + 1),
+                    hp: '0812000000' + String(i + 1).padStart(2, '0'),
+                    email: 'dist' + (i + 1) + '@dummy.local',
+                    alamat: (w.kecamatan ? 'Kec. ' + w.kecamatan + ', ' : '') +
+                            'Kab. Ciamis',
+                    alamatKtp: 'Desa Test, Kec. Test',
+                    nik_ktp: '3207000000000' + String(i + 1).padStart(3, '0'),
+                    lat: w.lat || -7.449199,
+                    lng: w.lng || 108.654786,
+                    status: 'Aktif',
+                    statusVerifikasi: 'Aktif',
+                    statusLangganan: 'Free',
+                    fotoUrl: '',
+                    createdBy: 'SEED_DISTRIBUTOR_DUMMY',
+                    createdAt: new Date().toISOString()
+                });
+                berhasil++;
+            }
+
+            localStorage.setItem('dataAkunAktif', JSON.stringify(akun));
+            refreshCacheDistributorGlobal();
+
+            return { sukses: true, jumlah: berhasil };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 0.10.61 — Dasbor Distributor (Data Layer V2) terpasang.');
+    console.log('   📋 14 fungsi + 1 bonus:');
+    console.log('   (1)  hitungProdukDistributorGlobal');
+    console.log('   (2)  cariWilayahDistributor');
+    console.log('   (3)  getDaftarDistributorGlobal ⭐');
+    console.log('   (4)  refreshCacheDistributorGlobal');
+    console.log('   (5)  hitungStatistikDistributorGlobal');
+    console.log('   (6)  cariDistributorGlobal');
+    console.log('   (7)  getDetailDistributorGlobal');
+    console.log('   (8)  getDaftarWilayahDistributorGlobal');
+    console.log('   (9)  toggleFavoritDistributorGlobal');
+    console.log('   (10) isFavoritDistributorGlobal');
+    console.log('   (11) getDistributorTerbaruGlobal');
+    console.log('   (12) getTopDistributorGlobal');
+    console.log('   (13) getDistributorByWilayahGlobal');
+    console.log('   (14) exportDistributorCSVGlobal');
+    console.log('   (+)  seedDistributorDummyGlobal (testing)');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 0.10.61 — DATA LAYER V2 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 <!-- ============================================================ -->
 <!-- ===== AKHIR FUNGSI AKUN SUPERADMIN ===== -->
 <!-- ============================================================ -->
@@ -48136,180 +48758,782 @@ function toggleStatusWilayah(id) {
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 10.61 — DASBOR DISTRIBUTOR (JS) ═══════════════ -->
-<!-- ═══ UI Handler — Cache template + Setup event ═════════════ -->
+<!-- ═══ BLOK R 10.61 — DASBOR DISTRIBUTOR (JS HANDLER) ════════ -->
+<!-- ═══ UI Grid + Filter + Modal Detail + Favorit + Export ════ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_R_10_61_DASBOR_DISTRIBUTOR_UI() {
-    // ═══════════════════════════════════════════════════════════
-    // GUARD IDEMPOTENCY
-    // ═══════════════════════════════════════════════════════════
+(function BLOK_R_10_61_DASBOR_DISTRIBUTOR() {
+    // ── Guard idempotency ──
     if (window._blokR1061Done) {
-        console.log('ℹ️ BLOK R 10.61 — Dasbor Distributor (UI) sudah terpasang.');
+        console.log('ℹ️ BLOK 10.61 sudah terpasang.');
         return;
     }
     window._blokR1061Done = true;
 
+    var _dstModeUser = 'GR';
+    var _dstDataDetail = null;
+
     // ═══════════════════════════════════════════════════════════
-    // (1) TAMPILKAN DASBOR — WRAPPER
-    // ------------------------------------------------------------
-    // Fungsi utama sudah ada di BLOK R 0.10.61
-    // Ini hanya sebagai pintu masuk alternatif
+    // HELPER
     // ═══════════════════════════════════════════════════════════
-    window.tampilkanDasborDistributorUI = function() {
-        // Delegasi ke fungsi global
-        if (typeof tampilkanDasborDistributor === 'function') {
-            tampilkanDasborDistributor();
+    function dstEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function dstSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function dstGetVal(id) {
+        var el = document.getElementById(id);
+        return el ? el.value : '';
+    }
+
+    function dstTgl(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleDateString('id-ID', {
+                day: '2-digit', month: 'short', year: 'numeric'
+            });
+        } catch (e) { return '-'; }
+    }
+
+    function dstTglLengkap(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: 'numeric',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            });
+        } catch (e) { return '-'; }
+    }
+
+    function dstInisial(nama) {
+        if (!nama) return 'D';
+        var parts = String(nama).trim().split(/\s+/);
+        if (parts.length === 0) return 'D';
+        if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+        return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+
+    function dstWarnaStatus(status) {
+        var s = String(status || '').toLowerCase();
+        if (s === 'aktif')    return { bg: 'success', text: 'Aktif' };
+        if (s === 'pending')  return { bg: 'warning text-dark', text: 'Pending' };
+        if (s === 'diblokir') return { bg: 'danger', text: 'Diblokir' };
+        if (s === 'nonaktif') return { bg: 'secondary', text: 'Nonaktif' };
+        if (s === 'dihapus')  return { bg: 'dark', text: 'Dihapus' };
+        return { bg: 'secondary', text: status || '-' };
+    }
+
+    function dstToast(pesan, tipe) {
+        var warna = {
+            success: '#28A745',
+            danger:  '#DC3545',
+            warning: '#FFC107',
+            info:    '#17A2B8'
+        }[tipe] || '#28A745';
+
+        var t = document.createElement('div');
+        t.textContent = pesan;
+        t.style.cssText =
+            'position:fixed;bottom:20px;right:20px;background:' + warna +
+            ';color:#fff;padding:12px 20px;border-radius:8px;' +
+            'font-size:14px;font-weight:500;z-index:9999;' +
+            'box-shadow:0 6px 20px rgba(0,0,0,0.25);';
+        document.body.appendChild(t);
+
+        setTimeout(function() {
+            t.style.opacity = '0';
+            setTimeout(function() {
+                if (t.parentNode) document.body.removeChild(t);
+            }, 300);
+        }, 2500);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) TAMPILKAN HALAMAN
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanDasborDistributor = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.error('❌ #kontenDasbor tidak ada');
+                return;
+            }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            // ── Cache template HTML ──
+            if (!window._tplDasborDistributor) {
+                var c = document.getElementById('dasborDistributorContainer');
+                if (!c) {
+                    console.warn('⚠️ #dasborDistributorContainer tidak ada');
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Dasbor Distributor', '10.61');
+                    }
+                    return;
+                }
+                window._tplDasborDistributor = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Dasbor Distributor di-cache');
+            }
+
+            konten.innerHTML = window._tplDasborDistributor;
+
+            // ── Deteksi mode (SA / GR) ──
+            var role = (typeof userAktif !== 'undefined' && userAktif)
+                ? userAktif.role : null;
+            _dstModeUser = (role === 'SuperAdmin') ? 'SA' : 'GR';
+
+            // ── Update label mode ──
+            var elLabel = document.getElementById('labelModeDistributor');
+            if (elLabel) {
+                if (_dstModeUser === 'SA') {
+                    elLabel.textContent = 'Mode: SuperAdmin';
+                    elLabel.className = 'badge bg-danger';
+                } else {
+                    elLabel.textContent = 'Mode: Grosir';
+                    elLabel.className = 'badge bg-primary';
+                }
+            }
+
+            // ── Tombol kembali ──
+            var btnKembali = document.getElementById('btnKembaliDistributor');
+            if (btnKembali) {
+                btnKembali.onclick = function() {
+                    if (typeof kembaliKeDasbor === 'function') kembaliKeDasbor();
+                };
+            }
+
+            // ── Render setelah DOM siap ──
+            setTimeout(function() {
+                _dstIsiDropdownWilayah();
+                _dstRenderStatistik();
+                _dstRenderGrid();
+                _dstPasangListenerFilter();
+                console.log('✅ BLOK 10.61 — Dasbor Distributor rendered');
+            }, 200);
+
+        } catch (e) {
+            console.error('tampilkanDasborDistributor error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) ISI DROPDOWN WILAYAH
+    // ═══════════════════════════════════════════════════════════
+    function _dstIsiDropdownWilayah() {
+        var sel = document.getElementById('filterWilayahDistributor');
+        if (!sel) return;
+
+        if (typeof getDaftarWilayahDistributorGlobal !== 'function') {
+            console.warn('⚠️ Data Layer 0.10.61 belum siap');
+            return;
+        }
+
+        var list = getDaftarWilayahDistributorGlobal();
+        var html = '<option value="">Semua Wilayah</option>';
+
+        list.forEach(function(item) {
+            html += '<option value="' + dstEsc(item.nama) + '">' +
+                dstEsc(item.nama) + ' (' + item.jumlah + ')' +
+                '</option>';
+        });
+
+        sel.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    function _dstRenderStatistik() {
+        if (typeof hitungStatistikDistributorGlobal !== 'function') return;
+
+        var stat = hitungStatistikDistributorGlobal();
+
+        dstSetText('statTotalDistributor', stat.totalDistributor);
+        dstSetText('statTotalProduk', stat.totalProduk);
+        dstSetText('statTotalWilayah', stat.totalWilayah);
+        dstSetText('statDistributorBaru', stat.distributorBaru);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) RENDER GRID DISTRIBUTOR
+    // ═══════════════════════════════════════════════════════════
+    function _dstRenderGrid() {
+        var grid = document.getElementById('gridDistributor');
+        if (!grid) return;
+
+        if (typeof cariDistributorGlobal !== 'function') {
+            grid.innerHTML =
+                '<div class="col-12 text-center text-white py-5">' +
+                    '<i class="fas fa-exclamation-triangle fa-2x mb-2"></i>' +
+                    '<p>Data Layer belum siap. Cek BLOK R 0.10.61.</p>' +
+                '</div>';
+            return;
+        }
+
+        var cari = (dstGetVal('cariDistributor') || '').toLowerCase().trim();
+        var wilayah = dstGetVal('filterWilayahDistributor');
+        var favorit = document.getElementById('filterFavoritDistributor')?.checked || false;
+
+        var hasil = cariDistributorGlobal({
+            cari: cari,
+            wilayah: wilayah,
+            hanyaFavorit: favorit
+        });
+
+        dstSetText('infoJumlahDistributor', hasil.length + ' Distributor');
+
+        // ── Kosong ──
+        if (hasil.length === 0) {
+            var all = getDaftarDistributorGlobal();
+            var isEmpty = all.length === 0;
+
+            grid.innerHTML =
+                '<div class="col-12 text-center text-white py-5">' +
+                    '<i class="fas fa-warehouse fa-4x d-block mb-3 opacity-50"></i>' +
+                    '<h5>' + (isEmpty
+                        ? 'Belum Ada Distributor Terdaftar'
+                        : 'Tidak Ada Distributor Cocok') + '</h5>' +
+                    '<p class="small">' +
+                        (isEmpty
+                            ? 'Distributor akan muncul di sini setelah ada ' +
+                              'yang mendaftar dengan role Distributor.'
+                            : 'Coba ubah filter atau reset.') +
+                    '</p>' +
+                    (isEmpty
+                        ? '<button class="btn btn-sm btn-outline-light mt-2" ' +
+                              'onclick="seedDistributorDummyGlobal(3); ' +
+                              'refreshCacheDistributorGlobal(); ' +
+                              'tampilkanDasborDistributor();">' +
+                              '<i class="fas fa-flask me-1"></i>' +
+                              'Seed 3 Data Dummy (Testing)' +
+                          '</button>'
+                        : '') +
+                '</div>';
+            return;
+        }
+
+        // ── Render kartu ──
+        var html = '';
+        hasil.forEach(function(d) {
+            html += _dstRenderKartu(d);
+        });
+        grid.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) RENDER 1 KARTU DISTRIBUTOR
+    // ═══════════════════════════════════════════════════════════
+    function _dstRenderKartu(d) {
+        var warna = dstWarnaStatus(d.status);
+        var inisial = dstInisial(d.nama);
+        var favorit = (typeof isFavoritDistributorGlobal === 'function')
+            ? isFavoritDistributorGlobal(d.idUser) : false;
+
+        // Avatar
+        var avatarHtml;
+        if (d.fotoUrl) {
+            avatarHtml =
+                '<img src="' + dstEsc(d.fotoUrl) + '" ' +
+                     'style="width:60px;height:60px;object-fit:cover;' +
+                            'border-radius:50%;border:3px solid #fff;' +
+                            'box-shadow:0 2px 8px rgba(0,0,0,0.15);" ' +
+                     'onerror="this.style.display=\'none\';' +
+                             'this.nextElementSibling.style.display=\'flex\';">' +
+                '<div style="width:60px;height:60px;border-radius:50%;' +
+                     'background:#6F42C1;color:#fff;display:none;' +
+                     'align-items:center;justify-content:center;' +
+                     'font-weight:bold;font-size:22px;border:3px solid #fff;' +
+                     'box-shadow:0 2px 8px rgba(0,0,0,0.15);">' +
+                    dstEsc(inisial) +
+                '</div>';
         } else {
-            console.error('❌ Fungsi tampilkanDasborDistributor belum tersedia');
-            if (typeof tampilkanPlaceholderMenu === 'function') {
-                tampilkanPlaceholderMenu('Dasbor Distributor', '10.61');
-            }
+            avatarHtml =
+                '<div style="width:60px;height:60px;border-radius:50%;' +
+                     'background:#6F42C1;color:#fff;display:flex;' +
+                     'align-items:center;justify-content:center;' +
+                     'font-weight:bold;font-size:22px;border:3px solid #fff;' +
+                     'box-shadow:0 2px 8px rgba(0,0,0,0.15);">' +
+                    dstEsc(inisial) +
+                '</div>';
         }
+
+        // Badge favorit
+        var badgeFavorit = favorit
+            ? '<span style="position:absolute;top:8px;right:8px;' +
+                    'background:#FFC107;color:#000;border-radius:50%;' +
+                    'width:32px;height:32px;display:flex;' +
+                    'align-items:center;justify-content:center;' +
+                    'box-shadow:0 2px 8px rgba(0,0,0,0.2);">' +
+                    '<i class="fas fa-star"></i></span>'
+            : '';
+
+        // Badge produk
+        var produkBadge = d.totalProduk > 0
+            ? '<span class="badge bg-success">' +
+                '<i class="fas fa-box me-1"></i>' + d.totalProduk + ' Produk</span>'
+            : '<span class="badge bg-secondary">' +
+                '<i class="fas fa-box me-1"></i>Belum ada produk</span>';
+
+        // Badge wilayah
+        var wilayahBadge = (d.wilayah && d.wilayah !== '-')
+            ? '<span class="badge bg-info text-dark">' +
+                '<i class="fas fa-map-marker-alt me-1"></i>' +
+                dstEsc(d.wilayah) +
+                (d.jarakWilayah ? ' • ' + dstEsc(d.jarakWilayah) : '') +
+                '</span>'
+            : '';
+
+        // Badge sumber data (debug)
+        var sumberBadge = '';
+        if (d._sumber && d._sumber.length > 1) {
+            sumberBadge = '<span class="badge bg-light text-dark" ' +
+                'style="font-size:9px;" title="Sumber: ' +
+                dstEsc(d._sumber.join(', ')) + '">' +
+                d._sumber.length + ' src</span>';
+        }
+
+        var idEsc = String(d.idUser).replace(/'/g, "\\'");
+
+        return '' +
+        '<div class="col-md-6 col-lg-4">' +
+            '<div class="card border-0 shadow-sm h-100" ' +
+                 'style="cursor:pointer;transition:transform 0.2s,box-shadow 0.2s;" ' +
+                 'onclick="dstBukaDetail(\'' + idEsc + '\')" ' +
+                 'onmouseover="this.style.transform=\'translateY(-4px)\';' +
+                                'this.style.boxShadow=\'0 8px 20px rgba(111,66,193,0.3)\';" ' +
+                 'onmouseout="this.style.transform=\'translateY(0)\';' +
+                               'this.style.boxShadow=\'0 2px 8px rgba(0,0,0,0.08)\';">' +
+
+                '<div class="card-body position-relative">' +
+                    badgeFavorit +
+
+                    '<div class="d-flex align-items-center gap-3 mb-2">' +
+                        avatarHtml +
+                        '<div style="flex:1;min-width:0;">' +
+                            '<h6 class="fw-bold mb-0 text-truncate" ' +
+                                'title="' + dstEsc(d.nama) + '">' +
+                                dstEsc(d.nama) +
+                            '</h6>' +
+                            '<small class="text-muted d-block text-truncate">' +
+                                '<i class="fas fa-id-card me-1"></i>' +
+                                dstEsc(d.idUser) +
+                            '</small>' +
+                            '<div class="d-flex gap-1 flex-wrap mt-1">' +
+                                '<span class="badge bg-' + warna.bg + '" ' +
+                                      'style="font-size:10px;">' +
+                                    warna.text + '</span>' +
+                                sumberBadge +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+
+                    '<hr class="my-2">' +
+
+                    '<div class="small text-muted mb-1 text-truncate">' +
+                        '<i class="fas fa-user-tag me-1 text-primary"></i>' +
+                        dstEsc(d.username || '-') +
+                    '</div>' +
+
+                    '<div class="small text-muted mb-1 text-truncate">' +
+                        '<i class="fas fa-phone me-1 text-success"></i>' +
+                        dstEsc(d.hp || '-') +
+                    '</div>' +
+
+                    '<div class="small text-muted mb-1 text-truncate" ' +
+                         'title="' + dstEsc(d.email || '-') + '">' +
+                        '<i class="fas fa-envelope me-1 text-info"></i>' +
+                        dstEsc(d.email || '-') +
+                    '</div>' +
+
+                    '<div class="small text-muted mb-2" ' +
+                         'style="display:-webkit-box;-webkit-line-clamp:2;' +
+                                '-webkit-box-orient:vertical;overflow:hidden;">' +
+                        '<i class="fas fa-map-marker-alt me-1 text-danger"></i>' +
+                        dstEsc(d.alamat || '-') +
+                    '</div>' +
+
+                    '<div class="d-flex gap-1 flex-wrap mb-2">' +
+                        produkBadge + wilayahBadge +
+                    '</div>' +
+
+                    '<div class="d-flex justify-content-between align-items-center ' +
+                         'small text-muted pt-2 border-top">' +
+                        '<span><i class="fas fa-calendar me-1"></i>' +
+                            dstTgl(d.createdAt) + '</span>' +
+                        '<span class="text-primary fw-bold">' +
+                            'Detail <i class="fas fa-arrow-right"></i></span>' +
+                    '</div>' +
+
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) PASANG LISTENER FILTER
+    // ═══════════════════════════════════════════════════════════
+    function _dstPasangListenerFilter() {
+        var elCari = document.getElementById('cariDistributor');
+        if (elCari && !elCari._dstListener) {
+            elCari._dstListener = true;
+            var timer = null;
+            elCari.addEventListener('input', function() {
+                clearTimeout(timer);
+                timer = setTimeout(_dstRenderGrid, 250);
+            });
+        }
+
+        var elWilayah = document.getElementById('filterWilayahDistributor');
+        if (elWilayah && !elWilayah._dstListener) {
+            elWilayah._dstListener = true;
+            elWilayah.addEventListener('change', _dstRenderGrid);
+        }
+
+        var elFav = document.getElementById('filterFavoritDistributor');
+        if (elFav && !elFav._dstListener) {
+            elFav._dstListener = true;
+            elFav.addEventListener('change', _dstRenderGrid);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) RESET FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterDistributorGlobal = function() {
+        var elCari = document.getElementById('cariDistributor');
+        if (elCari) elCari.value = '';
+
+        var elWilayah = document.getElementById('filterWilayahDistributor');
+        if (elWilayah) elWilayah.value = '';
+
+        var elFav = document.getElementById('filterFavoritDistributor');
+        if (elFav) elFav.checked = false;
+
+        _dstRenderGrid();
     };
 
     // ═══════════════════════════════════════════════════════════
-    // (2) RE-RENDER STATISTIK (dipanggil setelah data berubah)
+    // (8) BUKA DETAIL DISTRIBUTOR (MODAL DINAMIS)
     // ═══════════════════════════════════════════════════════════
-    window.refreshStatistikDistributorUI = function() {
+    window.dstBukaDetail = function(idUser) {
         try {
-            if (typeof hitungStatistikDistributorGlobal !== 'function') return;
-
-            var stat = hitungStatistikDistributorGlobal();
-
-            var elTotal = document.getElementById('statTotalDistributor');
-            if (elTotal) elTotal.textContent = stat.totalDistributor;
-
-            var elProduk = document.getElementById('statTotalProduk');
-            if (elProduk) elProduk.textContent = stat.totalProduk;
-
-            var elWilayah = document.getElementById('statTotalWilayah');
-            if (elWilayah) elWilayah.textContent = stat.totalWilayah;
-
-            var elBaru = document.getElementById('statDistributorBaru');
-            if (elBaru) elBaru.textContent = stat.distributorBaru;
-
-            console.log('🔄 Statistik Distributor refreshed');
-        } catch (e) {
-            console.error('refreshStatistikDistributorUI error:', e);
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // (3) AUTO-CLEANUP DUPLIKAT CONTAINER
-    // ═══════════════════════════════════════════════════════════
-    (function autoCleanupContainer() {
-        var containers = document.querySelectorAll('[id="dasborDistributorContainer"]');
-        if (containers.length > 1) {
-            for (var i = 0; i < containers.length - 1; i++) {
-                containers[i].remove();
-            }
-            console.log('🧹 Cleanup: hapus ' + (containers.length - 1) +
-                        ' container Distributor duplikat');
-        }
-    })();
-
-    // ═══════════════════════════════════════════════════════════
-    // (4) AUTO-INJECT KE menuConfig['GR'] — Menu "Lihat Distributor"
-    // ═══════════════════════════════════════════════════════════
-    setTimeout(function() {
-        try {
-            if (typeof menuConfig === 'undefined' || !menuConfig['GR']) {
-                console.warn('⚠️ menuConfig["GR"] tidak ditemukan');
+            if (typeof getDetailDistributorGlobal !== 'function') {
+                alert('Data Layer belum siap.');
                 return;
             }
 
-            var menuGR = menuConfig['GR'].menu;
-            var sudahAda = menuGR.some(function(m) {
-                return m.aksi === 'tampilkanDasborDistributor';
-            });
-            if (sudahAda) {
-                console.log('ℹ️ Menu "Lihat Distributor" sudah ada di GR');
+            var detail = getDetailDistributorGlobal(idUser);
+            if (!detail) {
+                alert('Data distributor tidak ditemukan.');
                 return;
             }
 
-            // Cari posisi setelah "Pengiriman via Ojek" (28.13.6)
-            var idx = menuGR.findIndex(function(m) {
-                return m.blok === '28.13.6';
-            });
+            _dstDataDetail = detail;
+            var p = detail.profil;
+            var favorit = detail.isFavorit;
 
-            var menuBaru = {
-                nama: 'Lihat Distributor',
-                ikon: 'fas fa-warehouse',
-                blok: '10.61',
-                aksi: 'tampilkanDasborDistributor',
-                kategori: '7. Wilayah & Pengiriman'
-            };
+            var html = '';
 
-            if (idx !== -1) {
-                // Insert setelah index idx
-                menuGR.splice(idx + 1, 0, menuBaru);
+            // Header profil
+            html += '<div class="d-flex align-items-center gap-3 mb-3 pb-3 border-bottom">';
+            if (p.fotoUrl) {
+                html += '<img src="' + dstEsc(p.fotoUrl) + '" ' +
+                        'style="width:80px;height:80px;object-fit:cover;' +
+                               'border-radius:50%;border:3px solid #6F42C1;">';
             } else {
-                // Kalau tidak ketemu, append di akhir
-                menuGR.push(menuBaru);
+                html += '<div style="width:80px;height:80px;border-radius:50%;' +
+                        'background:#6F42C1;color:#fff;display:flex;' +
+                        'align-items:center;justify-content:center;' +
+                        'font-weight:bold;font-size:28px;">' +
+                        dstEsc(dstInisial(p.nama)) + '</div>';
+            }
+            html += '<div style="flex:1;min-width:0;">';
+            html += '<h5 class="fw-bold mb-1">' + dstEsc(p.nama) + '</h5>';
+            html += '<div class="small text-muted">' +
+                '<i class="fas fa-id-card me-1"></i>' + dstEsc(p.idUser) +
+                ' <span class="badge bg-primary ms-2">Distributor</span>' +
+                '</div>';
+            var w = dstWarnaStatus(p.status);
+            html += '<span class="badge bg-' + w.bg + ' mt-1">' + w.text + '</span>';
+            html += '<div class="small text-muted mt-1">' +
+                '<i class="fas fa-calendar me-1"></i>Terdaftar ' +
+                dstTglLengkap(p.createdAt) + '</div>';
+            html += '</div>';
+            html += '</div>';
+
+            // Info grid
+            html += '<div class="row g-2 mb-3 small">';
+
+            html += '<div class="col-md-6">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">Username</div>' +
+                    '<strong>' + dstEsc(p.username || '-') + '</strong>' +
+                '</div></div>';
+
+            html += '<div class="col-md-6">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">No. HP</div>' +
+                    '<a href="tel:' + dstEsc(p.hp) + '" ' +
+                       'class="fw-bold text-decoration-none">' +
+                        dstEsc(p.hp || '-') + '</a>' +
+                '</div></div>';
+
+            html += '<div class="col-md-6">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">Email</div>' +
+                    '<div class="text-truncate">' +
+                        dstEsc(p.email || '-') + '</div>' +
+                '</div></div>';
+
+            html += '<div class="col-md-6">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">Wilayah</div>' +
+                    '<strong>' + dstEsc(p.wilayah || '-') + '</strong>' +
+                    (p.jarakWilayah
+                        ? ' <small class="text-muted">(' +
+                          dstEsc(p.jarakWilayah) + ')</small>'
+                        : '') +
+                '</div></div>';
+
+            html += '<div class="col-12">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">Alamat</div>' +
+                    '<div>' + dstEsc(p.alamat || '-') + '</div>' +
+                '</div></div>';
+
+            html += '<div class="col-md-6">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">NIK KTP</div>' +
+                    '<div>' + dstEsc(p.nik_ktp || '-') + '</div>' +
+                '</div></div>';
+
+            html += '<div class="col-md-6">' +
+                '<div class="border rounded p-2">' +
+                    '<div class="text-muted small">Total Produk</div>' +
+                    '<strong class="text-success">' +
+                        (detail.totalProduk || 0) + ' produk</strong>' +
+                '</div></div>';
+
+            if (p.lat && p.lng) {
+                html += '<div class="col-12">' +
+                    '<div class="border rounded p-2">' +
+                        '<div class="text-muted small">Koordinat</div>' +
+                        '<a href="https://www.google.com/maps?q=' +
+                            p.lat + ',' + p.lng + '" target="_blank" ' +
+                            'rel="noopener" class="text-decoration-none">' +
+                            '<i class="fas fa-map-marker-alt me-1"></i>' +
+                            parseFloat(p.lat).toFixed(6) + ', ' +
+                            parseFloat(p.lng).toFixed(6) +
+                            ' <i class="fas fa-external-link-alt ms-1"></i>' +
+                        '</a>' +
+                    '</div></div>';
             }
 
-            console.log('✅ Menu "Lihat Distributor" di-inject ke menuConfig["GR"]');
-        } catch (e) {
-            console.warn('Auto-inject menu GR error:', e);
-        }
-    }, 500);
-
-    // ═══════════════════════════════════════════════════════════
-    // (5) AUTO-INJECT KE menuConfig['SA'] — Update handler saja
-    // ------------------------------------------------------------
-    // Menu 10.61 sudah ada di SA, tapi handler-nya mungkin
-    // masih mengarah ke fungsi placeholder. Kita update.
-    // ═══════════════════════════════════════════════════════════
-    setTimeout(function() {
-        try {
-            if (typeof menuConfig === 'undefined' || !menuConfig['SA']) return;
-
-            var menuSA = menuConfig['SA'].menu;
-            var menuDst = menuSA.find(function(m) {
-                return m.blok === '10.61';
-            });
-
-            if (menuDst) {
-                // Pastikan aksi mengarah ke fungsi yang benar
-                menuDst.aksi = 'tampilkanDasborDistributor';
-                menuDst.nama = 'Dasbor Distributor';
-                console.log('✅ Menu SA 10.61 → "tampilkanDasborDistributor"');
+            if (p.bio) {
+                html += '<div class="col-12">' +
+                    '<div class="border rounded p-2">' +
+                        '<div class="text-muted small">Bio</div>' +
+                        '<div>' + dstEsc(p.bio) + '</div>' +
+                    '</div></div>';
             }
+
+            html += '</div>';
+
+            // Daftar produk
+            if (detail.produk && detail.produk.length > 0) {
+                html += '<h6 class="fw-bold mt-3 mb-2">' +
+                    '<i class="fas fa-boxes me-1 text-success"></i>' +
+                    'Produk (' + detail.produk.length + ')</h6>';
+                html += '<div class="list-group" ' +
+                        'style="max-height:250px;overflow-y:auto;">';
+
+                detail.produk.slice(0, 20).forEach(function(pr) {
+                    html += '<div class="list-group-item small py-2">' +
+                        '<div class="d-flex justify-content-between align-items-start">' +
+                            '<strong class="text-truncate" style="max-width:70%;">' +
+                                dstEsc(pr.nama || pr.kode || 'Produk') +
+                            '</strong>' +
+                            '<span class="badge bg-light text-dark">' +
+                                dstEsc(pr.kategori || '-') + '</span>' +
+                        '</div>' +
+                        '<div class="text-muted mt-1">' +
+                            '<i class="fas fa-tag me-1"></i>Rp ' +
+                            ((parseFloat(pr.harga) || 0)
+                                .toLocaleString('id-ID')) +
+                            ' • <i class="fas fa-cubes ms-2 me-1"></i>Stok: ' +
+                            (pr.stok || 0) +
+                        '</div>' +
+                    '</div>';
+                });
+
+                if (detail.produk.length > 20) {
+                    html += '<div class="text-center text-muted small py-2">' +
+                        '... dan ' + (detail.produk.length - 20) +
+                        ' produk lain</div>';
+                }
+                html += '</div>';
+            } else {
+                html += '<div class="alert alert-light border small mt-3 mb-0">' +
+                    '<i class="fas fa-info-circle me-1"></i>' +
+                    'Distributor ini belum upload produk.</div>';
+            }
+
+            // ── Buat / gunakan modal ──
+            var modalId = 'dstModalDetail';
+            var modalEl = document.getElementById(modalId);
+
+            if (!modalEl) {
+                modalEl = document.createElement('div');
+                modalEl.id = modalId;
+                modalEl.className = 'modal fade';
+                modalEl.setAttribute('tabindex', '-1');
+                modalEl.innerHTML =
+                    '<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">' +
+                        '<div class="modal-content">' +
+                            '<div class="modal-header text-white" ' +
+                                 'style="background:#6F42C1;">' +
+                                '<h5 class="modal-title">' +
+                                    '<i class="fas fa-warehouse me-2"></i>' +
+                                    'Detail Distributor</h5>' +
+                                '<button type="button" class="btn-close btn-close-white" ' +
+                                        'data-bs-dismiss="modal"></button>' +
+                            '</div>' +
+                            '<div class="modal-body" id="dstModalBody"></div>' +
+                            '<div class="modal-footer justify-content-between flex-wrap gap-2">' +
+                                '<div class="d-flex gap-2">' +
+                                    '<button type="button" class="btn btn-warning" ' +
+                                            'id="dstBtnFavorit"></button>' +
+                                    '<button type="button" class="btn btn-success" ' +
+                                            'id="dstBtnChat">' +
+                                        '<i class="fas fa-comments me-1"></i>Chat</button>' +
+                                '</div>' +
+                                '<button type="button" class="btn btn-secondary" ' +
+                                        'data-bs-dismiss="modal">Tutup</button>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+                document.body.appendChild(modalEl);
+            }
+
+            var body = document.getElementById('dstModalBody');
+            if (body) body.innerHTML = html;
+
+            // ── Tombol Favorit ──
+            var btnFav = document.getElementById('dstBtnFavorit');
+            if (btnFav) {
+                btnFav.innerHTML = favorit
+                    ? '<i class="fas fa-star me-1"></i>Hapus Favorit'
+                    : '<i class="far fa-star me-1"></i>Tandai Favorit';
+                btnFav.onclick = function() {
+                    var r = toggleFavoritDistributorGlobal(idUser);
+                    if (r.sukses) {
+                        var m = bootstrap.Modal.getInstance(modalEl);
+                        if (m) m.hide();
+                        _dstIsiDropdownWilayah();
+                        _dstRenderGrid();
+                        dstToast(r.sudahFavorit
+                            ? '⭐ Ditambahkan ke favorit'
+                            : 'Favorit dihapus', 'success');
+                    } else {
+                        dstToast('❌ ' + r.pesan, 'danger');
+                    }
+                };
+            }
+
+            // ── Tombol Chat ──
+            var btnChat = document.getElementById('dstBtnChat');
+            if (btnChat) {
+                btnChat.onclick = function() {
+                    var m = bootstrap.Modal.getInstance(modalEl);
+                    if (m) m.hide();
+
+                    if (typeof bukaChatPribadiDariKontak === 'function') {
+                        bukaChatPribadiDariKontak(idUser);
+                    } else if (typeof tampilkanMenuChatToko === 'function') {
+                        tampilkanMenuChatToko();
+                    } else if (typeof menuHandlers !== 'undefined' &&
+                               typeof menuHandlers['tampilkanMenuChatToko'] === 'function') {
+                        menuHandlers['tampilkanMenuChatToko']();
+                    } else if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Chat dengan ' + p.nama, '11.24');
+                    }
+                };
+            }
+
+            new bootstrap.Modal(modalEl).show();
+
         } catch (e) {
-            console.warn('Update menu SA error:', e);
+            console.error('dstBukaDetail error:', e);
+            alert('Error: ' + e.message);
         }
-    }, 600);
+    };
 
     // ═══════════════════════════════════════════════════════════
-    // (6) HANDLER MENU
+    // (9) HANDLER MENU
     // ═══════════════════════════════════════════════════════════
     window.menuHandlers = window.menuHandlers || {};
 
     window.menuHandlers['tampilkanDasborDistributor'] = function() {
-        if (typeof tampilkanDasborDistributor === 'function') {
-            tampilkanDasborDistributor();
-        } else if (typeof tampilkanPlaceholderMenu === 'function') {
-            tampilkanPlaceholderMenu('Dasbor Distributor', '10.61');
-        }
+        window.tampilkanDasborDistributor();
     };
-
     window.menuHandlers['tampilkanDasborDistributorSemuaRole'] =
         window.menuHandlers['tampilkanDasborDistributor'];
 
     // ═══════════════════════════════════════════════════════════
-    // (7) LOG
+    // (10) AUTO-INJECT MENU KE menuConfig['GR']
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        if (typeof menuConfig === 'undefined' || !menuConfig['GR']) return;
+
+        var menuGR = menuConfig['GR'].menu;
+        var sudahAda = menuGR.some(function(m) {
+            return m.aksi === 'tampilkanDasborDistributor';
+        });
+        if (sudahAda) return;
+
+        var idx = menuGR.findIndex(function(m) { return m.blok === '28.13.6'; });
+        var item = {
+            nama: 'Lihat Distributor',
+            ikon: 'fas fa-warehouse',
+            blok: '10.61',
+            aksi: 'tampilkanDasborDistributor',
+            kategori: '7. Wilayah & Pengiriman'
+        };
+
+        if (idx !== -1) menuGR.splice(idx + 1, 0, item);
+        else menuGR.push(item);
+
+        console.log('✅ Menu "Lihat Distributor" di-inject ke menuConfig[GR]');
+    }, 500);
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
     // ═══════════════════════════════════════════════════════════
     console.log('✅ BLOK R 10.61 — Dasbor Distributor (UI) terpasang.');
-    console.log('   • Container: #dasborDistributorContainer');
-    console.log('   • Handler: tampilkanDasborDistributor');
-    console.log('   • Auto-inject menu "Lihat Distributor" ke GR');
-    console.log('   • Update menu SA 10.61');
-    console.log('   • Butuh BLOK R 0.10.61 (fungsi global)');
+    console.log('   Sub-blok JS (10):');
+    console.log('   (1)  tampilkanDasborDistributor');
+    console.log('   (2)  _dstIsiDropdownWilayah');
+    console.log('   (3)  _dstRenderStatistik');
+    console.log('   (4)  _dstRenderGrid');
+    console.log('   (5)  _dstRenderKartu');
+    console.log('   (6)  _dstPasangListenerFilter');
+    console.log('   (7)  resetFilterDistributorGlobal');
+    console.log('   (8)  dstBukaDetail');
+    console.log('   (9)  Handler: tampilkanDasborDistributor');
+    console.log('   (10) Auto-inject menu ke GR');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK R 10.61 (JS) ══════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.61 — DASBOR DISTRIBUTOR (JS HANDLER) ══ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
