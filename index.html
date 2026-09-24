@@ -19548,7 +19548,7 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
     window._blokR01040Done = true;
 
     var KEY_STORAGE = 'dataLogAuditSA';
-    var MAX_LOG = 5000; // Batasi 5000 entri agar tidak bengkak
+    var MAX_LOG = 500; // Batasi 5000 entri agar tidak bengkak
 
     // ═══════════════════════════════════════════════════════════
     // (0) KONSTANTA — 9 KATEGORI + LEVEL
@@ -19610,46 +19610,122 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
         return data;
     };
 
-    // ═══════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════════
     // (2) saveLogAuditSAGlobal
+    // ------------------------------------------------------------
+    // Anti-quota: trim + strip + fallback berlapis
     // ═══════════════════════════════════════════════════════════
     window.saveLogAuditSAGlobal = function(data) {
         try {
             if (!data || typeof data !== 'object') {
                 return { sukses: false, pesan: 'Data tidak valid.' };
             }
+            if (!Array.isArray(data.log)) data.log = [];
 
             // Recompute stat
             data.stat = _logAuditHitungStatInternal(data.log);
 
-            // Trim kalau over max
-            if (data.log.length > MAX_LOG) {
-                data.log = data.log.slice(0, MAX_LOG);
-            }
-
             data.updatedAt = new Date().toISOString();
             data.updatedBy = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA';
 
-            localStorage.setItem(KEY_STORAGE, JSON.stringify(data));
-            window.dataLogAuditSA = data;
-            return { sukses: true };
+            // ── Strategi berlapis — turun level kalau quota penuh ──
+            var strategi = [
+                { max: MAX_LOG,   strip: 0 },   // default
+                { max: MAX_LOG,   strip: 1 },   // strip userAgent + metadata
+                { max: 300,       strip: 2 },   // strip dataLama/Baru
+                { max: 200,       strip: 3 },   // potong deskripsi
+                { max: 100,       strip: 3 }    // emergency
+            ];
+
+            var lastErr = null;
+
+            for (var i = 0; i < strategi.length; i++) {
+                var st = strategi[i];
+
+                var coba = {
+                    log:      _logAuditTrim(data.log, st.max, st.strip),
+                    stat:     data.stat,
+                    settings: data.settings,
+                    updatedAt: data.updatedAt,
+                    updatedBy: data.updatedBy
+                };
+
+                try {
+                    localStorage.setItem(KEY_STORAGE, JSON.stringify(coba));
+                    window.dataLogAuditSA = coba;
+                    if (st.strip > 0 || st.max < MAX_LOG) {
+                        console.warn('⚠️ Log Audit: strategi #' + (i + 1) +
+                            ' (max=' + st.max + ', strip=' + st.strip + ')');
+                    }
+                    return { sukses: true };
+                } catch (e) {
+                    lastErr = e.message;
+                    if (e.name === 'QuotaExceededError' ||
+                        (e.message && e.message.indexOf('quota') !== -1)) {
+                        continue;
+                    }
+                    return { sukses: false, pesan: e.message };
+                }
+            }
+
+            // Semua gagal — clear storage
+            try { localStorage.removeItem(KEY_STORAGE); } catch (e) {}
+            console.error('❌ Log Audit: semua strategi gagal, storage di-clear.');
+            return { sukses: false, pesan: 'Storage penuh: ' + lastErr };
+
         } catch (e) {
             console.error('saveLogAuditSAGlobal error:', e);
             return { sukses: false, pesan: e.message };
         }
     };
 
-    function _logAuditHitungStatInternal(log) {
-        var today = new Date().toISOString().substring(0, 10);
-        var stat = { total: log.length, totalHariIni: 0, totalKritis: 0, totalGagal: 0, lastReset: null };
+    // ── Helper internal: trim + strip entry berat ──
+    function _logAuditTrim(log, maxN, strip) {
+        if (!Array.isArray(log)) return [];
+        return log.slice(0, maxN).map(function(l) {
+            if (!l) return l;
+            var s = Object.assign({}, l);
 
-        log.forEach(function(l) {
-            if (!l) return;
-            if (l.waktu && l.waktu.substring(0, 10) === today) stat.totalHariIni++;
-            if (l.level === 'critical') stat.totalKritis++;
-            if (l.status === 'gagal') stat.totalGagal++;
+            // Level 1: userAgent + metadata
+            if (strip >= 1) {
+                if (s.context && typeof s.context === 'object') {
+                    s.context = Object.assign({}, s.context);
+                    if (s.context.userAgent && s.context.userAgent.length > 80) {
+                        s.context.userAgent = s.context.userAgent.substring(0, 80) + '…';
+                    }
+                }
+                if (s.metadata && typeof s.metadata === 'object') {
+                    var m = JSON.stringify(s.metadata);
+                    if (m.length > 300) {
+                        s.metadata = { _truncated: true, _preview: m.substring(0, 300) };
+                    }
+                }
+            }
+
+            // Level 2: dataLama + dataBaru
+            if (strip >= 2) {
+                if (s.dataLama) {
+                    var dl = JSON.stringify(s.dataLama);
+                    if (dl.length > 300) s.dataLama = { _truncated: true, _preview: dl.substring(0, 300) };
+                }
+                if (s.dataBaru) {
+                    var db = JSON.stringify(s.dataBaru);
+                    if (db.length > 300) s.dataBaru = { _truncated: true, _preview: db.substring(0, 300) };
+                }
+            }
+
+            // Level 3: potong deskripsi & pesanError
+            if (strip >= 3) {
+                if (s.deskripsi && s.deskripsi.length > 200) {
+                    s.deskripsi = s.deskripsi.substring(0, 200) + '…';
+                }
+                if (s.pesanError && s.pesanError.length > 200) {
+                    s.pesanError = s.pesanError.substring(0, 200) + '…';
+                }
+            }
+
+            return s;
         });
-        return stat;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -20348,7 +20424,43 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
         }
     };
 
+        // ═══════════════════════════════════════════════════════════
+    // AUTO-CLEANUP — trim log yang sudah bengkak saat load
     // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            var s = localStorage.getItem(KEY_STORAGE);
+            if (!s) return;
+
+            var bytes = s.length * 2;
+            var mb = Math.round(bytes / 1024 / 1024 * 100) / 100;
+            console.log('📊 Log Audit: ' + mb + ' MB (' + Math.round(bytes / 1024) + ' KB)');
+
+            if (bytes > 3 * 1024 * 1024) {
+                console.warn('🧹 Log Audit: bengkak ' + mb + ' MB, auto-trim ke 200 entry…');
+
+                var d;
+                try { d = JSON.parse(s); } catch (e) { d = { log: [] }; }
+                if (!d || !Array.isArray(d.log)) d = { log: [] };
+
+                d.log = _logAuditTrim(d.log, 200, 3);
+
+                try {
+                    localStorage.setItem(KEY_STORAGE, JSON.stringify(d));
+                    console.log('✅ Log Audit: dipangkas jadi ' +
+                        Math.round(JSON.stringify(d).length * 2 / 1024) + ' KB (' +
+                        d.log.length + ' entry)');
+                } catch (e) {
+                    try { localStorage.removeItem(KEY_STORAGE); } catch (e2) {}
+                    console.warn('⚠️ Log Audit: clear total');
+                }
+            }
+        } catch (e) {
+            console.error('Auto-cleanup Log Audit error:', e);
+        }
+    }, 1500);
+	
+	// ═══════════════════════════════════════════════════════════
     // BONUS — Auto-Purge saat load (kalau expired)
     // ═══════════════════════════════════════════════════════════
     setTimeout(function() {
@@ -24441,7 +24553,7 @@ function exportIntervensiCSVGlobal() {
     window._blokR01053Done = true;
 
     var KEY_LOG = 'dataLogAktivitasCoin';
-    var MAX_LOG = 5000; // batas maksimum log agar tidak bengkak
+    var MAX_LOG = 500; // batas maksimum log agar tidak bengkak
 
     // ═══════════════════════════════════════════════════════════
     // MODUL 0 — KONSTANTA (Severity + Sumber Label)
