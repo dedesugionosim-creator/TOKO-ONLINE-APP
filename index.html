@@ -64018,6 +64018,430 @@ window.menuHandlers['tampilkanDasborGrosir']          = tampilkanDasborGrosirAdm
 <!-- ===== AKHIR BLOK R 10.66 — HTML ===== -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ PATCH REVISI 10.66 — Hanya Tampilkan Akun AKTIF ══════ -->
+<!-- ═══ Override: getDaftarDDF, renderStatistik, renderGrid   ═ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function PATCH_REVISI_DASBOR_DDF_AKTIF_ONLY() {
+    // ── Guard idempotency ──
+    if (window._patchDDFAktifOnlyDone) {
+        console.log('ℹ️ Patch Revisi Dasbor DDF (Aktif Only) sudah terpasang.');
+        return;
+    }
+    window._patchDDFAktifOnlyDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    var ROLES_DDF = [
+        'Developer Properti',
+        'Dealer dan Showroom',
+        'Finance Multifinance'
+    ];
+
+    var WARNA_ROLE = {
+        'Developer Properti':   '#8B4513',
+        'Dealer dan Showroom':  '#003366',
+        'Finance Multifinance': '#046A38'
+    };
+
+    var IKON_ROLE = {
+        'Developer Properti':   'fas fa-building',
+        'Dealer dan Showroom':  'fas fa-car',
+        'Finance Multifinance': 'fas fa-hand-holding-usd'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER — cek akun Aktif (bukan Pending/Ditolak)
+    // ═══════════════════════════════════════════════════════════
+    function isAkunAktif(a) {
+        if (!a) return false;
+        var status = a.statusVerifikasi || a.status || '';
+        // Hanya 'Aktif' yang lolos
+        return status === 'Aktif';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // OVERRIDE 1 — renderStatistikDevDealerFin (hanya Aktif)
+    // ═══════════════════════════════════════════════════════════
+    window.renderStatistikDevDealerFin = function() {
+        try {
+            // Ambil semua akun DDF yang AKTIF saja
+            var akunAll = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif.filter(function(a) {
+                    return a && ROLES_DDF.indexOf(a.role) !== -1 && isAkunAktif(a);
+                })
+                : [];
+
+            var total    = akunAll.length;
+            var online   = 0;
+            var suspend  = 0;
+            var totalCoin = 0;
+
+            akunAll.forEach(function(a) {
+                var id = a.id || a.idUser;
+
+                // Cek online
+                var isOnline = false;
+                try {
+                    if (typeof getStatusOnlineAkun === 'function') {
+                        isOnline = (getStatusOnlineAkun(id) === 'Online');
+                    }
+                } catch (e) {}
+                if (isOnline) online++;
+
+                // Cek suspend
+                var isSuspend = false;
+                try {
+                    if (typeof isAkunTersuspendGlobal === 'function') {
+                        isSuspend = isAkunTersuspendGlobal(id);
+                    }
+                } catch (e) {}
+                if (isSuspend) suspend++;
+
+                // Saldo coin
+                try {
+                    if (typeof getSaldoDompet === 'function') {
+                        totalCoin += parseFloat(getSaldoDompet(id)) || 0;
+                    } else if (a.r2coin && a.r2coin.balance) {
+                        totalCoin += parseFloat(a.r2coin.balance) || 0;
+                    }
+                } catch (e) {}
+            });
+
+            // Statistik utama
+            _setText('ddTotalAkun', total);
+            _setText('ddTotalOnline', online);
+            _setText('ddTotalSuspend', suspend);
+            _setText('ddTotalCoin', Math.round(totalCoin).toLocaleString('id-ID'));
+
+            // Per role (hanya Aktif)
+            var devCount = akunAll.filter(function(a) { return a.role === 'Developer Properti'; }).length;
+            var dlrCount = akunAll.filter(function(a) { return a.role === 'Dealer dan Showroom'; }).length;
+            var finCount = akunAll.filter(function(a) { return a.role === 'Finance Multifinance'; }).length;
+
+            _setText('ddDevCount', devCount);
+            _setText('ddDlrCount', dlrCount);
+            _setText('ddFinCount', finCount);
+
+            console.log('✅ [REVISI] Statistik DDF: ' + total + ' akun Aktif (DP:' +
+                devCount + ', DLR:' + dlrCount + ', FIN:' + finCount + ')');
+        } catch (e) {
+            console.error('[REVISI] renderStatistikDevDealerFin error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // OVERRIDE 2 — renderGridDevDealerFin (hanya Aktif)
+    // ═══════════════════════════════════════════════════════════
+    window.renderGridDevDealerFin = function() {
+        try {
+            var grid = document.getElementById('ddGridAkun');
+            if (!grid) return;
+
+            // Ambil filter dari HTML
+            var cari         = (document.getElementById('ddCari')?.value || '').toLowerCase().trim();
+            var filterRole   = document.getElementById('ddFilterRole')?.value || '';
+            var filterStatus = document.getElementById('ddFilterStatus')?.value || '';
+
+            // ⚡ REVISI: Ambil HANYA akun DDF yang Aktif
+            var akunAll = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
+                ? dataAkunAktif.filter(function(a) {
+                    return a && ROLES_DDF.indexOf(a.role) !== -1 && isAkunAktif(a);
+                })
+                : [];
+
+            // Filter tambahan
+            var dataFilter = akunAll.filter(function(a) {
+                // Filter role
+                if (filterRole && a.role !== filterRole) return false;
+
+                // Filter status (online/offline/suspend)
+                if (filterStatus) {
+                    var id = a.id || a.idUser;
+                    var isOnline = false;
+                    var isSuspend = false;
+                    try {
+                        if (typeof getStatusOnlineAkun === 'function') {
+                            isOnline = (getStatusOnlineAkun(id) === 'Online');
+                        }
+                        if (typeof isAkunTersuspendGlobal === 'function') {
+                            isSuspend = isAkunTersuspendGlobal(id);
+                        }
+                    } catch (e) {}
+
+                    if (filterStatus === 'online'  && !isOnline) return false;
+                    if (filterStatus === 'offline' && (isOnline || isSuspend)) return false;
+                    if (filterStatus === 'suspend' && !isSuspend) return false;
+                }
+
+                // Filter cari
+                if (cari) {
+                    var s = (a.nama || '') + ' ' + (a.id || a.idUser || '') + ' ' +
+                            (a.username || '') + ' ' + (a.hp || '') + ' ' + (a.email || '');
+                    if (s.toLowerCase().indexOf(cari) === -1) return false;
+                }
+
+                return true;
+            });
+
+            // Sort: online dulu, lalu A-Z
+            dataFilter.sort(function(a, b) {
+                var idA = a.id || a.idUser;
+                var idB = b.id || b.idUser;
+                var sa = 0, sb = 0;
+                try {
+                    if (typeof getStatusOnlineAkun === 'function') {
+                        sa = (getStatusOnlineAkun(idA) === 'Online') ? 0 : 1;
+                        sb = (getStatusOnlineAkun(idB) === 'Online') ? 0 : 1;
+                    }
+                } catch (e) {}
+                if (sa !== sb) return sa - sb;
+                return (a.nama || '').localeCompare(b.nama || '');
+            });
+
+            // Update badge jumlah
+            _setText('ddJumlahAkun', dataFilter.length + ' Akun');
+
+            // ── Kalau kosong ──
+            if (dataFilter.length === 0) {
+                var pesanKosong = 'Belum ada akun Aktif.';
+                if (akunAll.length === 0) {
+                    pesanKosong = 'Belum ada akun Developer Properti, Dealer, atau Finance yang <strong>Aktif</strong>. ' +
+                                  'Akun Pending/Ditolak tidak ditampilkan di sini.';
+                } else {
+                    pesanKosong = 'Tidak ada akun cocok dengan filter.';
+                }
+
+                grid.innerHTML =
+                    '<div class="col-12 text-center text-white py-5">' +
+                        '<i class="fas fa-inbox fa-4x d-block mb-3 opacity-50"></i>' +
+                        '<h5>' + (akunAll.length === 0 ? 'Belum Ada Akun Aktif' : 'Tidak Ada Hasil') + '</h5>' +
+                        '<p class="small">' + pesanKosong + '</p>' +
+                    '</div>';
+                return;
+            }
+
+            // ── Render kartu ──
+            var html = '';
+            dataFilter.forEach(function(a) {
+                html += _renderKartuAktif(a);
+            });
+            grid.innerHTML = html;
+
+            console.log('✅ [REVISI] Grid DDF: ' + dataFilter.length + ' akun Aktif ditampilkan');
+        } catch (e) {
+            console.error('[REVISI] renderGridDevDealerFin error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER — render 1 kartu akun (internal)
+    // ═══════════════════════════════════════════════════════════
+    function _renderKartuAktif(a) {
+        var id = a.id || a.idUser;
+        var warna = WARNA_ROLE[a.role] || '#6C757D';
+        var ikon  = IKON_ROLE[a.role]  || 'fas fa-user';
+
+        var isOnline = false;
+        var isSuspend = false;
+        try {
+            if (typeof getStatusOnlineAkun === 'function') {
+                isOnline = (getStatusOnlineAkun(id) === 'Online');
+            }
+            if (typeof isAkunTersuspendGlobal === 'function') {
+                isSuspend = isAkunTersuspendGlobal(id);
+            }
+        } catch (e) {}
+
+        var saldo = 0;
+        try {
+            if (typeof getSaldoDompet === 'function') {
+                saldo = parseFloat(getSaldoDompet(id)) || 0;
+            }
+        } catch (e) {}
+
+        var foto = '';
+        try {
+            if (typeof getFotoProfilAkun === 'function') {
+                foto = getFotoProfilAkun(id) || '';
+            }
+        } catch (e) {}
+        if (!foto) {
+            var init = (a.nama || 'U').substring(0, 2).toUpperCase();
+            foto = 'https://placehold.co/80x80/' + warna.replace('#', '') +
+                   '/ffffff?text=' + encodeURIComponent(init);
+        }
+
+        var borderWarna = isSuspend ? '#DC3545' : (isOnline ? '#28A745' : '#6C757D');
+
+        var namaEsc = (a.nama || '').replace(/'/g, "\\'");
+        var roleEsc = (a.role || '').replace(/'/g, "\\'");
+        var idEsc   = id.replace(/'/g, "\\'");
+
+        // Badge status (hanya Aktif, jadi fokus Online/Offline/Suspend)
+        var badge = '';
+        if (isSuspend) {
+            badge = '<span class="badge bg-danger"><i class="fas fa-lock me-1"></i>Suspend</span>';
+        } else if (isOnline) {
+            badge = '<span class="badge bg-success"><i class="fas fa-circle me-1" style="font-size:7px;"></i>Online</span>';
+        } else {
+            badge = '<span class="badge bg-secondary"><i class="fas fa-circle me-1" style="font-size:7px;"></i>Offline</span>';
+        }
+
+        // Alamat (potong panjang)
+        var alamatTxt = a.alamat || '-';
+        if (alamatTxt.length > 45) alamatTxt = alamatTxt.substring(0, 45) + '...';
+
+        return '' +
+        '<div class="col-md-4 col-lg-3">' +
+            '<div class="card h-100 shadow-sm border-0 bg-white hover-card" ' +
+                 'style="cursor:pointer;" ' +
+                 'onclick="tampilkanProdukDariDasbor(\'' + idEsc + '\', \'' + roleEsc + '\', \'' + namaEsc + '\')">' +
+                '<div class="card-body text-center p-3">' +
+                    '<img src="' + foto + '" class="rounded-circle mb-2" ' +
+                         'style="width:80px;height:80px;object-fit:cover;' +
+                                'border:3px solid ' + borderWarna + ';">' +
+                    '<h6 class="fw-bold mb-1 text-truncate" title="' + _esc(a.nama) + '">' +
+                        _esc(a.nama) + '</h6>' +
+                    '<small class="text-muted d-block text-truncate">' + _esc(id) + '</small>' +
+
+                    '<div class="mt-2">' +
+                        '<span class="badge" style="background:' + warna + ';">' +
+                            '<i class="' + ikon + ' me-1"></i>' +
+                            _esc(a.role) +
+                        '</span>' +
+                    '</div>' +
+
+                    '<div class="mt-2">' + badge + '</div>' +
+
+                    '<div class="small text-muted mt-2 text-truncate" ' +
+                         'title="' + _esc(a.alamat) + '">' +
+                        '<i class="fas fa-map-marker-alt me-1"></i>' + _esc(alamatTxt) +
+                    '</div>' +
+
+                    '<div class="small text-warning mt-1">' +
+                        '<i class="fas fa-coins me-1"></i>' +
+                        (parseInt(saldo, 10) || 0).toLocaleString('id-ID') + ' Coin' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER — util
+    // ═══════════════════════════════════════════════════════════
+    function _setText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function _esc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // OVERRIDE 3 — getDaftarDevDealerFinGlobal (kalau blok 0.10.66 ada)
+    // ═══════════════════════════════════════════════════════════
+    if (typeof window.getDaftarDevDealerFinGlobal === 'function') {
+        window.getDaftarDevDealerFinGlobal = function() {
+            try {
+                var hasil = [];
+                var seen = {};
+
+                if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+                    dataAkunAktif.forEach(function(a) {
+                        if (!a) return;
+                        if (ROLES_DDF.indexOf(a.role) === -1) return;
+                        if (!isAkunAktif(a)) return;   // ⚡ hanya Aktif
+
+                        var id = a.id || a.idUser;
+                        if (!id || seen[id]) return;
+                        seen[id] = true;
+
+                        hasil.push({
+                            id: id,
+                            idUser: a.idUser || a.id,
+                            nama: a.nama || '-',
+                            role: a.role || '-',
+                            kodeRole: a.kodeRole || '-',
+                            username: a.username || '-',
+                            hp: a.hp || '-',
+                            email: a.email || '-',
+                            alamat: a.alamat || '-',
+                            status: a.statusVerifikasi || 'Aktif',
+                            statusVerifikasi: 'Aktif'
+                        });
+                    });
+                }
+
+                hasil.sort(function(a, b) {
+                    return (a.nama || '').localeCompare(b.nama || '');
+                });
+
+                return hasil;
+            } catch (e) {
+                console.error('[REVISI] getDaftarDevDealerFinGlobal error:', e);
+                return [];
+            }
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // OVERRIDE 4 — cariDDFGlobal (kalau blok 0.10.66 ada)
+    // ═══════════════════════════════════════════════════════════
+    if (typeof window.cariDDFGlobal === 'function') {
+        window.cariDDFGlobal = function(filter) {
+            filter = filter || {};
+            var list = window.getDaftarDevDealerFinGlobal();
+            var cari = (filter.cari || '').toLowerCase().trim();
+            var role = filter.role || '';
+
+            return list.filter(function(a) {
+                if (!a) return false;
+                if (role && a.role !== role) return false;
+                if (cari) {
+                    var s = (a.nama || '') + ' ' + (a.id || '') + ' ' +
+                            (a.username || '') + ' ' + (a.hp || '');
+                    if (s.toLowerCase().indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // AUTO-REFRESH — kalau halaman sedang terbuka, render ulang
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (document.getElementById('ddGridAkun')) {
+                window.renderStatistikDevDealerFin();
+                window.renderGridDevDealerFin();
+                console.log('✅ [REVISI] Auto-refresh grid DDF (Aktif Only)');
+            }
+        } catch (e) {}
+    }, 500);
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ PATCH REVISI 10.66 — Dasbor Dev/Dealer/Fin (Aktif Only) terpasang.');
+    console.log('   • Filter hanya statusVerifikasi === "Aktif"');
+    console.log('   • Akun Pending / Ditolak / Nonaktif tidak ditampilkan');
+    console.log('   • Suspend tetap ditampilkan (karena statusVerifikasi = Aktif, tapi sewa suspend)');
+    console.log('   • Fungsi di-override: renderStatistikDevDealerFin, renderGridDevDealerFin');
+    console.log('   • Bonus: getDaftarDevDealerFinGlobal, cariDDFGlobal (jika ada) juga di-override');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR PATCH REVISI 10.66 — DASBOR DDF (Aktif Only)  ═ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 10.67 — DASBOR JASA (HTML)                           -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div id="dasborJasaAdminContainer" style="display:none;">
