@@ -1251,21 +1251,76 @@ function tampilkanHalamanNotifikasi() {
         };
     }
     if (typeof window.saveDataWilayah !== 'function') {
-        window.saveDataWilayah = function(data) {
+    window.saveDataWilayah = function(data) {
+        try {
+            if (!Array.isArray(data)) return false;
+
+            var json = JSON.stringify(data);
+
+            // ── Coba simpan ──
             try {
-                if (!Array.isArray(data)) return false;
-                localStorage.setItem('dataWilayah', JSON.stringify(data));
-                if (typeof dataWilayah !== 'undefined' && Array.isArray(dataWilayah)) {
-                    dataWilayah.length = 0;
-                    data.forEach(function(w) { dataWilayah.push(w); });
-                }
-                return true;
+                localStorage.setItem('dataWilayah', json);
             } catch (e) {
-                console.error('saveDataWilayah fallback error:', e);
-                return false;
+                // Kalau quota penuh → emergency cleanup otomatis
+                if (e.name === 'QuotaExceededError' ||
+                    (e.message && e.message.indexOf('quota') !== -1)) {
+
+                    console.warn('⚠️ Storage penuh — emergency cleanup…');
+
+                    // 1. Hapus semua backup_*
+                    Object.keys(localStorage).forEach(function(k) {
+                        if (k.indexOf('backup_') === 0) {
+                            try { localStorage.removeItem(k); } catch (e2) {}
+                        }
+                    });
+
+                    // 2. Trim log audit
+                    try {
+                        var la = localStorage.getItem('dataLogAuditSA');
+                        if (la) {
+                            var d = JSON.parse(la);
+                            d.log = (d.log || []).slice(0, 100);
+                            localStorage.setItem('dataLogAuditSA', JSON.stringify(d));
+                        }
+                    } catch (e2) {}
+
+                    // 3. Trim histori aktivitas
+                    try {
+                        var ha = localStorage.getItem('dataHistoriAktivitas');
+                        if (ha) {
+                            var h = JSON.parse(ha);
+                            h = h.slice(0, 100);
+                            localStorage.setItem('dataHistoriAktivitas', JSON.stringify(h));
+                        }
+                    } catch (e2) {}
+
+                    // 4. Coba simpan ulang
+                    try {
+                        localStorage.setItem('dataWilayah', json);
+                        console.log('✅ saveDataWilayah: berhasil setelah cleanup.');
+                    } catch (e3) {
+                        console.error('❌ saveDataWilayah: gagal setelah cleanup:', e3);
+                        return false;
+                    }
+                } else {
+                    console.error('saveDataWilayah fallback error:', e);
+                    return false;
+                }
             }
-        };
-    }
+
+            // Sync ke variabel global
+            if (typeof dataWilayah !== 'undefined' && Array.isArray(dataWilayah)) {
+                dataWilayah.length = 0;
+                data.forEach(function(w) { dataWilayah.push(w); });
+            }
+            return true;
+
+        } catch (e) {
+            console.error('saveDataWilayah fallback error:', e);
+            return false;
+        }
+    };
+}
 
     if (typeof window.loadDataWilayah !== 'function' ||
         typeof window.saveDataWilayah !== 'function') {
@@ -12387,13 +12442,51 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
     // BLOK Fungsi Global Kelola Wilayah R 0.10.20 (2)
     // saveDataWilayah — simpan data wilayah ke localStorage
     // ═══════════════════════════════════════════════════════════
-    window.saveDataWilayah = function(data) {
+        window.saveDataWilayah = function(data) {
         try {
             if (!Array.isArray(data)) {
                 console.warn('saveDataWilayah: data bukan array, dilewati.');
                 return false;
             }
-            localStorage.setItem(KEY_STORAGE, JSON.stringify(data));
+
+            // ── Save dengan fallback anti-quota ──
+            var json = JSON.stringify(data);
+            try {
+                localStorage.setItem(KEY_STORAGE, json);
+            } catch (e) {
+                if (e.name === 'QuotaExceededError' ||
+                    (e.message && e.message.indexOf('quota') !== -1)) {
+
+                    console.warn('⚠️ saveDataWilayah: quota penuh, cleanup otomatis…');
+
+                    // Hapus backup lama
+                    Object.keys(localStorage).forEach(function(k) {
+                        if (k.indexOf('backup_') === 0) {
+                            try { localStorage.removeItem(k); } catch (e2) {}
+                        }
+                    });
+
+                    // Trim log audit
+                    try {
+                        var la = localStorage.getItem('dataLogAuditSA');
+                        if (la) {
+                            var d = JSON.parse(la);
+                            d.log = (d.log || []).slice(0, 100);
+                            localStorage.setItem('dataLogAuditSA', JSON.stringify(d));
+                        }
+                    } catch (e2) {}
+
+                    // Coba simpan ulang
+                    try {
+                        localStorage.setItem(KEY_STORAGE, json);
+                    } catch (e3) {
+                        console.error('❌ saveDataWilayah: gagal setelah cleanup:', e3);
+                        return false;
+                    }
+                } else {
+                    throw e;
+                }
+            }
 
             // Sync ke variabel global
             if (typeof dataWilayah !== 'undefined' && Array.isArray(dataWilayah)) {
@@ -12401,6 +12494,7 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
                 data.forEach(function(w) { dataWilayah.push(w); });
             }
             return true;
+
         } catch (e) {
             console.error('saveDataWilayah error:', e);
             return false;
