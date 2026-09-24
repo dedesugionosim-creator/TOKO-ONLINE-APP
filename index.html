@@ -42901,6 +42901,278 @@ console.log('   E. Helper      : (525) hitungStatistik4RoleBaruGlobal, (526) get
 <!-- ===== AKHIR BLOK R 01.0 (append) ===== -->
 <!-- ============================================================ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- FASE 5 — PATCH INTEGRASI TOGGLE KE FUNGSI INTI               -->
+<!-- Patch: prosesLogin, prosesBelanjaDenganCoin, hfBuatPost,     -->
+<!--        kirimPesan, ajukanTopUp, ajukanPendaftaran            -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function FASE_5_PATCH_INTEGRASI() {
+    if (window._fase5IntegrasiDone) {
+        console.log('ℹ️ FASE 5 sudah terpasang — skip.');
+        return;
+    }
+    window._fase5IntegrasiDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) HELPER GLOBAL: isToggleAktif(path)
+    // ------------------------------------------------------------
+    // path contoh:
+    //   'pembelian.bayarR2Coin'
+    //   'helloFriends.posting'
+    //   'chat.chatAntarUser'
+    //   'ekonomi.topUp'
+    //   'pendaftaran.daftarAkunBaru'
+    //
+    // Return: bool (true = toggle ON, boleh lanjut)
+    //   - Kalau config tidak tersedia → default TRUE (fail-open)
+    //   - Kalau field tidak ditemukan → default TRUE
+    // ═══════════════════════════════════════════════════════════
+    window.isToggleAktif = function(path) {
+        if (!path) return true;
+        try {
+            var cfg = (typeof getKeamananConfigGlobal === 'function')
+                ? getKeamananConfigGlobal()
+                : null;
+            if (!cfg || !cfg.toggles) return true;
+
+            var parts = String(path).split('.');
+            var cur = cfg.toggles;
+            for (var i = 0; i < parts.length; i++) {
+                if (cur == null || typeof cur !== 'object') return true;
+                cur = cur[parts[i]];
+            }
+            if (typeof cur === 'undefined' || cur === null) return true;
+            return !!cur;
+        } catch (e) {
+            console.warn('isToggleAktif error:', e);
+            return true; // fail-open: jangan blokir kalau config rusak
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) HELPER GLOBAL: isRoleBisaLogin(role)
+    // ------------------------------------------------------------
+    // Return bool:
+    //   - SuperAdmin → SELALU true (LOCKED)
+    //   - Role di list → ikut toggle
+    //   - Role tidak ada di list → default true
+    // ═══════════════════════════════════════════════════════════
+    window.isRoleBisaLogin = function(role) {
+        if (!role) return false;
+        if (role === 'SuperAdmin') return true; // 🔒 LOCKED
+
+        try {
+            var cfg = (typeof getKeamananConfigGlobal === 'function')
+                ? getKeamananConfigGlobal()
+                : null;
+            if (!cfg || !cfg.toggles || !cfg.toggles.loginPerRole) return true;
+
+            var val = cfg.toggles.loginPerRole[role];
+            if (typeof val === 'undefined') return true;
+            return !!val;
+        } catch (e) {
+            console.warn('isRoleBisaLogin error:', e);
+            return true;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) HELPER INTERNAL: wrapFungsi()
+    // ------------------------------------------------------------
+    // Bungkus fungsi global dengan pre-check.
+    // preCheck(args) → return:
+    //   { boleh: true }                         → lanjut panggil asli
+    //   { boleh: false, returnValue: <apapun> } → block, return returnValue
+    // ═══════════════════════════════════════════════════════════
+    function wrapFungsi(namaFungsi, preCheck) {
+        var original = window[namaFungsi];
+        if (typeof original !== 'function') {
+            console.warn('⚠️ ' + namaFungsi + ' belum ada — wrap dilewati.');
+            return false;
+        }
+        if (original._fase5Wrapped) {
+            console.log('ℹ️ ' + namaFungsi + ' sudah di-wrap sebelumnya.');
+            return true;
+        }
+
+        var wrapped = function() {
+            var args = Array.prototype.slice.call(arguments);
+            try {
+                var pre = preCheck(args);
+                if (pre && pre.boleh === false) {
+                    // Log blokir
+                    try {
+                        if (typeof catatAktivitasGlobal === 'function') {
+                            var idU = (typeof getIdUserAktif === 'function')
+                                ? getIdUserAktif() : 'SYSTEM';
+                            catatAktivitasGlobal(idU, '🚫 Toggle Block: ' + namaFungsi,
+                                'Kode: ' + (pre.kode || '-'));
+                        }
+                    } catch (e) {}
+
+                    // Return nilai yang sudah disiapkan
+                    if (typeof pre.returnValue !== 'undefined') {
+                        return pre.returnValue;
+                    }
+                    return false;
+                }
+            } catch (e) {
+                console.warn('Pre-check ' + namaFungsi + ' error:', e);
+            }
+            return original.apply(this, args);
+        };
+
+        wrapped._fase5Wrapped = true;
+        wrapped._original = original;
+        window[namaFungsi] = wrapped;
+        console.log('✅ Wrapped: ' + namaFungsi);
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) PATCH 1 — prosesLogin()
+    //     Cek isRoleBisaLogin() SEBELUM izinkan login
+    // ═══════════════════════════════════════════════════════════
+    wrapFungsi('prosesLogin', function(args) {
+        var usernameEl = document.getElementById('usernameLogin');
+        var notifEl    = document.getElementById('notifikasiLogin');
+        if (!usernameEl) return { boleh: true };
+
+        var username = (usernameEl.value || '').trim();
+        if (!username) return { boleh: true }; // biarkan validasi asli
+
+        // Cari user di dataLoginUser
+        var user = null;
+        if (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser)) {
+            user = dataLoginUser.find(function(u) {
+                return (u.username || '').toLowerCase() === username.toLowerCase();
+            });
+        }
+        if (!user) return { boleh: true }; // user tidak ada → biarkan proses asli
+
+        // Cek role toggle
+        if (typeof isRoleBisaLogin === 'function' && !isRoleBisaLogin(user.role)) {
+            if (notifEl) {
+                notifEl.className = 'alert alert-danger';
+                notifEl.innerHTML =
+                    '⛔ <strong>Login DINONAKTIFKAN</strong><br>' +
+                    'Role <strong>' + user.role + '</strong> sedang tidak ' +
+                    'diizinkan login oleh SuperAdmin.<br>' +
+                    '<small class="text-muted">Hubungi customer service untuk info lebih lanjut.</small>';
+                notifEl.classList.remove('d-none');
+            }
+            return { boleh: false, kode: 'LOGIN_ROLE_OFF', returnValue: false };
+        }
+
+        return { boleh: true };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) PATCH 2 — prosesBelanjaDenganCoin()
+    // ═══════════════════════════════════════════════════════════
+    wrapFungsi('prosesBelanjaDenganCoin', function(args) {
+        if (!isToggleAktif('pembelian.bayarR2Coin')) {
+            return {
+                boleh: false,
+                kode: 'TOGGLE_PEMBELIAN_R2COIN_OFF',
+                returnValue: {
+                    sukses: false,
+                    pesan: '⛔ Pembayaran dengan R2Coin sedang DINONAKTIFKAN oleh admin.',
+                    kode: 'TOGGLE_OFF'
+                }
+            };
+        }
+        return { boleh: true };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) PATCH 3 — hfBuatPost()
+    // ═══════════════════════════════════════════════════════════
+    wrapFungsi('hfBuatPost', function(args) {
+        if (!isToggleAktif('helloFriends.posting')) {
+            return {
+                boleh: false,
+                kode: 'TOGGLE_HF_POSTING_OFF',
+                returnValue: {
+                    sukses: false,
+                    pesan: '⛔ Fitur posting HelloFriends sedang DINONAKTIFKAN oleh admin.',
+                    kode: 'TOGGLE_OFF'
+                }
+            };
+        }
+        return { boleh: true };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) PATCH 4 — kirimPesan()
+    // ═══════════════════════════════════════════════════════════
+    wrapFungsi('kirimPesan', function(args) {
+        if (!isToggleAktif('chat.chatAntarUser')) {
+            return {
+                boleh: false,
+                kode: 'TOGGLE_CHAT_OFF',
+                returnValue: {
+                    sukses: false,
+                    pesan: '⛔ Fitur chat sedang DINONAKTIFKAN oleh admin.',
+                    kode: 'TOGGLE_OFF'
+                }
+            };
+        }
+        return { boleh: true };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) PATCH 5 — ajukanTopUp()
+    // ═══════════════════════════════════════════════════════════
+    wrapFungsi('ajukanTopUp', function(args) {
+        if (!isToggleAktif('ekonomi.topUp')) {
+            return {
+                boleh: false,
+                kode: 'TOGGLE_TOPUP_OFF',
+                returnValue: {
+                    sukses: false,
+                    pesan: '⛔ Fitur Top-Up R2Coin sedang DINONAKTIFKAN oleh admin.',
+                    kode: 'TOGGLE_OFF'
+                }
+            };
+        }
+        return { boleh: true };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) PATCH 6 — ajukanPendaftaran()
+    // ═══════════════════════════════════════════════════════════
+    wrapFungsi('ajukanPendaftaran', function(args) {
+        if (!isToggleAktif('pendaftaran.daftarAkunBaru')) {
+            var notif = document.getElementById('notifikasiDaftar');
+            if (notif) {
+                notif.className = 'alert alert-warning';
+                notif.innerHTML = '⛔ Pendaftaran akun baru sedang DINONAKTIFKAN oleh admin.';
+                notif.classList.remove('d-none');
+            }
+            return { boleh: false, kode: 'TOGGLE_PENDAFTARAN_OFF', returnValue: false };
+        }
+        return { boleh: true };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c✅ FASE 5 — Patch Integrasi (6 fungsi) terpasang',
+                'color:#28A745;font-weight:bold;font-size:13px;');
+    console.log('   • prosesLogin              → isRoleBisaLogin()');
+    console.log('   • prosesBelanjaDenganCoin  → pembelian.bayarR2Coin');
+    console.log('   • hfBuatPost               → helloFriends.posting');
+    console.log('   • kirimPesan               → chat.chatAntarUser');
+    console.log('   • ajukanTopUp              → ekonomi.topUp');
+    console.log('   • ajukanPendaftaran        → pendaftaran.daftarAkunBaru');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR FASE 5 — PATCH INTEGRASI                               -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 <script>
 // ============================================================
 // UI HANDLER — Pendapatan Platform
