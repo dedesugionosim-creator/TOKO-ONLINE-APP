@@ -97,9 +97,6 @@
 						border-radius: 8px;
 					}
 					.btn-back-dashboard {
-						display: none !important;
-					}
-					body.role-superadmin .btn-back-dashboard {
 						display: inline-block !important;
 					}
 					.dark-mode .card {
@@ -947,73 +944,196 @@ function cekOtomatisSewaAplikasiGlobal(idUser) {
 </script>
 
 <!-- ============================================================ -->
-<!-- ===== BLOK R 01.0 (26) — prosesLogout ====================== -->
-<!-- ===== Proses logout user =================================== -->
+<!-- ===== BLOK R 01.0 (26) — prosesLogout ===================== -->
+<!-- ===== REVISI LENGKAP ======================================= -->
+<!-- ===== - Clear semua interval (intervalTimer + _saRevisiWaktu) -->
+<!-- ===== - Support mode: manual (confirm) / force (auto-logout) -->
+<!-- ===== - Reset semua state sesi ke default ================== -->
+<!-- ===== - Idempotent: aman dipanggil berkali-kali ============= -->
 <!-- ============================================================ -->
 <script>
 function prosesLogout() {
-    try {
-        if (!confirm('Yakin ingin logout?')) return;
+    return prosesLogoutInternal(false);
+}
 
-        // Clear interval
+// ── Fungsi internal (shared logic) ──
+function prosesLogoutInternal(forceLogout) {
+    try {
+        // ── 1. Konfirmasi (hanya kalau manual) ──
+        if (!forceLogout) {
+            if (!confirm('Yakin ingin logout?')) {
+                return false;
+            }
+        }
+
+        // ── 2. Clear SEMUA interval yang mungkin aktif ──
         if (typeof intervalTimer !== 'undefined' && intervalTimer) {
             clearInterval(intervalTimer);
-            intervalTimer = null;
+            if (typeof window !== 'undefined') window.intervalTimer = null;
         }
         if (typeof window._saRevisiWaktuInterval !== 'undefined' && window._saRevisiWaktuInterval) {
             clearInterval(window._saRevisiWaktuInterval);
             window._saRevisiWaktuInterval = null;
         }
+        if (typeof intervalOtpTimer !== 'undefined' && intervalOtpTimer) {
+            clearInterval(intervalOtpTimer);
+            if (typeof window !== 'undefined') window.intervalOtpTimer = null;
+        }
+        // Bersihkan interval lain yang mungkin
+        if (typeof window._saAutoRefreshInterval !== 'undefined' && window._saAutoRefreshInterval) {
+            clearInterval(window._saAutoRefreshInterval);
+            window._saAutoRefreshInterval = null;
+        }
 
-        // Clear user aktif
-        if (typeof userAktif !== 'undefined') userAktif = {};
-        localStorage.removeItem('userAktif');
+        // ── 3. Hapus sesi user ──
+        try {
+            localStorage.removeItem('userAktif');
+            // Kalau ada session storage, bersihkan juga
+            if (typeof sessionStorage !== 'undefined') {
+                sessionStorage.removeItem('userAktif');
+            }
+        } catch (e) {}
 
-        // Tutup menu & kembali ke login
-        if (typeof tutupMenu === 'function') tutupMenu();
-        if (typeof tampilkanHalaman === 'function') tampilkanHalaman('login');
+        // ── 4. Reset variabel global ──
+        if (typeof userAktif !== 'undefined') {
+            try { userAktif = {}; } catch (e) {}
+        }
+        if (typeof waktuSisa !== 'undefined') {
+            try {
+                waktuSisa = (typeof WAKTU_LOGOUT_OTOMATIS !== 'undefined')
+                    ? WAKTU_LOGOUT_OTOMATIS : 600;
+            } catch (e) {}
+        }
 
-        console.log('✅ Logout berhasil');
+        // ── 5. Reset class body ──
+        try {
+            document.body.classList.remove('role-superadmin');
+            document.body.classList.remove('dark-mode');
+        } catch (e) {}
+
+        // ── 6. Tutup offcanvas menu ──
+        if (typeof tutupMenu === 'function') {
+            try { tutupMenu(); } catch (e) {}
+        }
+
+        // ── 7. Reset konten dasbor ke kosong (biar aman saat login ulang) ──
+        try {
+            var elKonten = document.getElementById('kontenDasbor');
+            if (elKonten) elKonten.innerHTML = '';
+        } catch (e) {}
+
+        // ── 8. Kembali ke halaman login ──
+        if (typeof tampilkanHalaman === 'function') {
+            tampilkanHalaman('login');
+        } else {
+            // Fallback: manual sembunyikan semua page-section + tampilkan login
+            try {
+                document.querySelectorAll('.page-section').forEach(function(el) {
+                    el.classList.remove('active');
+                });
+                var elLogin = document.getElementById('halamanLogin');
+                if (elLogin) elLogin.classList.add('active');
+            } catch (e) {}
+        }
+
+        // ── 9. Reset form login (bersihkan input) ──
+        try {
+            var elUser = document.getElementById('usernameLogin');
+            var elPass = document.getElementById('passwordLogin');
+            var elNotif = document.getElementById('notifikasiLogin');
+            var elRemember = document.getElementById('rememberMe');
+            if (elUser) elUser.value = '';
+            if (elPass) elPass.value = '';
+            if (elNotif) elNotif.classList.add('d-none');
+            // rememberMe sengaja tidak direset (biar user tetap teringat)
+            if (elRemember) {
+                var remembered = localStorage.getItem('rememberMe');
+                elRemember.checked = (remembered === 'true');
+            }
+        } catch (e) {}
+
+        // ── 10. Log ──
+        console.log('✅ Logout berhasil' + (forceLogout ? ' (auto/force)' : ' (manual)'));
+        return true;
+
     } catch (e) {
-        console.error('prosesLogout error:', e);
+        console.error('❌ prosesLogout error:', e);
+        return false;
     }
 }
 </script>
 
 <!-- ============================================================ -->
-<!-- ===== BLOK R 01.0 (27) — mulaiIntervalLogout =============== -->
-<!-- ===== Mulai timer auto-logout ============================== -->
+<!-- ===== BLOK R 01.0 (27) — mulaiIntervalLogout ============== -->
+<!-- ===== REVISI LENGKAP ======================================= -->
+<!-- ===== - Idempotent: clear dulu sebelum set baru ============ -->
+<!-- ===== - Auto-logout panggil prosesLogoutInternal(true) ===== -->
+<!-- ===== - Reset waktuSisa otomatis saat mulai ================ -->
+<!-- ===== - Tidak double timer (panggil ulang aman) ============ -->
 <!-- ============================================================ -->
 <script>
 function mulaiIntervalLogout() {
+    // ── 1. Clear interval lama (idempotent) ──
     if (typeof intervalTimer !== 'undefined' && intervalTimer) {
         clearInterval(intervalTimer);
     }
+    if (typeof window !== 'undefined') {
+        window.intervalTimer = null;
+    }
 
+    // ── 2. Pastikan konstanta ada ──
     if (typeof WAKTU_LOGOUT_OTOMATIS === 'undefined') {
         window.WAKTU_LOGOUT_OTOMATIS = 600;
     }
-    if (typeof waktuSisa === 'undefined') {
+
+    // ── 3. Set waktu sisa ke nilai default ──
+    if (typeof window !== 'undefined') {
         window.waktuSisa = window.WAKTU_LOGOUT_OTOMATIS;
     }
 
+    // ── 4. Mulai interval baru ──
     window.intervalTimer = setInterval(function() {
-        if (typeof userAktif !== 'undefined' && userAktif && userAktif.idUser) {
+        try {
+            // Cek hanya kalau user aktif
+            if (typeof userAktif === 'undefined' || !userAktif || !userAktif.idUser) {
+                // User sudah logout — clear interval sendiri
+                clearInterval(window.intervalTimer);
+                window.intervalTimer = null;
+                return;
+            }
+
             window.waktuSisa--;
+
             if (window.waktuSisa <= 0) {
-                alert('Sesi berakhir karena tidak ada aktivitas.');
-                if (typeof prosesLogout === 'function') {
-                    // Force logout tanpa confirm
+                // ⏹️ Hentikan timer dulu
+                clearInterval(window.intervalTimer);
+                window.intervalTimer = null;
+
+                // ⚠️ Notifikasi ke user
+                alert('Sesi berakhir karena tidak ada aktivitas.\nSilakan login kembali.');
+
+                // 🚪 Panggil logout paksa (tanpa confirm)
+                if (typeof prosesLogoutInternal === 'function') {
+                    prosesLogoutInternal(true);
+                } else if (typeof prosesLogout === 'function') {
+                    // Fallback: panggil prosesLogout biasa, tapi user sudah di-alert
+                    // Jadi kita paksa logout manual tanpa confirm
                     try {
-                        if (typeof intervalTimer !== 'undefined' && intervalTimer) clearInterval(intervalTimer);
-                        userAktif = {};
                         localStorage.removeItem('userAktif');
-                        if (typeof tampilkanHalaman === 'function') tampilkanHalaman('login');
+                        userAktif = {};
+                        if (typeof tampilkanHalaman === 'function') {
+                            tampilkanHalaman('login');
+                        }
                     } catch (e) {}
                 }
             }
+        } catch (e) {
+            console.error('❌ mulaiIntervalLogout tick error:', e);
         }
     }, 1000);
+
+    console.log('⏱️ Auto-logout interval dimulai — timeout: ' +
+        (window.WAKTU_LOGOUT_OTOMATIS / 60) + ' menit');
 }
 </script>
 
@@ -4382,187 +4502,6 @@ function tampilkanToastPersetujuan(pesan, tipe) {
 </script>
 
 <!-- ============================================================ -->
-<!-- ===== BLOK Fungsi Global Daftar Akun Baru R 0.10.5 (1) ==== -->
-<!-- ===== generateKodeUnik (BARU — dependensi) ================= -->
-<!-- ============================================================ -->
-<script>
-function generateKodeUnik(kodeRole) {
-    if (!kodeRole) return 'XXX-' + Date.now();
-    var tahun   = new Date().getFullYear();
-    var random  = Math.floor(Math.random() * 9000) + 1000;
-    var urut    = String(Date.now()).slice(-4);
-    return 'ID_TK2R_' + kodeRole + '-' + tahun + urut + random;
-}
-</script>
-
-<!-- ============================================================ -->
-<!-- ===== BLOK Fungsi Global Daftar Akun Baru R 0.10.5 (2) ==== -->
-<!-- ===== getDataIdUser (BARU — dependensi) ==================== -->
-<!-- ============================================================ -->
-<script>
-function getDataIdUser(idUser) {
-    if (!idUser) return null;
-
-    // Cari di dataAkunAktif
-    if (Array.isArray(dataAkunAktif)) {
-        var found = dataAkunAktif.find(function(a) {
-            return a && (a.id === idUser || a.idUser === idUser);
-        });
-        if (found) return found;
-    }
-
-    // Cari di dataLoginUser
-    if (Array.isArray(dataLoginUser)) {
-        var found2 = dataLoginUser.find(function(u) {
-            return u && (u.idUser === idUser || u.id === idUser);
-        });
-        if (found2) return found2;
-    }
-
-    return null;
-}
-</script>
-
-<!-- ============================================================ -->
-<!-- ===== BLOK Fungsi Global Daftar Akun Baru R 0.10.5 (3) ==== -->
-<!-- ===== cekDuplikatAkunGlobal (BARU — dependensi) ============ -->
-<!-- ============================================================ -->
-<script>
-function cekDuplikatAkunGlobal(data) {
-    try {
-        if (!data) return { sukses: true };
-
-        var username = (data.username || '').trim().toLowerCase();
-        var email    = (data.email || '').trim().toLowerCase();
-        var hp       = (data.hp || '').trim();
-        var nik      = (data.nik || '').trim();
-
-        // Gabung semua akun
-        var semuaAkun = [];
-        if (Array.isArray(dataAkunAktif))  semuaAkun = semuaAkun.concat(dataAkunAktif);
-        if (Array.isArray(dataLoginUser))  semuaAkun = semuaAkun.concat(dataLoginUser);
-
-        // Cek username
-        if (username) {
-            var dupUser = semuaAkun.find(function(a) {
-                return a && a.username && a.username.toLowerCase() === username;
-            });
-            if (dupUser) {
-                return { sukses: false, field: 'username',
-                    pesan: 'Username "' + data.username + '" sudah digunakan. Silakan pilih username lain.' };
-            }
-        }
-
-        // Cek email
-        if (email) {
-            var dupEmail = semuaAkun.find(function(a) {
-                return a && a.email && a.email.toLowerCase() === email;
-            });
-            if (dupEmail) {
-                return { sukses: false, field: 'email',
-                    pesan: 'Email "' + data.email + '" sudah terdaftar. Gunakan email lain.' };
-            }
-        }
-
-        // Cek HP
-        if (hp) {
-            var hpBersih = hp.replace(/\D/g, '');
-            var dupHp = semuaAkun.find(function(a) {
-                if (!a || !a.hp) return false;
-                return a.hp.replace(/\D/g, '') === hpBersih;
-            });
-            if (dupHp) {
-                return { sukses: false, field: 'hp',
-                    pesan: 'Nomor HP "' + data.hp + '" sudah terdaftar. Gunakan nomor lain.' };
-            }
-        }
-
-        // Cek NIK
-        if (nik) {
-            var dupNik = semuaAkun.find(function(a) {
-                return a && (a.nik_ktp === nik || a.nikKtp === nik);
-            });
-            if (dupNik) {
-                return { sukses: false, field: 'nik',
-                    pesan: 'NIK KTP "' + data.nik + '" sudah terdaftar. Gunakan NIK lain.' };
-            }
-        }
-
-        return { sukses: true };
-    } catch (e) {
-        console.error('cekDuplikatAkunGlobal error:', e);
-        return { sukses: true };
-    }
-}
-</script>
-
-<!-- ============================================================ -->
-<!-- ===== BLOK Fungsi Global Daftar Akun Baru R 0.10.5 (4) ==== -->
-<!-- ===== simpanDataKeLocalStorage (BARU — dependensi) ========= -->
-<!-- ============================================================ -->
-<script>
-function simpanDataKeLocalStorage() {
-    try {
-        if (Array.isArray(dataAkunAktif)) {
-            localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
-        }
-        if (Array.isArray(dataLoginUser)) {
-            localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
-        }
-        if (Array.isArray(dataPending)) {
-            localStorage.setItem('dataPending', JSON.stringify(dataPending));
-        }
-        if (Array.isArray(dataPengajuanBukaAkun)) {
-            localStorage.setItem('dataPengajuanBukaAkun', JSON.stringify(dataPengajuanBukaAkun));
-        }
-    } catch (e) {
-        console.error('simpanDataKeLocalStorage error:', e);
-    }
-}
-</script>
-
-<!-- ============================================================ -->
-<!-- ===== BLOK Fungsi Global Daftar Akun Baru R 0.10.5 (5) ==== -->
-<!-- ===== catatAktivitasGlobal (BARU — dependensi) ============= -->
-<!-- ============================================================ -->
-<script>
-function catatAktivitasGlobal(idUser, aksi, detail) {
-    try {
-        var riwayat = [];
-        try {
-            var s = localStorage.getItem('dataHistoriAktivitas');
-            riwayat = s ? JSON.parse(s) : [];
-            if (!Array.isArray(riwayat)) riwayat = [];
-        } catch (e) { riwayat = []; }
-
-        var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
-
-        var entry = {
-            id: 'LOG-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-            idUser: idUser || '-',
-            namaUser: user ? (user.nama || '-') : '-',
-            roleUser: user ? (user.role || '-') : '-',
-            aksi: aksi || '-',
-            detail: detail || '-',
-            waktu: new Date().toISOString()
-        };
-
-        riwayat.unshift(entry);
-        if (riwayat.length > 500) riwayat = riwayat.slice(0, 500);
-
-        localStorage.setItem('dataHistoriAktivitas', JSON.stringify(riwayat));
-
-        if (Array.isArray(dataHistoriAktivitas)) {
-            dataHistoriAktivitas.unshift(entry);
-            if (dataHistoriAktivitas.length > 500) dataHistoriAktivitas.pop();
-        }
-    } catch (e) {
-        console.error('catatAktivitasGlobal error:', e);
-    }
-}
-</script>
-
-<!-- ============================================================ -->
 <!-- ===== BLOK Fungsi Global Daftar Akun Baru R 0.10.5 (6) ==== -->
 <!-- ===== tampilkanFormBuatAkun ================================ -->
 <!-- ============================================================ -->
@@ -6660,51 +6599,6 @@ function tampilkanNotifDaftar(pesan, tipe) {
 <!-- ===== BLOK R 10.1 DASBOR SUPERADMIN (JS V2) ======= -->
 <!-- ============================================================ -->
 <script>
-(function BLOK_R_10_1_REVISI() {
-    // ── Guard idempotency ──
-    if (window._blokR101RevisiDone) {
-        console.log('ℹ️ BLOK R 10.1 Revisi sudah terpasang — dilewati.');
-        return;
-    }
-    window._blokR101RevisiDone = true;
-
-    // ═══════════════════════════════════════════════════════════
-    // HELPER INTERNAL
-    // ═══════════════════════════════════════════════════════════
-    function saEsc(s) {
-        var d = document.createElement('div');
-        d.textContent = s == null ? '' : String(s);
-        return d.innerHTML;
-    }
-
-    function saRupiah(n) {
-        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
-    }
-
-    function saSetText(id, val) {
-        var el = document.getElementById(id);
-        if (el) el.textContent = val;
-    }
-
-    function saWarnaRole(role) {
-        var map = {
-            'Toko':               '#FF8C00',
-            'Pedagang Pasar':     '#28A745',
-            'Pedagang Makanan':   '#FFC107',
-            'COD Seller':         '#17A2B8',
-            'Ojek':               '#DC3545',
-            'Grosir':             '#17A2B8',
-            'Distributor':        '#6F42C1',
-            'Customer':           '#6C757D',
-            'Kasir':              '#198754',
-            'Staf Admin':         '#0D6EFD',
-            'Developer Properti': '#8B4513',
-            'Dealer dan Showroom':'#003366',
-            'Finance Multifinance':'#046A38',
-            'Jasa':               '#FF5500'
-        };
-        return map[role] || '#6C757D';
-    }
 
     // ═══════════════════════════════════════════════════════════
     // BLOK R 10.1 (1) — TAMPILKAN DASBOR SA
@@ -6756,11 +6650,6 @@ function tampilkanNotifDaftar(pesan, tipe) {
 
             saSetText('saNamaProfil', user.nama || 'SuperAdmin');
             saSetText('saIdProfil', user.idUser || 'ID_TK2R_SA-0001');
-
-            // Jam real-time
-            updateWaktu();
-            if (window._saRevisiWaktuInterval) clearInterval(window._saRevisiWaktuInterval);
-            window._saRevisiWaktuInterval = setInterval(updateWaktu, 1000);
 
             // Render blok (delay kecil biar DOM siap)
             setTimeout(function() {
@@ -7793,13 +7682,20 @@ function tampilkanNotifDaftar(pesan, tipe) {
 //   - Tambah catatAktivitasGlobal di upload & hapus surat
 //   - Tambah guard null di semua akses userAktif
 // ------------------------------------------------------------
-// Fungsi global yang dipakai:
-//   - getIdUserAktif()           -> BLOK R 01.0 (73)
+// Fungsi global yang dipakai (mengacu BLOK R 01.0 REVISI):
 //   - generateKodeUnik()         -> BLOK R 01.0 (1)
-//   - catatAktivitasGlobal()     -> BLOK R 01.0 (21)
-//   - tutupMenu()                -> BLOK R 01.0 (5)
-//   - kembaliKeDasbor()          -> BLOK R 01.0 (54)
-//   - tampilkanPlaceholderMenu() -> BLOK R 01.1
+//   - getIdUserAktif()           -> BLOK R 01.0 (2)
+//   - getDataIdUser()            -> BLOK R 01.0 (3)
+//   - getFotoProfilAkun()        -> BLOK R 01.0 (4)
+//   - tutupMenu()                -> BLOK R 01.0 (6)
+//   - kembaliKeDasbor()          -> BLOK R 01.0 (7)
+//   - tampilkanPlaceholderMenu() -> BLOK R 01.0 (8)
+//   - catatAktivitasGlobal()     -> BLOK R 01.0 (12)
+// ------------------------------------------------------------
+// Variabel global yang dipakai:
+//   - userAktif                  -> BLOK Deklarasi Variabel Global
+//   - kontenAsliDasbor           -> BLOK Deklarasi Variabel Global
+//   - dataSuratPerusahaan        -> BLOK Fungsi Global PROFIL R 0.10.2 (1)
 // ============================================================
 
 // Variabel global lokal blok ini
@@ -9342,17 +9238,6 @@ function gantiPasswordSA(event) {
         </div>
     </div>
 </div>
-
-<div class="row mb-4 g-3">
-    <div class="col-md-3 col-6">
-        <div class="card border-0 shadow-sm bg-white h-100">
-            <div class="card-body text-center py-3">
-                <i class="fas fa-hourglass-half fa-2x mb-2 text-warning"></i>
-                <h4 class="fw-bold mb-0" id="statPersetujuanPending">0</h4>
-                <small class="text-muted">Pending</small>
-            </div>
-        </div>
-    </div>
     <div class="col-md-3 col-6">
         <div class="card border-0 shadow-sm bg-white h-100">
             <div class="card-body text-center py-3">
@@ -10637,7 +10522,7 @@ function gantiPasswordSA(event) {
 <!-- ===== AKHIR BLOK R 10.5 (HTML) ===== -->
 <!-- ============================================================ -->
 
-			<!-- ============================================================ -->
+<!-- ============================================================ -->
 <!-- ===== BLOK R 10.5.1 – UI HANDLER ===== -->
 <!-- ============================================================ -->
 <script>
@@ -13180,41 +13065,7 @@ console.log('✅ BLOK 9.3.2(3) — Handler komunikasi, konten & bantuan siap.');
 <!-- ============================================================ -->
 <script>
 function tampilkanPlaceholderMenu(namaMenu, kodeBlok) {
-    try {
-        if (typeof tutupMenu === 'function') tutupMenu();
-
-        var konten = document.getElementById('kontenDasbor');
-        if (!konten) {
-            console.error('❌ tampilkanPlaceholderMenu: #kontenDasbor tidak ada');
-            return;
-        }
-
-        konten.innerHTML =
-            '<div class="container-fluid px-4 py-4">' +
-                '<div class="d-flex justify-content-between align-items-center mb-4">' +
-                    '<h4 class="fw-bold text-white mb-0">' +
-                        '<i class="fas fa-tools me-2"></i>' + (namaMenu || 'Menu') +
-                    '</h4>' +
-                    '<button class="btn btn-outline-light" onclick="kembaliKeDasbor()">' +
-                        '<i class="fas fa-arrow-left me-1"></i> Kembali' +
-                    '</button>' +
-                '</div>' +
-                '<div class="card border-0 shadow">' +
-                    '<div class="card-body text-center py-5">' +
-                        '<i class="fas fa-hard-hat fa-4x mb-3" style="color:#FF8C00;"></i>' +
-                        '<h5 class="fw-bold mb-2">Menu Belum Tersedia</h5>' +
-                        '<p class="text-muted mb-3">' +
-                            'Fitur <strong>"' + (namaMenu || 'ini') + '"</strong> sedang dalam pengembangan.' +
-                        '</p>' +
-                        '<span class="badge bg-secondary">Blok: ' + (kodeBlok || '-') + '</span>' +
-                    '</div>' +
-                '</div>' +
-            '</div>';
-
-        console.log('📋 Placeholder: ' + namaMenu + ' (Blok ' + kodeBlok + ')');
-    } catch (e) {
-        console.error('❌ tampilkanPlaceholderMenu error:', e);
-    }
+    ...
 }
 </script>
 <!-- ============================================================ -->
