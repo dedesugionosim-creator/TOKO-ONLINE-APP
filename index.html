@@ -23660,6 +23660,772 @@ function exportIntervensiCSVGlobal() {
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 0.10.47-UI — FUNGSI UI VERIFIKASI COIN ═══════ -->
+<!-- ═══ Render Tabel Top-Up & Withdraw + Aksi Setujui/Tolak ═══ -->
+<!-- ═══ Wajib ada SETELAH Blok 0.10.47 (data layer) ═══════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_UI_VERIFIKASI_COIN_R01047UI() {
+    // ── Guard idempotency ──
+    if (window._blokR01047UIDone) {
+        console.log('ℹ️ BLOK Fungsi UI Verifikasi Coin R 0.10.47-UI sudah terpasang.');
+        return;
+    }
+    window._blokR01047UIDone = true;
+
+    // ── Pagination state ──
+    window.currentPageTopUp    = window.currentPageTopUp    || 1;
+    window.currentPageWithdraw = window.currentPageWithdraw || 1;
+    window.itemsPerPageVerifCoin = 20;
+
+    // ── Escape helper ──
+    function vcEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ── Format Rupiah ──
+    function vcRupiah(n) {
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+
+    // ── Format tanggal ──
+    function vcTgl(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: '2-digit',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            });
+        } catch (e) { return '-'; }
+    }
+
+    // ── Format metode pembayaran ──
+    function vcMetode(metode) {
+        if (!metode) return '-';
+        var map = {
+            'transfer_bca':     '🏦 BCA',
+            'transfer_mandiri': '🏦 Mandiri',
+            'transfer_bri':     '🏦 BRI',
+            'transfer_bni':     '🏦 BNI',
+            'dana':             '💳 DANA',
+            'ovo':              '💳 OVO',
+            'gopay':            '💳 GoPay',
+            'shopeepay':        '💳 ShopeePay'
+        };
+        return map[metode] || ('💳 ' + metode);
+    }
+
+    // ── Format rekening tujuan ──
+    function vcRekening(rek) {
+        if (!rek) return '<span class="text-muted">-</span>';
+        if (typeof rek === 'string') return vcEsc(rek);
+        return '<small>' +
+            '<strong>' + vcEsc(rek.bank || '-') + '</strong><br>' +
+            vcEsc(rek.nomor || '-') + '<br>' +
+            '<span class="text-muted">a/n ' + vcEsc(rek.atasNama || '-') + '</span>' +
+        '</small>';
+    }
+
+    // ── Badge status ──
+    function vcStatusBadge(status) {
+        var map = {
+            'Menunggu':  'bg-warning text-dark',
+            'Lunas':     'bg-success',
+            'Disetujui': 'bg-success',
+            'Ditolak':   'bg-danger'
+        };
+        var warna = map[status] || 'bg-secondary';
+        return '<span class="badge ' + warna + '">' + vcEsc(status || '-') + '</span>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) RENDER TABEL VERIFIKASI TOP-UP ⭐
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelVerifikasiTopUp = function(hal) {
+        try {
+            window.currentPageTopUp = hal || 1;
+
+            var tbody = document.getElementById('tabelTopUpSemua');
+            if (!tbody) return;
+
+            // Ambil data
+            var allData = (typeof loadTopUpHistoryGlobal === 'function')
+                ? loadTopUpHistoryGlobal() : [];
+
+            // Filter
+            var filterRole    = (document.getElementById('filterRoleVerifikasiTopUp')?.value) || '';
+            var filterStatus  = (document.getElementById('filterStatusVerifikasiTopUp')?.value) || '';
+            var filterTanggal = (document.getElementById('filterTanggalVerifikasiTopUp')?.value) || '';
+
+            var dataFilter = allData.filter(function(t) {
+                if (!t) return false;
+                if (filterRole && t.role !== filterRole) return false;
+                if (filterStatus && t.status !== filterStatus) return false;
+                if (filterTanggal) {
+                    var tgl = (t.tanggal || t.createdAt || '').substring(0, 10);
+                    if (tgl !== filterTanggal) return false;
+                }
+                return true;
+            });
+
+            // Sort terbaru dulu
+            dataFilter.sort(function(a, b) {
+                return new Date(b.createdAt || b.tanggal || 0) -
+                       new Date(a.createdAt || a.tanggal || 0);
+            });
+
+            // Update badge total
+            var elTotal = document.getElementById('totalTopUpSemua');
+            if (elTotal) elTotal.textContent = dataFilter.length;
+
+            var elInfo = document.getElementById('infoJumlahVerifikasiTopUp');
+            if (elInfo) elInfo.textContent = dataFilter.length + ' Data';
+
+            // Update tab badge
+            var elBadgeTab = document.getElementById('badgeTabTopUp');
+            if (elBadgeTab) elBadgeTab.textContent = allData.length;
+
+            if (dataFilter.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Belum ada pengajuan top-up.</td></tr>';
+                return;
+            }
+
+            // Pagination
+            var perPage = window.itemsPerPageVerifCoin;
+            var totalPages = Math.ceil(dataFilter.length / perPage) || 1;
+            if (window.currentPageTopUp > totalPages) window.currentPageTopUp = totalPages;
+            if (window.currentPageTopUp < 1) window.currentPageTopUp = 1;
+
+            var start = (window.currentPageTopUp - 1) * perPage;
+            var dataPaged = dataFilter.slice(start, start + perPage);
+
+            // Render
+            var html = '';
+            dataPaged.forEach(function(t, index) {
+                var realIndex = allData.indexOf(t); // index asli untuk aksi
+                var idEsc = (t.id || '').replace(/'/g, "\\'");
+                var status = t.status || 'Menunggu';
+
+                // Kolom user
+                var userHtml = '<strong>' + vcEsc(t.namaPembeli || '-') + '</strong><br>' +
+                    '<small class="text-muted">' + vcEsc(t.idUser || '-') + '</small>';
+
+                // Kolom role
+                var roleHtml = '<span class="badge bg-secondary">' +
+                    vcEsc(t.role || '-') + '</span>';
+
+                // Kolom coin
+                var coinHtml = '<strong class="text-success">+' +
+                    (parseInt(t.jumlahKoin, 10) || 0).toLocaleString('id-ID') +
+                    '</strong>';
+
+                // Kolom rupiah
+                var rpHtml = vcRupiah(t.totalRupiah);
+
+                // Kolom metode
+                var metodeHtml = vcMetode(t.metode);
+
+                // Kolom rekening (kalau ada)
+                var rekHtml = '-';
+                if (t.rekeningTujuan) {
+                    rekHtml = vcRekening(t.rekeningTujuan);
+                } else if (t.rekeningTujuanTeks) {
+                    rekHtml = '<small>' + vcEsc(t.rekeningTujuanTeks) + '</small>';
+                }
+
+                // Kolom bukti (kalau ada)
+                var buktiHtml = '<span class="text-muted">-</span>';
+                if (t.buktiTransfer) {
+                    buktiHtml = '<button class="btn btn-sm btn-outline-info" ' +
+                        'onclick="vcLihatBukti(\'' + idEsc + '\', \'topup\')" title="Lihat Bukti">' +
+                        '<i class="fas fa-image"></i></button>';
+                }
+
+                // Kolom aksi
+                var aksiHtml = '';
+                if (status === 'Menunggu') {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-success me-1" ' +
+                                'onclick="setujuiTopUpAll(' + realIndex + ')" title="Setujui">' +
+                            '<i class="fas fa-check"></i></button>' +
+                        '<button class="btn btn-sm btn-danger" ' +
+                                'onclick="tolakTopUpAll(' + realIndex + ')" title="Tolak">' +
+                            '<i class="fas fa-times"></i></button>';
+                } else {
+                    aksiHtml = '<span class="text-muted small">' + vcEsc(status) + '</span>';
+                }
+
+                var rowClass = status === 'Menunggu' ? 'table-warning' : '';
+
+                html += '<tr class="' + rowClass + '">' +
+                    '<td><small>' + vcTgl(t.createdAt || t.tanggal) + '</small></td>' +
+                    '<td>' + userHtml + '</td>' +
+                    '<td>' + roleHtml + '</td>' +
+                    '<td class="text-end">' + coinHtml + '</td>' +
+                    '<td class="text-end">' + rpHtml + '</td>' +
+                    '<td>' + metodeHtml + '</td>' +
+                    '<td>' + rekHtml + '</td>' +
+                    '<td class="text-center">' + buktiHtml + '</td>' +
+                    '<td>' + vcStatusBadge(status) + '</td>' +
+                    '<td>' + aksiHtml + '</td>' +
+                '</tr>';
+            });
+
+            tbody.innerHTML = html;
+
+            // Update info pagination (kalau ada di HTML)
+            console.log('✅ renderTabelVerifikasiTopUp: ' + dataFilter.length + ' data, hal ' + window.currentPageTopUp + '/' + totalPages);
+
+        } catch (e) {
+            console.error('renderTabelVerifikasiTopUp error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) RENDER TABEL VERIFIKASI WITHDRAW ⭐
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelVerifikasiWithdraw = function(hal) {
+        try {
+            window.currentPageWithdraw = hal || 1;
+
+            var tbody = document.getElementById('tabelWithdrawSemua');
+            if (!tbody) return;
+
+            // Ambil data
+            var allData = (typeof loadWithdrawalRequestsGlobal === 'function')
+                ? loadWithdrawalRequestsGlobal() : [];
+
+            // Filter
+            var filterRole    = (document.getElementById('filterRoleVerifikasiWithdraw')?.value) || '';
+            var filterStatus  = (document.getElementById('filterStatusVerifikasiWithdraw')?.value) || '';
+            var filterTanggal = (document.getElementById('filterTanggalVerifikasiWithdraw')?.value) || '';
+
+            var dataFilter = allData.filter(function(w) {
+                if (!w) return false;
+                if (filterRole && w.role !== filterRole) return false;
+                if (filterStatus && w.status !== filterStatus) return false;
+                if (filterTanggal) {
+                    var tgl = (w.tanggal || w.createdAt || '').substring(0, 10);
+                    if (tgl !== filterTanggal) return false;
+                }
+                return true;
+            });
+
+            // Sort terbaru dulu
+            dataFilter.sort(function(a, b) {
+                return new Date(b.createdAt || b.tanggal || 0) -
+                       new Date(a.createdAt || a.tanggal || 0);
+            });
+
+            // Update badge total
+            var elTotal = document.getElementById('totalWithdrawSemua');
+            if (elTotal) elTotal.textContent = dataFilter.length;
+
+            var elInfo = document.getElementById('infoJumlahVerifikasiWithdraw');
+            if (elInfo) elInfo.textContent = dataFilter.length + ' Data';
+
+            // Update tab badge
+            var elBadgeTab = document.getElementById('badgeTabWithdraw');
+            if (elBadgeTab) elBadgeTab.textContent = allData.length;
+
+            if (dataFilter.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Belum ada pengajuan withdraw.</td></tr>';
+                return;
+            }
+
+            // Pagination
+            var perPage = window.itemsPerPageVerifCoin;
+            var totalPages = Math.ceil(dataFilter.length / perPage) || 1;
+            if (window.currentPageWithdraw > totalPages) window.currentPageWithdraw = totalPages;
+            if (window.currentPageWithdraw < 1) window.currentPageWithdraw = 1;
+
+            var start = (window.currentPageWithdraw - 1) * perPage;
+            var dataPaged = dataFilter.slice(start, start + perPage);
+
+            // Render
+            var html = '';
+            dataPaged.forEach(function(w, index) {
+                var realIndex = allData.indexOf(w); // index asli untuk aksi
+                var idEsc = (w.id || '').replace(/'/g, "\\'");
+                var status = w.status || 'Menunggu';
+
+                // Kolom user
+                var userHtml = '<strong>' + vcEsc(w.namaPemohon || '-') + '</strong><br>' +
+                    '<small class="text-muted">' + vcEsc(w.idUser || '-') + '</small>';
+
+                // Kolom role
+                var roleHtml = '<span class="badge bg-secondary">' +
+                    vcEsc(w.role || '-') + '</span>';
+
+                // Kolom coin (debit / minus)
+                var coinHtml = '<strong class="text-danger">-' +
+                    (parseInt(w.jumlahKoin, 10) || 0).toLocaleString('id-ID') +
+                    '</strong>';
+
+                // Kolom total rupiah
+                var rpHtml = vcRupiah(w.totalRupiah);
+
+                // Kolom diterima (setelah fee)
+                var diterimaHtml = '<strong class="text-success">' +
+                    vcRupiah(w.diterima || w.totalRupiah) + '</strong>';
+
+                // Kolom rekening
+                var rekHtml = vcRekening(w.rekeningTujuan);
+
+                // Kolom aksi
+                var aksiHtml = '';
+                if (status === 'Menunggu') {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-success me-1" ' +
+                                'onclick="setujuiWithdrawAll(' + realIndex + ')" title="Setujui">' +
+                            '<i class="fas fa-check"></i></button>' +
+                        '<button class="btn btn-sm btn-danger" ' +
+                                'onclick="tolakWithdrawAll(' + realIndex + ')" title="Tolak">' +
+                            '<i class="fas fa-times"></i></button>';
+                } else {
+                    aksiHtml = '<span class="text-muted small">' + vcEsc(status) + '</span>';
+                }
+
+                var rowClass = status === 'Menunggu' ? 'table-warning' : '';
+
+                html += '<tr class="' + rowClass + '">' +
+                    '<td><small>' + vcTgl(w.createdAt || w.tanggal) + '</small></td>' +
+                    '<td>' + userHtml + '</td>' +
+                    '<td>' + roleHtml + '</td>' +
+                    '<td class="text-end">' + coinHtml + '</td>' +
+                    '<td class="text-end">' + rpHtml + '</td>' +
+                    '<td class="text-end">' + diterimaHtml + '</td>' +
+                    '<td>' + rekHtml + '</td>' +
+                    '<td>' + vcStatusBadge(status) + '</td>' +
+                    '<td>' + aksiHtml + '</td>' +
+                '</tr>';
+            });
+
+            tbody.innerHTML = html;
+
+            console.log('✅ renderTabelVerifikasiWithdraw: ' + dataFilter.length + ' data, hal ' + window.currentPageWithdraw + '/' + totalPages);
+
+        } catch (e) {
+            console.error('renderTabelVerifikasiWithdraw error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) AKSI: SETUJUI TOP-UP ⭐
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiTopUpAll = function(index) {
+        try {
+            var data = (typeof loadTopUpHistoryGlobal === 'function')
+                ? loadTopUpHistoryGlobal() : [];
+            var item = data[index];
+            if (!item) { alert('❌ Data tidak ditemukan.'); return; }
+
+            if (item.status === 'Lunas') {
+                alert('⚠️ Top-up ini sudah pernah disetujui.');
+                return;
+            }
+
+            var konfirmasi =
+                '✅ Setujui Top-Up ini?\n\n' +
+                'User    : ' + (item.namaPembeli || '-') + '\n' +
+                'ID      : ' + (item.idUser || '-') + '\n' +
+                'Coin    : +' + (item.jumlahKoin || 0) + ' R2Coin\n' +
+                'Rupiah  : ' + vcRupiah(item.totalRupiah) + '\n' +
+                'Metode  : ' + (item.metode || '-') + '\n\n' +
+                'Saldo coin user akan otomatis ditambahkan.';
+
+            if (!confirm(konfirmasi)) return;
+
+            var hasil;
+            if (typeof prosesSetujuiTopUpGlobal === 'function') {
+                hasil = prosesSetujuiTopUpGlobal(item.id, 'Disetujui via menu Verifikasi Top-Up');
+            } else {
+                // Fallback: update langsung
+                var update = (typeof updateStatusTopUpGlobal === 'function')
+                    ? updateStatusTopUpGlobal(item.id, 'Lunas', 'Disetujui SA')
+                    : { sukses: false, pesan: 'Fungsi update tidak tersedia.' };
+                if (update.sukses) {
+                    // Tambah saldo manual
+                    var jumlah = parseInt(item.jumlahKoin, 10) || 0;
+                    if (typeof tambahTransaksiDompet === 'function') {
+                        tambahTransaksiDompet(item.idUser, {
+                            tipe: 'credit',
+                            jumlah: jumlah,
+                            keterangan: 'Top-Up disetujui (ID: ' + item.id + ')',
+                            refId: item.id,
+                            kategori: 'topup'
+                        });
+                    }
+                }
+                hasil = update;
+            }
+
+            if (hasil.sukses) {
+                // Refresh
+                if (typeof renderTabelVerifikasiTopUp === 'function') {
+                    renderTabelVerifikasiTopUp(window.currentPageTopUp);
+                }
+                if (typeof renderStatistikVerifikasiCoinSA === 'function') {
+                    renderStatistikVerifikasiCoinSA();
+                }
+                if (typeof renderBreakdownPerRoleVerifikasiCoin === 'function') {
+                    renderBreakdownPerRoleVerifikasiCoin();
+                }
+                // Refresh log coin (kalau ada)
+                if (typeof refreshLogAktivitasCoinGlobal === 'function') {
+                    try { refreshLogAktivitasCoinGlobal(); } catch (e) {}
+                }
+
+                alert('✅ Top-Up berhasil disetujui!\n\nSaldo ' +
+                    (item.namaPembeli || item.idUser) + ' bertambah +' +
+                    (item.jumlahKoin || 0) + ' R2Coin.');
+            } else {
+                alert('❌ ' + (hasil.pesan || 'Gagal menyetujui.'));
+            }
+        } catch (e) {
+            console.error('setujuiTopUpAll error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) AKSI: TOLAK TOP-UP ⭐
+    // ═══════════════════════════════════════════════════════════
+    window.tolakTopUpAll = function(index) {
+        try {
+            var data = (typeof loadTopUpHistoryGlobal === 'function')
+                ? loadTopUpHistoryGlobal() : [];
+            var item = data[index];
+            if (!item) { alert('❌ Data tidak ditemukan.'); return; }
+
+            if (item.status !== 'Menunggu') {
+                alert('⚠️ Top-up ini sudah diproses sebelumnya.');
+                return;
+            }
+
+            var alasan = prompt(
+                '❌ Tolak Top-Up ini?\n\n' +
+                'User: ' + (item.namaPembeli || '-') + '\n' +
+                'Coin: ' + (item.jumlahKoin || 0) + '\n\n' +
+                'Masukkan alasan penolakan (minimal 5 karakter):',
+                'Bukti transfer tidak valid'
+            );
+            if (alasan === null) return; // user cancel
+            if (!alasan || alasan.trim().length < 5) {
+                alert('⚠️ Alasan wajib diisi minimal 5 karakter.');
+                return;
+            }
+
+            var hasil;
+            if (typeof prosesTolakTopUpGlobal === 'function') {
+                hasil = prosesTolakTopUpGlobal(item.id, alasan.trim());
+            } else {
+                hasil = (typeof updateStatusTopUpGlobal === 'function')
+                    ? updateStatusTopUpGlobal(item.id, 'Ditolak', alasan.trim())
+                    : { sukses: false, pesan: 'Fungsi update tidak tersedia.' };
+            }
+
+            if (hasil.sukses) {
+                if (typeof renderTabelVerifikasiTopUp === 'function') {
+                    renderTabelVerifikasiTopUp(window.currentPageTopUp);
+                }
+                if (typeof renderStatistikVerifikasiCoinSA === 'function') {
+                    renderStatistikVerifikasiCoinSA();
+                }
+                if (typeof renderBreakdownPerRoleVerifikasiCoin === 'function') {
+                    renderBreakdownPerRoleVerifikasiCoin();
+                }
+                if (typeof refreshLogAktivitasCoinGlobal === 'function') {
+                    try { refreshLogAktivitasCoinGlobal(); } catch (e) {}
+                }
+
+                alert('❌ Top-Up ditolak.\nUser akan menerima notifikasi.');
+            } else {
+                alert('❌ ' + (hasil.pesan || 'Gagal menolak.'));
+            }
+        } catch (e) {
+            console.error('tolakTopUpAll error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) AKSI: SETUJUI WITHDRAW ⭐
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiWithdrawAll = function(index) {
+        try {
+            var data = (typeof loadWithdrawalRequestsGlobal === 'function')
+                ? loadWithdrawalRequestsGlobal() : [];
+            var item = data[index];
+            if (!item) { alert('❌ Data tidak ditemukan.'); return; }
+
+            if (item.status === 'Disetujui') {
+                alert('⚠️ Withdraw ini sudah pernah disetujui.');
+                return;
+            }
+
+            var rek = item.rekeningTujuan || {};
+            var konfirmasi =
+                '✅ Setujui Withdraw ini?\n\n' +
+                'User    : ' + (item.namaPemohon || '-') + '\n' +
+                'ID      : ' + (item.idUser || '-') + '\n' +
+                'Coin    : -' + (item.jumlahKoin || 0) + ' R2Coin\n' +
+                'Total   : ' + vcRupiah(item.totalRupiah) + '\n' +
+                'Diterima: ' + vcRupiah(item.diterima || item.totalRupiah) + '\n' +
+                'Rekening: ' + (rek.bank || '-') + ' ' + (rek.nomor || '') + '\n' +
+                'a/n     : ' + (rek.atasNama || '-') + '\n\n' +
+                'Saldo coin user akan otomatis dikurangi.';
+
+            if (!confirm(konfirmasi)) return;
+
+            var hasil;
+            if (typeof prosesSetujuiWithdrawGlobal === 'function') {
+                hasil = prosesSetujuiWithdrawGlobal(item.id, 'Disetujui via menu Verifikasi Withdraw');
+            } else {
+                var update = (typeof updateStatusWithdrawGlobal === 'function')
+                    ? updateStatusWithdrawGlobal(item.id, 'Disetujui', 'Disetujui SA')
+                    : { sukses: false, pesan: 'Fungsi update tidak tersedia.' };
+                if (update.sukses) {
+                    var jumlah = parseInt(item.jumlahKoin, 10) || 0;
+                    if (typeof tambahTransaksiDompet === 'function') {
+                        tambahTransaksiDompet(item.idUser, {
+                            tipe: 'debit',
+                            jumlah: jumlah,
+                            keterangan: 'Withdraw disetujui (ID: ' + item.id + ')',
+                            refId: item.id,
+                            kategori: 'withdraw'
+                        });
+                    }
+                }
+                hasil = update;
+            }
+
+            if (hasil.sukses) {
+                if (typeof renderTabelVerifikasiWithdraw === 'function') {
+                    renderTabelVerifikasiWithdraw(window.currentPageWithdraw);
+                }
+                if (typeof renderStatistikVerifikasiCoinSA === 'function') {
+                    renderStatistikVerifikasiCoinSA();
+                }
+                if (typeof renderBreakdownPerRoleVerifikasiCoin === 'function') {
+                    renderBreakdownPerRoleVerifikasiCoin();
+                }
+                if (typeof refreshLogAktivitasCoinGlobal === 'function') {
+                    try { refreshLogAktivitasCoinGlobal(); } catch (e) {}
+                }
+
+                alert('✅ Withdraw berhasil disetujui!\n\n' +
+                    'Saldo ' + (item.namaPemohon || item.idUser) + ' berkurang ' +
+                    (item.jumlahKoin || 0) + ' R2Coin.\n\n' +
+                    '⚠️ Jangan lupa transfer ke rekening user.');
+            } else {
+                alert('❌ ' + (hasil.pesan || 'Gagal menyetujui.'));
+            }
+        } catch (e) {
+            console.error('setujuiWithdrawAll error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) AKSI: TOLAK WITHDRAW ⭐
+    // ═══════════════════════════════════════════════════════════
+    window.tolakWithdrawAll = function(index) {
+        try {
+            var data = (typeof loadWithdrawalRequestsGlobal === 'function')
+                ? loadWithdrawalRequestsGlobal() : [];
+            var item = data[index];
+            if (!item) { alert('❌ Data tidak ditemukan.'); return; }
+
+            if (item.status !== 'Menunggu') {
+                alert('⚠️ Withdraw ini sudah diproses sebelumnya.');
+                return;
+            }
+
+            var alasan = prompt(
+                '❌ Tolak Withdraw ini?\n\n' +
+                'User: ' + (item.namaPemohon || '-') + '\n' +
+                'Coin: ' + (item.jumlahKoin || 0) + '\n\n' +
+                'Masukkan alasan penolakan (minimal 5 karakter):',
+                'Rekening tujuan tidak valid'
+            );
+            if (alasan === null) return;
+            if (!alasan || alasan.trim().length < 5) {
+                alert('⚠️ Alasan wajib diisi minimal 5 karakter.');
+                return;
+            }
+
+            var hasil;
+            if (typeof prosesTolakWithdrawGlobal === 'function') {
+                hasil = prosesTolakWithdrawGlobal(item.id, alasan.trim());
+            } else {
+                hasil = (typeof updateStatusWithdrawGlobal === 'function')
+                    ? updateStatusWithdrawGlobal(item.id, 'Ditolak', alasan.trim())
+                    : { sukses: false, pesan: 'Fungsi update tidak tersedia.' };
+            }
+
+            if (hasil.sukses) {
+                if (typeof renderTabelVerifikasiWithdraw === 'function') {
+                    renderTabelVerifikasiWithdraw(window.currentPageWithdraw);
+                }
+                if (typeof renderStatistikVerifikasiCoinSA === 'function') {
+                    renderStatistikVerifikasiCoinSA();
+                }
+                if (typeof renderBreakdownPerRoleVerifikasiCoin === 'function') {
+                    renderBreakdownPerRoleVerifikasiCoin();
+                }
+                if (typeof refreshLogAktivitasCoinGlobal === 'function') {
+                    try { refreshLogAktivitasCoinGlobal(); } catch (e) {}
+                }
+
+                alert('❌ Withdraw ditolak.\nSaldo coin user tetap aman.');
+            } else {
+                alert('❌ ' + (hasil.pesan || 'Gagal menolak.'));
+            }
+        } catch (e) {
+            console.error('tolakWithdrawAll error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) RESET FILTER TOP-UP
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterVerifikasiTopUp = function() {
+        var ids = ['filterRoleVerifikasiTopUp',
+                   'filterStatusVerifikasiTopUp',
+                   'filterTanggalVerifikasiTopUp'];
+        ids.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        renderTabelVerifikasiTopUp(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) RESET FILTER WITHDRAW
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterVerifikasiWithdraw = function() {
+        var ids = ['filterRoleVerifikasiWithdraw',
+                   'filterStatusVerifikasiWithdraw',
+                   'filterTanggalVerifikasiWithdraw'];
+        ids.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        renderTabelVerifikasiWithdraw(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) LIHAT BUKTI TRANSFER (modal)
+    // ═══════════════════════════════════════════════════════════
+    window.vcLihatBukti = function(id, tipe) {
+        try {
+            var item = null;
+            if (tipe === 'topup') {
+                item = (typeof getTopUpByIdGlobal === 'function')
+                    ? getTopUpByIdGlobal(id) : null;
+            } else {
+                item = (typeof getWithdrawByIdGlobal === 'function')
+                    ? getWithdrawByIdGlobal(id) : null;
+            }
+            if (!item) {
+                alert('Data tidak ditemukan.');
+                return;
+            }
+
+            var buktiUrl = item.buktiTransfer || item.bukti || null;
+            if (!buktiUrl) {
+                alert('Tidak ada bukti transfer yang diupload.');
+                return;
+            }
+
+            // Buat modal dinamis
+            var modalId = 'vcModalBukti';
+            var existing = document.getElementById(modalId);
+            if (existing) existing.remove();
+
+            var modal = document.createElement('div');
+            modal.id = modalId;
+            modal.className = 'modal fade';
+            modal.setAttribute('tabindex', '-1');
+
+            modal.innerHTML =
+                '<div class="modal-dialog modal-lg modal-dialog-centered">' +
+                    '<div class="modal-content">' +
+                        '<div class="modal-header text-white" style="background:#1976D2;">' +
+                            '<h5 class="modal-title">' +
+                                '<i class="fas fa-image me-2"></i>Bukti Transfer' +
+                            '</h5>' +
+                            '<button type="button" class="btn-close btn-close-white" ' +
+                                    'data-bs-dismiss="modal"></button>' +
+                        '</div>' +
+                        '<div class="modal-body text-center">' +
+                            '<img src="' + buktiUrl + '" ' +
+                                 'style="max-width:100%;max-height:70vh;border-radius:8px;">' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            document.body.appendChild(modal);
+
+            if (typeof bootstrap !== 'undefined') {
+                new bootstrap.Modal(modal).show();
+            }
+
+            modal.addEventListener('hidden.bs.modal', function() {
+                modal.remove();
+            });
+        } catch (e) {
+            console.error('vcLihatBukti error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) BUKA TAB (untuk navigasi programmatic)
+    // ═══════════════════════════════════════════════════════════
+    window.vcBukaTab = function(tabName) {
+        var sel = (tabName === 'withdraw')
+            ? 'a[href="#tabWithdrawVerif"]'
+            : 'a[href="#tabTopUpVerif"]';
+        var tabLink = document.querySelector(sel);
+        if (tabLink && typeof bootstrap !== 'undefined') {
+            try {
+                new bootstrap.Tab(tabLink).show();
+                setTimeout(function() {
+                    if (tabName === 'withdraw') renderTabelVerifikasiWithdraw(1);
+                    else renderTabelVerifikasiTopUp(1);
+                }, 200);
+            } catch (e) {
+                tabLink.click();
+            }
+        }
+    };
+
+    console.log('✅ BLOK Fungsi UI Verifikasi Coin R 0.10.47-UI terpasang.');
+    console.log('   (1)  renderTabelVerifikasiTopUp ⭐');
+    console.log('   (2)  renderTabelVerifikasiWithdraw ⭐');
+    console.log('   (3)  setujuiTopUpAll');
+    console.log('   (4)  tolakTopUpAll');
+    console.log('   (5)  setujuiWithdrawAll');
+    console.log('   (6)  tolakWithdrawAll');
+    console.log('   (7)  resetFilterVerifikasiTopUp');
+    console.log('   (8)  resetFilterVerifikasiWithdraw');
+    console.log('   (9)  vcLihatBukti');
+    console.log('   (10) vcBukaTab');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK Fungsi UI Verifikasi Coin R 0.10.47-UI ════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 0.10.53 — FUNGSI GLOBAL LOG AKTIVITAS COIN ═══ -->
 <!-- ═══ Data Layer + Normalisasi + Refresh Audit + Statistik  ═ -->
 <!-- ═══ Trace Chain + Trace User + Suspicious Detector        ═ -->
