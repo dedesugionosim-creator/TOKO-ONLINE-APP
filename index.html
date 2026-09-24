@@ -1374,11 +1374,17 @@ function tampilkanHalamanNotifikasi() {
 })();
 
 // ============================================================
-// BLOK R 01.0 (63) V2 – SEEDER AKUN DUMMY 100 AKUN
+// BLOK R 01.0 (63) V3 – SEEDER AKUN DUMMY 100 AKUN (REVISI)
+// ------------------------------------------------------------
+// Perubahan V2 → V3:
+//   • Auto-fix akun existing: Banjarsari → Aktif, lainnya → Pending
+//   • Log setiap auto-fix biar kelihatan
+//   • Tidak skip kalau flag=true tapi ada akun bocor
 // ============================================================
-(function seederAkunDummy100() {
+(function seederAkunDummy100V3() {
     var FLAG = 'seedingAkunDummy100V3Lengkap';
 
+    // ── Cek kondisi ──
     var flagAktif = localStorage.getItem(FLAG) === 'true';
     var dataLoginAda = false;
     try {
@@ -1386,23 +1392,27 @@ function tampilkanHalamanNotifikasi() {
         dataLoginAda = Array.isArray(cekLogin) && cekLogin.length > 0;
     } catch (e) { dataLoginAda = false; }
 
-    if (flagAktif && dataLoginAda) {
-        console.log('ℹ️ Seeder Akun Dummy 100 sudah jalan & data ada, dilewati.');
-        return;
-    }
+    // Kalau flag=true & data ada, tetap jalankan auto-fix
+    // (tidak skip total, karena mungkin ada akun bocor)
+    var skipSeeding = (flagAktif && dataLoginAda);
 
-    if (flagAktif && !dataLoginAda) {
+    if (skipSeeding) {
+        console.log('ℹ️ Seeder Akun Dummy: data sudah ada — jalankan mode AUTO-FIX saja.');
+    } else if (flagAktif && !dataLoginAda) {
         console.warn('⚠️ Flag = true tapi data kosong → RE-SEEDING otomatis...');
     }
 
+    // ── Cek dependency ──
     if (typeof generateKodeUnik !== 'function' ||
-        typeof simpanDataKeLocalStorage !== 'function' ||
         typeof dataAkunAktif === 'undefined' ||
         typeof dataLoginUser === 'undefined') {
         console.warn('⚠️ Fungsi/variabel global belum siap. Seeder dibatalkan.');
         return;
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // HELPER: tambah atau fix akun
+    // ═══════════════════════════════════════════════════════════
     function tambahAkunDummy(opts) {
         var SELLER_ROLES_VERIFIKASI = [
             'Toko', 'Pedagang Pasar', 'Pedagang Makanan',
@@ -1412,60 +1422,150 @@ function tampilkanHalamanNotifikasi() {
         var usernameLower = (opts.username || '').toLowerCase();
         var isBanjarsari = usernameLower.indexOf('banjarsari') !== -1;
         var butuhVerifikasi = SELLER_ROLES_VERIFIKASI.indexOf(opts.role) !== -1;
-        var statusAwal = (butuhVerifikasi && !isBanjarsari) ? 'Pending' : 'Aktif';
+        var statusTarget = (butuhVerifikasi && !isBanjarsari) ? 'Pending' : 'Aktif';
 
-        var existing = dataLoginUser.find(function(u) { return u.username === opts.username; });
+        // ── Cek existing ──
+        var existing = dataLoginUser.find(function(u) {
+            return u.username === opts.username;
+        });
+
         if (existing) {
-            if (butuhVerifikasi && !isBanjarsari && existing.statusVerifikasi !== 'Pending') {
-                existing.statusVerifikasi = 'Pending';
-                existing.status = 'Pending';
+            // ═══ AUTO-FIX akun existing ═══
+            var statusLogin = existing.statusVerifikasi || existing.status || '';
+            var statusBerubah = false;
+
+            if (statusLogin !== statusTarget) {
+                console.log('🔧 Auto-fix: ' + opts.username +
+                    ' (' + statusLogin + ' → ' + statusTarget + ')');
+                existing.statusVerifikasi = statusTarget;
+                existing.status = statusTarget;
+                statusBerubah = true;
+
+                if (statusTarget === 'Aktif') {
+                    existing.verifiedAt = existing.verifiedAt || new Date().toISOString();
+                    existing.verifiedBy = 'AUTO_FIX_SEEDER_63';
+                    // Hapus metadata pending kalau ada
+                    delete existing.catatanOtomatis;
+                }
             }
-            var existingAkun = dataAkunAktif.find(function(a) { return a.username === opts.username; });
-            if (existingAkun && butuhVerifikasi && !isBanjarsari && existingAkun.status !== 'Pending') {
-                existingAkun.statusVerifikasi = 'Pending';
-                existingAkun.status = 'Pending';
+
+            // ── Sync ke dataAkunAktif juga ──
+            var existingAkun = dataAkunAktif.find(function(a) {
+                return a.username === opts.username;
+            });
+
+            if (existingAkun) {
+                var statusAkun = existingAkun.statusVerifikasi || existingAkun.status || '';
+                if (statusAkun !== statusTarget) {
+                    existingAkun.statusVerifikasi = statusTarget;
+                    existingAkun.status = statusTarget;
+                    statusBerubah = true;
+
+                    if (statusTarget === 'Aktif') {
+                        existingAkun.verifiedAt = existingAkun.verifiedAt || new Date().toISOString();
+                        existingAkun.verifiedBy = 'AUTO_FIX_SEEDER_63';
+                        delete existingAkun.catatanOtomatis;
+                    }
+                }
             }
-            console.warn('⚠️ Username "' + opts.username + '" sudah ada.');
-            return false;
+
+            if (!statusBerubah) {
+                // Silent skip
+            } else {
+                console.log('   ✓ Selesai.');
+            }
+
+            return false; // Tidak menambah akun baru
         }
 
+        // ═══ AKUN BARU — push ke dataLoginUser ═══
         var idUser = generateKodeUnik(opts.kodeRole);
         var now = new Date().toISOString();
         var password = opts.password || '123456';
 
         dataAkunAktif.push({
-            id: idUser, nama: opts.nama, role: opts.role, username: opts.username,
-            password: password, hp: opts.hp, email: opts.email, alamat: opts.alamat,
-            alamatKtp: opts.alamatKtp || opts.alamat, lat: opts.lat, lng: opts.lng,
-            status: statusAwal, statusVerifikasi: statusAwal, nik_ktp: opts.nik || null,
-            statusLangganan: 'Free', fotoUrl: '', ownerId: null,
-            createdBy: 'SEEDER_AKUN_DUMMY_100', createdAt: now
+            id: idUser,
+            nama: opts.nama,
+            role: opts.role,
+            username: opts.username,
+            password: password,
+            hp: opts.hp,
+            email: opts.email,
+            alamat: opts.alamat,
+            alamatKtp: opts.alamatKtp || opts.alamat,
+            lat: opts.lat,
+            lng: opts.lng,
+            status: statusTarget,
+            statusVerifikasi: statusTarget,
+            nik_ktp: opts.nik || null,
+            statusLangganan: 'Free',
+            fotoUrl: '',
+            ownerId: null,
+            createdBy: 'SEEDER_AKUN_DUMMY_100',
+            createdAt: now,
+            verifiedAt: statusTarget === 'Aktif' ? now : null,
+            verifiedBy: statusTarget === 'Aktif' ? 'SEEDER_63' : null
         });
 
         dataLoginUser.push({
-            idUser: idUser, username: opts.username, password: password, nama: opts.nama,
-            role: opts.role, kodeRole: opts.kodeRole, statusVerifikasi: statusAwal,
-            hp: opts.hp, email: opts.email, alamat: opts.alamat,
-            alamatKtp: opts.alamatKtp || opts.alamat, lat: opts.lat, lng: opts.lng,
-            nik_ktp: opts.nik || null, statusLangganan: 'Free', fotoUrl: '',
-            ownerId: null, createdBy: 'SEEDER_AKUN_DUMMY_100', createdAt: now
+            idUser: idUser,
+            username: opts.username,
+            password: password,
+            nama: opts.nama,
+            role: opts.role,
+            kodeRole: opts.kodeRole,
+            statusVerifikasi: statusTarget,
+            hp: opts.hp,
+            email: opts.email,
+            alamat: opts.alamat,
+            alamatKtp: opts.alamatKtp || opts.alamat,
+            lat: opts.lat,
+            lng: opts.lng,
+            nik_ktp: opts.nik || null,
+            statusLangganan: 'Free',
+            fotoUrl: '',
+            ownerId: null,
+            createdBy: 'SEEDER_AKUN_DUMMY_100',
+            createdAt: now,
+            status: statusTarget,
+            verifiedAt: statusTarget === 'Aktif' ? now : null,
+            verifiedBy: statusTarget === 'Aktif' ? 'SEEDER_63' : null
         });
 
+        // ── Profil ──
         try {
             localStorage.setItem('profil_' + idUser, JSON.stringify({
-                namaToko: opts.nama, namaDagang: opts.nama, namaUsaha: opts.nama,
-                namaDistributor: opts.nama, namaGrosir: opts.nama, namaOrganisasi: opts.nama,
-                namaProperti: opts.nama, namaDealer: opts.nama, namaFinance: opts.nama,
-                namaJasa: opts.nama, namaKasir: opts.nama, namaLengkap: opts.nama,
-                nikKtp: opts.nik || '', email: opts.email, hp: opts.hp,
-                alamat: opts.alamat, alamatKtp: opts.alamatKtp || opts.alamat,
-                fotoUrl: '', lat: opts.lat, lng: opts.lng
+                namaToko: opts.nama,
+                namaDagang: opts.nama,
+                namaUsaha: opts.nama,
+                namaDistributor: opts.nama,
+                namaGrosir: opts.nama,
+                namaOrganisasi: opts.nama,
+                namaProperti: opts.nama,
+                namaDealer: opts.nama,
+                namaFinance: opts.nama,
+                namaJasa: opts.nama,
+                namaKasir: opts.nama,
+                namaLengkap: opts.nama,
+                nikKtp: opts.nik || '',
+                email: opts.email,
+                hp: opts.hp,
+                alamat: opts.alamat,
+                alamatKtp: opts.alamatKtp || opts.alamat,
+                fotoUrl: '',
+                lat: opts.lat,
+                lng: opts.lng
             }));
-        } catch (e) { console.warn('Gagal simpan profil dummy:', e); }
+        } catch (e) {
+            console.warn('Gagal simpan profil dummy:', e);
+        }
 
         return true;
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // DATA KECAMATAN & ROLE
+    // ═══════════════════════════════════════════════════════════
     var KECAMATAN_LIST = [
         { nama: 'Banjarsari',  kodeNik: '01', pasar: 'Pasar Banjarsari',  lat: -7.5100,   lng: 108.5800 },
         { nama: 'Banjaranyar', kodeNik: '02', pasar: 'Pasar Banjaranyar', lat: -7.5300,   lng: 108.5600 },
@@ -1492,7 +1592,11 @@ function tampilkanHalamanNotifikasi() {
         { prefix: 'cust',  kodeRole: 'CT',  role: 'Customer',             label: 'Customer',             kodeNik: '13', wajibNik: false, offset: [ 0.0015, -0.0005] }
     ];
 
-    var jumlahWilayah = 0;
+    var jumlahBaru = 0;
+    var jumlahFix = 0;
+
+    // ── Track existing sebelum seeding ──
+    var existingCountBefore = dataLoginUser.length;
 
     KECAMATAN_LIST.forEach(function(kec) {
         var kecLower = kec.nama.toLowerCase();
@@ -1508,16 +1612,34 @@ function tampilkanHalamanNotifikasi() {
             var alamatKtp = 'Desa ' + kec.nama + ', Kec. ' + kec.nama + ', Kab. Ciamis, Jawa Barat';
 
             var ok = tambahAkunDummy({
-                username: username, password: '123456', nama: namaLengkap,
-                role: r.role, kodeRole: r.kodeRole, nik: nik, hp: hp, email: email,
-                alamat: alamat, alamatKtp: alamatKtp, lat: lat, lng: lng
+                username: username,
+                password: '123456',
+                nama: namaLengkap,
+                role: r.role,
+                kodeRole: r.kodeRole,
+                nik: nik,
+                hp: hp,
+                email: email,
+                alamat: alamat,
+                alamatKtp: alamatKtp,
+                lat: lat,
+                lng: lng
             });
-            if (ok) jumlahWilayah++;
+            if (ok) jumlahBaru++;
         });
     });
 
-    console.log('✅ Akun wilayah: ' + jumlahWilayah + ' / 91 dibuat.');
+    var existingCountAfter = dataLoginUser.length;
+    jumlahFix = existingCountAfter - existingCountBefore - jumlahBaru;
+    if (jumlahFix < 0) jumlahFix = 0;
 
+    console.log('✅ Seeder Akun Dummy: ' +
+        jumlahBaru + ' akun baru, ' +
+        (existingCountAfter - existingCountBefore - jumlahBaru) + ' diperiksa/fix');
+
+    // ═══════════════════════════════════════════════════════════
+    // AKUN STAF PUSAT
+    // ═══════════════════════════════════════════════════════════
     var ALAMAT_PUSAT = 'Kantor Toko Online 2R, Pasar Ciawitali, Kec. Purwadadi, Kab. Ciamis, Jawa Barat';
     var LAT_PUSAT = -7.449199;
     var LNG_PUSAT = 108.654786;
@@ -1535,75 +1657,92 @@ function tampilkanHalamanNotifikasi() {
     ];
 
     var jumlahStaf = 0;
-
     STAF_LIST.forEach(function(s, idx) {
         var urut = String(idx + 1).padStart(2, '0');
         var hp = '0812000' + urut + '99';
         var email = s.prefix + '@dummy.local';
 
         var ok = tambahAkunDummy({
-            username: s.prefix, password: '123456', nama: s.label + ' Pusat',
-            role: s.role, kodeRole: s.kodeRole, nik: null, hp: hp, email: email,
-            alamat: ALAMAT_PUSAT, alamatKtp: ALAMAT_PUSAT, lat: LAT_PUSAT, lng: LNG_PUSAT
+            username: s.prefix,
+            password: '123456',
+            nama: s.label + ' Pusat',
+            role: s.role,
+            kodeRole: s.kodeRole,
+            nik: null,
+            hp: hp,
+            email: email,
+            alamat: ALAMAT_PUSAT,
+            alamatKtp: ALAMAT_PUSAT,
+            lat: LAT_PUSAT,
+            lng: LNG_PUSAT
         });
         if (ok) jumlahStaf++;
     });
 
-    console.log('✅ Akun staf: ' + jumlahStaf + ' / 9 dibuat.');
+    console.log('✅ Seeder Akun Staf: ' + jumlahStaf + ' akun baru.');
 
-    var totalBerhasil = jumlahWilayah + jumlahStaf;
-
+    // ═══════════════════════════════════════════════════════════
+    // SIMPAN
+    // ═══════════════════════════════════════════════════════════
     try {
-        simpanDataKeLocalStorage();
+        if (typeof simpanDataKeLocalStorage === 'function') {
+            simpanDataKeLocalStorage();
+        } else {
+            localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
+            localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
+        }
     } catch (e) {
-        console.warn('simpanDataKeLocalStorage gagal:', e);
+        console.warn('Simpan gagal:', e);
         localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser));
         localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
     }
 
-    if (totalBerhasil > 0 && typeof catatAktivitasGlobal === 'function') {
+    // ── Catat aktivitas ──
+    if (typeof catatAktivitasGlobal === 'function' && jumlahBaru > 0) {
         catatAktivitasGlobal(
-            'SEEDER_AKUN_DUMMY_100', 'Seeder Akun Dummy 100',
-            'Menambahkan ' + jumlahWilayah + ' akun wilayah + ' + jumlahStaf + ' akun staf pusat'
+            'SEEDER_AKUN_DUMMY_100',
+            'Seeder Akun Dummy 100',
+            'Menambahkan ' + jumlahBaru + ' akun wilayah + ' + jumlahStaf + ' akun staf pusat'
         );
     }
 
     localStorage.setItem(FLAG, 'true');
-    console.log('✅ Seeder Akun Dummy 100 selesai. Total: ' + totalBerhasil + ' akun.');
+    console.log('✅ Seeder Akun Dummy V3 selesai.');
 })();
 
 // ============================================================
-// BLOK R 01.0 (64) – SEEDER PENGAJUAN VERIFIKASI
+// BLOK R 01.0 (64) V2 – SEEDER PENGAJUAN VERIFIKASI BANJARSARI
+// ------------------------------------------------------------
+// REVISI:
+//   • Jalankan walau flag=true (auto-fix mode)
+//   • Paksa akun Banjarsari → Aktif
+//   • Sync ke dataLoginUser + dataAkunAktif
 // ============================================================
-(function seederPengajuanVerifikasiBanjarsari() {
+(function seederPengajuanVerifikasiBanjarsariV2() {
     var FLAG = 'seedingPengajuanVerifikasiBanjarsariLengkap';
 
-    var flagSet = localStorage.getItem(FLAG) === 'true';
-    var dataVerifKosong = true;
-
-    try {
-        var existing = JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
-        if (Array.isArray(existing) && existing.length > 0) {
-            dataVerifKosong = false;
-        }
-    } catch (e) {}
-
-    if (flagSet && dataVerifKosong) {
-        console.warn('⚠️ Flag pengajuan = true tapi data kosong → RE-SEEDING...');
-        localStorage.removeItem(FLAG);
+    if (typeof generateKodeUnik !== 'function') {
+        console.warn('⚠️ generateKodeUnik tidak tersedia — seeder 64 dibatalkan.');
+        return;
     }
 
-    if (flagSet && !dataVerifKosong) return;
-    if (typeof generateKodeUnik !== 'function') return;
-
+    // ═══════════════════════════════════════════════════════════
+    // AMBIL DATA EXISTING
+    // ═══════════════════════════════════════════════════════════
     var usersFromStorage = [];
     try {
         usersFromStorage = JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
         if (!Array.isArray(usersFromStorage)) usersFromStorage = [];
     } catch (e) { usersFromStorage = []; }
 
-    if (usersFromStorage.length === 0) return;
+    if (usersFromStorage.length === 0) {
+        console.warn('⚠️ Seeder 64: dataLoginUser kosong — skip.');
+        return;
+    }
 
+    // ═══════════════════════════════════════════════════════════
+    // TARGET USER BANJARSARI (8 role seller)
+    // ═══════════════════════════════════════════════════════════
     var TARGET_USERS = [
         { username: 'dist_banjarsari', role: 'Distributor',      kodeRole: 'DST' },
         { username: 'gr_banjarsari',   role: 'Grosir',            kodeRole: 'GR'  },
@@ -1615,11 +1754,15 @@ function tampilkanHalamanNotifikasi() {
         { username: 'js_banjarsari',   role: 'Jasa',              kodeRole: 'JS'  }
     ];
 
+    // ═══════════════════════════════════════════════════════════
+    // HELPER: buat dokumen dummy
+    // ═══════════════════════════════════════════════════════════
     function buatDokumenDummy(label, warna) {
         var tipe = 'file';
-        if (label.toUpperCase().indexOf('KTP') !== -1) tipe = 'ktp';
-        else if (label.toUpperCase().indexOf('SKU') !== -1) tipe = 'sku';
-        else if (label.toUpperCase().indexOf('SKD') !== -1) tipe = 'skd';
+        var upper = label.toUpperCase();
+        if (upper.indexOf('KTP') !== -1) tipe = 'ktp';
+        else if (upper.indexOf('SKU') !== -1) tipe = 'sku';
+        else if (upper.indexOf('SKD') !== -1) tipe = 'skd';
 
         return {
             nama: label,
@@ -1637,28 +1780,59 @@ function tampilkanHalamanNotifikasi() {
         ];
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // AMBIL dataVerifikasiDokumen
+    // ═══════════════════════════════════════════════════════════
     var dataVerifikasi = [];
     try {
         dataVerifikasi = JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
         if (!Array.isArray(dataVerifikasi)) dataVerifikasi = [];
     } catch (e) { dataVerifikasi = []; }
 
-    var jumlahBerhasil = 0;
+    var jumlahFixStatus = 0;
+    var jumlahPengajuanBaru = 0;
+
     var now = new Date().toISOString();
     var tglHariIni = now.split('T')[0];
     var usersBerubah = false;
 
+    // ═══════════════════════════════════════════════════════════
+    // PROSES SETIAP TARGET USER
+    // ═══════════════════════════════════════════════════════════
     TARGET_USERS.forEach(function(target) {
-        var user = usersFromStorage.find(function(u) { return u.username === target.username; });
-        if (!user) return;
+        var user = usersFromStorage.find(function(u) {
+            return u.username === target.username;
+        });
 
-        user.statusVerifikasi = 'Aktif';
-        user.verifiedAt = now;
-        usersBerubah = true;
+        if (!user) {
+            console.warn('⚠️ Seeder 64: ' + target.username + ' tidak ditemukan — skip.');
+            return;
+        }
 
-        var sudahAda = dataVerifikasi.some(function(v) { return v.id === user.idUser; });
+        // ═══ FIX STATUS → Selalu Aktif ═══
+        var statusLama = user.statusVerifikasi || user.status || '-';
+        var perluFix = (user.statusVerifikasi !== 'Aktif' || user.status !== 'Aktif');
+
+        if (perluFix) {
+            console.log('🔧 Seeder 64 fix: ' + target.username +
+                ' (' + statusLama + ' → Aktif)');
+            user.statusVerifikasi = 'Aktif';
+            user.status = 'Aktif';
+            user.verifiedAt = user.verifiedAt || now;
+            user.verifiedBy = 'SEEDER_64';
+            // Bersihkan metadata pending
+            delete user.catatanOtomatis;
+            usersBerubah = true;
+            jumlahFixStatus++;
+        }
+
+        // ═══ Cek pengajuan sudah ada? ═══
+        var sudahAda = dataVerifikasi.some(function(v) {
+            return v && v.id === user.idUser;
+        });
         if (sudahAda) return;
 
+        // ═══ Buat pengajuan baru ═══
         var idPengajuan = generateKodeUnik('VERIF_' + target.kodeRole);
 
         dataVerifikasi.push({
@@ -1673,39 +1847,93 @@ function tampilkanHalamanNotifikasi() {
             verifiedAt: now,
             _seeder: 'PENGAJUAN_BANJARSARI'
         });
-        jumlahBerhasil++;
+
+        jumlahPengajuanBaru++;
     });
 
+    // ═══════════════════════════════════════════════════════════
+    // SYNC KE dataAkunAktif
+    // ═══════════════════════════════════════════════════════════
     var akunFromStorage = [];
     try {
         akunFromStorage = JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
         if (!Array.isArray(akunFromStorage)) akunFromStorage = [];
     } catch (e) { akunFromStorage = []; }
 
+    var jumlahFixAkun = 0;
     TARGET_USERS.forEach(function(target) {
-        var user = usersFromStorage.find(function(u) { return u.username === target.username; });
+        var user = usersFromStorage.find(function(u) {
+            return u.username === target.username;
+        });
         if (!user) return;
-        var idx = akunFromStorage.findIndex(function(a) { return a.id === user.idUser; });
+
+        var idx = akunFromStorage.findIndex(function(a) {
+            return a.id === user.idUser;
+        });
+
         if (idx !== -1) {
-            akunFromStorage[idx].statusVerifikasi = 'Aktif';
-            akunFromStorage[idx].status = 'Aktif';
-            akunFromStorage[idx].verifiedAt = now;
+            if (akunFromStorage[idx].statusVerifikasi !== 'Aktif' ||
+                akunFromStorage[idx].status !== 'Aktif') {
+                akunFromStorage[idx].statusVerifikasi = 'Aktif';
+                akunFromStorage[idx].status = 'Aktif';
+                akunFromStorage[idx].verifiedAt = akunFromStorage[idx].verifiedAt || now;
+                akunFromStorage[idx].verifiedBy = 'SEEDER_64';
+                delete akunFromStorage[idx].catatanOtomatis;
+                jumlahFixAkun++;
+            }
         }
     });
 
+    // ═══════════════════════════════════════════════════════════
+    // SIMPAN KE LOCALSTORAGE
+    // ═══════════════════════════════════════════════════════════
     localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(dataVerifikasi));
-    if (usersBerubah) localStorage.setItem('dataLoginUser', JSON.stringify(usersFromStorage));
-    localStorage.setItem('dataAkunAktif', JSON.stringify(akunFromStorage));
 
-    if (typeof catatAktivitasGlobal === 'function') {
+    if (usersBerubah) {
+        localStorage.setItem('dataLoginUser', JSON.stringify(usersFromStorage));
+    }
+    if (jumlahFixAkun > 0) {
+        localStorage.setItem('dataAkunAktif', JSON.stringify(akunFromStorage));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // UPDATE GLOBAL VAR (kalau ada)
+    // ═══════════════════════════════════════════════════════════
+    try {
+        if (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser)) {
+            dataLoginUser.length = 0;
+            usersFromStorage.forEach(function(u) { dataLoginUser.push(u); });
+        }
+        if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+            dataAkunAktif.length = 0;
+            akunFromStorage.forEach(function(a) { dataAkunAktif.push(a); });
+        }
+    } catch (e) {}
+
+    // ═══════════════════════════════════════════════════════════
+    // CATAT AKTIVITAS
+    // ═══════════════════════════════════════════════════════════
+    if (typeof catatAktivitasGlobal === 'function' &&
+        (jumlahFixStatus > 0 || jumlahPengajuanBaru > 0)) {
         catatAktivitasGlobal(
-            'SEEDER_PENGAJUAN_BANJARSARI', 'Seeder Pengajuan Verifikasi',
-            'Membuat ' + jumlahBerhasil + ' pengajuan Disetujui'
+            'SEEDER_PENGAJUAN_BANJARSARI',
+            'Seeder Pengajuan Verifikasi Banjarsari',
+            'Fix status: ' + jumlahFixStatus + ' akun, ' +
+            'Pengajuan baru: ' + jumlahPengajuanBaru
         );
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('═══════════════════════════════════════════');
+    console.log('✅ Seeder Pengajuan Verifikasi Banjarsari V2:');
+    console.log('   • Status diperbaiki : ' + jumlahFixStatus + ' akun');
+    console.log('   • Pengajuan baru    : ' + jumlahPengajuanBaru);
+    console.log('   • Status akun fixed : ' + jumlahFixAkun);
+    console.log('═══════════════════════════════════════════');
+
     localStorage.setItem(FLAG, 'true');
-    console.log('✅ Seeder Pengajuan Verifikasi selesai. ' + jumlahBerhasil + ' dibuat.');
 })();
 </script>
 <!-- ╔══════════════════════════════════════════════════════════╗ -->
