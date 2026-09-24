@@ -27866,12 +27866,10 @@ function exportGrosirCSVGlobal(filter) {
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 0.10.66 — FUNGSI GLOBAL DASBOR DEV/DEALER/FIN ═ -->
-<!-- ═══ Data Layer + Statistik + Render Grid + Filter        ═ -->
-<!-- ═══ Wajib ada SEBELUM BLOK R 10.66 (HTML)              ═ -->
+<!-- ═══ AKTIF ONLY — hanya tampilkan yang sudah disetujui SA  ═ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
 (function BLOK_FUNGSI_GLOBAL_DASBOR_DEV_DEALER_FIN_R01066() {
-    // ── Guard idempotency ──
     if (window._blokR01066Done) {
         console.log('ℹ️ BLOK Fungsi Global Dasbor Dev/Dealer/Fin R 0.10.66 sudah terpasang.');
         return;
@@ -27885,12 +27883,18 @@ function exportGrosirCSVGlobal(filter) {
         'Finance Multifinance'
     ];
 
+    // ── Helper: cek apakah akun Aktif (sudah disetujui SA) ──
+    function _ddfIsAktif(a) {
+        if (!a) return false;
+        var s = a.statusVerifikasi || a.status || '';
+        return s === 'Aktif';
+    }
+
     // ═══════════════════════════════════════════════════════════
     // MODUL 1 — DATA LAYER (3 fungsi)
     // ═══════════════════════════════════════════════════════════
 
-    // ── (1) getDaftarDevDealerFinGlobal ⭐ ──
-    // Ambil semua akun dengan role Dev/Dealer/Fin (semua status)
+    // ── (1) getDaftarDevDealerFinGlobal ⭐ (AKTIF ONLY) ──
     window.getDaftarDevDealerFinGlobal = function() {
         try {
             var hasil = [];
@@ -27901,6 +27905,7 @@ function exportGrosirCSVGlobal(filter) {
                 dataAkunAktif.forEach(function(a) {
                     if (!a) return;
                     if (ROLES_DEV_DEALER_FIN.indexOf(a.role) === -1) return;
+                    if (!_ddfIsAktif(a)) return;   // ⚡ hanya Aktif
 
                     var id = a.id || a.idUser;
                     if (!id || seen[id]) return;
@@ -27910,11 +27915,12 @@ function exportGrosirCSVGlobal(filter) {
                 });
             }
 
-            // Sumber 2: dataLoginUser (yang belum ada)
+            // Sumber 2: dataLoginUser (fallback, hanya yang Aktif & belum ada)
             if (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser)) {
                 dataLoginUser.forEach(function(u) {
                     if (!u) return;
                     if (ROLES_DEV_DEALER_FIN.indexOf(u.role) === -1) return;
+                    if (!_ddfIsAktif(u)) return;   // ⚡ hanya Aktif
 
                     var id = u.idUser || u.id;
                     if (!id || seen[id]) return;
@@ -27953,26 +27959,27 @@ function exportGrosirCSVGlobal(filter) {
 
     // ── Helper internal: normalisasi akun ──
     function _normalisasiAkunDDF(a, sumber) {
+        var id = a.id || a.idUser;
         var statusVerif = a.statusVerifikasi || a.status || 'Aktif';
         var isSuspend = false;
 
         try {
             if (typeof isAkunTersuspendGlobal === 'function') {
-                isSuspend = isAkunTersuspendGlobal(a.id || a.idUser);
+                isSuspend = isAkunTersuspendGlobal(id);
             }
         } catch (e) {}
 
         var saldo = 0;
         try {
             if (typeof getSaldoDompet === 'function') {
-                saldo = getSaldoDompet(a.id || a.idUser);
+                saldo = getSaldoDompet(id);
             } else if (a.r2coin && a.r2coin.balance) {
                 saldo = parseFloat(a.r2coin.balance) || 0;
             }
         } catch (e) {}
 
         return {
-            id: a.id || a.idUser,
+            id: id,
             idUser: a.idUser || a.id,
             nama: a.nama || '-',
             role: a.role || '-',
@@ -28000,9 +28007,10 @@ function exportGrosirCSVGlobal(filter) {
     // MODUL 2 — STATISTIK (3 fungsi)
     // ═══════════════════════════════════════════════════════════
 
-    // ── (4) hitungStatistikDevDealerFinGlobal ⭐ ──
+    // ── (4) hitungStatistikDevDealerFinGlobal ⭐ (AKTIF ONLY) ──
     window.hitungStatistikDevDealerFinGlobal = function() {
         try {
+            // _getAkunAktif() sudah difilter Aktif di getDaftarDevDealerFinGlobal()
             var list = getDaftarDevDealerFinGlobal();
 
             var stat = {
@@ -28019,11 +28027,11 @@ function exportGrosirCSVGlobal(filter) {
             };
 
             list.forEach(function(a) {
-                // Suspend?
+                if (!a) return;
+
                 if (a.isSuspend) {
                     stat.totalSuspend++;
                 } else {
-                    // Online?
                     var statusOnline = 'Offline';
                     try {
                         if (typeof getStatusOnlineAkun === 'function') {
@@ -28035,10 +28043,8 @@ function exportGrosirCSVGlobal(filter) {
                     else stat.totalOffline++;
                 }
 
-                // Coin
                 stat.totalCoin += parseFloat(a.saldo) || 0;
 
-                // Per role
                 if (stat.perRole[a.role] !== undefined) {
                     stat.perRole[a.role]++;
                 }
@@ -28055,20 +28061,19 @@ function exportGrosirCSVGlobal(filter) {
         }
     };
 
-    // ── (5) cariAkunDDFGlobal ──
+    // ── (5) cariAkunDDFGlobal (AKTIF ONLY) ──
     window.cariAkunDDFGlobal = function(filter) {
         filter = filter || {};
         var cari   = (filter.cari || '').toLowerCase().trim();
         var role   = filter.role || '';
         var status = filter.status || '';
 
-        var list = getDaftarDevDealerFinGlobal();
+        var list = getDaftarDevDealerFinGlobal();  // sudah Aktif-only
 
         return list.filter(function(a) {
             if (!a) return false;
             if (role && a.role !== role) return false;
 
-            // Filter status (online/offline/suspend)
             if (status) {
                 if (status === 'suspend') {
                     if (!a.isSuspend) return false;
@@ -28093,7 +28098,6 @@ function exportGrosirCSVGlobal(filter) {
                 }
             }
 
-            // Filter cari
             if (cari) {
                 var s = (a.nama || '') + ' ' + (a.id || '') + ' ' +
                         (a.username || '') + ' ' + (a.hp || '') + ' ' +
@@ -28131,7 +28135,7 @@ function exportGrosirCSVGlobal(filter) {
             }
             if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
 
-            // Cache template
+            // Cache template (support template tag atau div)
             if (!window._tplDasborDevDealerFin) {
                 var c = document.getElementById('dasborDevDealerFinContainer');
                 if (!c) {
@@ -28141,13 +28145,12 @@ function exportGrosirCSVGlobal(filter) {
                     return;
                 }
                 window._tplDasborDevDealerFin = c.innerHTML;
-                c.remove();
+                if (c.tagName !== 'TEMPLATE') c.remove();
                 console.log('✅ Template Dasbor Dev/Dealer/Fin di-cache');
             }
 
             konten.innerHTML = window._tplDasborDevDealerFin;
 
-            // Render setelah DOM siap
             setTimeout(function() {
                 renderStatistikDevDealerFin();
                 renderGridDevDealerFin();
@@ -28177,25 +28180,22 @@ function exportGrosirCSVGlobal(filter) {
         }
     };
 
-    // ── (9) renderGridDevDealerFin ⭐ (dipanggil dari HTML onchange) ──
+    // ── (9) renderGridDevDealerFin ⭐ ──
     window.renderGridDevDealerFin = function() {
         try {
             var grid = document.getElementById('ddGridAkun');
             if (!grid) return;
 
-            // Ambil filter dari HTML
             var cari   = (document.getElementById('ddCari')?.value || '').toLowerCase().trim();
             var role   = document.getElementById('ddFilterRole')?.value || '';
             var status = document.getElementById('ddFilterStatus')?.value || '';
 
-            // Cari akun
             var list = cariAkunDDFGlobal({
                 cari: cari,
                 role: role,
                 status: status
             });
 
-            // Update badge jumlah
             _setTextDDF('ddJumlahAkun', list.length + ' Akun');
 
             if (list.length === 0) {
@@ -28203,17 +28203,17 @@ function exportGrosirCSVGlobal(filter) {
                 grid.innerHTML =
                     '<div class="col-12 text-center text-white py-5">' +
                         '<i class="fas fa-inbox fa-4x d-block mb-3 opacity-50"></i>' +
-                        '<h5>' + (hasAnyData ? 'Tidak Ada Akun Cocok' : 'Belum Ada Akun') + '</h5>' +
+                        '<h5>' + (hasAnyData ? 'Tidak Ada Akun Cocok' : 'Belum Ada Akun Aktif') + '</h5>' +
                         '<p class="small">' +
                             (hasAnyData
                                 ? 'Coba ubah filter atau kata kunci pencarian.'
-                                : 'Belum ada akun Developer Properti, Dealer, atau Finance yang terdaftar.') +
+                                : 'Belum ada akun Developer Properti, Dealer, atau Finance yang <strong>Aktif</strong>. ' +
+                                  'Akun Pending/Ditolak tidak ditampilkan di sini.') +
                         '</p>' +
                     '</div>';
                 return;
             }
 
-            // Render grid
             var html = '';
             list.forEach(function(a) {
                 html += _renderKartuAkunDDF(a);
@@ -28225,7 +28225,7 @@ function exportGrosirCSVGlobal(filter) {
         }
     };
 
-    // ── (10) resetFilterDevDealerFin ⭐ (dipanggil dari HTML) ──
+    // ── (10) resetFilterDevDealerFin ──
     window.resetFilterDevDealerFin = function() {
         try {
             var elCari = document.getElementById('ddCari');
@@ -28246,7 +28246,6 @@ function exportGrosirCSVGlobal(filter) {
         var info = getWarnaRoleDDFGlobal(a.role);
         var warnaBg = info.bg;
 
-        // Status badge
         var statusOnline = 'Offline';
         try {
             if (typeof getStatusOnlineAkun === 'function' && !a.isSuspend) {
@@ -28268,7 +28267,6 @@ function exportGrosirCSVGlobal(filter) {
                 '<i class="fas fa-circle me-1" style="font-size:8px;"></i>Offline</span>';
         }
 
-        // Foto profil
         var fotoUrl = '';
         try {
             if (typeof getFotoProfilAkun === 'function') {
@@ -28281,14 +28279,12 @@ function exportGrosirCSVGlobal(filter) {
                 warnaBg.replace('#', '') + '/ffffff?text=' + encodeURIComponent(init);
         }
 
-        // Border foto: hijau kalau online, merah kalau suspend, abu kalau offline
         var borderColor = a.isSuspend ? '#DC3545' : (isOnline ? '#28A745' : '#6C757D');
 
         var namaEsc = (a.nama || '').replace(/'/g, "\\'");
         var idEsc = (a.id || '').replace(/'/g, "\\'");
         var roleEsc = (a.role || '').replace(/'/g, "\\'");
 
-        // Alamat (dipotong)
         var alamatTxt = a.alamat || '-';
         if (alamatTxt.length > 50) alamatTxt = alamatTxt.substring(0, 50) + '...';
 
@@ -28417,159 +28413,50 @@ function exportGrosirCSVGlobal(filter) {
             tampilkanPlaceholderMenu('Dasbor Dev/Dealer/Fin', '10.66');
         }
     };
-
-    // ═══════════════════════════════════════════════════════════
-    // AUTO-SEED DEMO (opsional)
-    // ═══════════════════════════════════════════════════════════
-    window.seedDemoDevDealerFinGlobal = function() {
-        try {
-            if (typeof dataAkunAktif === 'undefined' || !Array.isArray(dataAkunAktif)) {
-                return { sukses: false, pesan: 'dataAkunAktif tidak tersedia.' };
-            }
-
-            var adaSudah = dataAkunAktif.some(function(a) {
-                return a && ROLES_DEV_DEALER_FIN.indexOf(a.role) !== -1;
-            });
-            if (adaSudah) {
-                return { sukses: true, pesan: 'Sudah ada akun Dev/Dealer/Fin.' };
-            }
-
-            var now = new Date().toISOString();
-            var sample = [
-                {
-                    id: 'ID_TK2R_DP-0001', idUser: 'ID_TK2R_DP-0001',
-                    nama: 'PT Graha Properti Prima', role: 'Developer Properti',
-                    kodeRole: 'DP', username: 'dev_graha', hp: '081234001001',
-                    email: 'dev@graha.local', alamat: 'Jl. Properti No. 1, Ciamis',
-                    lat: -7.449, lng: 108.654,
-                    status: 'Aktif', statusVerifikasi: 'Aktif',
-                    statusLangganan: 'Pro', createdAt: now
-                },
-                {
-                    id: 'ID_TK2R_DLR-0001', idUser: 'ID_TK2R_DLR-0001',
-                    nama: 'Showroom Mobil Sejahtera', role: 'Dealer dan Showroom',
-                    kodeRole: 'DLR', username: 'dealer_sejahtera', hp: '081234002002',
-                    email: 'dealer@sejahtera.local', alamat: 'Jl. Raya Mobil No. 88, Ciamis',
-                    lat: -7.450, lng: 108.650,
-                    status: 'Aktif', statusVerifikasi: 'Aktif',
-                    statusLangganan: 'Pro', createdAt: now
-                },
-                {
-                    id: 'ID_TK2R_FIN-0001', idUser: 'ID_TK2R_FIN-0001',
-                    nama: 'PT Finance Mitra Sejahtera', role: 'Finance Multifinance',
-                    kodeRole: 'FIN', username: 'fin_mitra', hp: '081234003003',
-                    email: 'fin@mitra.local', alamat: 'Jl. Keuangan No. 5, Ciamis',
-                    lat: -7.448, lng: 108.652,
-                    status: 'Aktif', statusVerifikasi: 'Aktif',
-                    statusLangganan: 'Pro', createdAt: now
-                }
-            ];
-
-            sample.forEach(function(s) {
-                dataAkunAktif.push(s);
-            });
-
-            if (typeof simpanDataKeLocalStorage === 'function') {
-                simpanDataKeLocalStorage();
-            } else {
-                localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
-            }
-
-            console.log('✅ Seed demo Dev/Dealer/Fin: 3 akun ditambahkan');
-            return { sukses: true, total: 3 };
-        } catch (e) {
-            console.error('seedDemoDevDealerFinGlobal error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
+    window.menuHandlers['tampilkanDasborDDF'] = window.menuHandlers['tampilkanDasborDevDealerFin'];
 
     // ═══════════════════════════════════════════════════════════
     // LOG KONFIRMASI
     // ═══════════════════════════════════════════════════════════
-    console.log('✅ BLOK Fungsi Global Dasbor Dev/Dealer/Fin R 0.10.66 terpasang.');
-    console.log('   Modul 1 — Data Layer (3):');
-    console.log('     1. getDaftarDevDealerFinGlobal ⭐');
-    console.log('     2. getAkunDDFByIdGlobal');
-    console.log('     3. getAkunDDFByRoleGlobal');
-    console.log('   Modul 2 — Statistik (3):');
-    console.log('     4. hitungStatistikDevDealerFinGlobal ⭐');
-    console.log('     5. cariAkunDDFGlobal');
-    console.log('     6. getWarnaRoleDDFGlobal');
-    console.log('   Modul 3 — Render UI (4):');
-    console.log('     7. tampilkanDasborDevDealerFin ⭐ (entry point)');
-    console.log('     8. renderStatistikDevDealerFin');
-    console.log('     9. renderGridDevDealerFin ⭐ (dipanggil HTML)');
-    console.log('     10. resetFilterDevDealerFin ⭐ (dipanggil HTML)');
-    console.log('   Modul 4 — Helper & Bonus (3):');
-    console.log('     11. _setTextDDF (internal)');
-    console.log('     12. _escDDF (internal)');
-    console.log('     13. exportDDFCSVGlobal');
-    console.log('   Bonus: seedDemoDevDealerFinGlobal()');
-    console.log('   🎯 Total: 13 fungsi + 1 bonus = 14');
+    console.log('✅ BLOK Fungsi Global Dasbor Dev/Dealer/Fin R 0.10.66 (Aktif Only) terpasang.');
+    console.log('   • getDaftarDevDealerFinGlobal → filter statusVerifikasi === "Aktif"');
+    console.log('   • hitungStatistikDevDealerFinGlobal → hitung dari hasil filter Aktif');
+    console.log('   • Akun Pending/Ditolak TIDAK ditampilkan');
+    console.log('   • Suspend tetap tampil (statusVerifikasi masih Aktif)');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK Fungsi Global Dasbor Dev/Dealer/Fin R 0.10.66 -->
+<!-- ═══ AKHIR BLOK R 0.10.66 (Aktif Only)                  ═══ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 0.10.66/67 — FUNGSI GLOBAL DASBOR              ═ -->
-<!-- ═══ Dev/Dealer/Fin + Jasa — Data Layer + Statistik +     ═ -->
-<!-- ═══ Filter + Export + Helper untuk SA Dashboard          ═ -->
-<!-- ═══ Wajib ada SEBELUM BLOK R 10.66 & 10.67 (HTML/JS)    ═ -->
+<!-- ═══ BLOK R 0.10.67 — FUNGSI GLOBAL DASBOR JASA ═══════════ -->
+<!-- ═══ AKTIF ONLY — hanya tampilkan yang sudah disetujui SA  ═ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_FUNGSI_GLOBAL_DASBOR_SA_4ROLE_R01066_67() {
-    // ── Guard idempotency ──
-    if (window._blokR01066_67Done) {
-        console.log('ℹ️ BLOK Fungsi Global Dasbor SA 4 Role sudah terpasang.');
+(function BLOK_FUNGSI_GLOBAL_DASBOR_JASA_R01067() {
+    if (window._blokR01067Done) {
+        console.log('ℹ️ BLOK Fungsi Global Dasbor Jasa R 0.10.67 sudah terpasang.');
         return;
     }
-    window._blokR01066_67Done = true;
+    window._blokR01067Done = true;
+
+    // ── Role yang ditangani blok ini ──
+    var ROLE_JASA = 'Jasa';
+
+    // ── Helper: cek apakah akun Aktif (sudah disetujui SA) ──
+    function _jsIsAktif(a) {
+        if (!a) return false;
+        var s = a.statusVerifikasi || a.status || '';
+        return s === 'Aktif';
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // KONSTANTA
-    // ═══════════════════════════════════════════════════════════
-    window.ROLES_DDF = ['Developer Properti', 'Dealer dan Showroom', 'Finance Multifinance'];
-    window.ROLES_JASA = ['Jasa'];
-
-    window.WARNA_ROLE_SA4 = {
-        'Developer Properti':   { bg: '#8B4513', ikon: 'fas fa-building',         label: 'Developer' },
-        'Dealer dan Showroom':  { bg: '#003366', ikon: 'fas fa-car',              label: 'Dealer' },
-        'Finance Multifinance': { bg: '#046A38', ikon: 'fas fa-hand-holding-usd', label: 'Finance' },
-        'Jasa':                 { bg: '#FF8C00', ikon: 'fas fa-tools',            label: 'Jasa' }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // MODUL 1 — DATA LAYER (5 fungsi)
+    // MODUL 1 — DATA LAYER (3 fungsi)
     // ═══════════════════════════════════════════════════════════
 
-    // ── (1) getDaftarDDFGlobal ──
-    window.getDaftarDDFGlobal = function() {
-        return _ambilAkunByRole(window.ROLES_DDF);
-    };
-
-    // ── (2) getDaftarJasaGlobal ──
+    // ── (1) getDaftarJasaGlobal ⭐ (AKTIF ONLY) ──
     window.getDaftarJasaGlobal = function() {
-        return _ambilAkunByRole(window.ROLES_JASA);
-    };
-
-    // ── (3) getAkunSA4ByIdGlobal ──
-    // Cari akun dengan role apapun dari 4 role (DP, DLR, FIN, JS)
-    window.getAkunSA4ByIdGlobal = function(id) {
-        if (!id) return null;
-        var list = getDaftarDDFGlobal().concat(getDaftarJasaGlobal());
-        return list.find(function(a) { return a.id === id; }) || null;
-    };
-
-    // ── (4) getWarnaRoleSA4Global ──
-    window.getWarnaRoleSA4Global = function(role) {
-        return window.WARNA_ROLE_SA4[role] ||
-               { bg: '#6C757D', ikon: 'fas fa-user', label: role || '-' };
-    };
-
-    // ── Helper internal: ambil akun by role list ──
-    function _ambilAkunByRole(roleList) {
         try {
             var hasil = [];
             var seen = {};
@@ -28577,53 +28464,67 @@ function exportGrosirCSVGlobal(filter) {
             // Sumber 1: dataAkunAktif
             if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
                 dataAkunAktif.forEach(function(a) {
-                    if (!a || roleList.indexOf(a.role) === -1) return;
+                    if (!a) return;
+                    if (a.role !== ROLE_JASA) return;
+                    if (!_jsIsAktif(a)) return;   // ⚡ hanya Aktif
+
                     var id = a.id || a.idUser;
                     if (!id || seen[id]) return;
                     seen[id] = true;
-                    hasil.push(_normalisasiSA4(a, 'akunAktif'));
+
+                    hasil.push(_normalisasiAkunJasa(a, 'akunAktif'));
                 });
             }
 
-            // Sumber 2: dataLoginUser (yang belum ada)
+            // Sumber 2: dataLoginUser (fallback, hanya yang Aktif & belum ada)
             if (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser)) {
                 dataLoginUser.forEach(function(u) {
-                    if (!u || roleList.indexOf(u.role) === -1) return;
+                    if (!u) return;
+                    if (u.role !== ROLE_JASA) return;
+                    if (!_jsIsAktif(u)) return;   // ⚡ hanya Aktif
+
                     var id = u.idUser || u.id;
                     if (!id || seen[id]) return;
                     seen[id] = true;
-                    hasil.push(_normalisasiSA4(u, 'loginUser'));
+
+                    hasil.push(_normalisasiAkunJasa(u, 'loginUser'));
                 });
             }
 
-            // Sort A-Z
+            // Sort A-Z by nama
             hasil.sort(function(a, b) {
                 return (a.nama || '').localeCompare(b.nama || '');
             });
 
             return hasil;
         } catch (e) {
-            console.error('_ambilAkunByRole error:', e);
+            console.error('getDaftarJasaGlobal error:', e);
             return [];
         }
-    }
+    };
+
+    // ── (2) getAkunJasaByIdGlobal ──
+    window.getAkunJasaByIdGlobal = function(id) {
+        if (!id) return null;
+        var list = getDaftarJasaGlobal();
+        return list.find(function(a) { return a.id === id; }) || null;
+    };
+
+    // ── (3) getAkunJasaAktifGlobal ──
+    // Alias biar konsisten dengan penamaan
+    window.getAkunJasaAktifGlobal = function() {
+        return getDaftarJasaGlobal();
+    };
 
     // ── Helper internal: normalisasi akun ──
-    function _normalisasiSA4(a, sumber) {
+    function _normalisasiAkunJasa(a, sumber) {
         var id = a.id || a.idUser;
         var statusVerif = a.statusVerifikasi || a.status || 'Aktif';
-
         var isSuspend = false;
+
         try {
             if (typeof isAkunTersuspendGlobal === 'function') {
                 isSuspend = isAkunTersuspendGlobal(id);
-            }
-        } catch (e) {}
-
-        var statusOnline = 'Offline';
-        try {
-            if (typeof getStatusOnlineAkun === 'function' && !isSuspend) {
-                statusOnline = getStatusOnlineAkun(id);
             }
         } catch (e) {}
 
@@ -28636,20 +28537,12 @@ function exportGrosirCSVGlobal(filter) {
             }
         } catch (e) {}
 
-        var fotoUrl = '';
-        try {
-            if (typeof getFotoProfilAkun === 'function') {
-                fotoUrl = getFotoProfilAkun(id) || '';
-            }
-        } catch (e) {}
-        if (!fotoUrl) fotoUrl = a.fotoUrl || '';
-
         return {
             id: id,
             idUser: a.idUser || a.id,
             nama: a.nama || '-',
             role: a.role || '-',
-            kodeRole: a.kodeRole || '-',
+            kodeRole: a.kodeRole || 'JS',
             username: a.username || '-',
             hp: a.hp || '-',
             email: a.email || '-',
@@ -28662,124 +28555,95 @@ function exportGrosirCSVGlobal(filter) {
             statusVerifikasi: statusVerif,
             statusLangganan: a.statusLangganan || 'Free',
             isSuspend: isSuspend,
-            statusOnline: statusOnline,
             saldo: saldo,
-            fotoUrl: fotoUrl,
+            fotoUrl: a.fotoUrl || '',
             createdAt: a.createdAt || a.tanggalDaftar || null,
             _sumber: sumber
         };
     }
 
     // ═══════════════════════════════════════════════════════════
-    // MODUL 2 — STATISTIK (4 fungsi)
+    // MODUL 2 — STATISTIK (3 fungsi)
     // ═══════════════════════════════════════════════════════════
 
-    // ── (5) hitungStatistikDDFGlobal ⭐ ──
-    window.hitungStatistikDDFGlobal = function() {
-        return _hitungStatistikSA4(getDaftarDDFGlobal());
-    };
-
-    // ── (6) hitungStatistikJasaGlobal ⭐ ──
+    // ── (4) hitungStatistikJasaGlobal ⭐ (AKTIF ONLY) ──
     window.hitungStatistikJasaGlobal = function() {
-        return _hitungStatistikSA4(getDaftarJasaGlobal());
+        try {
+            var list = getDaftarJasaGlobal();
+
+            var stat = {
+                totalAkun: list.length,
+                totalOnline: 0,
+                totalOffline: 0,
+                totalSuspend: 0,
+                totalCoin: 0
+            };
+
+            list.forEach(function(a) {
+                if (!a) return;
+
+                if (a.isSuspend) {
+                    stat.totalSuspend++;
+                } else {
+                    var statusOnline = 'Offline';
+                    try {
+                        if (typeof getStatusOnlineAkun === 'function') {
+                            statusOnline = getStatusOnlineAkun(a.id);
+                        }
+                    } catch (e) {}
+
+                    if (statusOnline === 'Online') stat.totalOnline++;
+                    else stat.totalOffline++;
+                }
+
+                stat.totalCoin += parseFloat(a.saldo) || 0;
+            });
+
+            return stat;
+        } catch (e) {
+            console.error('hitungStatistikJasaGlobal error:', e);
+            return {
+                totalAkun: 0, totalOnline: 0, totalOffline: 0,
+                totalSuspend: 0, totalCoin: 0
+            };
+        }
     };
 
-    // ── (7) hitungStatistikSA4AllGlobal ──
-    // Gabungan DDF + Jasa
-    window.hitungStatistikSA4AllGlobal = function() {
-        return _hitungStatistikSA4(
-            getDaftarDDFGlobal().concat(getDaftarJasaGlobal())
-        );
-    };
-
-    // ── Helper internal: hitung statistik ──
-    function _hitungStatistikSA4(list) {
-        var stat = {
-            total: list.length,
-            online: 0,
-            offline: 0,
-            suspend: 0,
-            pending: 0,
-            totalCoin: 0,
-            perRole: {}
-        };
-
-        // Init perRole dari konstanta
-        window.ROLES_DDF.concat(window.ROLES_JASA).forEach(function(r) {
-            stat.perRole[r] = 0;
-        });
-
-        list.forEach(function(a) {
-            if (!a) return;
-
-            if (a.isSuspend) stat.suspend++;
-            else if (a.statusOnline === 'Online') stat.online++;
-            else stat.offline++;
-
-            if (a.statusVerifikasi === 'Pending') stat.pending++;
-
-            stat.totalCoin += parseFloat(a.saldo) || 0;
-
-            if (stat.perRole[a.role] !== undefined) {
-                stat.perRole[a.role]++;
-            }
-        });
-
-        return stat;
-    }
-
-    // ── (8) getRingkasanSA4Global ──
-    // Snapshot gabungan untuk widget dashboard SA utama
-    window.getRingkasanSA4Global = function() {
-        var statDDF = hitungStatistikDDFGlobal();
-        var statJS  = hitungStatistikJasaGlobal();
-        var statAll = hitungStatistikSA4AllGlobal();
-
-        return {
-            ddf: statDDF,
-            jasa: statJS,
-            semua: statAll,
-            generatedAt: new Date().toISOString()
-        };
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // MODUL 3 — FILTER & PENCARIAN (3 fungsi)
-    // ═══════════════════════════════════════════════════════════
-
-    // ── (9) cariDDFGlobal ──
-    window.cariDDFGlobal = function(filter) {
-        return _filterSA4(getDaftarDDFGlobal(), filter);
-    };
-
-    // ── (10) cariJasaGlobal ──
-    window.cariJasaGlobal = function(filter) {
-        return _filterSA4(getDaftarJasaGlobal(), filter);
-    };
-
-    // ── Helper internal: filter ──
-    function _filterSA4(list, filter) {
+    // ── (5) cariAkunJasaGlobal (AKTIF ONLY) ──
+    window.cariAkunJasaGlobal = function(filter) {
         filter = filter || {};
         var cari   = (filter.cari || '').toLowerCase().trim();
-        var role   = filter.role || '';
         var status = filter.status || '';
+
+        var list = getDaftarJasaGlobal();  // sudah Aktif-only
 
         return list.filter(function(a) {
             if (!a) return false;
-            if (role && a.role !== role) return false;
 
-            // Filter status
-            if (status === 'suspend') {
-                if (!a.isSuspend) return false;
-            } else if (status === 'online') {
-                if (a.isSuspend || a.statusOnline !== 'Online') return false;
-            } else if (status === 'offline') {
-                if (a.isSuspend || a.statusOnline !== 'Offline') return false;
-            } else if (status === 'pending') {
-                if (a.statusVerifikasi !== 'Pending') return false;
+            if (status) {
+                if (status === 'suspend') {
+                    if (!a.isSuspend) return false;
+                } else if (status === 'online') {
+                    if (a.isSuspend) return false;
+                    var st = 'Offline';
+                    try {
+                        if (typeof getStatusOnlineAkun === 'function') {
+                            st = getStatusOnlineAkun(a.id);
+                        }
+                    } catch (e) {}
+                    if (st !== 'Online') return false;
+                } else if (status === 'offline') {
+                    if (a.isSuspend) return false;
+                    var st2 = 'Offline';
+                    try {
+                        if (typeof getStatusOnlineAkun === 'function') {
+                            st2 = getStatusOnlineAkun(a.id);
+                        }
+                    } catch (e) {}
+                    if (st2 !== 'Offline') return false;
+                }
             }
 
-            // Filter cari
             if (cari) {
                 var s = (a.nama || '') + ' ' + (a.id || '') + ' ' +
                         (a.username || '') + ' ' + (a.hp || '') + ' ' +
@@ -28789,42 +28653,228 @@ function exportGrosirCSVGlobal(filter) {
 
             return true;
         });
+    };
+
+    // ── (6) getWarnaRoleJasaGlobal ──
+    window.getWarnaRoleJasaGlobal = function() {
+        return { bg: '#FF8C00', label: 'Jasa', ikon: 'fas fa-tools' };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // MODUL 3 — RENDER UI (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── (7) tampilkanDasborJasa ⭐ (ENTRY POINT) ──
+    window.tampilkanDasborJasa = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.error('❌ #kontenDasbor tidak ditemukan');
+                return;
+            }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            // Cache template (support template tag atau div)
+            if (!window._tplDasborJasaAdmin) {
+                var c = document.getElementById('dasborJasaAdminContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Dasbor Jasa', '10.67');
+                    }
+                    return;
+                }
+                window._tplDasborJasaAdmin = c.innerHTML;
+                if (c.tagName !== 'TEMPLATE') c.remove();
+                console.log('✅ Template Dasbor Jasa di-cache');
+            }
+
+            konten.innerHTML = window._tplDasborJasaAdmin;
+
+            setTimeout(function() {
+                renderStatistikJasaAdmin();
+                renderGridJasaAdmin();
+                console.log('✅ BLOK R 10.67 — Dasbor Jasa rendered');
+            }, 150);
+
+        } catch (e) {
+            console.error('tampilkanDasborJasa error:', e);
+        }
+    };
+
+    // ── (8) renderStatistikJasaAdmin ──
+    window.renderStatistikJasaAdmin = function() {
+        try {
+            var stat = hitungStatistikJasaGlobal();
+
+            _setTextJS('jsTotalAkun',    stat.totalAkun);
+            _setTextJS('jsTotalOnline',  stat.totalOnline);
+            _setTextJS('jsTotalOffline', stat.totalOffline);
+            _setTextJS('jsTotalSuspend', stat.totalSuspend);
+        } catch (e) {
+            console.error('renderStatistikJasaAdmin error:', e);
+        }
+    };
+
+    // ── (9) renderGridJasaAdmin ⭐ ──
+    window.renderGridJasaAdmin = function() {
+        try {
+            var grid = document.getElementById('jsGridAkun');
+            if (!grid) return;
+
+            var cari   = (document.getElementById('jsCari')?.value || '').toLowerCase().trim();
+            var status = document.getElementById('jsFilterStatus')?.value || '';
+
+            var list = cariAkunJasaGlobal({
+                cari: cari,
+                status: status
+            });
+
+            _setTextJS('jsJumlahAkun', list.length + ' Jasa');
+
+            if (list.length === 0) {
+                var hasAnyData = getDaftarJasaGlobal().length > 0;
+                grid.innerHTML =
+                    '<div class="col-12 text-center text-white py-5">' +
+                        '<i class="fas fa-inbox fa-4x d-block mb-3 opacity-50"></i>' +
+                        '<h5>' + (hasAnyData ? 'Tidak Ada Akun Cocok' : 'Belum Ada Akun Jasa Aktif') + '</h5>' +
+                        '<p class="small">' +
+                            (hasAnyData
+                                ? 'Coba ubah filter atau kata kunci pencarian.'
+                                : 'Belum ada akun Jasa yang <strong>Aktif</strong>. ' +
+                                  'Akun Pending/Ditolak tidak ditampilkan di sini.') +
+                        '</p>' +
+                    '</div>';
+                return;
+            }
+
+            var html = '';
+            list.forEach(function(a) {
+                html += _renderKartuAkunJasa(a);
+            });
+            grid.innerHTML = html;
+
+        } catch (e) {
+            console.error('renderGridJasaAdmin error:', e);
+        }
+    };
+
+    // ── (10) resetFilterJasaAdmin ──
+    window.resetFilterJasaAdmin = function() {
+        try {
+            var elCari = document.getElementById('jsCari');
+            var elStat = document.getElementById('jsFilterStatus');
+            if (elCari) elCari.value = '';
+            if (elStat) elStat.value = '';
+
+            renderGridJasaAdmin();
+        } catch (e) {
+            console.error('resetFilterJasaAdmin error:', e);
+        }
+    };
+
+    // ── Helper: render 1 kartu akun ──
+    function _renderKartuAkunJasa(a) {
+        var info = getWarnaRoleJasaGlobal();
+        var warnaBg = info.bg;
+
+        var statusOnline = 'Offline';
+        try {
+            if (typeof getStatusOnlineAkun === 'function' && !a.isSuspend) {
+                statusOnline = getStatusOnlineAkun(a.id);
+            }
+        } catch (e) {}
+
+        var isOnline = (statusOnline === 'Online');
+
+        var badgeStatusHtml = '';
+        if (a.isSuspend) {
+            badgeStatusHtml = '<span class="badge bg-danger">' +
+                '<i class="fas fa-lock me-1"></i>Suspend</span>';
+        } else if (isOnline) {
+            badgeStatusHtml = '<span class="badge bg-success">' +
+                '<i class="fas fa-circle me-1" style="font-size:8px;"></i>Online</span>';
+        } else {
+            badgeStatusHtml = '<span class="badge bg-secondary">' +
+                '<i class="fas fa-circle me-1" style="font-size:8px;"></i>Offline</span>';
+        }
+
+        var fotoUrl = '';
+        try {
+            if (typeof getFotoProfilAkun === 'function') {
+                fotoUrl = getFotoProfilAkun(a.id) || '';
+            }
+        } catch (e) {}
+        if (!fotoUrl) {
+            var init = (a.nama || 'U').substring(0, 2).toUpperCase();
+            fotoUrl = 'https://placehold.co/100x100/FF8C00/ffffff?text=' + encodeURIComponent(init);
+        }
+
+        var borderColor = a.isSuspend ? '#DC3545' : (isOnline ? '#28A745' : '#6C757D');
+
+        var namaEsc = (a.nama || '').replace(/'/g, "\\'");
+        var idEsc = (a.id || '').replace(/'/g, "\\'");
+
+        var alamatTxt = a.alamat || '-';
+        if (alamatTxt.length > 50) alamatTxt = alamatTxt.substring(0, 50) + '...';
+
+        return '' +
+        '<div class="col-md-4 col-lg-3">' +
+            '<div class="card h-100 shadow-sm border-0 bg-white hover-card" ' +
+                 'style="cursor:pointer;" ' +
+                 'onclick="tampilkanProdukDariDasbor(\'' + idEsc + '\', \'Jasa\', \'' + namaEsc + '\')">' +
+                '<div class="card-body text-center p-3">' +
+                    '<img src="' + fotoUrl + '" class="rounded-circle mb-2" ' +
+                         'style="width:80px;height:80px;object-fit:cover;' +
+                                'border:3px solid ' + borderColor + ';">' +
+                    '<h6 class="fw-bold mb-1 text-truncate" title="' + _escJS(a.nama) + '">' +
+                        _escJS(a.nama) + '</h6>' +
+                    '<small class="text-muted d-block">' + _escJS(a.id) + '</small>' +
+                    '<div class="mt-2">' +
+                        '<span class="badge" style="background:' + warnaBg + ';">' +
+                            '<i class="' + info.ikon + ' me-1"></i>' + info.label +
+                        '</span>' +
+                    '</div>' +
+                    '<div class="mt-2">' + badgeStatusHtml + '</div>' +
+                    '<div class="small text-muted mt-2 text-truncate" title="' + _escJS(a.alamat) + '">' +
+                        '<i class="fas fa-map-marker-alt me-1"></i>' + _escJS(alamatTxt) +
+                    '</div>' +
+                    '<div class="small text-warning mt-1">' +
+                        '<i class="fas fa-coins me-1"></i>' +
+                        (parseFloat(a.saldo) || 0).toLocaleString('id-ID') + ' Coin' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
     }
 
-    // ── (11) getTopAkunSA4ByCoinGlobal ──
-    // Top N akun dengan saldo coin tertinggi
-    window.getTopAkunSA4ByCoinGlobal = function(limit, filterRoles) {
-        limit = parseInt(limit, 10) || 10;
-        var list = filterRoles && filterRoles.length > 0
-            ? _ambilAkunByRole(filterRoles)
-            : getDaftarDDFGlobal().concat(getDaftarJasaGlobal());
-
-        var sorted = list.slice().sort(function(a, b) {
-            return (b.saldo || 0) - (a.saldo || 0);
-        });
-
-        return sorted.slice(0, limit);
-    };
-
     // ═══════════════════════════════════════════════════════════
-    // MODUL 4 — EXPORT & UTIL (3 fungsi)
+    // MODUL 4 — HELPER & BONUS (3 fungsi)
     // ═══════════════════════════════════════════════════════════
 
-    // ── (12) exportDDFCSVGlobal ──
-    window.exportDDFCSVGlobal = function(filter) {
-        return _exportSA4CSV(getDaftarDDFGlobal(), filter || {}, 'dev_dealer_fin');
-    };
+    // ── (11) _setTextJS (internal) ──
+    function _setTextJS(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
 
-    // ── (13) exportJasaCSVGlobal ──
-    window.exportJasaCSVGlobal = function(filter) {
-        return _exportSA4CSV(getDaftarJasaGlobal(), filter || {}, 'jasa');
-    };
+    // ── (12) _escJS (internal escape) ──
+    function _escJS(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
 
-    // ── Helper internal: export CSV ──
-    function _exportSA4CSV(list, filter, namaPrefix) {
+    // ── (13) exportJasaCSVGlobal (bonus) ──
+    window.exportJasaCSVGlobal = function() {
         try {
-            var data = _filterSA4(list, filter);
-            if (data.length === 0) {
+            var list = cariAkunJasaGlobal({
+                cari: document.getElementById('jsCari')?.value || '',
+                status: document.getElementById('jsFilterStatus')?.value || ''
+            });
+
+            if (list.length === 0) {
                 return { sukses: false, pesan: 'Tidak ada data untuk diexport.' };
             }
 
@@ -28837,8 +28887,15 @@ function exportGrosirCSVGlobal(filter) {
                 return s;
             }
 
-            var lines = ['No;Nama;ID;Role;Username;HP;Email;Alamat;Status Online;Suspend;Status Verifikasi;Coin'];
-            data.forEach(function(a, i) {
+            var lines = ['No;Nama;ID;Role;Username;HP;Email;Alamat;Status Online;Suspend;Coin'];
+            list.forEach(function(a, i) {
+                var st = 'Offline';
+                try {
+                    if (typeof getStatusOnlineAkun === 'function' && !a.isSuspend) {
+                        st = getStatusOnlineAkun(a.id);
+                    }
+                } catch (e) {}
+
                 lines.push([
                     i + 1,
                     esc(a.nama),
@@ -28848,15 +28905,14 @@ function exportGrosirCSVGlobal(filter) {
                     esc(a.hp),
                     esc(a.email),
                     esc(a.alamat),
-                    esc(a.statusOnline),
+                    esc(st),
                     a.isSuspend ? 'YA' : 'TIDAK',
-                    esc(a.statusVerifikasi),
                     a.saldo || 0
                 ].join(';'));
             });
 
             var csv = '\uFEFF' + lines.join('\n');
-            var namaFile = namaPrefix + '_' +
+            var namaFile = 'jasa_' +
                 new Date().toISOString().split('T')[0] + '.csv';
 
             var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -28869,101 +28925,38 @@ function exportGrosirCSVGlobal(filter) {
             document.body.removeChild(a);
             setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
 
-            return { sukses: true, namaFile: namaFile, total: data.length };
+            return { sukses: true, namaFile: namaFile, total: list.length };
         } catch (e) {
-            console.error('_exportSA4CSV error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    }
-
-    // ── (14) getDaftarRoleSA4Global ──
-    // Daftar role + metadata untuk dropdown/filter
-    window.getDaftarRoleSA4Global = function() {
-        return [
-            { role: 'Developer Properti',   kategori: 'Profesional', warna: '#8B4513', ikon: 'fas fa-building' },
-            { role: 'Dealer dan Showroom',  kategori: 'Profesional', warna: '#003366', ikon: 'fas fa-car' },
-            { role: 'Finance Multifinance', kategori: 'Profesional', warna: '#046A38', ikon: 'fas fa-hand-holding-usd' },
-            { role: 'Jasa',                 kategori: 'Profesional', warna: '#FF8C00', ikon: 'fas fa-tools' }
-        ];
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // AUTO-SEED DEMO (opsional)
-    // ═══════════════════════════════════════════════════════════
-    window.seedDemoSA4Global = function() {
-        try {
-            if (typeof dataAkunAktif === 'undefined' || !Array.isArray(dataAkunAktif)) {
-                return { sukses: false, pesan: 'dataAkunAktif tidak tersedia.' };
-            }
-
-            var sudahAda = dataAkunAktif.some(function(a) {
-                return a && window.ROLES_DDF.concat(window.ROLES_JASA).indexOf(a.role) !== -1;
-            });
-            if (sudahAda) {
-                return { sukses: true, pesan: 'Data demo sudah ada.' };
-            }
-
-            var now = new Date().toISOString();
-            var samples = [
-                { id: 'ID_TK2R_DP-0001',  idUser: 'ID_TK2R_DP-0001',  nama: 'PT Graha Properti Prima',   role: 'Developer Properti',   kodeRole: 'DP',  hp: '081234001001', email: 'dev@graha.local',   alamat: 'Jl. Properti No. 1, Ciamis' },
-                { id: 'ID_TK2R_DLR-0001', idUser: 'ID_TK2R_DLR-0001', nama: 'Showroom Mobil Sejahtera',  role: 'Dealer dan Showroom',  kodeRole: 'DLR', hp: '081234002002', email: 'dealer@sejahtera.local', alamat: 'Jl. Raya Mobil No. 88, Ciamis' },
-                { id: 'ID_TK2R_FIN-0001', idUser: 'ID_TK2R_FIN-0001', nama: 'PT Finance Mitra Sejahtera',role: 'Finance Multifinance', kodeRole: 'FIN', hp: '081234003003', email: 'fin@mitra.local',   alamat: 'Jl. Keuangan No. 5, Ciamis' },
-                { id: 'ID_TK2R_JS-0001',  idUser: 'ID_TK2R_JS-0001',  nama: 'Bengkel Teknik Prima',      role: 'Jasa',                 kodeRole: 'JS',  hp: '081234004004', email: 'jasa@teknik.local', alamat: 'Jl. Service No. 10, Ciamis' }
-            ];
-
-            samples.forEach(function(s) {
-                s.username = s.kodeRole.toLowerCase() + '_demo';
-                s.status = 'Aktif';
-                s.statusVerifikasi = 'Aktif';
-                s.statusLangganan = 'Pro';
-                s.lat = -7.449 + Math.random() * 0.01;
-                s.lng = 108.654 + Math.random() * 0.01;
-                s.createdAt = now;
-                dataAkunAktif.push(s);
-            });
-
-            if (typeof simpanDataKeLocalStorage === 'function') {
-                simpanDataKeLocalStorage();
-            } else {
-                localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
-            }
-
-            console.log('✅ Seed demo SA4: 4 akun ditambahkan');
-            return { sukses: true, total: samples.length };
-        } catch (e) {
-            console.error('seedDemoSA4Global error:', e);
+            console.error('exportJasaCSVGlobal error:', e);
             return { sukses: false, pesan: e.message };
         }
     };
+
+    // ═══════════════════════════════════════════════════════════
+    // MODUL 5 — HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanDasborJasa'] = function() {
+        if (typeof window.tampilkanDasborJasa === 'function') {
+            window.tampilkanDasborJasa();
+        } else if (typeof tampilkanPlaceholderMenu === 'function') {
+            tampilkanPlaceholderMenu('Dasbor Jasa', '10.67');
+        }
+    };
+    window.menuHandlers['tampilkanDasborJasaAdmin'] = window.menuHandlers['tampilkanDasborJasa'];
 
     // ═══════════════════════════════════════════════════════════
     // LOG KONFIRMASI
     // ═══════════════════════════════════════════════════════════
-    console.log('✅ BLOK Fungsi Global Dasbor SA 4 Role R 0.10.66/67 terpasang.');
-    console.log('   Modul 1 — Data Layer (5):');
-    console.log('     1. getDaftarDDFGlobal');
-    console.log('     2. getDaftarJasaGlobal');
-    console.log('     3. getAkunSA4ByIdGlobal');
-    console.log('     4. getWarnaRoleSA4Global');
-    console.log('   Modul 2 — Statistik (4):');
-    console.log('     5. hitungStatistikDDFGlobal ⭐');
-    console.log('     6. hitungStatistikJasaGlobal ⭐');
-    console.log('     7. hitungStatistikSA4AllGlobal');
-    console.log('     8. getRingkasanSA4Global ⭐');
-    console.log('   Modul 3 — Filter (3):');
-    console.log('     9. cariDDFGlobal');
-    console.log('     10. cariJasaGlobal');
-    console.log('     11. getTopAkunSA4ByCoinGlobal');
-    console.log('   Modul 4 — Export & Util (3):');
-    console.log('     12. exportDDFCSVGlobal');
-    console.log('     13. exportJasaCSVGlobal');
-    console.log('     14. getDaftarRoleSA4Global');
-    console.log('   Bonus: seedDemoSA4Global()');
-    console.log('   🎯 Total: 14 fungsi + 1 bonus = 15');
+    console.log('✅ BLOK Fungsi Global Dasbor Jasa R 0.10.67 (Aktif Only) terpasang.');
+    console.log('   • getDaftarJasaGlobal → filter statusVerifikasi === "Aktif"');
+    console.log('   • hitungStatistikJasaGlobal → hitung dari hasil filter Aktif');
+    console.log('   • Akun Pending/Ditolak TIDAK ditampilkan');
+    console.log('   • Suspend tetap tampil (statusVerifikasi masih Aktif)');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK Fungsi Global Dasbor SA 4 Role R 0.10.66/67 -->
+<!-- ═══ AKHIR BLOK R 0.10.67 (Aktif Only)                  ═══ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
