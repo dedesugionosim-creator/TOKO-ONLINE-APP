@@ -21388,6 +21388,642 @@ function cekStatusSewaAkunGlobal(idUser) {
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
+<!-- ===== BLOK R 0.10.46 – FUNGSI GLOBAL DOMPET R2COIN SA ===== -->
+<!-- ============================================================ -->
+<script>
+// ============================================================
+// BLOK R 0.10.46 – FUNGSI GLOBAL DOMPET R2COIN SA
+// ------------------------------------------------------------
+// Fungsi global yang dipakai:
+//   - getIdUserAktif()         -> BLOK R 01.0 (2)
+//   - getDataIdUser()          -> BLOK R 01.0 (3)
+//   - generateKodeUnik()       -> BLOK R 01.0 (1)
+//   - catatAktivitasGlobal()   -> BLOK R 01.0 (12)
+//   - loadTopUpHistory()       -> BLOK R 01.0 (16)
+//   - loadWithdrawalRequests() -> BLOK R 01.0 (17)
+//   - getSettingEkonomiGlobal() -> BLOK R 01.0 (23)
+//   - getFotoProfilAkun()      -> BLOK R 01.0 (4)
+//   - isAkunTersuspendGlobal() -> BLOK R 01.0 (24)
+// ------------------------------------------------------------
+// CATATAN STRUKTUR:
+//   • Per user: 'dompet_<idUser>' = {
+//       balance, totalMasuk, totalKeluar,
+//       transactions: [], updatedAt, updatedBy
+//     }
+//   • Log intervensi global: 'dataIntervensiCoinLog' = []
+// ============================================================
+
+var KEY_DOMPET_PREFIX  = 'dompet_';
+var KEY_INTERVENSI_LOG = 'dataIntervensiCoinLog';
+
+// --- 1. HELPER: Default Dompet ---
+function getDefaultDompet() {
+    return {
+        balance: 0,
+        totalMasuk: 0,
+        totalKeluar: 0,
+        transactions: [],
+        updatedAt: null,
+        updatedBy: null
+    };
+}
+
+// --- 2. GET DOMPET USER ---
+function getDompetUser(idUser) {
+    if (!idUser) return getDefaultDompet();
+
+    try {
+        var s = localStorage.getItem(KEY_DOMPET_PREFIX + idUser);
+        if (!s) return getDefaultDompet();
+
+        var data = JSON.parse(s);
+        if (!data || typeof data !== 'object') return getDefaultDompet();
+
+        var def = getDefaultDompet();
+        var merged = Object.assign({}, def, data);
+        if (!Array.isArray(merged.transactions)) merged.transactions = [];
+
+        return merged;
+    } catch (e) {
+        console.error('getDompetUser error:', e);
+        return getDefaultDompet();
+    }
+}
+
+// --- 3. SIMPAN DOMPET USER ---
+function saveDompetUser(idUser, data) {
+    if (!idUser) {
+        return { sukses: false, pesan: 'ID user tidak valid.' };
+    }
+    if (!data || typeof data !== 'object') {
+        return { sukses: false, pesan: 'Data dompet tidak valid.' };
+    }
+
+    try {
+        var def = getDefaultDompet();
+        var merged = Object.assign({}, def, data);
+        if (!Array.isArray(merged.transactions)) merged.transactions = [];
+
+        // Batasi riwayat 500 transaksi terakhir
+        if (merged.transactions.length > 500) {
+            merged.transactions = merged.transactions.slice(-500);
+        }
+
+        merged.updatedAt = new Date().toISOString();
+        merged.updatedBy = (typeof getIdUserAktif === 'function')
+            ? getIdUserAktif() : 'SA';
+
+        localStorage.setItem(KEY_DOMPET_PREFIX + idUser,
+            JSON.stringify(merged));
+
+        return { sukses: true, data: merged };
+    } catch (e) {
+        console.error('saveDompetUser error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// --- 4. GET SALDO DOMPET USER ---
+function getSaldoDompet(idUser) {
+    if (!idUser) return 0;
+    var dompet = getDompetUser(idUser);
+    return parseFloat(dompet.balance) || 0;
+}
+
+// --- 5. SET SALDO DOMPET ---
+function setSaldoDompet(idUser, saldoBaru) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+    try {
+        var dompet = getDompetUser(idUser);
+        dompet.balance = Math.max(0, parseFloat(saldoBaru) || 0);
+        return saveDompetUser(idUser, dompet);
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// --- 6. TAMBAH TRANSAKSI DOMPET (CORE) ---
+function tambahTransaksiDompet(idUser, opts) {
+    opts = opts || {};
+
+    if (!idUser) {
+        return { sukses: false, pesan: 'ID user tidak valid.' };
+    }
+
+    var tipe = opts.tipe || 'credit';  // 'credit' | 'debit'
+    var jumlah = parseFloat(opts.jumlah) || 0;
+
+    if (jumlah <= 0) {
+        return { sukses: false, pesan: 'Jumlah harus > 0.' };
+    }
+
+    try {
+        var dompet = getDompetUser(idUser);
+        var saldoLama = parseFloat(dompet.balance) || 0;
+        var saldoBaru;
+
+        if (tipe === 'credit') {
+            saldoBaru = saldoLama + jumlah;
+            dompet.totalMasuk = (parseFloat(dompet.totalMasuk) || 0) + jumlah;
+        } else {
+            if (saldoLama < jumlah) {
+                return {
+                    sukses: false,
+                    pesan: 'Saldo tidak mencukupi. Saldo: ' + saldoLama,
+                    saldoSekarang: saldoLama
+                };
+            }
+            saldoBaru = saldoLama - jumlah;
+            dompet.totalKeluar = (parseFloat(dompet.totalKeluar) || 0) + jumlah;
+        }
+
+        dompet.balance = saldoBaru;
+
+        var trx = {
+            id: (typeof generateKodeUnik === 'function')
+                ? generateKodeUnik('TRXCOIN')
+                : 'TRXCOIN-' + Date.now(),
+            tipe: tipe,
+            jumlah: jumlah,
+            saldoSebelum: saldoLama,
+            saldoSesudah: saldoBaru,
+            keterangan: opts.keterangan || '-',
+            refId: opts.refId || null,
+            kategori: opts.kategori || 'lainnya',
+            waktu: new Date().toISOString(),
+            oleh: (typeof getIdUserAktif === 'function')
+                ? getIdUserAktif() : 'system'
+        };
+
+        if (!Array.isArray(dompet.transactions)) dompet.transactions = [];
+        dompet.transactions.push(trx);
+
+        var hasil = saveDompetUser(idUser, dompet);
+        if (!hasil.sukses) return hasil;
+
+        return {
+            sukses: true,
+            transaksi: trx,
+            saldo: saldoBaru,
+            saldoSebelum: saldoLama
+        };
+    } catch (e) {
+        console.error('tambahTransaksiDompet error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// --- 7. LOAD RIWAYAT DOMPET USER (SORTED) ---
+function loadRiwayatDompetUser(idUser) {
+    if (!idUser) return [];
+    var dompet = getDompetUser(idUser);
+    var trx = Array.isArray(dompet.transactions) ? dompet.transactions : [];
+
+    return trx.slice().sort(function(a, b) {
+        return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+    });
+}
+
+// --- 8. INTERVENSI COIN SA (MAIN ACTION) ---
+function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
+    if (!idUser) {
+        return { sukses: false, pesan: 'ID user tidak valid.' };
+    }
+    if (aksi !== 'tambah' && aksi !== 'kurang') {
+        return { sukses: false, pesan: 'Aksi harus "tambah" atau "kurang".' };
+    }
+
+    jumlah = parseInt(jumlah, 10) || 0;
+    if (jumlah <= 0) {
+        return { sukses: false, pesan: 'Jumlah harus > 0.' };
+    }
+
+    var tipe = (aksi === 'tambah') ? 'credit' : 'debit';
+
+    var hasil = tambahTransaksiDompet(idUser, {
+        tipe: tipe,
+        jumlah: jumlah,
+        keterangan: keterangan || 'Intervensi manual oleh SA',
+        kategori: 'intervensi_sa'
+    });
+
+    if (!hasil.sukses) return hasil;
+
+    var saldoBaru = hasil.saldo;
+    var saldoLama = hasil.saldoSebelum;
+
+    // Update saldo di dataAkunAktif (agar tampil di list)
+    try {
+        if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+            var idx = dataAkunAktif.findIndex(function(a) {
+                return a && (a.id === idUser || a.idUser === idUser);
+            });
+            if (idx !== -1) {
+                if (!dataAkunAktif[idx].r2coin) dataAkunAktif[idx].r2coin = {};
+                dataAkunAktif[idx].r2coin.balance = saldoBaru;
+                try {
+                    localStorage.setItem('dataAkunAktif',
+                        JSON.stringify(dataAkunAktif));
+                } catch (e) {}
+            }
+        }
+    } catch (e) {}
+
+    // Catat ke log intervensi global
+    var idAdmin = (typeof getIdUserAktif === 'function')
+        ? getIdUserAktif() : 'SA';
+    var userData = (typeof getDataIdUser === 'function')
+        ? getDataIdUser(idUser) : null;
+    var adminData = (typeof getDataIdUser === 'function')
+        ? getDataIdUser(idAdmin) : null;
+
+    var logEntry = {
+        id: (typeof generateKodeUnik === 'function')
+            ? generateKodeUnik('INTERV')
+            : 'INTERV-' + Date.now(),
+        waktu: new Date().toISOString(),
+        adminId: idAdmin,
+        adminNama: adminData ? (adminData.nama || idAdmin) : 'SuperAdmin',
+        userId: idUser,
+        userNama: userData ? (userData.nama || idUser) : idUser,
+        aksi: aksi,
+        jumlah: jumlah,
+        saldoSebelum: saldoLama,
+        saldoSesudah: saldoBaru,
+        keterangan: keterangan || '-',
+        idTransaksi: hasil.transaksi.id
+    };
+
+    simpanIntervensiLog(logEntry);
+
+    // Catat aktivitas global
+    if (typeof catatAktivitasGlobal === 'function') {
+        catatAktivitasGlobal(idAdmin, 'Intervensi Coin SA',
+            (aksi === 'tambah' ? 'Tambah' : 'Kurangi') + ' ' + jumlah +
+            ' Coin ke ' + logEntry.userNama + ' (' + idUser + ')'
+        );
+    }
+
+    return {
+        sukses: true,
+        transaksi: hasil.transaksi,
+        saldo: saldoBaru,
+        saldoSebelum: saldoLama,
+        log: logEntry
+    };
+}
+
+// --- 9. SIMPAN INTERVENSI LOG (INTERNAL) ---
+function simpanIntervensiLog(entry) {
+    try {
+        var log = loadRiwayatIntervensi();
+        log.unshift(entry);
+
+        // Batasi 500 entri
+        if (log.length > 500) log = log.slice(0, 500);
+
+        localStorage.setItem(KEY_INTERVENSI_LOG, JSON.stringify(log));
+    } catch (e) {
+        console.error('simpanIntervensiLog error:', e);
+    }
+}
+
+// --- 10. LOAD RIWAYAT INTERVENSI GLOBAL ---
+function loadRiwayatIntervensi() {
+    try {
+        var s = localStorage.getItem(KEY_INTERVENSI_LOG);
+        var arr = s ? JSON.parse(s) : [];
+        return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+// --- 11. GET RIWAYAT INTERVENSI BY USER ---
+function getRiwayatIntervensiUser(idUser) {
+    if (!idUser) return [];
+    var log = loadRiwayatIntervensi();
+    return log.filter(function(l) {
+        return l && l.userId === idUser;
+    });
+}
+
+// --- 12. HITUNG STATISTIK DOMPET GLOBAL ---
+function hitungStatistikDompetGlobal() {
+    var totalCoinBeredar = 0;
+    var totalTopUpRupiah = 0;
+    var totalWithdrawRupiah = 0;
+
+    // Coin beredar dari semua akun aktif
+    try {
+        if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+            dataAkunAktif.forEach(function(a) {
+                if (!a) return;
+                var id = a.id || a.idUser;
+                var saldo = getSaldoDompet(id);
+                totalCoinBeredar += saldo;
+            });
+        }
+    } catch (e) {}
+
+    // Top-up history (Lunas)
+    try {
+        var topUps = (typeof loadTopUpHistory === 'function')
+            ? loadTopUpHistory() : [];
+        topUps.forEach(function(item) {
+            if (item && item.status === 'Lunas') {
+                totalTopUpRupiah += parseFloat(item.totalRupiah) || 0;
+            }
+        });
+    } catch (e) {}
+
+    // Withdrawal history (Disetujui)
+    try {
+        var wd = (typeof loadWithdrawalRequests === 'function')
+            ? loadWithdrawalRequests() : [];
+        wd.forEach(function(item) {
+            if (item && item.status === 'Disetujui') {
+                totalWithdrawRupiah += parseFloat(item.totalRupiah) || 0;
+            }
+        });
+    } catch (e) {}
+
+    // Saldo kas = coin beredar × harga jual
+    var saldoKasRupiah = 0;
+    try {
+        if (typeof getSaldoKasRupiah === 'function') {
+            saldoKasRupiah = getSaldoKasRupiah();
+        } else {
+            var setting = (typeof getSettingEkonomiGlobal === 'function')
+                ? getSettingEkonomiGlobal() : { hargaJual: 1000 };
+            saldoKasRupiah = totalCoinBeredar * (setting.hargaJual || 1000);
+        }
+    } catch (e) {}
+
+    return {
+        totalCoinBeredar: totalCoinBeredar,
+        totalTopUpRupiah: totalTopUpRupiah,
+        totalWithdrawRupiah: totalWithdrawRupiah,
+        saldoKasRupiah: saldoKasRupiah
+    };
+}
+
+// --- 13. HITUNG STATISTIK DOMPET PER ROLE ---
+function hitungStatistikDompetPerRole() {
+    var perRole = {};
+    var totalCoin = 0;
+    var totalUser = 0;
+
+    try {
+        if (typeof dataLoginUser === 'undefined' || !Array.isArray(dataLoginUser)) {
+            return { perRole: {}, totalCoin: 0, totalUser: 0 };
+        }
+
+        dataLoginUser.forEach(function(u) {
+            if (!u || !u.idUser) return;
+            if (u.role === 'SuperAdmin') return;
+
+            var role = u.role || 'Lainnya';
+            var saldo = getSaldoDompet(u.idUser);
+
+            if (!perRole[role]) {
+                perRole[role] = {
+                    role: role,
+                    jumlahUser: 0,
+                    totalCoin: 0,
+                    aktifCoin: 0,
+                    suspendCoin: 0
+                };
+            }
+
+            perRole[role].jumlahUser++;
+            perRole[role].totalCoin += saldo;
+
+            // Cek status suspend
+            var isSuspend = false;
+            try {
+                if (typeof isAkunTersuspendGlobal === 'function') {
+                    isSuspend = isAkunTersuspendGlobal(u.idUser);
+                }
+            } catch (e) {}
+
+            if (isSuspend) {
+                perRole[role].suspendCoin += saldo;
+            } else {
+                perRole[role].aktifCoin += saldo;
+            }
+
+            totalCoin += saldo;
+            totalUser++;
+        });
+    } catch (e) {
+        console.error('hitungStatistikDompetPerRole error:', e);
+    }
+
+    return {
+        perRole: perRole,
+        totalCoin: totalCoin,
+        totalUser: totalUser
+    };
+}
+
+// --- 14. GET SEMUA TRANSAKSI COIN GLOBAL ---
+function getAllTransaksiCoinGlobal() {
+    var hasil = [];
+
+    // Top-Up
+    try {
+        var topUps = (typeof loadTopUpHistory === 'function')
+            ? loadTopUpHistory() : [];
+        topUps.forEach(function(item) {
+            if (!item || item.status !== 'Lunas') return;
+            hasil.push({
+                waktu: item.createdAt || item.tanggal,
+                user: item.namaPembeli || item.idUser,
+                idUser: item.idUser,
+                role: item.role || '-',
+                jenis: 'Top-Up',
+                coin: parseFloat(item.jumlahKoin) || 0,
+                rupiah: parseFloat(item.totalRupiah) || 0,
+                keterangan: 'Top-Up via ' + (item.metode || '-')
+            });
+        });
+    } catch (e) {}
+
+    // Withdrawal
+    try {
+        var wd = (typeof loadWithdrawalRequests === 'function')
+            ? loadWithdrawalRequests() : [];
+        wd.forEach(function(item) {
+            if (!item || item.status !== 'Disetujui') return;
+            hasil.push({
+                waktu: item.createdAt || item.tanggal,
+                user: item.namaPemohon || item.idUser,
+                idUser: item.idUser,
+                role: item.role || '-',
+                jenis: 'Withdraw',
+                coin: -(parseFloat(item.jumlahKoin) || 0),
+                rupiah: parseFloat(item.totalRupiah) || 0,
+                keterangan: 'Withdraw ke ' +
+                    ((item.rekeningTujuan && item.rekeningTujuan.bank) || '-')
+            });
+        });
+    } catch (e) {}
+
+    // Sort desc by waktu
+    hasil.sort(function(a, b) {
+        return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+    });
+
+    return hasil;
+}
+
+// --- 15. GET DAFTAR SALDO USER (FILTERED + SORTED) ---
+function getDaftarSaldoUserGlobal(filter) {
+    filter = filter || {};
+    var cari = (filter.cari || '').toLowerCase().trim();
+    var filterRole = filter.role || '';
+    var filterSaldo = filter.saldo || '';
+
+    var hasil = [];
+    if (typeof dataLoginUser === 'undefined' || !Array.isArray(dataLoginUser)) {
+        return hasil;
+    }
+
+    dataLoginUser.forEach(function(u) {
+        if (!u || !u.idUser) return;
+        if (u.role === 'SuperAdmin') return;
+
+        var saldo = getSaldoDompet(u.idUser);
+        var dompet = getDompetUser(u.idUser);
+        var jmlTrx = (dompet.transactions || []).length;
+
+        var matchCari = cari === '' ||
+            (u.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+            (u.idUser || '').toLowerCase().indexOf(cari) !== -1 ||
+            (u.username || '').toLowerCase().indexOf(cari) !== -1;
+
+        var matchRole = filterRole === '' || u.role === filterRole;
+
+        var matchSaldo = filterSaldo === '' ||
+            (filterSaldo === 'ada' && saldo > 0) ||
+            (filterSaldo === 'kosong' && saldo === 0);
+
+        if (!matchCari || !matchRole || !matchSaldo) return;
+
+        hasil.push({
+            idUser: u.idUser,
+            nama: u.nama || '-',
+            role: u.role || '-',
+            username: u.username || '-',
+            saldo: saldo,
+            jmlTransaksi: jmlTrx,
+            totalMasuk: dompet.totalMasuk || 0,
+            totalKeluar: dompet.totalKeluar || 0
+        });
+    });
+
+    // Sort by saldo desc
+    hasil.sort(function(a, b) { return b.saldo - a.saldo; });
+    return hasil;
+}
+
+// --- 16. RESET DOMPET USER ---
+function resetDompetUser(idUser, opsi) {
+    opsi = opsi || {};
+    if (!idUser) {
+        return { sukses: false, pesan: 'ID user tidak valid.' };
+    }
+    if (!opsi.konfirmasi) {
+        return { sukses: false, pesan: 'Reset butuh { konfirmasi: true }' };
+    }
+
+    try {
+        // Backup dulu
+        var backup = localStorage.getItem(KEY_DOMPET_PREFIX + idUser);
+        if (backup) {
+            localStorage.setItem('backup_dompet_' + idUser + '_' + Date.now(),
+                backup);
+        }
+
+        localStorage.removeItem(KEY_DOMPET_PREFIX + idUser);
+
+        // Catat aktivitas
+        var idAdmin = (typeof getIdUserAktif === 'function')
+            ? getIdUserAktif() : 'SA';
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(idAdmin, 'Reset Dompet User',
+                'Reset dompet ' + idUser + ' ke 0'
+            );
+        }
+
+        return { sukses: true };
+    } catch (e) {
+        return { sukses: false, pesan: e.message };
+    }
+}
+
+// --- 17. EXPORT RIWAYAT INTERVENSI CSV ---
+function exportIntervensiCSVGlobal() {
+    try {
+        var log = loadRiwayatIntervensi();
+
+        function esc(v) {
+            if (v == null) return '';
+            var s = String(v);
+            if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 ||
+                s.indexOf('\n') !== -1) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        }
+
+        var lines = [
+            'No,Waktu,Admin,User,Aksi,Jumlah,Saldo Sebelum,Saldo Sesudah,ID Trx,Keterangan'
+        ];
+
+        log.forEach(function(l, i) {
+            lines.push([
+                i + 1,
+                esc(l.waktu ? new Date(l.waktu).toLocaleString('id-ID') : '-'),
+                esc(l.adminNama || l.adminId || '-'),
+                esc((l.userNama || '-') + ' (' + (l.userId || '-') + ')'),
+                esc(l.aksi || '-'),
+                l.jumlah || 0,
+                l.saldoSebelum || 0,
+                l.saldoSesudah || 0,
+                esc(l.idTransaksi || '-'),
+                esc((l.keterangan || '').substring(0, 150))
+            ].join(','));
+        });
+
+        var csv = '\uFEFF' + lines.join('\n');
+        var namaFile = 'intervensi_coin_' +
+            new Date().toISOString().split('T')[0] + '.csv';
+
+        var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = namaFile;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+        return { sukses: true, namaFile: namaFile, total: log.length };
+    } catch (e) {
+        console.error('exportIntervensiCSVGlobal error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+}
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 0.10.46 – FUNGSI GLOBAL ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
 <!-- ===== BLOK R 0.10.61 – FUNGSI GLOBAL DASBOR DISTRIBUTOR ===== -->
 <!-- ============================================================ -->
 <script>
@@ -50932,6 +51568,1064 @@ console.log('   (4) simpanTarifOjekForm');
 </script>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 10.45.1 ===== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.46 – DOMPET R2COIN SUPERADMIN (HTML V2) === -->
+<!-- ============================================================ -->
+<div id="dompetR2CoinSAContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ SUB-BLOK 10.46.H1 — HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-wallet me-2"></i>Dompet R2Coin SuperAdmin
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Monitor & intervensi saldo coin semua akun.
+                </small>
+            </div>
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.46.H2 — STATISTIK ══════════ -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-coins fa-2x mb-2 text-warning"></i>
+                        <h5 class="fw-bold mb-0" id="saTotalCoinBeredar">0</h5>
+                        <small class="text-muted">Coin Beredar</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-money-bill-wave fa-2x mb-2 text-success"></i>
+                        <h5 class="fw-bold mb-0" id="saTotalTopUp">Rp 0</h5>
+                        <small class="text-muted">Total Top-Up</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-hand-holding-usd fa-2x mb-2 text-danger"></i>
+                        <h5 class="fw-bold mb-0" id="saTotalWithdraw">Rp 0</h5>
+                        <small class="text-muted">Total Withdraw</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-vault fa-2x mb-2 text-primary"></i>
+                        <h5 class="fw-bold mb-0" id="saSaldoKasRupiah">Rp 0</h5>
+                        <small class="text-muted">Saldo Kas</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.46.H3 — BREAKDOWN PER ROLE ══════════ -->
+        <div id="saBreakdownPerRoleDompet" class="mb-3"></div>
+
+        <!-- ══════════ SUB-BLOK 10.46.H4 — INTERVENSI MANUAL ══════════ -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-header text-white" style="background-color: #DC3545;">
+                <i class="fas fa-edit me-2"></i>Intervensi Manual
+            </div>
+            <div class="card-body">
+                <div id="notifIntervensiCoin" class="alert d-none"></div>
+                <div class="row g-3">
+                    <div class="col-md-4 position-relative">
+                        <label class="fw-bold">Cari User</label>
+                        <input type="text" id="saIntervensiSearch" class="form-control"
+                               placeholder="Nama / ID / Username" oninput="saCariUserIntervensi()"
+                               autocomplete="off">
+                        <input type="hidden" id="saIntervensiUserId">
+                        <div id="saHasilPencarianUser" class="list-group position-absolute w-100 d-none"
+                             style="z-index:1050;max-height:200px;overflow-y:auto;
+                                    box-shadow:0 4px 12px rgba(0,0,0,.15);"></div>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold">Aksi</label>
+                        <select id="saIntervensiAksi" class="form-select">
+                            <option value="tambah">Tambah</option>
+                            <option value="kurang">Kurangi</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold">Jumlah Coin</label>
+                        <input type="number" id="saIntervensiJumlah"
+                               class="form-control" min="1">
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end">
+                        <button class="btn btn-danger w-100" onclick="saIntervensiCoin()">
+                            <i class="fas fa-check me-1"></i> Proses Intervensi
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.46.H5 — TABS ══════════ -->
+        <ul class="nav nav-tabs mb-3" id="tabsDompetSA" role="tablist">
+            <li class="nav-item">
+                <a class="nav-link active" data-bs-toggle="tab" href="#tabTrxGlobal">
+                    <i class="fas fa-exchange-alt me-1"></i> Transaksi Global
+                    <span class="badge bg-dark ms-1" id="saTotalTransaksiGlobal">0</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#tabRiwayatIntervensi">
+                    <i class="fas fa-history me-1"></i> Riwayat Intervensi
+                    <span class="badge bg-dark ms-1" id="saTotalIntervensi">0</span>
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#tabSaldoSemuaUser">
+                    <i class="fas fa-users me-1"></i> Saldo Semua User
+                    <span class="badge bg-dark ms-1" id="saTotalUserSaldo">0</span>
+                </a>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+
+            <!-- ═══ TAB 1: TRANSAKSI GLOBAL ═══ -->
+            <div class="tab-pane fade show active" id="tabTrxGlobal">
+                <div class="card border-0 shadow">
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Tanggal</th><th>User</th><th>Role</th>
+                                        <th>Jenis</th><th>Coin</th><th>Rupiah</th><th>Keterangan</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tabelTransaksiCoinGlobal">
+                                    <tr><td colspan="7" class="text-center text-muted py-4">Memuat...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══ TAB 2: RIWAYAT INTERVENSI ═══ -->
+            <div class="tab-pane fade" id="tabRiwayatIntervensi">
+                <div class="card border-0 shadow">
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Waktu</th><th>Admin</th><th>User</th>
+                                        <th>Aksi</th><th>Jumlah</th><th>ID Trx</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tabelRiwayatIntervensi">
+                                    <tr><td colspan="6" class="text-center text-muted py-4">Memuat...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══ TAB 3: SALDO SEMUA USER ═══ -->
+            <div class="tab-pane fade" id="tabSaldoSemuaUser">
+                <div class="card border-0 shadow">
+                    <div class="card-body">
+                        <div class="row g-2 mb-3 align-items-end">
+                            <div class="col-md-4">
+                                <input type="text" id="cariUserSaldoSA" class="form-control"
+                                       placeholder="Cari nama / ID / username"
+                                       oninput="renderTabelSaldoSemuaUser()">
+                            </div>
+                            <div class="col-md-3">
+                                <select id="filterRoleSaldoSA" class="form-select"
+                                        onchange="renderTabelSaldoSemuaUser()">
+                                    <option value="">Semua Role</option>
+                                    <optgroup label="— Seller —">
+                                        <option value="Toko">Toko</option>
+                                        <option value="Pedagang Pasar">Pedagang Pasar</option>
+                                        <option value="Pedagang Makanan">Pedagang Makanan</option>
+                                        <option value="COD Seller">COD Seller</option>
+                                        <option value="Grosir">Grosir</option>
+                                        <option value="Distributor">Distributor</option>
+                                    </optgroup>
+                                    <optgroup label="— Transport —">
+                                        <option value="Ojek">Ojek</option>
+                                    </optgroup>
+                                    <optgroup label="— Profesional / Bisnis Baru —">
+                                        <option value="Jasa">⚙️ Jasa</option>
+                                        <option value="Developer Properti">Developer Properti</option>
+                                        <option value="Dealer dan Showroom">Dealer dan Showroom</option>
+                                        <option value="Finance Multifinance">Finance Multifinance</option>
+                                    </optgroup>
+                                    <optgroup label="— Customer —">
+                                        <option value="Customer">Customer</option>
+                                    </optgroup>
+                                    <optgroup label="— Staf & Internal —">
+                                        <option value="Kasir">Kasir</option>
+                                        <option value="Staf Admin">Staf Admin</option>
+                                        <option value="Staf Marketing">Staf Marketing</option>
+                                        <option value="Staf Penagihan">Staf Penagihan</option>
+                                        <option value="Customer Service">Customer Service</option>
+                                        <option value="Event Organizer">Event Organizer</option>
+                                        <option value="Organisasi">Organisasi</option>
+                                        <option value="Individu">Individu</option>
+                                        <option value="Staf Owner Toko">Staf Owner Toko</option>
+                                        <option value="Staf Owner Ojek">Staf Owner Ojek</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <select id="filterSaldoSA" class="form-select"
+                                        onchange="renderTabelSaldoSemuaUser()">
+                                    <option value="">Semua Saldo</option>
+                                    <option value="ada">Ada Saldo</option>
+                                    <option value="kosong">Saldo 0</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-outline-secondary w-100"
+                                        onclick="resetFilterSaldoSA()">
+                                    <i class="fas fa-undo me-1"></i>Reset
+                                </button>
+                            </div>
+                            <div class="col-md-1 text-end">
+                                <span class="badge bg-dark fs-6" id="saTotalUserSaldoAll">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>#</th><th>ID</th><th>Nama</th><th>Role</th>
+                                        <th>Saldo</th><th>Status</th><th>Total Trx</th><th>Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tabelSaldoSemuaUser">
+                                    <tr><td colspan="8" class="text-center text-muted py-4">Memuat...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.46.H6 — FOOTER KEMBALI ══════════ -->
+        <div class="text-center mt-4 border-top pt-3">
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.46.H7 — MODAL DETAIL TRANSAKSI ══════════ -->
+<div class="modal fade" id="modalDetailTransaksiSA" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #6F42C1;">
+                <h5 class="modal-title">
+                    <i class="fas fa-list me-2"></i>Detail Transaksi User
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalDetailTransaksiSABody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Tutup</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.46 (HTML V2) ======================== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.46 – DOMPET R2COIN SUPERADMIN (JS V2) ==== -->
+<!-- ============================================================ -->
+<script>
+(function BLOK_R_10_46_DOMPET_R2COIN_SA() {
+    // ── Guard idempotency ──
+    if (window._blokR1046V2Done) {
+        console.log('ℹ️ BLOK R 10.46 V2 sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR1046V2Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER
+    // ═══════════════════════════════════════════════════════════
+    function saEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function saRupiah(n) {
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+
+    function saSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function saWarnaRole(role) {
+        var map = {
+            // Seller
+            'Toko':                 '#FF8C00',
+            'Pedagang Pasar':       '#28A745',
+            'Pedagang Makanan':     '#FFC107',
+            'COD Seller':           '#17A2B8',
+            'Grosir':               '#17A2B8',
+            'Distributor':          '#6F42C1',
+            // Transport
+            'Ojek':                 '#DC3545',
+            // Profesional
+            'Jasa':                 '#FF5500',
+            'Developer Properti':   '#8B4513',
+            'Dealer dan Showroom':  '#003366',
+            'Finance Multifinance': '#046A38',
+            // Customer
+            'Customer':             '#6C757D',
+            // Staf
+            'Kasir':                '#198754',
+            'Staf Admin':           '#0D6EFD',
+            'Staf Marketing':       '#0D6EFD',
+            'Staf Penagihan':       '#0D6EFD',
+            'Customer Service':     '#0D6EFD',
+            'Event Organizer':      '#6C757D',
+            'Organisasi':           '#6C757D',
+            'Individu':             '#6C757D',
+            'Staf Owner Toko':      '#198754',
+            'Staf Owner Ojek':      '#198754'
+        };
+        return map[role] || '#6C757D';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (1) — TAMPILKAN HALAMAN
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanDompetR2CoinSA = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplDompetR2CoinSAV2) {
+                var c = document.getElementById('dompetR2CoinSAContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Dompet R2Coin SuperAdmin', '10.46');
+                    }
+                    return;
+                }
+                window._tplDompetR2CoinSAV2 = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Dompet R2Coin SA V2 di-cache');
+            }
+
+            konten.innerHTML = window._tplDompetR2CoinSAV2;
+
+            setTimeout(function() {
+                renderStatistikDompetSA();
+                renderBreakdownPerRoleDompet();
+                renderTabelTransaksiCoinGlobalSA();
+                renderTabelRiwayatIntervensiSA();
+                renderTabelSaldoUserSA();
+
+                // Reset form intervensi
+                var elSearch = document.getElementById('saIntervensiSearch');
+                var elUserId = document.getElementById('saIntervensiUserId');
+                var elJumlah = document.getElementById('saIntervensiJumlah');
+                var elHasil = document.getElementById('saHasilPencarianUser');
+                if (elSearch) elSearch.value = '';
+                if (elUserId) elUserId.value = '';
+                if (elJumlah) elJumlah.value = '';
+                if (elHasil) elHasil.classList.add('d-none');
+
+                console.log('✅ BLOK R 10.46 V2 — Dompet R2Coin SA rendered');
+            }, 200);
+        } catch (e) {
+            console.error('BLOK R 10.46 (1) error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (2) — RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.renderStatistikDompetSA = function() {
+        try {
+            var stat = (typeof hitungStatistikDompetGlobal === 'function')
+                ? hitungStatistikDompetGlobal()
+                : { totalCoinBeredar: 0, totalTopUpRupiah: 0,
+                    totalWithdrawRupiah: 0, saldoKasRupiah: 0 };
+
+            saSetText('saTotalCoinBeredar',
+                Math.round(stat.totalCoinBeredar).toLocaleString('id-ID'));
+            saSetText('saSaldoKasRupiah', saRupiah(stat.saldoKasRupiah || 0));
+            saSetText('saTotalTopUp', saRupiah(stat.totalTopUpRupiah || 0));
+            saSetText('saTotalWithdraw', saRupiah(stat.totalWithdrawRupiah || 0));
+        } catch (e) {
+            console.error('BLOK R 10.46 (2) renderStatistikDompetSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (3) — RENDER BREAKDOWN PER ROLE (CHIPS)
+    // ═══════════════════════════════════════════════════════════
+    window.renderBreakdownPerRoleDompet = function() {
+        try {
+            var container = document.getElementById('saBreakdownPerRoleDompet');
+            if (!container) return;
+
+            var stat = (typeof hitungStatistikDompetPerRole === 'function')
+                ? hitungStatistikDompetPerRole()
+                : { perRole: {}, totalCoin: 0, totalUser: 0 };
+
+            var perRole = stat.perRole || {};
+            var roles = Object.keys(perRole);
+
+            if (roles.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            // Sort: Jasa prioritas, lalu coin terbanyak
+            roles.sort(function(a, b) {
+                if (a === 'Jasa' && b !== 'Jasa') return -1;
+                if (b === 'Jasa' && a !== 'Jasa') return 1;
+                return perRole[b].totalCoin - perRole[a].totalCoin;
+            });
+
+            var html = '' +
+                '<div class="card border-0 shadow-sm bg-white">' +
+                    '<div class="card-body py-2">' +
+                        '<div class="d-flex align-items-center flex-wrap gap-2 mb-2">' +
+                            '<small class="fw-bold text-muted me-2">' +
+                                '<i class="fas fa-layer-group me-1"></i>' +
+                                'Coin per Role (klik untuk filter):' +
+                            '</small>' +
+                            '<span class="badge bg-dark ms-auto">' +
+                                'Total: ' + Math.round(stat.totalCoin).toLocaleString('id-ID') +
+                                ' Coin | ' + stat.totalUser + ' user</span>' +
+                        '</div>' +
+                        '<div class="d-flex flex-wrap gap-2">';
+
+            roles.forEach(function(role) {
+                var d = perRole[role];
+                var warna = saWarnaRole(role);
+                var ikon = role === 'Jasa' ? '⚙️ ' : '';
+                var roleEsc = role.replace(/'/g, "\\'");
+                var coinRounded = Math.round(d.totalCoin);
+
+                html +=
+                    '<button type="button" class="btn btn-sm text-white" ' +
+                            'style="background:' + warna + ';font-size:12px;" ' +
+                            'title="User: ' + d.jumlahUser +
+                            ' | Aktif: ' + Math.round(d.aktifCoin) +
+                            ' | Suspend: ' + Math.round(d.suspendCoin) + '" ' +
+                            'onclick="saFilterRoleDompetCepat(\'' + roleEsc + '\')">' +
+                        ikon + saEsc(role) +
+                        ' <span class="badge bg-light text-dark ms-1">' +
+                            coinRounded + ' Coin</span>' +
+                        ' <span class="badge bg-light text-dark ms-1">' +
+                            d.jumlahUser + ' user</span>' +
+                    '</button>';
+            });
+
+            html += '</div></div></div>';
+            container.innerHTML = html;
+        } catch (e) {
+            console.error('BLOK R 10.46 (3) renderBreakdownPerRole error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (4) — FILTER CEPAT VIA CHIP
+    // ═══════════════════════════════════════════════════════════
+    window.saFilterRoleDompetCepat = function(role) {
+        try {
+            // Auto pindah ke tab saldo semua user
+            var tabLink = document.querySelector('a[href="#tabSaldoSemuaUser"]');
+            if (tabLink && typeof bootstrap !== 'undefined') {
+                try {
+                    new bootstrap.Tab(tabLink).show();
+                } catch (e) {
+                    tabLink.click();
+                }
+            }
+
+            setTimeout(function() {
+                var sel = document.getElementById('filterRoleSaldoSA');
+                if (sel) sel.value = role;
+                renderTabelSaldoUserSA();
+            }, 300);
+        } catch (e) {
+            console.error('saFilterRoleDompetCepat error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (5) — CARI USER INTERVENSI
+    // ═══════════════════════════════════════════════════════════
+    window.saCariUserIntervensi = function() {
+        try {
+            var input = document.getElementById('saIntervensiSearch');
+            var hasilDiv = document.getElementById('saHasilPencarianUser');
+            if (!input || !hasilDiv) return;
+
+            var cari = input.value.toLowerCase().trim();
+
+            if (cari === '') {
+                hasilDiv.classList.add('d-none');
+                hasilDiv.innerHTML = '';
+                return;
+            }
+
+            var hasil = (dataLoginUser || []).filter(function(u) {
+                if (u.role === 'SuperAdmin') return false;
+                var nama = (u.nama || '').toLowerCase();
+                var username = (u.username || '').toLowerCase();
+                var idUser = (u.idUser || '').toLowerCase();
+                return nama.indexOf(cari) !== -1 ||
+                       username.indexOf(cari) !== -1 ||
+                       idUser.indexOf(cari) !== -1;
+            }).slice(0, 15);
+
+            if (hasil.length === 0) {
+                hasilDiv.innerHTML =
+                    '<div class="list-group-item text-muted small">Tidak ditemukan.</div>';
+                hasilDiv.classList.remove('d-none');
+                return;
+            }
+
+            var html = '';
+            hasil.forEach(function(u) {
+                var namaEsc = (u.nama || '').replace(/'/g, "\\'");
+                var saldo = (typeof getSaldoDompet === 'function')
+                    ? getSaldoDompet(u.idUser) : 0;
+                var warna = saWarnaRole(u.role);
+
+                html +=
+                    '<div class="list-group-item list-group-item-action d-flex align-items-center" ' +
+                        'onclick="saPilihUserIntervensi(\'' + u.idUser + '\', \'' +
+                        namaEsc + '\')">' +
+                        '<div style="flex:1;min-width:0;">' +
+                            '<strong>' + saEsc(u.nama || '-') + '</strong> ' +
+                            '<span class="badge ms-1" style="background:' + warna + ';">' +
+                                saEsc(u.role) + '</span>' +
+                            '<br>' +
+                            '<small class="text-muted">' + saEsc(u.idUser) +
+                                ' • Saldo: ' + saldo + ' Coin</small>' +
+                        '</div>' +
+                        '<i class="fas fa-chevron-right text-muted"></i>' +
+                    '</div>';
+            });
+
+            hasilDiv.innerHTML = html;
+            hasilDiv.classList.remove('d-none');
+        } catch (e) {
+            console.error('saCariUserIntervensi error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (6) — PILIH USER INTERVENSI
+    // ═══════════════════════════════════════════════════════════
+    window.saPilihUserIntervensi = function(idUser, nama) {
+        var elId = document.getElementById('saIntervensiUserId');
+        var elSearch = document.getElementById('saIntervensiSearch');
+        var elHasil = document.getElementById('saHasilPencarianUser');
+        var elJumlah = document.getElementById('saIntervensiJumlah');
+
+        if (elId) elId.value = idUser;
+        if (elSearch) elSearch.value = nama;
+        if (elHasil) elHasil.classList.add('d-none');
+        if (elJumlah) elJumlah.focus();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (7) — PROSES INTERVENSI
+    // ═══════════════════════════════════════════════════════════
+    window.saIntervensiCoin = function() {
+        try {
+            var idUser = document.getElementById('saIntervensiUserId').value.trim();
+            var aksi = document.getElementById('saIntervensiAksi').value;
+            var jumlah = parseInt(document.getElementById('saIntervensiJumlah').value, 10) || 0;
+            var notif = document.getElementById('notifIntervensiCoin');
+
+            if (!idUser) {
+                if (notif) {
+                    notif.className = 'alert alert-warning';
+                    notif.innerHTML = '⚠️ Pilih user terlebih dahulu!';
+                    notif.classList.remove('d-none');
+                }
+                return;
+            }
+            if (jumlah <= 0) {
+                if (notif) {
+                    notif.className = 'alert alert-warning';
+                    notif.innerHTML = '⚠️ Jumlah coin harus lebih dari 0!';
+                    notif.classList.remove('d-none');
+                }
+                return;
+            }
+
+            var user = getDataIdUser(idUser);
+            if (!user) {
+                if (notif) {
+                    notif.className = 'alert alert-danger';
+                    notif.innerHTML = '❌ User tidak ditemukan!';
+                    notif.classList.remove('d-none');
+                }
+                return;
+            }
+
+            if (aksi === 'kurang') {
+                var saldo = getSaldoDompet(idUser);
+                if (saldo < jumlah) {
+                    if (notif) {
+                        notif.className = 'alert alert-danger';
+                        notif.innerHTML = '❌ Saldo tidak mencukupi! ' +
+                            'Saldo saat ini: ' + saldo + ' Coin';
+                        notif.classList.remove('d-none');
+                    }
+                    return;
+                }
+            }
+
+            var labelAksi = aksi === 'tambah' ? 'Tambah' : 'Kurangi';
+            var konfirmasi = labelAksi + ' ' + jumlah + ' Coin untuk "' +
+                user.nama + '"?';
+            if (!confirm(konfirmasi)) return;
+
+            var hasil = (typeof intervensiCoinSA === 'function')
+                ? intervensiCoinSA(idUser, aksi, jumlah, 'Manual via Dompet SA')
+                : { sukses: false, pesan: 'Fungsi intervensi tidak tersedia.' };
+
+            if (hasil.sukses) {
+                if (notif) {
+                    notif.className = 'alert alert-success';
+                    notif.innerHTML = '✅ ' + labelAksi + ' ' + jumlah +
+                        ' Coin berhasil! Saldo ' + user.nama + ' sekarang: ' +
+                        hasil.saldo + ' Coin';
+                    notif.classList.remove('d-none');
+                    setTimeout(function() { notif.classList.add('d-none'); }, 5000);
+                }
+
+                // Reset form
+                var elSearch = document.getElementById('saIntervensiSearch');
+                var elUserId = document.getElementById('saIntervensiUserId');
+                var elJumlah = document.getElementById('saIntervensiJumlah');
+                if (elSearch) elSearch.value = '';
+                if (elUserId) elUserId.value = '';
+                if (elJumlah) elJumlah.value = '';
+
+                // Refresh semua
+                renderStatistikDompetSA();
+                renderBreakdownPerRoleDompet();
+                renderTabelRiwayatIntervensiSA();
+                renderTabelSaldoUserSA();
+                renderTabelTransaksiCoinGlobalSA();
+            } else {
+                if (notif) {
+                    notif.className = 'alert alert-danger';
+                    notif.innerHTML = '❌ ' + hasil.pesan;
+                    notif.classList.remove('d-none');
+                }
+            }
+        } catch (e) {
+            console.error('saIntervensiCoin error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (8) — RENDER TABEL TRANSAKSI GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelTransaksiCoinGlobalSA = function() {
+        try {
+            var tbody = document.getElementById('tabelTransaksiCoinGlobal');
+            if (!tbody) return;
+
+            var semuaTransaksi = [];
+
+            var topUps = (typeof loadTopUpHistory === 'function')
+                ? loadTopUpHistory() : [];
+            topUps.forEach(function(item) {
+                if (item.status === 'Lunas') {
+                    semuaTransaksi.push({
+                        waktu: item.createdAt || item.tanggal,
+                        user: item.namaPembeli,
+                        idUser: item.idUser,
+                        role: item.role,
+                        jenis: 'Top-Up',
+                        coin: item.jumlahKoin || 0,
+                        rupiah: item.totalRupiah || 0,
+                        keterangan: 'Top-Up via ' + (item.metode || '-')
+                    });
+                }
+            });
+
+            var withdrawals = (typeof loadWithdrawalRequests === 'function')
+                ? loadWithdrawalRequests() : [];
+            withdrawals.forEach(function(item) {
+                if (item.status === 'Disetujui') {
+                    semuaTransaksi.push({
+                        waktu: item.createdAt || item.tanggal,
+                        user: item.namaPemohon,
+                        idUser: item.idUser,
+                        role: item.role,
+                        jenis: 'Withdraw',
+                        coin: -(item.jumlahKoin || 0),
+                        rupiah: item.totalRupiah || 0,
+                        keterangan: 'Withdraw ke ' +
+                            ((item.rekeningTujuan && item.rekeningTujuan.bank) || '-')
+                    });
+                }
+            });
+
+            semuaTransaksi.sort(function(a, b) {
+                return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+            });
+
+            var totalEl = document.getElementById('saTotalTransaksiGlobal');
+            if (totalEl) totalEl.textContent = semuaTransaksi.length;
+
+            if (semuaTransaksi.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="7" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Belum ada transaksi.</td></tr>';
+                return;
+            }
+
+            var html = '';
+            semuaTransaksi.slice(0, 50).forEach(function(item) {
+                var waktu = item.waktu
+                    ? new Date(item.waktu).toLocaleString('id-ID', { hour12: false })
+                    : '-';
+
+                var jenisBadge = item.jenis === 'Top-Up'
+                    ? '<span class="badge bg-success">Top-Up</span>'
+                    : '<span class="badge bg-danger">Withdraw</span>';
+
+                var coinClass = item.coin >= 0 ? 'text-success' : 'text-danger';
+                var coinText = (item.coin >= 0 ? '+' : '') +
+                    item.coin.toLocaleString('id-ID');
+
+                var warnaRole = saWarnaRole(item.role);
+                var ikonRole = item.role === 'Jasa' ? '⚙️ ' : '';
+
+                html += '<tr>' +
+                    '<td><small>' + saEsc(waktu) + '</small></td>' +
+                    '<td><strong>' + saEsc(item.user || '-') + '</strong></td>' +
+                    '<td><span class="badge" style="background:' + warnaRole + ';">' +
+                        ikonRole + saEsc(item.role || '-') + '</span></td>' +
+                    '<td>' + jenisBadge + '</td>' +
+                    '<td class="fw-bold ' + coinClass + '">' + coinText + '</td>' +
+                    '<td>' + saRupiah(item.rupiah) + '</td>' +
+                    '<td><small>' + saEsc(item.keterangan) + '</small></td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('renderTabelTransaksiCoinGlobalSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (9) — RENDER TABEL RIWAYAT INTERVENSI
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelRiwayatIntervensiSA = function() {
+        try {
+            var tbody = document.getElementById('tabelRiwayatIntervensi');
+            if (!tbody) return;
+
+            var riwayat = (typeof loadRiwayatIntervensi === 'function')
+                ? loadRiwayatIntervensi() : [];
+
+            var totalEl = document.getElementById('saTotalIntervensi');
+            if (totalEl) totalEl.textContent = riwayat.length;
+
+            if (riwayat.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="6" class="text-center text-muted py-4">' +
+                    'Belum ada intervensi.</td></tr>';
+                return;
+            }
+
+            var html = '';
+            riwayat.slice(0, 100).forEach(function(item) {
+                var aksiBadge = item.aksi === 'tambah'
+                    ? '<span class="badge bg-success">Tambah</span>'
+                    : '<span class="badge bg-danger">Kurangi</span>';
+
+                var coinClass = item.aksi === 'tambah' ? 'text-success' : 'text-danger';
+                var coinText = (item.aksi === 'tambah' ? '+' : '-') + item.jumlah + ' Coin';
+
+                html += '<tr>' +
+                    '<td><small>' + saEsc(item.waktu || '-') + '</small></td>' +
+                    '<td><strong>' + saEsc(item.adminNama || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + saEsc(item.adminId || '-') + '</small></td>' +
+                    '<td><strong>' + saEsc(item.userNama || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + saEsc(item.userId || '-') + '</small></td>' +
+                    '<td>' + aksiBadge + '</td>' +
+                    '<td class="fw-bold ' + coinClass + '">' + coinText + '</td>' +
+                    '<td><small>' + saEsc(item.idTransaksi || '-') + '</small></td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('renderTabelRiwayatIntervensiSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (10) — RENDER TABEL SALDO SEMUA USER
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelSaldoUserSA = function() {
+        try {
+            var tbody = document.getElementById('tabelSaldoSemuaUser');
+            if (!tbody) return;
+
+            var cari = (document.getElementById('cariUserSaldoSA')?.value || '')
+                .toLowerCase().trim();
+            var filterRole = document.getElementById('filterRoleSaldoSA')?.value || '';
+            var filterSaldo = document.getElementById('filterSaldoSA')?.value || '';
+
+            var semuaUser = (dataLoginUser || []).filter(function(u) {
+                return u.role !== 'SuperAdmin';
+            });
+
+            var dataFilter = semuaUser.filter(function(u) {
+                var matchCari = cari === '' ||
+                    (u.nama || '').toLowerCase().includes(cari) ||
+                    (u.idUser || '').toLowerCase().includes(cari) ||
+                    (u.username || '').toLowerCase().includes(cari);
+                var matchRole = filterRole === '' || u.role === filterRole;
+
+                var saldo = (typeof getSaldoDompet === 'function')
+                    ? getSaldoDompet(u.idUser) : 0;
+                var matchSaldo = filterSaldo === '' ||
+                    (filterSaldo === 'ada' && saldo > 0) ||
+                    (filterSaldo === 'kosong' && saldo === 0);
+
+                return matchCari && matchRole && matchSaldo;
+            });
+
+            dataFilter.sort(function(a, b) {
+                var sa = (typeof getSaldoDompet === 'function') ? getSaldoDompet(a.idUser) : 0;
+                var sb = (typeof getSaldoDompet === 'function') ? getSaldoDompet(b.idUser) : 0;
+                return sb - sa;
+            });
+
+            var totalEl = document.getElementById('saTotalUserSaldo');
+            if (totalEl) totalEl.textContent = dataFilter.length;
+            var totalAllEl = document.getElementById('saTotalUserSaldoAll');
+            if (totalAllEl) totalAllEl.textContent = dataFilter.length + ' user';
+
+            if (dataFilter.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="8" class="text-center text-muted py-4">' +
+                    'Tidak ada user ditemukan.</td></tr>';
+                return;
+            }
+
+            var html = '';
+            dataFilter.slice(0, 100).forEach(function(u, i) {
+                var saldo = (typeof getSaldoDompet === 'function')
+                    ? getSaldoDompet(u.idUser) : 0;
+                var dompet = (typeof getDompetUser === 'function')
+                    ? getDompetUser(u.idUser) : null;
+                var jmlTrx = (dompet && dompet.transactions)
+                    ? dompet.transactions.length : 0;
+                var saldoClass = saldo > 0 ? 'text-success' : 'text-muted';
+                var warna = saWarnaRole(u.role);
+                var ikon = u.role === 'Jasa' ? '⚙️ ' : '';
+
+                html += '<tr>' +
+                    '<td>' + (i + 1) + '</td>' +
+                    '<td><small>' + saEsc(u.idUser || '-') + '</small></td>' +
+                    '<td><strong>' + saEsc(u.nama || '-') + '</strong></td>' +
+                    '<td><span class="badge" style="background:' + warna + ';">' +
+                        ikon + saEsc(u.role || '-') + '</span></td>' +
+                    '<td class="fw-bold ' + saldoClass + '">' + saldo + ' Coin</td>' +
+                    '<td>' + jmlTrx + '</td>' +
+                    '<td>' +
+                        '<button class="btn btn-sm btn-outline-primary" ' +
+                            'onclick="lihatDetailTransaksiUserSA(\'' + u.idUser + '\')" ' +
+                            'title="Detail">' +
+                            '<i class="fas fa-eye"></i>' +
+                        '</button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('renderTabelSaldoUserSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (11) — RESET FILTER SALDO
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterSaldoSA = function() {
+        var elCari = document.getElementById('cariUserSaldoSA');
+        var elRole = document.getElementById('filterRoleSaldoSA');
+        var elSaldo = document.getElementById('filterSaldoSA');
+        if (elCari) elCari.value = '';
+        if (elRole) elRole.value = '';
+        if (elSaldo) elSaldo.value = '';
+        renderTabelSaldoUserSA();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.46 (12) — MODAL DETAIL TRANSAKSI USER
+    // ═══════════════════════════════════════════════════════════
+    window.lihatDetailTransaksiUserSA = function(idUser) {
+        try {
+            var user = getDataIdUser(idUser);
+            if (!user) {
+                alert('User tidak ditemukan.');
+                return;
+            }
+
+            var dompet = (typeof getDompetUser === 'function')
+                ? getDompetUser(idUser) : null;
+            var saldo = dompet ? dompet.balance : 0;
+            var totalMasuk = dompet ? dompet.totalMasuk : 0;
+            var totalKeluar = dompet ? dompet.totalKeluar : 0;
+            var transaksi = (typeof loadRiwayatDompetUser === 'function')
+                ? loadRiwayatDompetUser(idUser) : [];
+
+            var fotoUrl = (typeof getFotoProfilAkun === 'function'
+                ? getFotoProfilAkun(idUser) : '') ||
+                'https://placehold.co/100x100/FF8C00/ffffff?text=' +
+                (user.role || 'U').split(' ')[0];
+
+            var warnaRole = saWarnaRole(user.role);
+            var ikonRole = user.role === 'Jasa' ? '⚙️ ' : '';
+
+            var html = '' +
+                '<div class="row g-3 mb-3">' +
+                    '<div class="col-md-3 text-center">' +
+                        '<img src="' + fotoUrl + '" class="rounded-circle mb-2" ' +
+                            'style="width:80px;height:80px;object-fit:cover;' +
+                            'border:3px solid #FF8C00;">' +
+                        '<h6 class="fw-bold mb-0">' + saEsc(user.nama || '-') + '</h6>' +
+                        '<small class="text-muted">' + saEsc(user.idUser || '-') + '</small>' +
+                    '</div>' +
+                    '<div class="col-md-9">' +
+                        '<div class="row g-2">' +
+                            '<div class="col-6"><small class="text-muted">Role</small><br>' +
+                                '<span class="badge" style="background:' + warnaRole + ';">' +
+                                    ikonRole + saEsc(user.role || '-') + '</span></div>' +
+                            '<div class="col-6"><small class="text-muted">Saldo Sekarang</small><br>' +
+                                '<strong class="text-success fs-5">' + saldo +
+                                ' Coin</strong></div>' +
+                            '<div class="col-6"><small class="text-muted">Total Masuk</small><br>' +
+                                '<span class="text-success">+' + totalMasuk +
+                                ' Coin</span></div>' +
+                            '<div class="col-6"><small class="text-muted">Total Keluar</small><br>' +
+                                '<span class="text-danger">-' + totalKeluar +
+                                ' Coin</span></div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<hr>';
+
+            if (transaksi.length === 0) {
+                html += '<p class="text-muted text-center py-4">Belum ada transaksi.</p>';
+            } else {
+                html += '<h6 class="fw-bold mb-2">Riwayat Transaksi (' +
+                    transaksi.length + '):</h6>';
+                html += '<div class="table-responsive" ' +
+                    'style="max-height:400px;overflow-y:auto;">';
+                html += '<table class="table table-sm table-hover align-middle mb-0">';
+                html += '<thead class="table-light"><tr>' +
+                    '<th>Waktu</th><th>Jenis</th><th>Jumlah</th>' +
+                    '<th>Saldo Akhir</th><th>Keterangan</th></tr></thead>';
+                html += '<tbody>';
+
+                transaksi.forEach(function(t) {
+                    var tipeBadge = t.tipe === 'credit'
+                        ? '<span class="badge bg-success">Masuk</span>'
+                        : '<span class="badge bg-danger">Keluar</span>';
+                    var jumlahClass = t.tipe === 'credit'
+                        ? 'text-success' : 'text-danger';
+                    var jumlahText = (t.tipe === 'credit' ? '+' : '-') + t.jumlah;
+                    var waktu = t.waktu
+                        ? new Date(t.waktu).toLocaleString('id-ID', { hour12: false })
+                        : '-';
+
+                    html += '<tr>' +
+                        '<td><small>' + saEsc(waktu) + '</small></td>' +
+                        '<td>' + tipeBadge + '</td>' +
+                        '<td class="fw-bold ' + jumlahClass + '">' + jumlahText + '</td>' +
+                        '<td>' + (t.saldoSesudah || '-') + '</td>' +
+                        '<td><small>' + saEsc(t.keterangan || '-') + '</small></td>' +
+                    '</tr>';
+                });
+
+                html += '</tbody></table></div>';
+            }
+
+            var bodyEl = document.getElementById('modalDetailTransaksiSABody');
+            if (bodyEl) bodyEl.innerHTML = html;
+
+            var modal = new bootstrap.Modal(
+                document.getElementById('modalDetailTransaksiSA')
+            );
+            modal.show();
+        } catch (e) {
+            console.error('lihatDetailTransaksiUserSA error:', e);
+        }
+    };
+
+    console.log('✅ BLOK R 10.46 V2 – Dompet R2Coin SA terpasang.');
+    console.log('   Sub-blok JS:');
+    console.log('   (1)  tampilkanDompetR2CoinSA');
+    console.log('   (2)  renderStatistikDompetSA');
+    console.log('   (3)  renderBreakdownPerRoleDompet');
+    console.log('   (4)  saFilterRoleDompetCepat');
+    console.log('   (5)  saCariUserIntervensi');
+    console.log('   (6)  saPilihUserIntervensi');
+    console.log('   (7)  saIntervensiCoin');
+    console.log('   (8)  renderTabelTransaksiCoinGlobalSA');
+    console.log('   (9)  renderTabelRiwayatIntervensiSA');
+    console.log('   (10) renderTabelSaldoUserSA');
+    console.log('   (11) resetFilterSaldoSA');
+    console.log('   (12) lihatDetailTransaksiUserSA');
+})();
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.46 (JS V2) ========================= -->
 <!-- ============================================================ -->
 
 <!-- ============================================================ -->
