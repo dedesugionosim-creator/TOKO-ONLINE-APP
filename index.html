@@ -24339,6 +24339,1196 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
 <!-- ═══ AKHIR BLOK Guard Pending R 0.11.3 ════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK Fungsi Global Pengajuan Verifikasi R 0.11.4 ═════ -->
+<!-- ═══ Support BLOK 11.3(1) — Pengajuan Verifikasi Toko ═════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_VERIFIKASI_R0114() {
+    if (window._blokR0114Done) {
+        console.log('ℹ️ BLOK Fungsi Verifikasi R 0.11.4 sudah terpasang.');
+        return;
+    }
+    window._blokR0114Done = true;
+
+    var KEY_VERIF = 'dataVerifikasiDokumen';
+
+    // ═══════════════════════════════════════════════════════════
+    // MODUL 1 — CORE (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── (1) prosesKirimVerifikasiGlobal ⭐ ──
+    // Dipanggil dari BLOK 11.3(1) saat user klik "Kirim Dokumen"
+    // Return: { sukses, idPengajuan?, pesan? }
+    // ═══════════════════════════════════════════════════════════
+    window.prosesKirimVerifikasiGlobal = function(idUser, nama, role, listDokumen) {
+        try {
+            // ── Validasi dasar ──
+            if (!idUser) {
+                return { sukses: false, pesan: 'ID user tidak valid.' };
+            }
+            if (!nama || !role) {
+                return { sukses: false, pesan: 'Nama dan role wajib diisi.' };
+            }
+            if (!Array.isArray(listDokumen) || listDokumen.length === 0) {
+                return { sukses: false, pesan: 'Dokumen wajib diupload minimal 1.' };
+            }
+
+            // ── Validasi dokumen ──
+            var validasi = validasiDokumenVerifikasiGlobal(listDokumen);
+            if (!validasi.sukses) return validasi;
+
+            // ── Cek apakah sudah ada pengajuan sebelumnya ──
+            var existing = getVerifikasiDokumenUserGlobal(idUser);
+            if (existing && existing.status === 'Menunggu') {
+                return {
+                    sukses: false,
+                    pesan: 'Anda sudah mengirim pengajuan verifikasi. Mohon tunggu review SuperAdmin.',
+                    sudahAda: true,
+                    idPengajuan: existing.idPengajuan
+                };
+            }
+
+            // ── Ambil data dari localStorage ──
+            var dataVerif = _verifLoadData();
+
+            // ── Generate ID pengajuan ──
+            var idPengajuan = (typeof generateKodeUnik === 'function')
+                ? generateKodeUnik('VERIF')
+                : 'VERIF-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
+            // ── Bangun entry pengajuan ──
+            var now = new Date().toISOString();
+            var tglHariIni = now.split('T')[0];
+
+            var pengajuan = {
+                id: idUser,
+                idPengajuan: idPengajuan,
+                nama: String(nama).trim(),
+                role: String(role).trim(),
+                tgl: tglHariIni,
+                status: 'Menunggu',
+                listDokumen: listDokumen.map(function(d) {
+                    return {
+                        nama: d.nama || '-',
+                        url: d.url || '',
+                        tipe: d.tipe || 'file'
+                    };
+                }),
+                verifiedBy: null,
+                verifiedAt: null,
+                catatan: null,
+                createdAt: now,
+                updatedAt: null
+            };
+
+            // ── Simpan (replace kalau sudah ada, atau push baru) ──
+            var idx = dataVerif.findIndex(function(v) { return v.id === idUser; });
+            if (idx !== -1) {
+                // Update existing (kasus: pernah kirim & ditolak, kirim ulang)
+                pengajuan.status = 'Menunggu';
+                pengajuan.resubmitCount = (dataVerif[idx].resubmitCount || 0) + 1;
+                dataVerif[idx] = pengajuan;
+            } else {
+                dataVerif.push(pengajuan);
+            }
+
+            // ── Simpan ke localStorage ──
+            _verifSaveData(dataVerif);
+
+            // ── Update status user (kalau ada fungsi dari R 11.3) ──
+            // Catatan: user tetap Pending sampai SA approve
+            // Status verifikasi tetap 'Pending', tapi ada dokumen menunggu
+
+            // ── Catat aktivitas ──
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(idUser, 'Kirim Verifikasi',
+                        'Role ' + role + ' kirim ' + listDokumen.length +
+                        ' dokumen. ID: ' + idPengajuan);
+                }
+            } catch (e) {}
+
+            // ── Catat log audit (kalau ada) ──
+            try {
+                if (typeof catatLogAuditSAGlobal === 'function') {
+                    catatLogAuditSAGlobal({
+                        kategori: 'manajemen_akun',
+                        subKategori: 'submit_verifikasi',
+                        aksi: 'Kirim Verifikasi Dokumen',
+                        level: 'info',
+                        deskripsi: role + ' "' + nama + '" kirim ' + listDokumen.length + ' dokumen',
+                        target: { tipe: 'user', id: idUser, nama: nama },
+                        status: 'sukses',
+                        metadata: {
+                            idPengajuan: idPengajuan,
+                            jumlahDokumen: listDokumen.length,
+                            role: role
+                        }
+                    });
+                }
+            } catch (e) {}
+
+            console.log('✅ Verifikasi terkirim:', idPengajuan, 'dari', nama);
+
+            return {
+                sukses: true,
+                idPengajuan: idPengajuan,
+                pengajuan: pengajuan,
+                pesan: 'Dokumen berhasil dikirim ke SuperAdmin.'
+            };
+
+        } catch (e) {
+            console.error('prosesKirimVerifikasiGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── (2) resetFormVerifikasiGlobal ──
+    // Reset form pengajuan verifikasi setelah submit berhasil
+    window.resetFormVerifikasiGlobal = function() {
+        try {
+            // Reset semua input file berdasarkan ID yang dipakai di BLOK 11.3
+            var fileInputs = [
+                'uploadKtpTK', 'uploadSkuTK', 'uploadSkdTK',
+                'uploadKtpPP', 'uploadSkuPP', 'uploadSkdPP',
+                'uploadKtpPM', 'uploadSkuPM', 'uploadSkdPM',
+                'uploadKtpCOD', 'uploadSkuCOD', 'uploadSkdCOD',
+                'uploadKtpOJ', 'uploadSkuOJ', 'uploadSkdOJ',
+                'uploadKtpGR', 'uploadSkuGR', 'uploadSkdGR',
+                'uploadKtpDST', 'uploadSuratDST',
+                'uploadKtpJS', 'uploadSkuJS', 'uploadSkdJS'
+            ];
+            fileInputs.forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+
+            // Reset preview
+            var previewIds = [
+                'previewKtpTK', 'previewSkuTK', 'previewSkdTK',
+                'previewKtpPP', 'previewSkuPP', 'previewSkdPP',
+                'previewKtpPM', 'previewSkuPM', 'previewSkdPM',
+                'previewKtpCOD', 'previewSkuCOD', 'previewSkdCOD',
+                'previewKtpOJ', 'previewSkuOJ', 'previewSkdOJ',
+                'previewKtpGR', 'previewSkuGR', 'previewSkdGR',
+                'previewKtpDST', 'previewSuratDST',
+                'previewKtpJS', 'previewSkuJS', 'previewSkdJS'
+            ];
+            previewIds.forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.innerHTML = '';
+            });
+
+            // Reset checkbox kebijakan
+            var cbIds = [
+                'setujuKebijakanTK', 'setujuKebijakanPP', 'setujuKebijakanPM',
+                'setujuKebijakanCOD', 'setujuKebijakanOJ', 'setujuKebijakanGR',
+                'setujuKebijakanDST', 'setujuKebijakanJS'
+            ];
+            cbIds.forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.checked = false;
+            });
+
+            // Disable tombol kirim
+            var btnIds = [
+                'tombolKirimDokumenTK', 'tombolKirimDokumenPP', 'tombolKirimDokumenPM',
+                'tombolKirimDokumenCOD', 'tombolKirimDokumenOJ', 'tombolKirimDokumenGR',
+                'tombolKirimDokumenDST', 'tombolKirimDokumenJS'
+            ];
+            btnIds.forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.disabled = true;
+            });
+
+            console.log('✅ Form verifikasi direset');
+            return { sukses: true };
+        } catch (e) {
+            console.error('resetFormVerifikasiGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── (3) getVerifikasiDokumenUserGlobal ──
+    // Ambil pengajuan verifikasi milik user tertentu
+    window.getVerifikasiDokumenUserGlobal = function(idUser) {
+        if (!idUser) return null;
+        var data = _verifLoadData();
+        return data.find(function(v) { return v && v.id === idUser; }) || null;
+    };
+
+    // ── (4) getVerifikasiDokumenByIdGlobal ──
+    // Ambil pengajuan berdasarkan idPengajuan (bukan idUser)
+    window.getVerifikasiDokumenByIdGlobal = function(idPengajuan) {
+        if (!idPengajuan) return null;
+        var data = _verifLoadData();
+        return data.find(function(v) { return v && v.idPengajuan === idPengajuan; }) || null;
+    };
+
+    // ── (5) getStatusVerifikasiUserGlobal ──
+    // Ambil status verifikasi: 'Belum Kirim' | 'Menunggu' | 'Disetujui' | 'Ditolak'
+    window.getStatusVerifikasiUserGlobal = function(idUser) {
+        if (!idUser) return 'Belum Kirim';
+
+        // Cek di dataVerifikasiDokumen dulu
+        var pengajuan = getVerifikasiDokumenUserGlobal(idUser);
+        if (pengajuan) {
+            return pengajuan.status || 'Menunggu';
+        }
+
+        // Cek di data user
+        try {
+            var user = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+            if (user) {
+                var status = user.statusVerifikasi || user.status;
+                if (status === 'Aktif') return 'Disetujui';
+                if (status === 'Pending') return 'Belum Kirim';
+                if (status === 'Ditolak') return 'Ditolak';
+            }
+        } catch (e) {}
+
+        return 'Belum Kirim';
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // MODUL 2 — HELPER (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── (6) cekSudahKirimVerifikasiGlobal ──
+    window.cekSudahKirimVerifikasiGlobal = function(idUser) {
+        var pengajuan = getVerifikasiDokumenUserGlobal(idUser);
+        if (!pengajuan) return false;
+        return pengajuan.status === 'Menunggu' || pengajuan.status === 'Disetujui';
+    };
+
+    // ── (7) hitungDokumenVerifikasiGlobal ──
+    window.hitungDokumenVerifikasiGlobal = function(listDokumen) {
+        if (!Array.isArray(listDokumen)) return 0;
+        return listDokumen.filter(function(d) {
+            return d && d.url && String(d.url).length > 10;
+        }).length;
+    };
+
+    // ── (8) validasiDokumenVerifikasiGlobal ──
+    // Return: { sukses: bool, pesan? }
+    window.validasiDokumenVerifikasiGlobal = function(listDokumen) {
+        if (!Array.isArray(listDokumen)) {
+            return { sukses: false, pesan: 'List dokumen tidak valid.' };
+        }
+
+        // Cek setiap dokumen punya URL valid
+        for (var i = 0; i < listDokumen.length; i++) {
+            var d = listDokumen[i];
+            if (!d || !d.nama) {
+                return { sukses: false, pesan: 'Dokumen ke-' + (i + 1) + ' tidak valid (nama kosong).' };
+            }
+            if (!d.url || String(d.url).length < 10) {
+                return { sukses: false, pesan: 'Dokumen "' + d.nama + '" belum diupload.' };
+            }
+        }
+
+        return { sukses: true };
+    };
+
+    // ── (9) getRingkasanVerifikasiGlobal ──
+    // Ringkasan statistik verifikasi
+    window.getRingkasanVerifikasiGlobal = function() {
+        var data = _verifLoadData();
+
+        var ringkasan = {
+            total: data.length,
+            menunggu: 0,
+            disetujui: 0,
+            ditolak: 0,
+            perRole: {}
+        };
+
+        data.forEach(function(v) {
+            if (!v) return;
+            if (v.status === 'Menunggu') ringkasan.menunggu++;
+            else if (v.status === 'Disetujui') ringkasan.disetujui++;
+            else if (v.status === 'Ditolak') ringkasan.ditolak++;
+
+            if (v.role) {
+                if (!ringkasan.perRole[v.role]) {
+                    ringkasan.perRole[v.role] = { total: 0, menunggu: 0 };
+                }
+                ringkasan.perRole[v.role].total++;
+                if (v.status === 'Menunggu') ringkasan.perRole[v.role].menunggu++;
+            }
+        });
+
+        return ringkasan;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // MODUL 3 — UPDATE STATUS (3 fungsi — untuk SA & sistem)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── (10) updateStatusVerifikasiGlobal ──
+    // Dipakai SA untuk approve/reject, atau sistem untuk update
+    // status: 'Disetujui' | 'Ditolak' | 'Menunggu'
+    window.updateStatusVerifikasiGlobal = function(idUser, status, catatan) {
+        if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+        if (['Menunggu', 'Disetujui', 'Ditolak'].indexOf(status) === -1) {
+            return { sukses: false, pesan: 'Status tidak valid.' };
+        }
+
+        try {
+            var data = _verifLoadData();
+            var idx = data.findIndex(function(v) { return v && v.id === idUser; });
+
+            if (idx === -1) {
+                return { sukses: false, pesan: 'Pengajuan verifikasi tidak ditemukan.' };
+            }
+
+            var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA';
+            var now = new Date().toISOString();
+
+            data[idx].status = status;
+            data[idx].verifiedBy = idAdmin;
+            data[idx].verifiedAt = now;
+            data[idx].catatan = catatan || null;
+            data[idx].updatedAt = now;
+
+            _verifSaveData(data);
+
+            // Update user status di dataAkunAktif / dataLoginUser
+            if (status === 'Disetujui') {
+                _verifUpdateUserStatus(idUser, 'Aktif');
+            } else if (status === 'Ditolak') {
+                _verifUpdateUserStatus(idUser, 'Ditolak');
+            }
+
+            // Catat aktivitas
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(idAdmin, 'Update Verifikasi',
+                        'Akun ' + idUser + ' → ' + status);
+                }
+            } catch (e) {}
+
+            return { sukses: true, status: status };
+        } catch (e) {
+            console.error('updateStatusVerifikasiGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── (11) hapusVerifikasiDokumenGlobal ──
+    window.hapusVerifikasiDokumenGlobal = function(idUser) {
+        if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+        try {
+            var data = _verifLoadData();
+            var before = data.length;
+            data = data.filter(function(v) { return v && v.id !== idUser; });
+
+            if (data.length === before) {
+                return { sukses: false, pesan: 'Pengajuan tidak ditemukan.' };
+            }
+
+            _verifSaveData(data);
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── (12) bersihkanVerifikasiLamaGlobal ──
+    // Bersihkan pengajuan yang sudah Disetujui/Ditolak lebih dari N hari
+    window.bersihkanVerifikasiLamaGlobal = function(hari) {
+        hari = parseInt(hari, 10) || 90;
+        try {
+            var data = _verifLoadData();
+            var batas = Date.now() - (hari * 24 * 60 * 60 * 1000);
+            var before = data.length;
+
+            data = data.filter(function(v) {
+                if (!v) return false;
+                if (v.status === 'Menunggu') return true;  // keep pending
+                var t = new Date(v.verifiedAt || v.createdAt || 0).getTime();
+                return t > batas;
+            });
+
+            var dihapus = before - data.length;
+            if (dihapus > 0) _verifSaveData(data);
+
+            return { sukses: true, jumlah: dihapus };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // MODUL 4 — BONUS (2 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── (13) konversiFileKeBase64Global ──
+    // Helper: konversi File → base64 (dipakai oleh PATCH)
+    window.konversiFileKeBase64Global = function(file, maxKB) {
+        return new Promise(function(resolve, reject) {
+            if (!file) {
+                return reject({ sukses: false, pesan: 'File tidak valid.' });
+            }
+
+            var maxBytes = (maxKB || 2000) * 1024;
+            if (file.size > maxBytes) {
+                return reject({
+                    sukses: false,
+                    pesan: 'File terlalu besar. Maks ' + maxKB + ' KB. ' +
+                           'Ukuran Anda: ' + Math.round(file.size / 1024) + ' KB'
+                });
+            }
+
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                resolve({
+                    sukses: true,
+                    base64: e.target.result,
+                    ukuranKB: Math.round(file.size / 1024 * 10) / 10
+                });
+            };
+            reader.onerror = function() {
+                reject({ sukses: false, pesan: 'Gagal baca file.' });
+            };
+            reader.readAsDataURL(file);
+        });
+    };
+
+    // ── (14) getVerifikasiDokumenAllGlobal ──
+    window.getVerifikasiDokumenAllGlobal = function() {
+        return _verifLoadData();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // INTERNAL HELPERS
+    // ═══════════════════════════════════════════════════════════
+    function _verifLoadData() {
+        try {
+            var s = localStorage.getItem(KEY_VERIF);
+            var data = s ? JSON.parse(s) : [];
+            return Array.isArray(data) ? data : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function _verifSaveData(data) {
+        try {
+            localStorage.setItem(KEY_VERIF, JSON.stringify(data || []));
+            return { sukses: true };
+        } catch (e) {
+            console.error('_verifSaveData error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    function _verifUpdateUserStatus(idUser, status) {
+        try {
+            // Update dataAkunAktif
+            var aa = JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
+            if (Array.isArray(aa)) {
+                var idx1 = aa.findIndex(function(a) {
+                    return a && (a.id === idUser || a.idUser === idUser);
+                });
+                if (idx1 !== -1) {
+                    aa[idx1].status = status;
+                    aa[idx1].statusVerifikasi = status;
+                    aa[idx1].verifiedAt = new Date().toISOString();
+                    localStorage.setItem('dataAkunAktif', JSON.stringify(aa));
+                }
+            }
+
+            // Update dataLoginUser
+            var lu = JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
+            if (Array.isArray(lu)) {
+                var idx2 = lu.findIndex(function(u) {
+                    return u && (u.idUser === idUser || u.id === idUser);
+                });
+                if (idx2 !== -1) {
+                    lu[idx2].status = status;
+                    lu[idx2].statusVerifikasi = status;
+                    lu[idx2].verifiedAt = new Date().toISOString();
+                    localStorage.setItem('dataLoginUser', JSON.stringify(lu));
+                }
+            }
+
+            // Update userAktif jika yang login adalah user ini
+            if (typeof userAktif !== 'undefined' && userAktif &&
+                userAktif.idUser === idUser) {
+                userAktif.statusVerifikasi = status;
+                userAktif.status = status;
+                localStorage.setItem('userAktif', JSON.stringify(userAktif));
+            }
+
+            // Update IndexedDB
+            if (typeof userIndexUpdate === 'function') {
+                userIndexUpdate(idUser, { status: status, statusVerifikasi: status });
+            }
+        } catch (e) {
+            console.warn('_verifUpdateUserStatus error:', e);
+        }
+    }
+
+    console.log('✅ BLOK Fungsi Verifikasi R 0.11.4 terpasang.');
+    console.log('   Modul 1 — Core (5):');
+    console.log('     1. prosesKirimVerifikasiGlobal ⭐');
+    console.log('     2. resetFormVerifikasiGlobal');
+    console.log('     3. getVerifikasiDokumenUserGlobal');
+    console.log('     4. getVerifikasiDokumenByIdGlobal');
+    console.log('     5. getStatusVerifikasiUserGlobal');
+    console.log('   Modul 2 — Helper (4):');
+    console.log('     6. cekSudahKirimVerifikasiGlobal');
+    console.log('     7. hitungDokumenVerifikasiGlobal');
+    console.log('     8. validasiDokumenVerifikasiGlobal');
+    console.log('     9. getRingkasanVerifikasiGlobal');
+    console.log('   Modul 3 — Update Status (3):');
+    console.log('     10. updateStatusVerifikasiGlobal');
+    console.log('     11. hapusVerifikasiDokumenGlobal');
+    console.log('     12. bersihkanVerifikasiLamaGlobal');
+    console.log('   Modul 4 — Bonus (2):');
+    console.log('     13. konversiFileKeBase64Global');
+    console.log('     14. getVerifikasiDokumenAllGlobal');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK Fungsi Verifikasi R 0.11.4 ════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK Fungsi Global Download SKU/SKD R 0.11.5 ═════════ -->
+<!-- ═══ Support BLOK 11.4(1) — Surat Permintaan SKU & SKD ════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_DOWNLOAD_SKU_R0115() {
+    if (window._blokR0115Done) {
+        console.log('ℹ️ BLOK Fungsi Download SKU R 0.11.5 sudah terpasang.');
+        return;
+    }
+    window._blokR0115Done = true;
+
+    var _skuPreviewData = null;
+    var _skuNomorSuratCounter = null;
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) isiDataSKUUniversal ⭐ — Auto-fill data user
+    // ═══════════════════════════════════════════════════════════
+    window.isiDataSKUUniversal = function() {
+        try {
+            var user = userAktif;
+            if (!user || !user.idUser) {
+                console.warn('isiDataSKUUniversal: userAktif tidak valid');
+                return { sukses: false, pesan: 'User tidak valid.' };
+            }
+
+            // Ambil data user lengkap (dari R 0.11.0 & R 0.11.1)
+            var userData = null;
+            try {
+                if (typeof getDataIdUser === 'function') {
+                    userData = getDataIdUser(user.idUser);
+                }
+            } catch (e) {}
+            userData = userData || user;
+
+            // Ambil profil lengkap
+            var profil = null;
+            try {
+                if (typeof getProfilLengkapGlobal === 'function') {
+                    profil = getProfilLengkapGlobal(user.idUser);
+                }
+            } catch (e) {}
+            profil = profil || {};
+
+            // ── Merge data: prioritas profil > userData > user ──
+            var namaLengkap = profil.namaLengkap || userData.nama || user.nama || '-';
+            var nik = profil.nikKtp || profil.nik_ktp || userData.nik_ktp || '-';
+            var alamatKtp = profil.alamatKtp || profil.alamat || userData.alamatKtp || userData.alamat || '-';
+            var hp = profil.hp || userData.hp || user.hp || '-';
+            var email = profil.email || userData.email || user.email || '-';
+
+            // Nama usaha sesuai role
+            var namaUsaha = _skuGetNamaUsaha(profil, userData, user);
+
+            // Alamat usaha (default = alamat KTP)
+            var alamatUsaha = profil.alamat || userData.alamat || alamatKtp;
+
+            // ── Isi field form ──
+            _skuSetVal('skuNamaLengkap', namaLengkap);
+            _skuSetVal('skuNik', nik);
+            _skuSetVal('skuAlamatKtp', alamatKtp);
+            _skuSetVal('skuHp', hp);
+            _skuSetVal('skuEmail', email);
+            _skuSetVal('skuNamaUsaha', namaUsaha);
+            _skuSetVal('skuAlamatUsaha', alamatUsaha);
+
+            // Kepala Desa (kalau ada di profil)
+            _skuSetVal('skuKepalaDesa', profil.kepalaDesa || '');
+
+            // Nomor Surat (auto-generate)
+            var nomorSurat = _skuGenerateNomorSurat(user.idUser);
+            _skuSetVal('skuNomorSurat', nomorSurat);
+
+            console.log('✅ isiDataSKUUniversal: data terisi');
+
+            return {
+                sukses: true,
+                data: {
+                    namaLengkap: namaLengkap,
+                    nik: nik,
+                    alamatKtp: alamatKtp,
+                    hp: hp,
+                    email: email,
+                    namaUsaha: namaUsaha,
+                    alamatUsaha: alamatUsaha,
+                    nomorSurat: nomorSurat
+                }
+            };
+
+        } catch (e) {
+            console.error('isiDataSKUUniversal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    function _skuGetNamaUsaha(profil, userData, user) {
+        var role = (user && user.role) || '';
+
+        // Prioritas field per role
+        if (role === 'Toko') return profil.namaToko || profil.namaLengkap || userData.nama || '-';
+        if (role === 'Pedagang Pasar') return profil.namaDagang || profil.namaLengkap || userData.nama || '-';
+        if (role === 'Pedagang Makanan') return profil.namaUsaha || profil.namaLengkap || userData.nama || '-';
+        if (role === 'COD Seller') return profil.namaUsaha || profil.namaLengkap || userData.nama || '-';
+        if (role === 'Grosir') return profil.namaGrosir || profil.namaLengkap || userData.nama || '-';
+        if (role === 'Distributor') return profil.namaDistributor || profil.namaLengkap || userData.nama || '-';
+        if (role === 'Jasa') return profil.namaJasa || profil.namaLengkap || userData.nama || '-';
+        if (role === 'Ojek') return profil.namaLengkap || userData.nama || '-';
+
+        return profil.namaLengkap || userData.nama || '-';
+    }
+
+    function _skuGenerateNomorSurat(idUser) {
+        // Format: 001/SKU-SKD/TK2R/2026
+        var tahun = new Date().getFullYear();
+
+        // Counter dari localStorage (per hari)
+        var key = 'skuCounter_' + new Date().toISOString().split('T')[0];
+        var counter = parseInt(localStorage.getItem(key) || '0', 10) + 1;
+
+        var nomor = String(counter).padStart(3, '0');
+        var kodeRole = (userAktif && userAktif.kodeRole) || 'TK';
+
+        return nomor + '/SKU-SKD-' + kodeRole + '/TK2R/' + tahun;
+    }
+
+    function _skuSetVal(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.value = val || '';
+    }
+
+    function _skuGetVal(id) {
+        var el = document.getElementById(id);
+        return el ? (el.value || '').trim() : '';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) pasangListenerSKUUniversal — Live update preview
+    // ═══════════════════════════════════════════════════════════
+    window.pasangListenerSKUUniversal = function(fields) {
+        try {
+            if (!Array.isArray(fields)) {
+                fields = ['skuNamaUsaha', 'skuAlamatUsaha', 'skuKepalaDesa', 'skuNomorSurat'];
+            }
+
+            fields.forEach(function(id) {
+                var el = document.getElementById(id);
+                if (!el) return;
+
+                // Remove listener lama (kalau ada) dengan clone
+                var newEl = el.cloneNode(true);
+                el.parentNode.replaceChild(newEl, el);
+
+                // Attach new listener
+                newEl.addEventListener('input', function() {
+                    renderPreviewSKUUniversal();
+                });
+                newEl.addEventListener('change', function() {
+                    renderPreviewSKUUniversal();
+                });
+            });
+
+            console.log('✅ pasangListenerSKUUniversal: ' + fields.length + ' listener terpasang');
+            return { sukses: true, jumlah: fields.length };
+
+        } catch (e) {
+            console.error('pasangListenerSKUUniversal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) renderPreviewSKUUniversal ⭐ — Render surat
+    // ═══════════════════════════════════════════════════════════
+    window.renderPreviewSKUUniversal = function() {
+        try {
+            var target = document.getElementById('previewSKU');
+            if (!target) {
+                console.warn('renderPreviewSKUUniversal: #previewSKU tidak ditemukan');
+                return { sukses: false, pesan: 'Container preview tidak ditemukan.' };
+            }
+
+            // Ambil data dari form
+            var data = {
+                namaLengkap: _skuGetVal('skuNamaLengkap'),
+                nik: _skuGetVal('skuNik'),
+                alamatKtp: _skuGetVal('skuAlamatKtp'),
+                hp: _skuGetVal('skuHp'),
+                email: _skuGetVal('skuEmail'),
+                namaUsaha: _skuGetVal('skuNamaUsaha'),
+                alamatUsaha: _skuGetVal('skuAlamatUsaha'),
+                kepalaDesa: _skuGetVal('skuKepalaDesa'),
+                nomorSurat: _skuGetVal('skuNomorSurat')
+            };
+
+            // Cache data untuk PDF
+            _skuPreviewData = data;
+
+            // Tanggal surat
+            var now = new Date();
+            var tglSurat = now.toLocaleDateString('id-ID', {
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric'
+            });
+
+            // Kabupaten (default Ciamis)
+            var kabupaten = 'CIAMIS';
+
+            // ── HTML Surat ──
+            var html =
+            '<div style="font-family:\'Times New Roman\',Times,serif;' +
+                 'background:#fff;color:#000;padding:15px;line-height:1.4;font-size:12px;">' +
+
+                // ── KOP SURAT ──
+                '<div style="text-align:center;border-bottom:3px double #000;' +
+                     'padding-bottom:10px;margin-bottom:15px;">' +
+                    '<div style="font-size:16px;font-weight:bold;">PEMERINTAH KABUPATEN ' + kabupaten + '</div>' +
+                    '<div style="font-size:14px;font-weight:bold;">KECAMATAN ....................</div>' +
+                    '<div style="font-size:16px;font-weight:bold;">DESA ....................</div>' +
+                    '<div style="font-size:11px;margin-top:3px;">' +
+                        'Jl. ...................., Kec. ...................., Kab. ' + kabupaten +
+                    '</div>' +
+                '</div>' +
+
+                // ── JUDUL ──
+                '<div style="text-align:center;margin:15px 0;">' +
+                    '<div style="font-size:14px;font-weight:bold;text-decoration:underline;">' +
+                        'SURAT PERMINTAAN PENERBITAN SKU & SKD' +
+                    '</div>' +
+                    '<div style="font-size:11px;">Nomor: ' + _skuEsc(data.nomorSurat || '-') + '</div>' +
+                '</div>' +
+
+                // ── PEMBUKA ──
+                '<div style="margin-bottom:10px;">Yang bertanda tangan di bawah ini, Kepala Desa ...................., ' +
+                'Kecamatan ...................., Kabupaten ' + kabupaten + ', dengan ini menerangkan bahwa:</div>' +
+
+                // ── DATA PEMOHON ──
+                '<table style="margin-left:20px;margin-bottom:12px;font-size:12px;">' +
+                    '<tr>' +
+                        '<td style="width:180px;padding:2px 0;">Nama Lengkap</td>' +
+                        '<td style="width:10px;">:</td>' +
+                        '<td><strong>' + _skuEsc(data.namaLengkap || '-') + '</strong></td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td style="padding:2px 0;">NIK KTP</td>' +
+                        '<td>:</td>' +
+                        '<td>' + _skuEsc(data.nik || '-') + '</td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td style="padding:2px 0;">Alamat KTP</td>' +
+                        '<td>:</td>' +
+                        '<td>' + _skuEsc(data.alamatKtp || '-') + '</td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td style="padding:2px 0;">No. HP</td>' +
+                        '<td>:</td>' +
+                        '<td>' + _skuEsc(data.hp || '-') + '</td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td style="padding:2px 0;">Email</td>' +
+                        '<td>:</td>' +
+                        '<td>' + _skuEsc(data.email || '-') + '</td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td style="padding:2px 0;">Nama Usaha / Toko</td>' +
+                        '<td>:</td>' +
+                        '<td><strong>' + _skuEsc(data.namaUsaha || '-') + '</strong></td>' +
+                    '</tr>' +
+                    '<tr>' +
+                        '<td style="padding:2px 0;">Alamat Usaha</td>' +
+                        '<td>:</td>' +
+                        '<td>' + _skuEsc(data.alamatUsaha || '-') + '</td>' +
+                    '</tr>' +
+                '</table>' +
+
+                // ── ISI SURAT ──
+                '<div style="margin-bottom:12px;text-align:justify;">' +
+                    'Bahwa nama tersebut di atas adalah benar-benar warga Desa ...................., ' +
+                    'Kecamatan ...................., Kabupaten ' + kabupaten + ', ' +
+                    'yang memiliki usaha <strong>' + _skuEsc(data.namaUsaha || '-') + '</strong> ' +
+                    'dan berkeinginan untuk mendaftarkan usahanya pada platform ' +
+                    '<strong>TOKO ONLINE 2R</strong> sebagai mitra penjual.' +
+                '</div>' +
+
+                '<div style="margin-bottom:12px;text-align:justify;">' +
+                    'Sehubungan dengan hal tersebut, kami dari Pemerintah Desa .................... ' +
+                    'memohon kepada pihak <strong>TOKO ONLINE 2R</strong> untuk dapat ' +
+                    '<strong>menerbitkan Surat Keterangan Usaha (SKU)</strong> dan ' +
+                    '<strong>Surat Keterangan Domisili (SKD)</strong> ' +
+                    'bagi pemohon yang bersangkutan.' +
+                '</div>' +
+
+                '<div style="margin-bottom:15px;text-align:justify;">' +
+                    'Demikian surat permintaan ini kami buat dengan sebenar-benarnya untuk ' +
+                    'dapat dipergunakan sebagaimana mestinya. Atas perhatian dan kerjasamanya ' +
+                    'kami ucapkan terima kasih.' +
+                '</div>' +
+
+                // ── TANDA TANGAN ──
+                '<table style="width:100%;margin-top:20px;">' +
+                    '<tr>' +
+                        '<td style="width:50%;text-align:center;vertical-align:top;">' +
+                            '<div>Pemohon,</div>' +
+                            '<div style="height:60px;"></div>' +
+                            '<div style="border-top:1px solid #000;display:inline-block;' +
+                                 'padding:2px 20px;">' +
+                                '<strong>' + _skuEsc(data.namaLengkap || '-') + '</strong>' +
+                            '</div>' +
+                            '<div style="font-size:11px;">NIK: ' + _skuEsc(data.nik || '-') + '</div>' +
+                        '</td>' +
+                        '<td style="width:50%;text-align:center;vertical-align:top;">' +
+                            'Desa ...................., ' + tglSurat + '<br>' +
+                            '<strong>Kepala Desa ....................</strong>' +
+                            '<div style="height:60px;"></div>' +
+                            '<div style="border-top:1px solid #000;display:inline-block;' +
+                                 'padding:2px 20px;">' +
+                                '<strong>' + _skuEsc(data.kepalaDesa || '....................') + '</strong>' +
+                            '</div>' +
+                        '</td>' +
+                    '</tr>' +
+                '</table>' +
+
+                // ── FOOTER ──
+                '<div style="margin-top:15px;padding-top:10px;border-top:1px dashed #999;' +
+                     'font-size:10px;color:#666;text-align:center;">' +
+                    'Dokumen ini dicetak dari sistem TOKO ONLINE 2R<br>' +
+                    'Dicetak: ' + new Date().toLocaleString('id-ID') +
+                '</div>' +
+
+            '</div>';
+
+            target.innerHTML = html;
+
+            console.log('✅ renderPreviewSKUUniversal: preview dirender');
+            return { sukses: true, data: data };
+
+        } catch (e) {
+            console.error('renderPreviewSKUUniversal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) downloadPDFSKUUniversal ⭐ — Generate & download PDF
+    // ═══════════════════════════════════════════════════════════
+    window.downloadPDFSKUUniversal = async function() {
+        try {
+            // Cek library
+            if (typeof html2canvas === 'undefined') {
+                alert('❌ Library html2canvas tidak tersedia.');
+                return { sukses: false, pesan: 'html2canvas tidak tersedia.' };
+            }
+            if (typeof jspdf === 'undefined' && typeof window.jspdf === 'undefined') {
+                alert('❌ Library jsPDF tidak tersedia.');
+                return { sukses: false, pesan: 'jsPDF tidak tersedia.' };
+            }
+
+            var previewEl = document.getElementById('previewSKU');
+            if (!previewEl) {
+                alert('❌ Preview tidak ditemukan.');
+                return { sukses: false, pesan: 'Preview tidak ditemukan.' };
+            }
+
+            // Pastikan preview sudah dirender
+            if (!_skuPreviewData) {
+                renderPreviewSKUUniversal();
+            }
+
+            // Ambil data untuk nama file
+            var data = _skuPreviewData || {};
+            var namaUsaha = (data.namaUsaha || 'Usaha').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 40);
+            var nomorSurat = (data.nomorSurat || 'SURAT').replace(/[^a-zA-Z0-9]/g, '_');
+
+            // Notif loading
+            var notif = document.createElement('div');
+            notif.style.cssText =
+                'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+                'background:#fff;padding:20px 30px;border-radius:10px;z-index:99999;' +
+                'box-shadow:0 10px 40px rgba(0,0,0,0.3);text-align:center;';
+            notif.innerHTML =
+                '<i class="fas fa-spinner fa-spin fa-2x" style="color:#FF8C00;"></i>' +
+                '<div style="margin-top:10px;font-weight:bold;">Membuat PDF...</div>' +
+                '<small class="text-muted">Mohon tunggu sebentar</small>';
+            document.body.appendChild(notif);
+
+            // FIX: hide overflow sementara untuk render penuh
+            var originalStyle = previewEl.getAttribute('style') || '';
+            previewEl.style.maxHeight = 'none';
+            previewEl.style.overflow = 'visible';
+
+            // Render ke canvas
+            var canvas = await html2canvas(previewEl, {
+                scale: 2,
+                useCORS: true,
+                backgroundColor: '#ffffff',
+                logging: false,
+                windowWidth: previewEl.scrollWidth,
+                windowHeight: previewEl.scrollHeight
+            });
+
+            // Restore style
+            previewEl.setAttribute('style', originalStyle);
+
+            // ── Buat PDF (A4) ──
+            var { jsPDF } = window.jspdf || window;
+            var pdf = new jsPDF({
+                orientation: 'portrait',
+                unit: 'mm',
+                format: 'a4'
+            });
+
+            var pdfWidth = 210;   // A4 width mm
+            var pdfHeight = 297;  // A4 height mm
+            var margin = 10;
+            var contentWidth = pdfWidth - (margin * 2); // 190 mm
+
+            // Hitung tinggi proporsional
+            var imgWidth = canvas.width;
+            var imgHeight = canvas.height;
+            var imgRatio = imgHeight / imgWidth;
+            var contentHeight = contentWidth * imgRatio;
+
+            // Kalau lebih tinggi dari 1 halaman, split ke beberapa halaman
+            if (contentHeight <= (pdfHeight - margin * 2)) {
+                // 1 halaman
+                var imgData = canvas.toDataURL('image/jpeg', 0.92);
+                pdf.addImage(imgData, 'JPEG', margin, margin, contentWidth, contentHeight);
+            } else {
+                // Multi-halaman
+                var pageContentHeight = pdfHeight - margin * 2;
+                var totalPages = Math.ceil(contentHeight / pageContentHeight);
+                var imgSliceHeightPx = imgHeight / totalPages;
+
+                for (var i = 0; i < totalPages; i++) {
+                    if (i > 0) pdf.addPage();
+
+                    // Crop canvas per halaman
+                    var tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = imgWidth;
+                    tempCanvas.height = imgSliceHeightPx;
+
+                    var ctx = tempCanvas.getContext('2d');
+                    ctx.drawImage(
+                        canvas,
+                        0, i * imgSliceHeightPx,     // src x, y
+                        imgWidth, imgSliceHeightPx,  // src w, h
+                        0, 0,                         // dst x, y
+                        imgWidth, imgSliceHeightPx    // dst w, h
+                    );
+
+                    var sliceData = tempCanvas.toDataURL('image/jpeg', 0.92);
+                    var sliceHeightMm = contentWidth * (imgSliceHeightPx / imgWidth);
+                    pdf.addImage(sliceData, 'JPEG', margin, margin, contentWidth, sliceHeightMm);
+                }
+            }
+
+            // Save
+            var namaFile = 'SKU-SKD_' + namaUsaha + '_' + nomorSurat + '.pdf';
+            pdf.save(namaFile);
+
+            // Hapus notif
+            if (notif.parentNode) notif.parentNode.removeChild(notif);
+
+            // Increment counter setelah sukses
+            try {
+                var key = 'skuCounter_' + new Date().toISOString().split('T')[0];
+                var counter = parseInt(localStorage.getItem(key) || '0', 10) + 1;
+                localStorage.setItem(key, counter);
+            } catch (e) {}
+
+            // Catat aktivitas
+            try {
+                if (typeof catatAktivitasGlobal === 'function' && userAktif) {
+                    catatAktivitasGlobal(userAktif.idUser, 'Download SKU/SKD',
+                        'Download PDF: ' + namaFile);
+                }
+            } catch (e) {}
+
+            // Catat log audit
+            try {
+                if (typeof catatLogAuditSAGlobal === 'function') {
+                    catatLogAuditSAGlobal({
+                        kategori: 'ekspor_impor',
+                        subKategori: 'download_sku',
+                        aksi: 'Download Form SKU/SKD',
+                        level: 'info',
+                        deskripsi: 'Download PDF: ' + namaFile,
+                        target: {
+                            tipe: 'user',
+                            id: userAktif.idUser,
+                            nama: userAktif.nama
+                        },
+                        status: 'sukses',
+                        metadata: { namaFile: namaFile }
+                    });
+                }
+            } catch (e) {}
+
+            console.log('✅ PDF downloaded:', namaFile);
+
+            // Notif sukses (opsional)
+            _skuShowToast('✅ PDF berhasil didownload: ' + namaFile, 'success');
+
+            return { sukses: true, namaFile: namaFile };
+
+        } catch (e) {
+            console.error('downloadPDFSKUUniversal error:', e);
+
+            // Hapus loading notif kalau masih ada
+            var notifs = document.querySelectorAll('div[style*="z-index:99999"]');
+            notifs.forEach(function(n) { if (n.parentNode) n.parentNode.removeChild(n); });
+
+            alert('❌ Gagal membuat PDF: ' + e.message);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) BONUS — Buka Modal Preview Full (opsional)
+    // ═══════════════════════════════════════════════════════════
+    window.bukaPreviewFullSKUUniversal = function() {
+        var preview = document.getElementById('previewSKU');
+        if (!preview) return;
+
+        // Buat modal dinamis
+        var modalId = 'modalPreviewSKUFull';
+        if (document.getElementById(modalId)) {
+            // Kalau sudah ada, buka saja
+            if (typeof bootstrap !== 'undefined') {
+                new bootstrap.Modal(document.getElementById(modalId)).show();
+            }
+            return;
+        }
+
+        var modal = document.createElement('div');
+        modal.id = modalId;
+        modal.className = 'modal fade';
+        modal.setAttribute('tabindex', '-1');
+
+        modal.innerHTML =
+            '<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">' +
+                '<div class="modal-content">' +
+                    '<div class="modal-header text-white" style="background:#FF8C00;">' +
+                        '<h5 class="modal-title">' +
+                            '<i class="fas fa-file-alt me-2"></i>Preview Surat Full' +
+                        '</h5>' +
+                        '<button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>' +
+                    '</div>' +
+                    '<div class="modal-body">' +
+                        '<div id="modalSKUContent"></div>' +
+                    '</div>' +
+                    '<div class="modal-footer">' +
+                        '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>' +
+                        '<button type="button" class="btn btn-success" onclick="downloadPDFSKUUniversal()">' +
+                            '<i class="fas fa-download me-1"></i>Download PDF' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+
+        document.body.appendChild(modal);
+
+        // Copy konten preview
+        document.getElementById('modalSKUContent').innerHTML = preview.innerHTML;
+
+        if (typeof bootstrap !== 'undefined') {
+            new bootstrap.Modal(modal).show();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) BONUS — Reset nomor surat
+    // ═══════════════════════════════════════════════════════════
+    window.resetCounterSKUUniversal = function() {
+        if (!confirm('Reset counter nomor surat untuk hari ini?')) return;
+
+        try {
+            var key = 'skuCounter_' + new Date().toISOString().split('T')[0];
+            localStorage.removeItem(key);
+            alert('✅ Counter direset. Nomor surat akan mulai dari 001.');
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _skuEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function _skuShowToast(pesan, tipe) {
+        var warna = {
+            success: '#28A745',
+            danger: '#DC3545',
+            warning: '#FFC107',
+            info: '#17A2B8'
+        }[tipe] || '#28A745';
+
+        var toast = document.createElement('div');
+        toast.textContent = pesan;
+        toast.style.cssText =
+            'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+            'padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;' +
+            'z-index:99999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+            'max-width:80vw;';
+        document.body.appendChild(toast);
+
+        setTimeout(function() {
+            toast.style.opacity = '0';
+            setTimeout(function() {
+                if (toast.parentNode) toast.parentNode.removeChild(toast);
+            }, 300);
+        }, 3500);
+    }
+
+    console.log('✅ BLOK Fungsi Download SKU/SKD R 0.11.5 terpasang.');
+    console.log('   (1) isiDataSKUUniversal ⭐ — auto-fill dari getDataIdUser & getProfilLengkapGlobal');
+    console.log('   (2) pasangListenerSKUUniversal — live preview on input');
+    console.log('   (3) renderPreviewSKUUniversal ⭐ — render surat HTML');
+    console.log('   (4) downloadPDFSKUUniversal ⭐ — generate PDF (html2canvas + jsPDF)');
+    console.log('   (+) bukaPreviewFullSKUUniversal — modal preview full');
+    console.log('   (+) resetCounterSKUUniversal — reset counter surat');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK Fungsi Download SKU/SKD R 0.11.5 ══════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ============================================================ -->
 <!-- ===== AKHIR FUNGSI ALL ROLE AKUN ===== -->
@@ -50160,6 +51350,995 @@ function toggleStatusWilayah(id) {
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- AKHIR BLOK R 11.2 (JS)                                     -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 11.3(1) – PENGAJUAN VERIFIKASI SELLER (HTML)        -->
+<!-- Universal: TK, PP, PM, COD, OJ, GR, JS, DST                -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div id="pengajuanVerifikasiSellerContainer" style="display:none;">
+    <div class="container-fluid px-3 px-md-4 py-3 py-md-4">
+
+        <!-- ══════════ HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-file-upload me-2"></i>
+                    <span id="pvsHeaderLabel">Pengajuan Verifikasi</span>
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Upload dokumen untuk verifikasi akun
+                </small>
+            </div>
+            <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i>Kembali
+            </button>
+        </div>
+
+        <!-- ══════════ BANNER STATUS (muncul kalau sudah kirim) ══════════ -->
+        <div id="pvsStatusBanner" class="mb-3"></div>
+
+        <!-- ══════════ CARD FORM ══════════ -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white" id="pvsCardHeader" style="background:#FF8C00;">
+                <i class="fas fa-id-card me-2"></i>
+                <strong id="pvsCardTitle">Formulir Verifikasi Akun</strong>
+            </div>
+            <div class="card-body">
+
+                <!-- ── INFO USER (READONLY) ── -->
+                <div class="alert alert-light border small mb-3">
+                    <i class="fas fa-info-circle me-1 text-primary"></i>
+                    Data di bawah ini diambil otomatis dari profil Anda.
+                    Kalau ada yang salah, perbaiki di menu <strong>Profil</strong> dulu.
+                </div>
+
+                <div class="row g-2 g-md-3 mb-3">
+                    <div class="col-md-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-user me-1"></i>Nama Lengkap
+                        </label>
+                        <input type="text" id="pvsNama" class="form-control form-control-sm bg-light"
+                               readonly placeholder="Loading...">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-id-card me-1"></i>NIK KTP
+                        </label>
+                        <input type="text" id="pvsNik" class="form-control form-control-sm bg-light"
+                               readonly placeholder="Loading...">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-phone me-1"></i>No. HP
+                        </label>
+                        <input type="text" id="pvsHp" class="form-control form-control-sm bg-light"
+                               readonly placeholder="Loading...">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-envelope me-1"></i>Email
+                        </label>
+                        <input type="text" id="pvsEmail" class="form-control form-control-sm bg-light"
+                               readonly placeholder="Loading...">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-user-tag me-1"></i>Role
+                        </label>
+                        <input type="text" id="pvsRole" class="form-control form-control-sm bg-light"
+                               readonly>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-map-marker-alt me-1"></i>Alamat
+                        </label>
+                        <input type="text" id="pvsAlamat" class="form-control form-control-sm bg-light"
+                               readonly placeholder="Loading...">
+                    </div>
+                </div>
+
+                <hr>
+
+                <!-- ══════════ UPLOAD DOKUMEN ══════════ -->
+                <h6 class="fw-bold mb-3">
+                    <i class="fas fa-cloud-upload-alt me-1"></i>
+                    Upload Dokumen Verifikasi
+                </h6>
+
+                <!-- Upload KTP -->
+                <div class="mb-3 p-3 border rounded">
+                    <label class="fw-bold small">
+                        <i class="fas fa-id-card me-1 text-primary"></i>
+                        Foto KTP
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="file" id="pvsFileKtp" class="form-control form-control-sm mt-2"
+                           accept="image/*" data-doc="ktp">
+                    <small class="text-muted d-block mt-1">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Format: JPG/PNG/WebP. Maks 2 MB. Foto KTP harus jelas & terbaca.
+                    </small>
+                    <div id="pvsPreviewKtp" class="mt-2"></div>
+                </div>
+
+                <!-- Upload SKU (kecuali Distributor) -->
+                <div class="mb-3 p-3 border rounded" id="pvsWrapSku">
+                    <label class="fw-bold small">
+                        <i class="fas fa-file-alt me-1 text-success"></i>
+                        Form SKU (Surat Keterangan Usaha)
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="file" id="pvsFileSku" class="form-control form-control-sm mt-2"
+                           accept="image/*" data-doc="sku">
+                    <small class="text-muted d-block mt-1">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Download & isi form SKU dari menu "Download Form SKU" dulu.
+                    </small>
+                    <div id="pvsPreviewSku" class="mt-2"></div>
+                </div>
+
+                <!-- Upload SKD (kecuali Distributor) -->
+                <div class="mb-3 p-3 border rounded" id="pvsWrapSkd">
+                    <label class="fw-bold small">
+                        <i class="fas fa-file-signature me-1 text-info"></i>
+                        Form SKD (Surat Keterangan Domisili)
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="file" id="pvsFileSkd" class="form-control form-control-sm mt-2"
+                           accept="image/*" data-doc="skd">
+                    <small class="text-muted d-block mt-1">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Download & isi form SKD dari menu "Download Form SKU" dulu.
+                    </small>
+                    <div id="pvsPreviewSkd" class="mt-2"></div>
+                </div>
+
+                <!-- Upload Surat Kerjasama (khusus Distributor) -->
+                <div class="mb-3 p-3 border rounded" id="pvsWrapKerjasama" style="display:none;">
+                    <label class="fw-bold small">
+                        <i class="fas fa-handshake me-1 text-primary"></i>
+                        Surat Perjanjian Kerjasama
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="file" id="pvsFileKerjasama" class="form-control form-control-sm mt-2"
+                           accept="image/*,.pdf" data-doc="kerjasama">
+                    <small class="text-muted d-block mt-1">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Format: JPG/PNG/PDF. Maks 2 MB. Surat yang sudah ditandatangani.
+                    </small>
+                    <div id="pvsPreviewKerjasama" class="mt-2"></div>
+                </div>
+
+                <hr>
+
+                <!-- ══════════ CHECKBOX KEBIJAKAN ══════════ -->
+                <div class="mb-3 p-3 border rounded" style="background:#FFF8E1;">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="pvsSetujuKebijakan"
+                               onchange="pvsCekTombolKirim()">
+                        <label class="form-check-label fw-bold small" for="pvsSetujuKebijakan">
+                            <i class="fas fa-check-circle me-1 text-success"></i>
+                            Saya menyetujui semua kebijakan & pedoman
+                        </label>
+                    </div>
+                    <p class="small text-muted mt-2 mb-0" style="font-size:11px;">
+                        Dengan mencentang kotak ini, saya menyatakan bahwa seluruh data dan
+                        dokumen yang saya unggah adalah <strong>benar, asli, dan sah</strong>.
+                        Saya berkomitmen untuk mematuhi semua kebijakan, ketentuan, dan pedoman
+                        yang berlaku di platform <strong>Toko Online 2R</strong>.
+                        Saya memahami bahwa jika di kemudian hari ditemukan ketidaksesuaian
+                        atau pelanggaran, akun saya dapat <strong>diblokir atau dikenakan sanksi</strong>
+                        sesuai ketentuan yang berlaku.
+                    </p>
+                </div>
+
+                <!-- ══════════ TOMBOL KIRIM ══════════ -->
+                <div class="d-grid gap-2">
+                    <button class="btn btn-lg text-white fw-bold" id="pvsTombolKirim"
+                            style="background:#FF8C00;" disabled onclick="pvsKirimVerifikasi()">
+                        <i class="fas fa-paper-plane me-2"></i>
+                        <span id="pvsTombolLabel">Kirim Dokumen Verifikasi</span>
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" id="pvsTombolReset"
+                            onclick="pvsResetForm()" style="display:none;">
+                        <i class="fas fa-undo me-1"></i>Reset Form
+                    </button>
+                </div>
+
+                <!-- ══════════ NOTIFIKASI ══════════ -->
+                <div id="pvsNotif" class="alert d-none mt-3"></div>
+
+            </div>
+        </div>
+
+        <!-- ══════════ INFO TAMBAHAN ══════════ -->
+        <div class="card border-0 shadow mt-3">
+            <div class="card-header text-white" style="background:#6C757D;">
+                <i class="fas fa-question-circle me-2"></i><strong>Butuh Bantuan?</strong>
+            </div>
+            <div class="card-body small">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <strong><i class="fas fa-download me-1 text-info"></i>
+                        Download Form SKU / SKD</strong>
+                        <p class="text-muted mb-0 mt-1">
+                            Kalau belum punya form SKU/SKD, download dulu di menu
+                            <strong>"Download Form SKU"</strong>.
+                        </p>
+                    </div>
+                    <div class="col-md-6">
+                        <strong><i class="fas fa-headset me-1 text-primary"></i>
+                        Butuh Bantuan CS?</strong>
+                        <p class="text-muted mb-0 mt-1">
+                            Kalau ada kendala verifikasi, hubungi
+                            <strong>Customer Service</strong> via menu Chat.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ MODAL PREVIEW GAMBAR ══════════ -->
+<div class="modal fade" id="pvsModalPreview" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-search-plus me-2"></i>Preview Dokumen
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center" id="pvsModalPreviewBody">
+                <p class="text-muted">Memuat...</p>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 11.3(1) (HTML)                                -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 11.3(1) – PENGAJUAN VERIFIKASI SELLER (JS)          -->
+<!-- Universal: TK, PP, PM, COD, OJ, GR, JS, DST                -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_11_3_PENGAJUAN_VERIFIKASI() {
+    if (window._blokR113Done) {
+        console.log('ℹ️ BLOK R 11.3(1) sudah terpasang.');
+        return;
+    }
+    window._blokR113Done = true;
+
+    var _pvsCurrentRole = 'Toko';
+    var _pvsCurrentKode = 'TK';
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) TAMPILKAN HALAMAN — Entry Point Universal
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanPengajuanVerifikasiSeller = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            if (!userAktif || !userAktif.idUser) {
+                if (typeof tampilkanHalaman === 'function') tampilkanHalaman('login');
+                return;
+            }
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            // Cache template
+            if (!window._tplPengajuanVerifikasiSeller) {
+                var c = document.getElementById('pengajuanVerifikasiSellerContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Pengajuan Verifikasi', '11.3');
+                    }
+                    return;
+                }
+                window._tplPengajuanVerifikasiSeller = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Pengajuan Verifikasi Seller di-cache');
+            }
+
+            konten.innerHTML = window._tplPengajuanVerifikasiSeller;
+
+            _pvsCurrentRole = userAktif.role || 'Toko';
+            _pvsCurrentKode = userAktif.kodeRole || _pvsCariKodeRole(_pvsCurrentRole);
+
+            // Update label per role
+            _pvsUpdateLabelRole();
+
+            // Setup tampilan khusus Distributor
+            _pvsSetupTampilanDistributor();
+
+            // Cek status verifikasi dulu
+            _pvsCekStatusVerifikasi();
+
+            // Isi data user
+            setTimeout(function() {
+                _pvsIsiDataUser();
+                _pvsPasangListenerPreview();
+                _pvsCekTombolKirim();
+            }, 150);
+
+        } catch (e) {
+            console.error('tampilkanPengajuanVerifikasiSeller error:', e);
+        }
+    };
+
+    // Alias untuk semua role seller
+    window.tampilkanPengajuanVerifikasiTK   = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiPP   = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiPM   = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiCOD  = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiOJ   = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiGR   = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiJS   = window.tampilkanPengajuanVerifikasiSeller;
+    window.tampilkanPengajuanVerifikasiDST  = window.tampilkanPengajuanVerifikasiSeller;
+
+    function _pvsCariKodeRole(role) {
+        var map = {
+            'Toko': 'TK',
+            'Pedagang Pasar': 'PP',
+            'Pedagang Makanan': 'PM',
+            'COD Seller': 'COD',
+            'Ojek': 'OJ',
+            'Grosir': 'GR',
+            'Jasa': 'JS',
+            'Distributor': 'DST'
+        };
+        return map[role] || 'TK';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) UPDATE LABEL ROLE
+    // ═══════════════════════════════════════════════════════════
+    function _pvsUpdateLabelRole() {
+        var headerLabel = document.getElementById('pvsHeaderLabel');
+        if (headerLabel) {
+            headerLabel.textContent = 'Pengajuan Verifikasi ' + _pvsCurrentRole;
+        }
+
+        var cardTitle = document.getElementById('pvsCardTitle');
+        if (cardTitle) {
+            cardTitle.textContent = 'Formulir Verifikasi ' + _pvsCurrentRole;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) SETUP TAMPILAN KHUSUS DISTRIBUTOR
+    // ═══════════════════════════════════════════════════════════
+    function _pvsSetupTampilanDistributor() {
+        var isDistributor = (_pvsCurrentRole === 'Distributor');
+
+        // Sembunyikan SKU & SKD untuk Distributor, tampilkan Surat Kerjasama
+        var wrapSku = document.getElementById('pvsWrapSku');
+        var wrapSkd = document.getElementById('pvsWrapSkd');
+        var wrapKerjasama = document.getElementById('pvsWrapKerjasama');
+
+        if (isDistributor) {
+            if (wrapSku) wrapSku.style.display = 'none';
+            if (wrapSkd) wrapSkd.style.display = 'none';
+            if (wrapKerjasama) wrapKerjasama.style.display = 'block';
+        } else {
+            if (wrapSku) wrapSku.style.display = 'block';
+            if (wrapSkd) wrapSkd.style.display = 'block';
+            if (wrapKerjasama) wrapKerjasama.style.display = 'none';
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) CEK STATUS VERIFIKASI
+    // ------------------------------------------------------------
+    // Kalau sudah kirim → tampil banner, disable form
+    // Kalau ditolak → banner warning, tombol jadi "Kirim Ulang"
+    // ═══════════════════════════════════════════════════════════
+    function _pvsCekStatusVerifikasi() {
+        var banner = document.getElementById('pvsStatusBanner');
+        var tombol = document.getElementById('pvsTombolKirim');
+        var tombolLabel = document.getElementById('pvsTombolLabel');
+        var tombolReset = document.getElementById('pvsTombolReset');
+
+        // Cek via fungsi global
+        var pengajuan = null;
+        try {
+            if (typeof getVerifikasiDokumenUserGlobal === 'function') {
+                pengajuan = getVerifikasiDokumenUserGlobal(userAktif.idUser);
+            }
+        } catch (e) {}
+
+        if (!pengajuan) {
+            // Belum pernah kirim
+            banner.innerHTML = '';
+            if (tombol) tombol.disabled = false;
+            if (tombolLabel) tombolLabel.textContent = 'Kirim Dokumen Verifikasi';
+            if (tombolReset) tombolReset.style.display = 'none';
+            return;
+        }
+
+        var status = pengajuan.status || 'Menunggu';
+        var idPengajuan = pengajuan.idPengajuan || '-';
+        var tglKirim = pengajuan.createdAt
+            ? new Date(pengajuan.createdAt).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            })
+            : '-';
+
+        if (status === 'Menunggu') {
+            // Sudah kirim, menunggu review
+            banner.innerHTML =
+                '<div class="alert alert-info d-flex align-items-start mb-0">' +
+                    '<i class="fas fa-hourglass-half fa-2x me-3 mt-1"></i>' +
+                    '<div style="flex:1;">' +
+                        '<h6 class="fw-bold mb-1">📤 Dokumen Sudah Dikirim</h6>' +
+                        '<div class="small">' +
+                            'Pengajuan Anda <strong>' + _pvsEsc(idPengajuan) + '</strong> ' +
+                            'sedang dalam review SuperAdmin.<br>' +
+                            '<i class="fas fa-clock me-1"></i>Dikirim: ' + _pvsEsc(tglKirim) +
+                        '</div>' +
+                        '<div class="small mt-2 text-muted">' +
+                            '<i class="fas fa-info-circle me-1"></i>' +
+                            'Anda akan menerima notifikasi setelah disetujui.' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            // Disable form
+            if (tombol) {
+                tombol.disabled = true;
+                tombol.innerHTML = '<i class="fas fa-hourglass-half me-2"></i>' +
+                    '<span id="pvsTombolLabel">Menunggu Verifikasi SA</span>';
+            }
+            if (tombolReset) tombolReset.style.display = 'none';
+
+            // Disable input file
+            _pvsDisableFormInputs(true);
+
+        } else if (status === 'Disetujui') {
+            banner.innerHTML =
+                '<div class="alert alert-success d-flex align-items-start mb-0">' +
+                    '<i class="fas fa-check-circle fa-2x me-3 mt-1"></i>' +
+                    '<div style="flex:1;">' +
+                        '<h6 class="fw-bold mb-1">✅ Akun Sudah Diverifikasi</h6>' +
+                        '<div class="small">' +
+                            'Selamat! Akun Anda sudah diverifikasi. ' +
+                            'Sekarang Anda bisa mengakses <strong>semua fitur</strong>.' +
+                        '</div>' +
+                        '<button class="btn btn-sm btn-success mt-2" ' +
+                                'onclick="kembaliKeDasbor()">' +
+                            '<i class="fas fa-home me-1"></i>Ke Dasbor' +
+                        '</button>' +
+                    '</div>' +
+                '</div>';
+
+            if (tombol) tombol.style.display = 'none';
+            if (tombolReset) tombolReset.style.display = 'none';
+            _pvsDisableFormInputs(true);
+
+        } else if (status === 'Ditolak') {
+            var catatan = pengajuan.catatan || 'Dokumen belum sesuai.';
+            banner.innerHTML =
+                '<div class="alert alert-danger d-flex align-items-start mb-0">' +
+                    '<i class="fas fa-times-circle fa-2x me-3 mt-1"></i>' +
+                    '<div style="flex:1;">' +
+                        '<h6 class="fw-bold mb-1">❌ Pengajuan Ditolak</h6>' +
+                        '<div class="small">' +
+                            '<strong>Alasan:</strong> ' + _pvsEsc(catatan) +
+                        '</div>' +
+                        '<div class="small text-muted mt-2">' +
+                            '<i class="fas fa-info-circle me-1"></i>' +
+                            'Silakan perbaiki dokumen & kirim ulang.' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            // Allow resubmit
+            if (tombol) {
+                tombol.disabled = false;
+                tombol.innerHTML = '<i class="fas fa-redo me-2"></i>' +
+                    '<span id="pvsTombolLabel">Kirim Ulang Dokumen</span>';
+            }
+            if (tombolReset) tombolReset.style.display = 'inline-block';
+        }
+    }
+
+    function _pvsDisableFormInputs(disabled) {
+        var inputs = [
+            'pvsFileKtp', 'pvsFileSku', 'pvsFileSkd', 'pvsFileKerjasama',
+            'pvsSetujuKebijakan'
+        ];
+        inputs.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.disabled = disabled;
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) ISI DATA USER OTOMATIS
+    // ═══════════════════════════════════════════════════════════
+    function _pvsIsiDataUser() {
+        var user = userAktif;
+        if (!user || !user.idUser) return;
+
+        // Ambil data dari getDataIdUser (R 0.11.0)
+        var userData = null;
+        try {
+            if (typeof getDataIdUser === 'function') {
+                userData = getDataIdUser(user.idUser);
+            }
+        } catch (e) {}
+        userData = userData || user;
+
+        // Ambil profil lengkap (R 0.11.1)
+        var profil = {};
+        try {
+            if (typeof getProfilLengkapGlobal === 'function') {
+                profil = getProfilLengkapGlobal(user.idUser) || {};
+            }
+        } catch (e) {}
+
+        // Merge data
+        var nama = profil.namaLengkap || userData.nama || user.nama || '-';
+        var nik = profil.nikKtp || profil.nik_ktp || userData.nik_ktp || '-';
+        var hp = profil.hp || userData.hp || user.hp || '-';
+        var email = profil.email || userData.email || user.email || '-';
+        var alamat = profil.alamat || userData.alamat || user.alamat || '-';
+        var role = user.role || '-';
+
+        _pvsSetVal('pvsNama', nama);
+        _pvsSetVal('pvsNik', nik);
+        _pvsSetVal('pvsHp', hp);
+        _pvsSetVal('pvsEmail', email);
+        _pvsSetVal('pvsAlamat', alamat);
+        _pvsSetVal('pvsRole', role);
+
+        console.log('✅ Data user terisi: ' + nama);
+    }
+
+    function _pvsSetVal(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.value = val || '';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) PASANG LISTENER PREVIEW GAMBAR
+    // ═══════════════════════════════════════════════════════════
+    function _pvsPasangListenerPreview() {
+        var mapInput = [
+            { id: 'pvsFileKtp',       previewId: 'pvsPreviewKtp' },
+            { id: 'pvsFileSku',       previewId: 'pvsPreviewSku' },
+            { id: 'pvsFileSkd',       previewId: 'pvsPreviewSkd' },
+            { id: 'pvsFileKerjasama', previewId: 'pvsPreviewKerjasama' }
+        ];
+
+        mapInput.forEach(function(item) {
+            var input = document.getElementById(item.id);
+            if (!input) return;
+
+            // Cek sudah punya listener
+            if (input._pvsListener) return;
+            input._pvsListener = true;
+
+            input.addEventListener('change', function(e) {
+                _pvsPreviewFile(e, item.previewId);
+            });
+        });
+    }
+
+    function _pvsPreviewFile(event, previewId) {
+        var file = event.target.files && event.target.files[0];
+        var preview = document.getElementById(previewId);
+        if (!preview) return;
+
+        if (!file) {
+            preview.innerHTML = '';
+            _pvsCekTombolKirim();
+            return;
+        }
+
+        // Validasi
+        if (file.type.indexOf('image') !== 0 && file.type !== 'application/pdf') {
+            _pvsNotif('⚠️ File harus gambar (JPG/PNG) atau PDF.', 'warning');
+            event.target.value = '';
+            preview.innerHTML = '';
+            return;
+        }
+
+        if (file.size > 2 * 1024 * 1024) {
+            _pvsNotif('⚠️ Ukuran file maksimal 2 MB. File Anda: ' +
+                Math.round(file.size / 1024) + ' KB', 'warning');
+            event.target.value = '';
+            preview.innerHTML = '';
+            return;
+        }
+
+        // Render preview
+        if (file.type === 'application/pdf') {
+            preview.innerHTML =
+                '<div class="d-flex align-items-center p-2 border rounded bg-light">' +
+                    '<i class="fas fa-file-pdf fa-2x text-danger me-2"></i>' +
+                    '<div style="flex:1;min-width:0;">' +
+                        '<strong class="d-block text-truncate small">' +
+                            _pvsEsc(file.name) + '</strong>' +
+                        '<small class="text-muted">' +
+                            Math.round(file.size / 1024) + ' KB • PDF</small>' +
+                    '</div>' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary" ' +
+                            'onclick="pvsHapusFile(\'' + event.target.id + '\', \'' + previewId + '\')">' +
+                        '<i class="fas fa-times"></i>' +
+                    '</button>' +
+                '</div>';
+        } else {
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                preview.innerHTML =
+                    '<div class="d-flex align-items-start gap-2">' +
+                        '<img src="' + e.target.result + '" ' +
+                             'style="max-height:120px;border:2px solid #FF8C00;' +
+                                    'border-radius:6px;cursor:pointer;" ' +
+                             'onclick="pvsBukaPreviewModal(this.src)" ' +
+                             'alt="Preview">' +
+                        '<div style="flex:1;min-width:0;">' +
+                            '<small class="text-muted d-block text-truncate">' +
+                                _pvsEsc(file.name) + '</small>' +
+                            '<small class="text-muted">' +
+                                Math.round(file.size / 1024) + ' KB</small><br>' +
+                            '<button type="button" class="btn btn-sm btn-outline-danger mt-1" ' +
+                                    'onclick="pvsHapusFile(\'' + event.target.id + '\', \'' + previewId + '\')">' +
+                                '<i class="fas fa-trash me-1"></i>Hapus' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>';
+            };
+            reader.readAsDataURL(file);
+        }
+
+        setTimeout(_pvsCekTombolKirim, 100);
+    }
+
+    window.pvsHapusFile = function(inputId, previewId) {
+        var input = document.getElementById(inputId);
+        var preview = document.getElementById(previewId);
+        if (input) input.value = '';
+        if (preview) preview.innerHTML = '';
+        _pvsCekTombolKirim();
+    };
+
+    window.pvsBukaPreviewModal = function(src) {
+        var body = document.getElementById('pvsModalPreviewBody');
+        if (body) {
+            body.innerHTML = '<img src="' + src + '" ' +
+                'style="max-width:100%;max-height:70vh;border-radius:8px;">';
+        }
+        if (typeof bootstrap !== 'undefined') {
+            new bootstrap.Modal(document.getElementById('pvsModalPreview')).show();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) CEK STATUS TOMBOL KIRIM
+    // ═══════════════════════════════════════════════════════════
+    window.pvsCekTombolKirim = function() {
+        var tombol = document.getElementById('pvsTombolKirim');
+        if (!tombol) return;
+
+        // Skip kalau tombol sudah disabled karena status pending/disetujui
+        var pengajuan = null;
+        try {
+            if (typeof getVerifikasiDokumenUserGlobal === 'function') {
+                pengajuan = getVerifikasiDokumenUserGlobal(userAktif.idUser);
+            }
+        } catch (e) {}
+
+        if (pengajuan && (pengajuan.status === 'Menunggu' || pengajuan.status === 'Disetujui')) {
+            return; // sudah di-disable di _pvsCekStatusVerifikasi
+        }
+
+        // Cek input
+        var ktp = document.getElementById('pvsFileKtp');
+        var setuju = document.getElementById('pvsSetujuKebijakan');
+
+        var lengkap = ktp && ktp.files && ktp.files.length > 0 &&
+                      setuju && setuju.checked;
+
+        // Khusus Distributor: cek kerjasama. Non-DST: cek SKU & SKD
+        if (_pvsCurrentRole === 'Distributor') {
+            var kerjasama = document.getElementById('pvsFileKerjasama');
+            lengkap = lengkap && kerjasama && kerjasama.files && kerjasama.files.length > 0;
+        } else {
+            var sku = document.getElementById('pvsFileSku');
+            var skd = document.getElementById('pvsFileSkd');
+            lengkap = lengkap &&
+                      sku && sku.files && sku.files.length > 0 &&
+                      skd && skd.files && skd.files.length > 0;
+        }
+
+        tombol.disabled = !lengkap;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) KIRIM VERIFIKASI ⭐
+    // ------------------------------------------------------------
+    // Pakai prosesKirimVerifikasiGlobal (R 0.11.4) + base64
+    // ═══════════════════════════════════════════════════════════
+    window.pvsKirimVerifikasi = async function() {
+        try {
+            var notif = document.getElementById('pvsNotif');
+            var tombol = document.getElementById('pvsTombolKirim');
+
+            // Validasi awal
+            var ktp = document.getElementById('pvsFileKtp');
+            var setuju = document.getElementById('pvsSetujuKebijakan');
+
+            if (!ktp || !ktp.files || ktp.files.length === 0) {
+                _pvsNotif('⚠️ Foto KTP wajib diupload!', 'warning');
+                return;
+            }
+            if (!setuju || !setuju.checked) {
+                _pvsNotif('⚠️ Anda harus menyetujui kebijakan terlebih dahulu!', 'warning');
+                return;
+            }
+
+            // Kumpulkan file yang perlu dikonversi
+            var filesToConvert = [
+                { key: 'ktp', inputId: 'pvsFileKtp', label: 'Foto KTP', tipe: 'ktp' }
+            ];
+
+            if (_pvsCurrentRole === 'Distributor') {
+                filesToConvert.push({
+                    key: 'kerjasama',
+                    inputId: 'pvsFileKerjasama',
+                    label: 'Surat Perjanjian Kerjasama',
+                    tipe: 'kerjasama'
+                });
+            } else {
+                filesToConvert.push({
+                    key: 'sku', inputId: 'pvsFileSku',
+                    label: 'Form SKU', tipe: 'sku'
+                });
+                filesToConvert.push({
+                    key: 'skd', inputId: 'pvsFileSkd',
+                    label: 'Form SKD', tipe: 'skd'
+                });
+            }
+
+            // Validasi semua file ada
+            for (var i = 0; i < filesToConvert.length; i++) {
+                var item = filesToConvert[i];
+                var input = document.getElementById(item.inputId);
+                if (!input || !input.files || input.files.length === 0) {
+                    _pvsNotif('⚠️ ' + item.label + ' wajib diupload!', 'warning');
+                    return;
+                }
+            }
+
+            // Disable tombol + tampil loading
+            if (tombol) {
+                tombol.disabled = true;
+                tombol.innerHTML =
+                    '<i class="fas fa-spinner fa-spin me-2"></i>Memproses...';
+            }
+
+            _pvsNotif('<i class="fas fa-spinner fa-spin me-1"></i>' +
+                'Memproses dokumen, mohon tunggu...', 'info');
+
+            // Konversi semua file ke base64 (R 0.11.4)
+            var listDokumen = [];
+
+            if (typeof konversiFileKeBase64Global !== 'function') {
+                throw new Error('Fungsi konversiFileKeBase64Global tidak tersedia.');
+            }
+
+            for (var j = 0; j < filesToConvert.length; j++) {
+                var it = filesToConvert[j];
+                var fileInput = document.getElementById(it.inputId);
+                var file = fileInput.files[0];
+
+                var res = await konversiFileKeBase64Global(file, 2000);
+
+                if (!res.sukses) {
+                    throw new Error(it.label + ': ' + res.pesan);
+                }
+
+                listDokumen.push({
+                    nama: it.label,
+                    url: res.base64,
+                    tipe: it.tipe
+                });
+            }
+
+            // Ambil data user
+            var user = userAktif;
+            var userData = null;
+            try {
+                userData = (typeof getDataIdUser === 'function')
+                    ? getDataIdUser(user.idUser) : null;
+            } catch (e) {}
+            userData = userData || user;
+
+            var namaFinal = userData.nama || user.nama || '-';
+            var roleFinal = user.role || _pvsCurrentRole;
+
+            // Kirim via fungsi global
+            if (typeof prosesKirimVerifikasiGlobal !== 'function') {
+                throw new Error('Fungsi prosesKirimVerifikasiGlobal tidak tersedia.');
+            }
+
+            var hasil = prosesKirimVerifikasiGlobal(
+                user.idUser,
+                namaFinal,
+                roleFinal,
+                listDokumen
+            );
+
+            if (hasil.sukses) {
+                _pvsNotif(
+                    '✅ <strong>Dokumen berhasil dikirim!</strong><br>' +
+                    'ID Pengajuan: <code>' + _pvsEsc(hasil.idPengajuan) + '</code><br>' +
+                    '<small class="text-muted">' +
+                        'SuperAdmin akan mereview dalam 1x24 jam. ' +
+                        'Anda akan menerima notifikasi setelah disetujui.' +
+                    '</small>',
+                    'success'
+                );
+
+                // Reset form (R 0.11.4)
+                if (typeof resetFormVerifikasiGlobal === 'function') {
+                    resetFormVerifikasiGlobal();
+                }
+
+                // Refresh status banner
+                setTimeout(function() {
+                    _pvsCekStatusVerifikasi();
+                }, 500);
+
+                // Catat aktivitas dashboard
+                try {
+                    if (typeof cekApprovalSetelahLogin === 'function') {
+                        // noop
+                    }
+                } catch (e) {}
+
+            } else {
+                _pvsNotif('❌ ' + (hasil.pesan || 'Gagal mengirim.'), 'danger');
+
+                // Enable tombol kembali
+                if (tombol) {
+                    tombol.disabled = false;
+                    var labelKembali = (pengajuanStatus === 'Ditolak')
+                        ? 'Kirim Ulang Dokumen'
+                        : 'Kirim Dokumen Verifikasi';
+                    tombol.innerHTML = '<i class="fas fa-paper-plane me-2"></i>' +
+                        '<span id="pvsTombolLabel">' + labelKembali + '</span>';
+                }
+            }
+
+        } catch (e) {
+            console.error('pvsKirimVerifikasi error:', e);
+            _pvsNotif('❌ ' + (e.message || 'Gagal memproses.'), 'danger');
+
+            // Enable tombol kembali
+            var tombol2 = document.getElementById('pvsTombolKirim');
+            if (tombol2) {
+                tombol2.disabled = false;
+                tombol2.innerHTML = '<i class="fas fa-paper-plane me-2"></i>' +
+                    '<span id="pvsTombolLabel">Coba Lagi</span>';
+            }
+        }
+
+        var pengajuanStatus = '';
+        try {
+            if (typeof getVerifikasiDokumenUserGlobal === 'function') {
+                var p = getVerifikasiDokumenUserGlobal(userAktif.idUser);
+                if (p) pengajuanStatus = p.status;
+            }
+        } catch (e) {}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) RESET FORM
+    // ═══════════════════════════════════════════════════════════
+    window.pvsResetForm = function() {
+        if (!confirm('Reset semua file yang sudah diupload?')) return;
+
+        var fileIds = ['pvsFileKtp', 'pvsFileSku', 'pvsFileSkd', 'pvsFileKerjasama'];
+        var previewIds = ['pvsPreviewKtp', 'pvsPreviewSku', 'pvsPreviewSkd', 'pvsPreviewKerjasama'];
+
+        fileIds.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+
+        previewIds.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.innerHTML = '';
+        });
+
+        var setuju = document.getElementById('pvsSetujuKebijakan');
+        if (setuju) setuju.checked = false;
+
+        var notif = document.getElementById('pvsNotif');
+        if (notif) notif.classList.add('d-none');
+
+        _pvsCekTombolKirim();
+        _pvsNotif('Form direset.', 'info');
+        setTimeout(function() {
+            if (notif) notif.classList.add('d-none');
+        }, 2000);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) HELPER NOTIF
+    // ═══════════════════════════════════════════════════════════
+    function _pvsNotif(pesan, tipe) {
+        var notif = document.getElementById('pvsNotif');
+        if (!notif) return;
+        notif.className = 'alert alert-' + tipe;
+        notif.innerHTML = pesan;
+        notif.classList.remove('d-none');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (11) HELPER ESCAPE
+    // ═══════════════════════════════════════════════════════════
+    function _pvsEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (12) HANDLER MENU — Binding otomatis
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+
+    // Override handler 'pengajuanVerifikasi' (auto-detect role)
+    var _oldPengajuanVerifikasi = window.menuHandlers['pengajuanVerifikasi'];
+    window.menuHandlers['pengajuanVerifikasi'] = function() {
+        var role = (typeof userAktif !== 'undefined' && userAktif) ? userAktif.role : null;
+        var sellerRoles = [
+            'Toko', 'Pedagang Pasar', 'Pedagang Makanan',
+            'COD Seller', 'Ojek', 'Grosir', 'Distributor', 'Jasa'
+        ];
+
+        if (sellerRoles.indexOf(role) !== -1) {
+            window.tampilkanPengajuanVerifikasiSeller();
+        } else if (typeof _oldPengajuanVerifikasi === 'function') {
+            _oldPengajuanVerifikasi();
+        } else if (typeof tampilkanPlaceholderMenu === 'function') {
+            tampilkanPlaceholderMenu('Pengajuan Verifikasi', '11.3');
+        }
+    };
+
+    // Alias untuk masing-masing role
+    window.menuHandlers['tampilkanPengajuanVerifikasiTK']   = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiPP']   = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiPM']   = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiCOD']  = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiOJ']   = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiGR']   = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiJS']   = window.tampilkanPengajuanVerifikasiSeller;
+    window.menuHandlers['tampilkanPengajuanVerifikasiDST']  = window.tampilkanPengajuanVerifikasiSeller;
+
+    console.log('✅ BLOK R 11.3(1) — Pengajuan Verifikasi Seller terpasang.');
+    console.log('   📱 Universal: TK, PP, PM, COD, OJ, GR, JS, DST');
+    console.log('   📤 Support Distributor (dokumen khusus: Surat Kerjasama)');
+    console.log('   🔄 Pakai base64 (tidak hilang saat refresh)');
+    console.log('   🎯 Entry point: tampilkanPengajuanVerifikasiSeller()');
+    console.log('   🎨 Container: #pengajuanVerifikasiSellerContainer');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 11.3(1) (JS)                                  -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ===== BLOK R 9.1 BOOTSTRAP ===== -->
