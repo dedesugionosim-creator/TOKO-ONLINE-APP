@@ -23557,6 +23557,789 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
 <!-- ═══ AKHIR BLOK Engine Dasbor Multi-Role R 0.11.2 ════════ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 0.11.3 — FUNGSI GLOBAL GUARD PENDING ══════════ -->
+<!-- ═══ Batasi menu untuk role yang butuh verifikasi ═════════ -->
+<!-- ═══ Auto-patch semua handler + filter sidebar + modal ════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_GUARD_PENDING_R0113() {
+    if (window._blokR0113Done) {
+        console.log('ℹ️ BLOK Guard Pending R 0.11.3 sudah terpasang.');
+        return;
+    }
+    window._blokR0113Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // (0) KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.ROLE_BUTUH_VERIFIKASI = [
+        'Toko',
+        'Pedagang Pasar',
+        'Pedagang Makanan',
+        'COD Seller',
+        'Ojek',
+        'Grosir',
+        'Distributor',
+        'Jasa'
+    ];
+
+    // Aksi yang boleh diakses saat Pending (whitelist)
+    window.AKSI_ALLOWED_PENDING = [
+        // Menu utama
+        'dashboardUtama',
+        'profil',
+        'pengajuanVerifikasi',
+        'downloadSKU',
+        'downloadKerjasama',    // khusus Distributor
+        
+        // Handler spesifik per role (kalau ada)
+        'tampilkanPengajuanVerifikasiTK',
+        'tampilkanPengajuanVerifikasiPP',
+        'tampilkanPengajuanVerifikasiPM',
+        'tampilkanPengajuanVerifikasiCOD',
+        'tampilkanPengajuanVerifikasiOJ',
+        'tampilkanPengajuanVerifikasiGR',
+        'tampilkanPengajuanVerifikasiDST',
+        'tampilkanPengajuanVerifikasiJS',
+        
+        'tampilkanDownloadSKUTK',
+        'tampilkanDownloadSKUPP',
+        'tampilkanDownloadSKUPM',
+        'tampilkanDownloadSKUCOD',
+        'tampilkanDownloadSKUOJ',
+        'tampilkanDownloadSKUGR',
+        'tampilkanDownloadSKUJS',
+        'tampilkanDownloadKerjasamaDST',
+        'tampilkanDownloadSKUUniversal',
+        
+        // Profil handler per role
+        'tampilkanProfilTK',
+        'tampilkanProfilPP',
+        'tampilkanProfilPM',
+        'tampilkanProfilCOD',
+        'tampilkanProfilOJ',
+        'tampilkanProfilGrosir',
+        'tampilkanProfilDistributor',
+        'tampilkanProfilJS',
+        'tampilkanProfilSeller',
+        
+        // Dasbor handler per role
+        'tampilkanDasborToko',
+        'tampilkanDasborPP',
+        'tampilkanDasborPM',
+        'tampilkanDasborCOD',
+        'tampilkanDasborOJ',
+        'tampilkanDasborGrosir',
+        'tampilkanDasborDistributor',
+        'tampilkanDasborJasa',
+        'tampilkanDasborSeller',
+        
+        // Navigasi & utility
+        'kembaliKeDasbor',
+        'prosesLogout',
+        'tutupMenu'
+    ];
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) cekIjinPendingGlobal ⭐ — INTI
+    // ------------------------------------------------------------
+    // Return: true (boleh akses) | false (diblokir)
+    // ═══════════════════════════════════════════════════════════
+    window.cekIjinPendingGlobal = function(aksi) {
+        // Kalau bukan role yang butuh verifikasi → selalu boleh
+        var role = (typeof userAktif !== 'undefined' && userAktif) ? userAktif.role : null;
+        if (!role) return true;
+
+        if (window.ROLE_BUTUH_VERIFIKASI.indexOf(role) === -1) {
+            return true;  // role tidak butuh verifikasi
+        }
+
+        // Cek status verifikasi
+        var status = (userAktif && userAktif.statusVerifikasi) ||
+                     (userAktif && userAktif.status) || 'Aktif';
+
+        if (status === 'Aktif') {
+            return true;  // sudah diverifikasi
+        }
+
+        // Status PENDING → cek whitelist aksi
+        if (!aksi) return true;  // navigasi umum
+        return window.AKSI_ALLOWED_PENDING.indexOf(aksi) !== -1;
+    };
+
+    // Helper untuk cek status
+    window.isUserPendingGlobal = function() {
+        var role = (typeof userAktif !== 'undefined' && userAktif) ? userAktif.role : null;
+        if (!role) return false;
+        if (window.ROLE_BUTUH_VERIFIKASI.indexOf(role) === -1) return false;
+        
+        var status = (userAktif && userAktif.statusVerifikasi) ||
+                     (userAktif && userAktif.status) || 'Aktif';
+        return status === 'Pending';
+    };
+
+    // Ambil daftar aksi yang diizinkan
+    window.getAksiAllowedPendingGlobal = function() {
+        return window.AKSI_ALLOWED_PENDING.slice();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) showModalPendingBlockedGlobal — Modal notifikasi
+    // ═══════════════════════════════════════════════════════════
+    window.showModalPendingBlockedGlobal = function(aksi) {
+        // Kalau sudah ada modal terbuka, skip
+        if (document.getElementById('modalPendingBlocked')) return;
+
+        // Buat modal dinamis
+        var modalId = 'modalPendingBlocked';
+        var modal = document.createElement('div');
+        modal.id = modalId;
+        modal.className = 'modal fade';
+        modal.setAttribute('tabindex', '-1');
+        modal.setAttribute('data-bs-backdrop', 'static');
+        modal.style.zIndex = '10050';
+
+        modal.innerHTML =
+            '<div class="modal-dialog modal-dialog-centered">' +
+                '<div class="modal-content">' +
+                    '<div class="modal-header text-white" style="background:#FF8C00;">' +
+                        '<h5 class="modal-title">' +
+                            '<i class="fas fa-lock me-2"></i>Akun Belum Diverifikasi' +
+                        '</h5>' +
+                    '</div>' +
+                    '<div class="modal-body text-center py-4">' +
+                        '<i class="fas fa-user-clock text-warning" ' +
+                           'style="font-size:72px;margin-bottom:20px;display:block;"></i>' +
+                        '<h5 class="fw-bold mb-2">Akses Terbatas</h5>' +
+                        '<p class="text-muted mb-3">' +
+                            'Akun Anda masih dalam status <strong>PENDING</strong>.<br>' +
+                            'Menu ini hanya bisa diakses setelah akun Anda <strong>diverifikasi</strong> oleh SuperAdmin.' +
+                        '</p>' +
+                        '<div class="alert alert-info small text-start mb-3">' +
+                            '<i class="fas fa-info-circle me-1"></i>' +
+                            '<strong>Saat Pending, Anda hanya bisa mengakses:</strong>' +
+                            '<ul class="mb-0 mt-1 ps-3">' +
+                                '<li>🏠 Dasbor</li>' +
+                                '<li>👤 Profil</li>' +
+                                '<li>📤 Pengajuan Verifikasi</li>' +
+                                '<li>📥 Download Form SKU / Kerjasama</li>' +
+                            '</ul>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="modal-footer justify-content-center">' +
+                        '<button type="button" class="btn btn-secondary" ' +
+                                'onclick="closeModalPendingBlocked()">' +
+                            '<i class="fas fa-times me-1"></i>Tutup' +
+                        '</button>' +
+                        '<button type="button" class="btn btn-success fw-bold" ' +
+                                'onclick="goToPengajuanVerifikasi()">' +
+                            '<i class="fas fa-paper-plane me-1"></i>Upload Dokumen Sekarang' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+
+        document.body.appendChild(modal);
+
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            var bsModal = new bootstrap.Modal(modal);
+            bsModal.show();
+
+            // Auto-cleanup saat close
+            modal.addEventListener('hidden.bs.modal', function() {
+                modal.remove();
+            });
+        }
+
+        // Auto-logger
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keamanan',
+                    subKategori: 'blocked_pending_access',
+                    aksi: 'Percobaan Akses Ditolak',
+                    level: 'warning',
+                    deskripsi: 'User pending coba akses: ' + (aksi || '-'),
+                    target: {
+                        tipe: 'user',
+                        id: userAktif.idUser,
+                        nama: userAktif.nama
+                    },
+                    metadata: {
+                        aksiDiblokir: aksi,
+                        role: userAktif.role
+                    }
+                });
+            }
+        } catch (e) {}
+    };
+
+    window.closeModalPendingBlocked = function() {
+        var modal = document.getElementById('modalPendingBlocked');
+        if (!modal) return;
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            var bsModal = bootstrap.Modal.getInstance(modal);
+            if (bsModal) bsModal.hide();
+        }
+    };
+
+    window.goToPengajuanVerifikasi = function() {
+        window.closeModalPendingBlocked();
+
+        setTimeout(function() {
+            // Panggil handler pengajuan verifikasi sesuai role
+            var role = (userAktif && userAktif.role) || 'Toko';
+            var handlerMap = {
+                'Toko': 'tampilkanPengajuanVerifikasiTK',
+                'Pedagang Pasar': 'tampilkanPengajuanVerifikasiPP',
+                'Pedagang Makanan': 'tampilkanPengajuanVerifikasiPM',
+                'COD Seller': 'tampilkanPengajuanVerifikasiCOD',
+                'Ojek': 'tampilkanPengajuanVerifikasiOJ',
+                'Grosir': 'tampilkanPengajuanVerifikasiGR',
+                'Distributor': 'tampilkanPengajuanVerifikasiDST',
+                'Jasa': 'tampilkanPengajuanVerifikasiJS'
+            };
+
+            // Coba ke handler spesifik dulu
+            var fnSpesifik = handlerMap[role];
+            if (fnSpesifik && typeof window[fnSpesifik] === 'function') {
+                try { window[fnSpesifik](); return; } catch (e) {}
+            }
+
+            // Fallback ke menuHandlers['pengajuanVerifikasi']
+            if (typeof menuHandlers !== 'undefined' && menuHandlers['pengajuanVerifikasi']) {
+                try { menuHandlers['pengajuanVerifikasi'](); return; } catch (e) {}
+            }
+
+            // Fallback placeholder
+            if (typeof tampilkanPlaceholderMenu === 'function') {
+                tampilkanPlaceholderMenu('Pengajuan Verifikasi', '11.3');
+            }
+        }, 350);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) patchSemuaHandlerWithGuardGlobal ⭐ — AUTO-PATCHER
+    // ------------------------------------------------------------
+    // Patch semua handler di menuHandlers dengan guard
+    // ═══════════════════════════════════════════════════════════
+    window.patchSemuaHandlerWithGuardGlobal = function() {
+        if (!window.menuHandlers) {
+            window.menuHandlers = {};
+        }
+
+        var totalPatched = 0;
+        var daftarHandler = Object.keys(window.menuHandlers);
+
+        daftarHandler.forEach(function(aksi) {
+            var original = window.menuHandlers[aksi];
+            if (typeof original !== 'function') return;
+            if (original._guarded) return;  // sudah dipatch
+
+            window.menuHandlers[aksi] = function() {
+                // Guard Pending
+                if (typeof cekIjinPendingGlobal === 'function' &&
+                    !cekIjinPendingGlobal(aksi)) {
+                    if (typeof showModalPendingBlockedGlobal === 'function') {
+                        showModalPendingBlockedGlobal(aksi);
+                    } else {
+                        alert('⛔ Akun Anda belum diverifikasi.\n\nSelesaikan verifikasi dulu di menu "Pengajuan Verifikasi".');
+                    }
+                    return;
+                }
+
+                // Lanjut ke handler asli
+                try {
+                    return original.apply(this, arguments);
+                } catch (e) {
+                    console.error('Handler error [' + aksi + ']:', e);
+                    throw e;
+                }
+            };
+
+            window.menuHandlers[aksi]._guarded = true;
+            window.menuHandlers[aksi]._original = original;
+
+            totalPatched++;
+        });
+
+        console.log('✅ Guard Pending: ' + totalPatched + ' handler di-patch');
+        return totalPatched;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) REVISI loadMenuNavigasi — Filter ketat
+    // ------------------------------------------------------------
+    // Override fungsi existing (BLOK 9.3.2(0))
+    // ═══════════════════════════════════════════════════════════
+    var _oldLoadMenuNavigasi = window.loadMenuNavigasi;
+
+    window.loadMenuNavigasi = function(kodeRole, statusVerifikasi) {
+        // Panggil fungsi lama dulu
+        if (typeof _oldLoadMenuNavigasi === 'function') {
+            try {
+                _oldLoadMenuNavigasi.apply(this, arguments);
+            } catch (e) {
+                console.warn('loadMenuNavigasi lama error:', e);
+            }
+        }
+
+        // Post-process: filter ulang untuk role butuh verifikasi
+        try {
+            var role = (typeof userAktif !== 'undefined' && userAktif) ? userAktif.role : null;
+            if (!role) return;
+
+            if (window.ROLE_BUTUH_VERIFIKASI.indexOf(role) === -1) return;
+
+            var status = statusVerifikasi || (userAktif && userAktif.statusVerifikasi) || 'Aktif';
+            if (status === 'Aktif') return;  // sudah verifikasi, tidak perlu filter ulang
+
+            // Filter ketat: HANYA aksi yang di-whitelist
+            var menuContainer = document.getElementById('menuNavigasi');
+            if (!menuContainer) return;
+
+            // Iterasi semua .menu-item, hapus yang bukan whitelist
+            var items = menuContainer.querySelectorAll('.menu-item');
+            items.forEach(function(el) {
+                var onclick = el.getAttribute('onclick') || '';
+                
+                // Cek apakah onclick mengandung aksi yang diizinkan
+                var diizinkan = false;
+                for (var i = 0; i < window.AKSI_ALLOWED_PENDING.length; i++) {
+                    var aksi = window.AKSI_ALLOWED_PENDING[i];
+                    if (onclick.indexOf(aksi) !== -1) {
+                        diizinkan = true;
+                        break;
+                    }
+                }
+
+                if (!diizinkan) {
+                    el.remove();
+                }
+            });
+
+            // Sembunyikan header kategori yang kosong
+            var kategoriHeaders = menuContainer.querySelectorAll('.text-warning.small.fw-bold');
+            kategoriHeaders.forEach(function(header) {
+                var next = header.nextElementSibling;
+                var adaItem = false;
+                var cur = header.nextElementSibling;
+                while (cur) {
+                    if (cur.classList.contains('text-warning') && cur.classList.contains('fw-bold')) {
+                        break;  // ketemu header berikutnya
+                    }
+                    if (cur.classList.contains('menu-item')) {
+                        adaItem = true;
+                        break;
+                    }
+                    cur = cur.nextElementSibling;
+                }
+                if (!adaItem) header.remove();
+            });
+
+            console.log('✅ Menu sidebar difilter untuk Pending: hanya 4 menu allowed');
+
+        } catch (e) {
+            console.error('Post-filter loadMenuNavigasi error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) PATCH tampilkanDasborSeller — Mode Pending
+    // ------------------------------------------------------------
+    // Kalau user Pending buka dasbor, tampil alert + tombol redirect
+    // ═══════════════════════════════════════════════════════════
+    var _oldTampilkanDasborSeller = window.tampilkanDasborSeller;
+
+    window.tampilkanDasborSeller = function() {
+        // Kalau user pending → tampil mode pending
+        if (typeof isUserPendingGlobal === 'function' && isUserPendingGlobal()) {
+            return tampilkanDasborPendingMode();
+        }
+
+        // Kalau aktif → panggil render normal
+        if (typeof _oldTampilkanDasborSeller === 'function') {
+            return _oldTampilkanDasborSeller.apply(this, arguments);
+        }
+    };
+
+    // Re-bind semua alias
+    window.tampilkanDasborToko        = window.tampilkanDasborSeller;
+    window.tampilkanDasborPP          = window.tampilkanDasborSeller;
+    window.tampilkanDasborPM          = window.tampilkanDasborSeller;
+    window.tampilkanDasborCOD         = window.tampilkanDasborSeller;
+    window.tampilkanDasborOJ          = window.tampilkanDasborSeller;
+    window.tampilkanDasborGrosir      = window.tampilkanDasborSeller;
+    window.tampilkanDasborDistributor = window.tampilkanDasborSeller;
+    window.tampilkanDasborJasa        = window.tampilkanDasborSeller;
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) tampilkanDasborPendingMode — Dasbor khusus pending
+    // ═══════════════════════════════════════════════════════════
+    function tampilkanDasborPendingMode() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            var user = userAktif;
+            var userData = (typeof getDataIdUser === 'function')
+                ? (getDataIdUser(user.idUser) || user) : user;
+
+            var namaTampil = userData.nama || user.nama || 'User';
+            var role = user.role || 'Toko';
+            var idUser = user.idUser || '-';
+
+            // Progress kelengkapan
+            var kelengkapan = 0;
+            try {
+                if (typeof hitungKelengkapanProfilGlobal === 'function') {
+                    kelengkapan = hitungKelengkapanProfilGlobal(idUser);
+                }
+            } catch (e) {}
+
+            // Hitung waktu pending
+            var waktuPending = '-';
+            try {
+                var createdAt = userData.createdAt || userData.tanggalDaftar;
+                if (createdAt) {
+                    var diff = Date.now() - new Date(createdAt).getTime();
+                    var hari = Math.floor(diff / (24 * 60 * 60 * 1000));
+                    var jam = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+                    if (hari > 0) waktuPending = hari + ' hari ' + jam + ' jam';
+                    else if (jam > 0) waktuPending = jam + ' jam';
+                    else waktuPending = 'Baru saja';
+                }
+            } catch (e) {}
+
+            // Cek apakah sudah kirim dokumen
+            var sudahKirimDokumen = false;
+            try {
+                var verif = JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
+                sudahKirimDokumen = verif.some(function(v) {
+                    return v && v.id === idUser && v.status === 'Menunggu';
+                });
+            } catch (e) {}
+
+            var html =
+            '<div class="container-fluid px-3 px-md-4 py-3 py-md-4">' +
+
+                // ── HEADER PENDING ──
+                '<div class="card border-0 shadow-sm mb-3" ' +
+                     'style="background:linear-gradient(135deg,#FFC107,#FF8C00);">' +
+                    '<div class="card-body text-white text-center py-4">' +
+                        '<i class="fas fa-user-clock fa-4x mb-3"></i>' +
+                        '<h4 class="fw-bold mb-2">Akun ' + _gpHtmlEsc(role) + ' Anda Menunggu Verifikasi</h4>' +
+                        '<p class="mb-3 opacity-75">' +
+                            'Halo <strong>' + _gpHtmlEsc(namaTampil) + '</strong>, ' +
+                            'akun Anda sedang dalam proses verifikasi oleh SuperAdmin.' +
+                        '</p>' +
+                        '<div class="badge bg-light text-dark px-3 py-2" style="font-size:13px;">' +
+                            '<i class="fas fa-hourglass-half me-1"></i>' +
+                            'Menunggu: ' + _gpHtmlEsc(waktuPending) +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+
+                // ── STATUS DOKUMEN ──
+                '<div class="row g-3 mb-3">' +
+                    '<div class="col-md-6">' +
+                        '<div class="card border-0 shadow-sm h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-' +
+                                    (sudahKirimDokumen ? 'check-circle text-success' : 'exclamation-circle text-danger') +
+                                    ' fa-2x mb-2"></i>' +
+                                '<h6 class="fw-bold mb-1">Dokumen Verifikasi</h6>' +
+                                '<small class="text-muted">' +
+                                    (sudahKirimDokumen
+                                        ? '✅ Sudah dikirim, menunggu review'
+                                        : '❌ Belum dikirim') +
+                                '</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-6">' +
+                        '<div class="card border-0 shadow-sm h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-user-check fa-2x mb-2" ' +
+                                   'style="color:#FF8C00;"></i>' +
+                                '<h6 class="fw-bold mb-1">Kelengkapan Profil</h6>' +
+                                '<div class="progress mt-2" style="height:8px;">' +
+                                    '<div class="progress-bar ' +
+                                        (kelengkapan >= 80 ? 'bg-success' :
+                                         kelengkapan >= 50 ? 'bg-warning' : 'bg-danger') +
+                                        '" style="width:' + kelengkapan + '%;"></div>' +
+                                '</div>' +
+                                '<small class="text-muted">' + kelengkapan + '%</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+
+                // ── LANGKAH SELANJUTNYA ──
+                '<div class="card border-0 shadow-sm mb-3">' +
+                    '<div class="card-header text-white" style="background:#1976D2;">' +
+                        '<i class="fas fa-list-check me-2"></i>' +
+                        '<strong>Langkah Selanjutnya</strong>' +
+                    '</div>' +
+                    '<div class="card-body">' +
+
+                        // Step 1 — sudah dilakukan
+                        '<div class="d-flex align-items-start mb-3 pb-3 border-bottom">' +
+                            '<div class="me-3" style="width:36px;height:36px;border-radius:50%;' +
+                                 'background:#28A745;color:#fff;display:flex;' +
+                                 'align-items:center;justify-content:center;flex-shrink:0;">' +
+                                '<i class="fas fa-check"></i>' +
+                            '</div>' +
+                            '<div>' +
+                                '<h6 class="fw-bold mb-1">1. Registrasi Akun</h6>' +
+                                '<small class="text-muted">' +
+                                    'Akun berhasil dibuat. Status: PENDING.' +
+                                '</small>' +
+                            '</div>' +
+                        '</div>' +
+
+                        // Step 2 — upload dokumen
+                        '<div class="d-flex align-items-start mb-3 pb-3 border-bottom">' +
+                            '<div class="me-3" style="width:36px;height:36px;border-radius:50%;' +
+                                 'background:' + (sudahKirimDokumen ? '#28A745' : '#FFC107') + ';color:#fff;' +
+                                 'display:flex;align-items:center;justify-content:center;flex-shrink:0;">' +
+                                '<i class="fas fa-' + (sudahKirimDokumen ? 'check' : '2') + '"></i>' +
+                            '</div>' +
+                            '<div style="flex:1;">' +
+                                '<h6 class="fw-bold mb-1">2. Upload Dokumen Verifikasi</h6>' +
+                                '<small class="text-muted d-block mb-2">' +
+                                    (sudahKirimDokumen
+                                        ? '✅ Dokumen sudah dikirim.'
+                                        : 'Upload: KTP, Form SKU, Form SKD.') +
+                                '</small>' +
+                                (!sudahKirimDokumen
+                                    ? '<button class="btn btn-warning btn-sm fw-bold" ' +
+                                            'onclick="goToPengajuanVerifikasi()">' +
+                                        '<i class="fas fa-upload me-1"></i>Upload Sekarang' +
+                                        '</button>'
+                                    : '') +
+                            '</div>' +
+                        '</div>' +
+
+                        // Step 3 — tunggu verifikasi
+                        '<div class="d-flex align-items-start">' +
+                            '<div class="me-3" style="width:36px;height:36px;border-radius:50%;' +
+                                 'background:#6C757D;color:#fff;display:flex;' +
+                                 'align-items:center;justify-content:center;flex-shrink:0;">' +
+                                '<i class="fas fa-3"></i>' +
+                            '</div>' +
+                            '<div>' +
+                                '<h6 class="fw-bold mb-1">3. Tunggu Verifikasi SA</h6>' +
+                                '<small class="text-muted">' +
+                                    'SuperAdmin akan verifikasi dalam 1x24 jam. ' +
+                                    'Anda akan dapat notifikasi setelah disetujui.' +
+                                '</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+
+                // ── TOMBOL AKSI ──
+                '<div class="row g-2 mb-3">' +
+                    '<div class="col-md-6">' +
+                        '<button class="btn btn-success w-100 fw-bold py-3" ' +
+                                'onclick="goToPengajuanVerifikasi()">' +
+                            '<i class="fas fa-file-upload me-2"></i>Pengajuan Verifikasi' +
+                        '</button>' +
+                    '</div>' +
+                    '<div class="col-md-6">' +
+                        '<button class="btn btn-info text-white w-100 fw-bold py-3" ' +
+                                'onclick="goToDownloadSKU()">' +
+                            '<i class="fas fa-download me-2"></i>Download Form SKU / Kerjasama' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+
+                // ── INFO BAWAH ──
+                '<div class="alert alert-info small mb-0">' +
+                    '<i class="fas fa-info-circle me-1"></i>' +
+                    '<strong>Info:</strong> Saat Pending, hanya 4 menu yang tersedia: ' +
+                    '<strong>Dasbor</strong>, <strong>Profil</strong>, ' +
+                    '<strong>Pengajuan Verifikasi</strong>, dan <strong>Download Form</strong>. ' +
+                    'Setelah diverifikasi, semua menu akan terbuka.' +
+                '</div>' +
+
+            '</div>';
+
+            konten.innerHTML = html;
+            console.log('✅ Dasbor Mode Pending rendered untuk role:', role);
+
+        } catch (e) {
+            console.error('tampilkanDasborPendingMode error:', e);
+        }
+    }
+
+    window.goToDownloadSKU = function() {
+        var role = (userAktif && userAktif.role) || 'Toko';
+        var handlerMap = {
+            'Toko': 'tampilkanDownloadSKUTK',
+            'Pedagang Pasar': 'tampilkanDownloadSKUPP',
+            'Pedagang Makanan': 'tampilkanDownloadSKUPM',
+            'COD Seller': 'tampilkanDownloadSKUCOD',
+            'Ojek': 'tampilkanDownloadSKUOJ',
+            'Grosir': 'tampilkanDownloadSKUGR',
+            'Jasa': 'tampilkanDownloadSKUJS',
+            'Distributor': 'tampilkanDownloadKerjasamaDST'
+        };
+
+        var fn = handlerMap[role];
+        if (fn && typeof window[fn] === 'function') {
+            try { window[fn](); return; } catch (e) {}
+        }
+
+        // Fallback
+        if (typeof menuHandlers !== 'undefined' && menuHandlers['downloadSKU']) {
+            try { menuHandlers['downloadSKU'](); return; } catch (e) {}
+        }
+        if (typeof menuHandlers !== 'undefined' && menuHandlers['downloadKerjasama']) {
+            try { menuHandlers['downloadKerjasama'](); return; } catch (e) {}
+        }
+        if (typeof tampilkanPlaceholderMenu === 'function') {
+            tampilkanPlaceholderMenu('Download Form SKU', '11.4');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) PATCH dsJalankanAksi — Guard di shortcut click
+    // ═══════════════════════════════════════════════════════════
+    var _oldDsJalankanAksi = window.dsJalankanAksi;
+
+    window.dsJalankanAksi = function(aksi) {
+        // Guard pending
+        if (typeof cekIjinPendingGlobal === 'function' && !cekIjinPendingGlobal(aksi)) {
+            if (typeof showModalPendingBlockedGlobal === 'function') {
+                showModalPendingBlockedGlobal(aksi);
+            } else {
+                alert('⛔ Akun Anda belum diverifikasi.');
+            }
+            return;
+        }
+
+        // Lanjut ke handler asli
+        if (typeof _oldDsJalankanAksi === 'function') {
+            return _oldDsJalankanAksi.apply(this, arguments);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) PATCH getDashboardDataGlobal — Tambah flag isPendingMode
+    // ═══════════════════════════════════════════════════════════
+    var _oldGetDashboardData = window.getDashboardDataGlobal;
+
+    window.getDashboardDataGlobal = function(idUser, role) {
+        var result = _oldGetDashboardData
+            ? _oldGetDashboardData.apply(this, arguments)
+            : { sukses: false };
+
+        try {
+            if (result && result.sukses) {
+                result.isPendingMode = (typeof isUserPendingGlobal === 'function')
+                    ? isUserPendingGlobal() : false;
+            }
+        } catch (e) {}
+
+        return result;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) SINKRONISASI NOTIFIKASI SETELAH APPROVE
+    // ------------------------------------------------------------
+    // Cek saat login: kalau status berubah jadi Aktif, kirim notif bell
+    // ═══════════════════════════════════════════════════════════
+    window.cekApprovalSetelahLogin = function() {
+        try {
+            if (!userAktif || !userAktif.idUser) return;
+
+            var role = userAktif.role || '';
+            if (window.ROLE_BUTUH_VERIFIKASI.indexOf(role) === -1) return;
+
+            var status = userAktif.statusVerifikasi || userAktif.status || 'Aktif';
+            if (status !== 'Aktif') return;
+
+            // Cek apakah baru di-approve (belum ada notif sebelumnya)
+            var key = 'notifApprovedSeen_' + userAktif.idUser;
+            var sudahAda = localStorage.getItem(key);
+            if (sudahAda === 'true') return;
+
+            // Kirim notif ke bell (integrasi dengan R 0.10.14)
+            if (typeof tambahNotifBroadcastGlobal === 'function') {
+                tambahNotifBroadcastGlobal({
+                    judul: '🎉 Akun Anda Telah Diverifikasi!',
+                    isi: 'Selamat! Akun ' + role + ' Anda sudah diverifikasi. ' +
+                         'Sekarang Anda bisa mengakses semua fitur.',
+                    jenis: 'info',
+                    prioritas: 'high',
+                    target: { mode: 'role', roles: [role] },
+                    tampilPopup: false,
+                    tampilBell: true,
+                    status: 'aktif'
+                });
+            }
+
+            // Tandai sudah lihat notif
+            localStorage.setItem(key, 'true');
+
+            console.log('✅ Notifikasi approval dikirim ke bell');
+
+        } catch (e) {
+            console.warn('cekApprovalSetelahLogin error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (10) HELPER ESCAPE
+    // ═══════════════════════════════════════════════════════════
+    function _gpHtmlEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // (11) AUTO-INIT — Jalan setelah semua blok ter-load
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        console.log('🚀 Auto-init Guard Pending R 0.11.3...');
+
+        // Patch semua handler
+        if (typeof patchSemuaHandlerWithGuardGlobal === 'function') {
+            var totalPatched = patchSemuaHandlerWithGuardGlobal();
+            console.log('✅ Auto-patch selesai: ' + totalPatched + ' handler');
+        }
+
+        // Cek approval setelah login (delay)
+        setTimeout(function() {
+            if (typeof cekApprovalSetelahLogin === 'function') {
+                cekApprovalSetelahLogin();
+            }
+        }, 2000);
+
+    }, 1500);
+
+    console.log('✅ BLOK Guard Pending R 0.11.3 terpasang.');
+    console.log('   🎯 Role wajib verifikasi: ' + window.ROLE_BUTUH_VERIFIKASI.join(', '));
+    console.log('   🎯 Aksi allowed pending: ' + window.AKSI_ALLOWED_PENDING.length + ' aksi');
+    console.log('   🔒 cekIjinPendingGlobal — guard universal');
+    console.log('   🔧 patchSemuaHandlerWithGuardGlobal — auto-patch semua handler');
+    console.log('   📱 tampilkanDasborPendingMode — dasbor khusus pending');
+    console.log('   🎨 showModalPendingBlockedGlobal — modal akses ditolak');
+    console.log('   🔄 loadMenuNavigasi — filter sidebar ketat');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK Guard Pending R 0.11.3 ════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+
 <!-- ============================================================ -->
 <!-- ===== AKHIR FUNGSI ALL ROLE AKUN ===== -->
 <!-- ============================================================ -->
