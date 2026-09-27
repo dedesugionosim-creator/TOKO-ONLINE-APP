@@ -9758,92 +9758,164 @@ function kompresFileMedia(file, maxKB, tipe) {
     };
 
     // ═══════════════════════════════════════════════════════════
-    // BLOK R 0.10.17 (6) — tambahRekeningMasterGlobal
-    // ------------------------------------------------------------
-    // Tambah rekening baru di kategori tertentu
-    // opts: { kategori, namaBank, nomorRekening, namaRekening, status?, catatan? }
-    // Return: { sukses, rekening?, pesan? }
-    // ═══════════════════════════════════════════════════════════
-    window.tambahRekeningMasterGlobal = function(opts) {
-        opts = opts || {};
+// BLOK R 0.10.17 (6) — tambahRekeningMasterGlobal
+// REVISI: Cek duplikat LINTAS rekeningBank + rekeningMaster
+// ═══════════════════════════════════════════════════════════
+window.tambahRekeningMasterGlobal = function(opts) {
+    opts = opts || {};
 
-        // Validasi
-        if (!opts.kategori) {
-            return { sukses: false, pesan: 'Kategori wajib diisi.' };
-        }
-        if (!KATEGORI_REKENING_MASTER[opts.kategori]) {
-            return { sukses: false, pesan: 'Kategori tidak dikenal: ' + opts.kategori };
-        }
-        if (!opts.namaBank || !String(opts.namaBank).trim()) {
-            return { sukses: false, pesan: 'Nama bank wajib diisi.' };
-        }
-        if (!opts.nomorRekening || !String(opts.nomorRekening).trim()) {
-            return { sukses: false, pesan: 'Nomor rekening wajib diisi.' };
-        }
-        if (!opts.namaRekening || !String(opts.namaRekening).trim()) {
-            return { sukses: false, pesan: 'Nama rekening wajib diisi.' };
+    // ══════════ VALIDASI DASAR ══════════
+    if (!opts.kategori) {
+        return { sukses: false, pesan: 'Kategori wajib diisi.' };
+    }
+    if (!KATEGORI_REKENING_MASTER[opts.kategori]) {
+        return { sukses: false, pesan: 'Kategori tidak dikenal: ' + opts.kategori };
+    }
+    if (!opts.namaBank || !String(opts.namaBank).trim()) {
+        return { sukses: false, pesan: 'Nama bank wajib diisi.' };
+    }
+    if (!opts.nomorRekening || !String(opts.nomorRekening).trim()) {
+        return { sukses: false, pesan: 'Nomor rekening wajib diisi.' };
+    }
+    if (!opts.namaRekening || !String(opts.namaRekening).trim()) {
+        return { sukses: false, pesan: 'Nama rekening wajib diisi.' };
+    }
+
+    // ══════════ VALIDASI NOMOR REKENING ══════════
+    var nomorBersih = String(opts.nomorRekening).replace(/\D/g, '');
+    if (nomorBersih.length < 6 || nomorBersih.length > 30) {
+        return { sukses: false, pesan: 'Nomor rekening harus 6-30 digit angka.' };
+    }
+
+    try {
+        var data = getRekeningMasterGlobal();
+
+        // ═══════════════════════════════════════════════════════════
+        // FIX — CEK DUPLIKAT LINTAS SISTEM
+        // ------------------------------------------------------------
+        // 1. Cek di rekeningMaster (internal)
+        // 2. Cek di rekeningBank (10.41)
+        // Pakai helper cekDuplikatRekeningLintasGlobal dari BLOK 10.41
+        // ═══════════════════════════════════════════════════════════
+
+        // ── Cek 1: Duplikat internal dalam rekeningMaster ──
+        for (var kat in data) {
+            if (!Array.isArray(data[kat])) continue;
+            var dup = data[kat].find(function(r) {
+                return r && String(r.nomorRekening || '').replace(/\D/g, '') === nomorBersih;
+            });
+            if (dup) {
+                return {
+                    sukses: false,
+                    pesan: 'Nomor rekening sudah ada di kategori "' +
+                           (KATEGORI_REKENING_MASTER[kat] ?
+                            KATEGORI_REKENING_MASTER[kat].label : kat) +
+                           '" — ' + dup.namaBank
+                };
+            }
         }
 
-        // Validasi nomor rekening — hanya angka, 6-30 digit
-        var nomorBersih = String(opts.nomorRekening).replace(/\D/g, '');
-        if (nomorBersih.length < 6 || nomorBersih.length > 30) {
-            return { sukses: false, pesan: 'Nomor rekening harus 6-30 digit angka.' };
-        }
-
-        try {
-            var data = getRekeningMasterGlobal();
-
-            // Cek duplikat nomor rekening global
-            for (var kat in data) {
-                if (!Array.isArray(data[kat])) continue;
-                var dup = data[kat].find(function(r) {
-                    return r && String(r.nomorRekening || '').replace(/\D/g, '') === nomorBersih;
-                });
-                if (dup) {
-                    return { sukses: false, pesan: 'Nomor rekening sudah ada: ' + dup.namaBank };
+        // ── Cek 2: Duplikat lintas ke rekeningBank (10.41) ──
+        if (typeof cekDuplikatRekeningLintasGlobal === 'function') {
+            var adaDuplikat = cekDuplikatRekeningLintasGlobal(nomorBersih);
+            if (adaDuplikat) {
+                return {
+                    sukses: false,
+                    pesan: 'Nomor rekening sudah terdaftar di Manajemen Bank/Rekening (10.41). ' +
+                           'Gunakan nomor yang berbeda.'
+                };
+            }
+        } else {
+            // Fallback: cek manual kalau helper tidak tersedia
+            try {
+                if (typeof rekeningBankGetAll === 'function') {
+                    var rb = rekeningBankGetAll();
+                    var dupBank = rb.find(function(r) {
+                        return r && String(r.nomor || '').replace(/\D/g, '') === nomorBersih;
+                    });
+                    if (dupBank) {
+                        return {
+                            sukses: false,
+                            pesan: 'Nomor rekening sudah terdaftar di Manajemen Bank: ' +
+                                   dupBank.nama + ' (' + dupBank.nomor + ')'
+                        };
+                    }
                 }
+            } catch (e) {
+                console.warn('Fallback cek duplikat bank error:', e);
             }
-
-            var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA';
-            var now = new Date().toISOString();
-
-            var idBaru = (typeof generateKodeUnik === 'function')
-                ? generateKodeUnik('REKMASTER')
-                : 'RM-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-
-            var rekeningBaru = {
-                id: idBaru,
-                namaBank: String(opts.namaBank).trim(),
-                nomorRekening: nomorBersih,
-                namaRekening: String(opts.namaRekening).trim(),
-                status: opts.status || 'Aktif',
-                catatan: String(opts.catatan || '').substring(0, 200),
-                createdBy: idUser,
-                createdAt: now,
-                updatedBy: null,
-                updatedAt: null
-            };
-
-            if (!Array.isArray(data[opts.kategori])) data[opts.kategori] = [];
-            data[opts.kategori].push(rekeningBaru);
-
-            var hasilSave = saveRekeningMasterGlobal(data);
-            if (!hasilSave.sukses) return hasilSave;
-
-            // Catat aktivitas
-            if (typeof catatAktivitasGlobal === 'function') {
-                catatAktivitasGlobal(idUser, 'Tambah Rekening Master',
-                    '[' + KATEGORI_REKENING_MASTER[opts.kategori].label + '] ' +
-                    rekeningBaru.namaBank + ' - ' + rekeningBaru.nomorRekening +
-                    ' (' + rekeningBaru.namaRekening + ')');
-            }
-
-            return { sukses: true, rekening: rekeningBaru };
-        } catch (e) {
-            console.error('tambahRekeningMasterGlobal error:', e);
-            return { sukses: false, pesan: e.message };
         }
-    };
+
+        // ══════════ BUAT REKENING BARU ══════════
+        var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA';
+        var now = new Date().toISOString();
+
+        var idBaru = (typeof generateKodeUnik === 'function')
+            ? generateKodeUnik('REKMASTER')
+            : 'RM-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
+        var rekeningBaru = {
+            id: idBaru,
+            namaBank: String(opts.namaBank).trim(),
+            nomorRekening: nomorBersih,
+            namaRekening: String(opts.namaRekening).trim(),
+            status: opts.status || 'Aktif',
+            catatan: String(opts.catatan || '').substring(0, 200),
+            createdBy: idUser,
+            createdAt: now,
+            updatedBy: null,
+            updatedAt: null
+        };
+
+        if (!Array.isArray(data[opts.kategori])) data[opts.kategori] = [];
+        data[opts.kategori].push(rekeningBaru);
+
+        var hasilSave = saveRekeningMasterGlobal(data);
+        if (!hasilSave.sukses) return hasilSave;
+
+        // ══════════ CATAT AKTIVITAS GLOBAL ══════════
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(idUser, 'Tambah Rekening Master',
+                '[' + KATEGORI_REKENING_MASTER[opts.kategori].label + '] ' +
+                rekeningBaru.namaBank + ' - ' + rekeningBaru.nomorRekening +
+                ' (' + rekeningBaru.namaRekening + ')');
+        }
+
+        // ══════════ CATAT LOG AUDIT SA (FIX) ══════════
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keuangan',
+                    subKategori: 'tambah_rekening_master',
+                    aksi: 'Tambah Rekening Master',
+                    level: 'info',
+                    deskripsi: '[' + KATEGORI_REKENING_MASTER[opts.kategori].label + '] ' +
+                               rekeningBaru.namaBank + ' - ' + rekeningBaru.nomorRekening,
+                    target: {
+                        tipe: 'module',
+                        module: 'rekeningMaster',
+                        id: idBaru
+                    },
+                    status: 'sukses',
+                    metadata: {
+                        kategori: opts.kategori,
+                        namaBank: rekeningBaru.namaBank,
+                        nomorRekening: rekeningBaru.nomorRekening,
+                        namaRekening: rekeningBaru.namaRekening
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn('catatLogAuditSA error:', e);
+        }
+
+        return { sukses: true, rekening: rekeningBaru };
+
+    } catch (e) {
+        console.error('tambahRekeningMasterGlobal error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+};
 
     // ═══════════════════════════════════════════════════════════
     // BLOK R 0.10.17 (7) — updateRekeningMasterGlobal
@@ -21671,6 +21743,118 @@ console.log('✅ BLOK 0.10.19 (38): Handler menuChatSuperAdmin terpasang');
     console.log('   (13) rekeningBankCekDuplikat');
     console.log('   (14) rekeningBankSeedDefault');
 })();
+
+// ═══════════════════════════════════════════════════════════
+// UNIFIKASI REKENING — Gabung rekeningBank + rekeningMaster
+// ═══════════════════════════════════════════════════════════
+
+window.getAllRekeningUnified = function(kategoriSumber) {
+    var hasil = [];
+
+    if (!kategoriSumber || kategoriSumber === 'seller') {
+        try {
+            var rb = (typeof rekeningBankGetAll === 'function')
+                ? rekeningBankGetAll() : [];
+            rb.forEach(function(r) {
+                hasil.push({
+                    id: r.id,
+                    sumber: 'rekeningBank',
+                    tipe: r.tipe || 'Bank',
+                    namaBank: r.nama,
+                    nomor: r.nomor,
+                    atasNama: r.atasNama,
+                    status: r.status,
+                    catatan: r.catatan || '',
+                    untuk: 'seller',
+                    createdAt: r.createdAt
+                });
+            });
+        } catch (e) {}
+    }
+
+    if (!kategoriSumber || kategoriSumber === 'internal') {
+        try {
+            if (typeof getRekeningMasterGlobal === 'function') {
+                var rm = getRekeningMasterGlobal();
+                Object.keys(rm).forEach(function(kategori) {
+                    if (!Array.isArray(rm[kategori])) return;
+                    rm[kategori].forEach(function(r) {
+                        hasil.push({
+                            id: r.id,
+                            sumber: 'rekeningMaster',
+                            kategori: kategori,
+                            tipe: 'Bank',
+                            namaBank: r.namaBank,
+                            nomor: r.nomorRekening,
+                            atasNama: r.namaRekening,
+                            status: r.status,
+                            catatan: r.catatan || '',
+                            untuk: kategori,
+                            createdAt: r.createdAt
+                        });
+                    });
+                });
+            }
+        } catch (e) {}
+    }
+
+    return hasil;
+};
+
+window.cekDuplikatRekeningLintasGlobal = function(nomor, excludeId) {
+    if (!nomor) return false;
+    var nomorBersih = String(nomor).replace(/\D/g, '');
+    if (!nomorBersih) return false;
+
+    var semua = window.getAllRekeningUnified();
+    return semua.some(function(r) {
+        if (excludeId && r.id === excludeId) return false;
+        return String(r.nomor || '').replace(/\D/g, '') === nomorBersih;
+    });
+};
+
+window.migrasiRekeningOtomatis = function() {
+    try {
+        if (typeof getRekeningMasterGlobal !== 'function' ||
+            typeof rekeningBankGetAll !== 'function') return { skip: true };
+
+        var rm = getRekeningMasterGlobal();
+        var rb = rekeningBankGetAll();
+
+        var totalRM = 0;
+        Object.keys(rm).forEach(function(k) {
+            if (Array.isArray(rm[k])) totalRM += rm[k].length;
+        });
+
+        if (totalRM > 0 || rb.length === 0) return { skip: true };
+
+        if (!Array.isArray(rm.sewa)) rm.sewa = [];
+        rb.forEach(function(r) {
+            rm.sewa.push({
+                id: r.id + '_migrasi_' + Date.now(),
+                namaBank: r.nama,
+                nomorRekening: r.nomor,
+                namaRekening: r.atasNama,
+                status: r.status,
+                catatan: '[Migrasi dari Manajemen Bank] ' + (r.catatan || ''),
+                createdBy: 'MIGRASI',
+                createdAt: r.createdAt || new Date().toISOString()
+            });
+        });
+
+        if (typeof saveRekeningMasterGlobal === 'function') {
+            saveRekeningMasterGlobal(rm);
+        }
+
+        console.log('✅ Migrasi: ' + rb.length + ' rekening dipindah ke rekeningMaster.sewa');
+        return { sukses: true, jumlah: rb.length };
+    } catch (e) {
+        console.error('migrasiRekeningOtomatis error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+};
+
+setTimeout(migrasiRekeningOtomatis, 3000);
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK Fungsi Global Manajemen Rekening R 0.10.41 -->
@@ -21741,6 +21925,12 @@ function saveSettingEkonomiGlobal(data) {
 
         var current = getSettingEkonomiLengkapGlobal();
 
+        // Deteksi perubahan penting SEBELUM update
+        var hargaJualLama   = parseFloat(current.hargaJual) || 1000;
+        var hargaBeliLama   = parseFloat(current.hargaBeli) || 900;
+        var feePlatformLama = parseFloat(current.feePlatform) || 2;
+        var feeSawerLama    = parseFloat(current.feeSawer) || 5;
+
         Object.keys(data).forEach(function(k) {
             if (data[k] !== undefined) current[k] = data[k];
         });
@@ -21751,13 +21941,64 @@ function saveSettingEkonomiGlobal(data) {
 
         localStorage.setItem('settingEkonomi', JSON.stringify(current));
 
-        // Catat aktivitas
+        // Catat aktivitas global
         if (typeof catatAktivitasGlobal === 'function') {
             catatAktivitasGlobal(current.updatedBy, 'Setting Ekonomi',
                 'Harga Jual: ' + current.hargaJual +
                 ' | Harga Beli: ' + current.hargaBeli +
                 ' | Min Belanja: ' + current.minimalBelanja
             );
+        }
+
+        // ═══ FIX: Trigger refresh log coin kalau ada perubahan ekonomi ═══
+        var hargaJualBaru   = parseFloat(current.hargaJual) || 1000;
+        var hargaBeliBaru   = parseFloat(current.hargaBeli) || 900;
+        var feePlatformBaru = parseFloat(current.feePlatform) || 2;
+        var feeSawerBaru    = parseFloat(current.feeSawer) || 5;
+
+        var adaPerubahanEkonomi = (
+            hargaJualLama   !== hargaJualBaru ||
+            hargaBeliLama   !== hargaBeliBaru ||
+            feePlatformLama !== feePlatformBaru ||
+            feeSawerLama    !== feeSawerBaru
+        );
+
+        if (adaPerubahanEkonomi) {
+            console.log('💰 Setting ekonomi berubah — trigger refresh log coin');
+
+            setTimeout(function() {
+                try {
+                    if (typeof refreshLogAktivitasCoinGlobal === 'function') {
+                        refreshLogAktivitasCoinGlobal();
+                        console.log('✅ Log coin di-refresh setelah perubahan setting');
+                    }
+                } catch (e) {
+                    console.warn('Refresh log coin gagal:', e);
+                }
+            }, 500);
+
+            // Catat log audit SA
+            try {
+                if (typeof catatLogAuditSAGlobal === 'function') {
+                    catatLogAuditSAGlobal({
+                        kategori: 'konfigurasi',
+                        subKategori: 'setting_ekonomi',
+                        aksi: 'Update Setting Ekonomi',
+                        level: 'warning',
+                        deskripsi: 'Harga Jual: ' + hargaJualLama + ' → ' + hargaJualBaru +
+                                   ' | Fee Platform: ' + feePlatformLama + '% → ' + feePlatformBaru + '%' +
+                                   ' | Fee Sawer: ' + feeSawerLama + '% → ' + feeSawerBaru + '%',
+                        target: { tipe: 'module', module: 'settingEkonomi' },
+                        status: 'sukses',
+                        metadata: {
+                            hargaJual:   { lama: hargaJualLama,   baru: hargaJualBaru },
+                            hargaBeli:   { lama: hargaBeliLama,   baru: hargaBeliBaru },
+                            feePlatform: { lama: feePlatformLama, baru: feePlatformBaru },
+                            feeSawer:    { lama: feeSawerLama,    baru: feeSawerBaru }
+                        }
+                    });
+                }
+            } catch (e) {}
         }
 
         return { sukses: true, data: current };
@@ -22395,6 +22636,18 @@ function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
         return { sukses: false, pesan: 'Jumlah harus > 0.' };
     }
 
+    // ═══ FIX: Validasi limit intervensi (>1jt butuh konfirmasi) ═══
+    if (jumlah >= 1000000) {
+        if (!confirm(
+            '⚠️ INTERVENSI BESAR!\n\n' +
+            'Jumlah: ' + jumlah.toLocaleString('id-ID') + ' Coin\n' +
+            'Aksi: ' + aksi + '\n\n' +
+            'Lanjutkan?'
+        )) {
+            return { sukses: false, pesan: 'Dibatalkan SA.' };
+        }
+    }
+
     var tipe = (aksi === 'tambah') ? 'credit' : 'debit';
 
     var hasil = tambahTransaksiDompet(idUser, {
@@ -22409,7 +22662,7 @@ function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
     var saldoBaru = hasil.saldo;
     var saldoLama = hasil.saldoSebelum;
 
-    // Update saldo di dataAkunAktif (agar tampil di list)
+    // Update saldo di dataAkunAktif
     try {
         if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
             var idx = dataAkunAktif.findIndex(function(a) {
@@ -22419,20 +22672,15 @@ function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
                 if (!dataAkunAktif[idx].r2coin) dataAkunAktif[idx].r2coin = {};
                 dataAkunAktif[idx].r2coin.balance = saldoBaru;
                 try {
-                    localStorage.setItem('dataAkunAktif',
-                        JSON.stringify(dataAkunAktif));
+                    localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif));
                 } catch (e) {}
             }
         }
     } catch (e) {}
 
-    // Catat ke log intervensi global
-    var idAdmin = (typeof getIdUserAktif === 'function')
-        ? getIdUserAktif() : 'SA';
-    var userData = (typeof getDataIdUser === 'function')
-        ? getDataIdUser(idUser) : null;
-    var adminData = (typeof getDataIdUser === 'function')
-        ? getDataIdUser(idAdmin) : null;
+    var idAdmin = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA';
+    var userData = (typeof getDataIdUser === 'function') ? getDataIdUser(idUser) : null;
+    var adminData = (typeof getDataIdUser === 'function') ? getDataIdUser(idAdmin) : null;
 
     var logEntry = {
         id: (typeof generateKodeUnik === 'function')
@@ -22461,6 +22709,51 @@ function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
         );
     }
 
+    // ═══ FIX: Catat log audit SA ═══
+    try {
+        if (typeof catatLogAuditSAGlobal === 'function') {
+            catatLogAuditSAGlobal({
+                kategori: 'keuangan',
+                subKategori: 'intervensi_coin',
+                aksi: 'Intervensi Coin',
+                level: jumlah >= 1000 ? 'critical' : 'warning',
+                deskripsi: (aksi === 'tambah' ? '+' : '-') + jumlah +
+                           ' coin ke ' + logEntry.userNama + ' — ' + (keterangan || '-'),
+                target: { tipe: 'user', id: idUser, nama: logEntry.userNama },
+                status: 'sukses',
+                metadata: {
+                    aksi: aksi,
+                    jumlah: jumlah,
+                    saldoSebelum: saldoLama,
+                    saldoSesudah: saldoBaru
+                }
+            });
+        }
+    } catch (e) {}
+
+    // ═══ FIX: Catat log coin (audit trail) ═══
+    try {
+        if (typeof catatLogCoinManualGlobal === 'function') {
+            catatLogCoinManualGlobal({
+                idUser: idUser,
+                namaUser: logEntry.userNama,
+                roleUser: userData ? userData.role : '-',
+                tipe: tipe,
+                jumlah: jumlah,
+                saldoSebelum: saldoLama,
+                saldoSesudah: saldoBaru,
+                sumber: 'intervensi-SA',
+                keterangan: 'Intervensi SA: ' + (keterangan || '-'),
+                refId: hasil.transaksi.id,
+                lawanTransaksi: {
+                    idUser: idAdmin,
+                    nama: logEntry.adminNama,
+                    role: 'SuperAdmin'
+                }
+            });
+        }
+    } catch (e) {}
+
     return {
         sukses: true,
         transaksi: hasil.transaksi,
@@ -22469,7 +22762,6 @@ function intervensiCoinSA(idUser, aksi, jumlah, keterangan) {
         log: logEntry
     };
 }
-
 // --- 9. SIMPAN INTERVENSI LOG (INTERNAL) ---
 function simpanIntervensiLog(entry) {
     try {
@@ -23268,53 +23560,126 @@ function exportIntervensiCSVGlobal() {
 
     // ── (19) prosesSetujuiTopUpGlobal ⭐ ──
     window.prosesSetujuiTopUpGlobal = function(id, catatan) {
-        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+    if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
 
-        try {
-            var topup = getTopUpByIdGlobal(id);
-            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
-            if (topup.status === 'Lunas') {
-                return { sukses: false, pesan: 'Top-up sudah pernah disetujui.' };
+    try {
+        var topup = getTopUpByIdGlobal(id);
+        if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+        if (topup.status === 'Lunas') {
+            return { sukses: false, pesan: 'Top-up sudah pernah disetujui.' };
+        }
+
+        // ═══ FIX: Validasi minimalTopUp dari Setting Ekonomi ═══
+        var setting = (typeof getSettingEkonomiLengkapGlobal === 'function')
+            ? getSettingEkonomiLengkapGlobal()
+            : { minimalTopUp: 10000, hargaJual: 1000 };
+
+        var totalRupiah  = parseFloat(topup.totalRupiah) || 0;
+        var minimalTopUp = parseFloat(setting.minimalTopUp) || 10000;
+
+        if (totalRupiah < minimalTopUp) {
+            return {
+                sukses: false,
+                pesan: 'Nominal top-up Rp ' + totalRupiah.toLocaleString('id-ID') +
+                       ' di bawah minimal Rp ' + minimalTopUp.toLocaleString('id-ID') + '.',
+                validasi: 'minimalTopUp'
+            };
+        }
+
+        // ═══ FIX: Validasi harga per coin sesuai Setting Ekonomi ═══
+        var jumlahKoin   = parseInt(topup.jumlahKoin, 10) || 0;
+        var hargaJual    = parseFloat(setting.hargaJual) || 1000;
+        var totalSeharus = jumlahKoin * hargaJual;
+        var toleransi    = totalSeharus * 0.05;
+
+        if (Math.abs(totalRupiah - totalSeharus) > toleransi && totalSeharus > 0) {
+            if (!confirm(
+                '⚠️ PERINGATAN!\n\n' +
+                'Jumlah coin: ' + jumlahKoin + '\n' +
+                'Total bayar: Rp ' + totalRupiah.toLocaleString('id-ID') + '\n' +
+                'Seharusnya: Rp ' + totalSeharus.toLocaleString('id-ID') + '\n' +
+                '(harga per coin Rp ' + hargaJual.toLocaleString('id-ID') + ')\n\n' +
+                'Selisih > 5%. Lanjut setujui?'
+            )) {
+                return { sukses: false, pesan: 'Dibatalkan SA.' };
             }
+        }
 
-            // Update status
-            var hasilUpdate = updateStatusTopUpGlobal(id, 'Lunas', catatan || 'Disetujui SA');
-            if (!hasilUpdate.sukses) return hasilUpdate;
+        // Update status
+        var hasilUpdate = updateStatusTopUpGlobal(id, 'Lunas', catatan || 'Disetujui SA');
+        if (!hasilUpdate.sukses) return hasilUpdate;
 
-            // Tambah saldo coin ke dompet user
-            var jumlahKoin = parseInt(topup.jumlahKoin, 10) || 0;
-            if (jumlahKoin > 0 && typeof tambahTransaksiDompet === 'function') {
-                tambahTransaksiDompet(topup.idUser, {
+        // Tambah saldo coin ke dompet user
+        if (jumlahKoin > 0 && typeof tambahTransaksiDompet === 'function') {
+            tambahTransaksiDompet(topup.idUser, {
+                tipe: 'credit',
+                jumlah: jumlahKoin,
+                keterangan: 'Top-Up disetujui (ID: ' + id + ')',
+                refId: id,
+                kategori: 'topup'
+            });
+        } else if (jumlahKoin > 0 && typeof getSaldoDompet === 'function' &&
+                   typeof setSaldoDompet === 'function') {
+            var saldoLama = getSaldoDompet(topup.idUser) || 0;
+            setSaldoDompet(topup.idUser, saldoLama + jumlahKoin);
+        }
+
+        // Kirim notif chat
+        kirimNotifVerifikasiCoinKeUser(topup.idUser, 'topup_lunas', topup, catatan);
+
+        // Catat aktivitas
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(
+                (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA',
+                'Setujui Top-Up',
+                topup.namaPembeli + ' (' + topup.idUser + ') +' + jumlahKoin + ' Coin'
+            );
+        }
+
+        // ═══ FIX: Catat Log Audit SA ═══
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keuangan',
+                    subKategori: 'approve_topup',
+                    aksi: 'Setujui Top-Up',
+                    level: jumlahKoin >= 1000 ? 'warning' : 'info',
+                    deskripsi: topup.namaPembeli + ' +' + jumlahKoin +
+                               ' coin | Rp ' + totalRupiah.toLocaleString('id-ID'),
+                    target: { tipe: 'user', id: topup.idUser, nama: topup.namaPembeli },
+                    status: 'sukses',
+                    metadata: {
+                        jumlahKoin: jumlahKoin,
+                        totalRupiah: totalRupiah,
+                        metode: topup.metode
+                    }
+                });
+            }
+        } catch (e) {}
+
+        // ═══ FIX: Catat Log Coin (audit trail) ═══
+        try {
+            if (typeof catatLogCoinManualGlobal === 'function') {
+                catatLogCoinManualGlobal({
+                    idUser: topup.idUser,
+                    namaUser: topup.namaPembeli,
+                    roleUser: topup.role,
                     tipe: 'credit',
                     jumlah: jumlahKoin,
-                    keterangan: 'Top-Up disetujui (ID: ' + id + ')',
-                    refId: id,
-                    kategori: 'topup'
+                    sumber: 'topup',
+                    keterangan: 'Top-up LUNAS via ' + (topup.metode || '-') +
+                                ' | Rp ' + totalRupiah.toLocaleString('id-ID'),
+                    refId: id
                 });
-            } else if (jumlahKoin > 0 && typeof getSaldoDompet === 'function' && typeof setSaldoDompet === 'function') {
-                // Fallback kalau tambahTransaksiDompet tidak ada
-                var saldoLama = getSaldoDompet(topup.idUser) || 0;
-                setSaldoDompet(topup.idUser, saldoLama + jumlahKoin);
             }
+        } catch (e) {}
 
-            // Kirim notif chat ke user
-            kirimNotifVerifikasiCoinKeUser(topup.idUser, 'topup_lunas', topup, catatan);
-
-            // Catat aktivitas
-            if (typeof catatAktivitasGlobal === 'function') {
-                catatAktivitasGlobal(
-                    (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA',
-                    'Setujui Top-Up',
-                    topup.namaPembeli + ' (' + topup.idUser + ') +' + jumlahKoin + ' Coin'
-                );
-            }
-
-            return { sukses: true, topup: hasilUpdate.topup };
-        } catch (e) {
-            console.error('prosesSetujuiTopUpGlobal error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
+        return { sukses: true, topup: hasilUpdate.topup };
+    } catch (e) {
+        console.error('prosesSetujuiTopUpGlobal error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+};
 
     // ── (20) prosesTolakTopUpGlobal ──
     window.prosesTolakTopUpGlobal = function(id, catatan) {
@@ -23349,48 +23714,122 @@ function exportIntervensiCSVGlobal() {
 
     // ── (21) prosesSetujuiWithdrawGlobal ⭐ ──
     window.prosesSetujuiWithdrawGlobal = function(id, catatan) {
-        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+    if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
 
-        try {
-            var wd = getWithdrawByIdGlobal(id);
-            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
-            if (wd.status === 'Disetujui') {
-                return { sukses: false, pesan: 'Withdraw sudah disetujui.' };
+    try {
+        var wd = getWithdrawByIdGlobal(id);
+        if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+        if (wd.status === 'Disetujui') {
+            return { sukses: false, pesan: 'Withdraw sudah disetujui.' };
+        }
+
+        // ═══ FIX: Validasi minimalWithdraw ═══
+        var setting = (typeof getSettingEkonomiLengkapGlobal === 'function')
+            ? getSettingEkonomiLengkapGlobal()
+            : { minimalWithdraw: 50000 };
+
+        var totalRupiah = parseFloat(wd.totalRupiah) || 0;
+        var minimalWithdraw = parseFloat(setting.minimalWithdraw) || 50000;
+
+        if (totalRupiah < minimalWithdraw) {
+            return {
+                sukses: false,
+                pesan: 'Nominal withdraw Rp ' + totalRupiah.toLocaleString('id-ID') +
+                       ' di bawah minimal Rp ' + minimalWithdraw.toLocaleString('id-ID') + '.',
+                validasi: 'minimalWithdraw'
+            };
+        }
+
+        // ═══ FIX: Cek saldo user cukup sebelum approve ═══
+        var jumlahKoin = parseInt(wd.jumlahKoin, 10) || 0;
+        var saldoUser = 0;
+        if (typeof getSaldoDompet === 'function') {
+            saldoUser = parseFloat(getSaldoDompet(wd.idUser)) || 0;
+        }
+
+        if (saldoUser < jumlahKoin) {
+            return {
+                sukses: false,
+                pesan: 'Saldo user tidak cukup. Saldo: ' + saldoUser +
+                       ' coin, butuh: ' + jumlahKoin + ' coin.',
+                validasi: 'saldoTidakCukup'
+            };
+        }
+
+        var hasilUpdate = updateStatusWithdrawGlobal(id, 'Disetujui', catatan || 'Disetujui SA');
+        if (!hasilUpdate.sukses) return hasilUpdate;
+
+        // Kurangi saldo coin user
+        if (jumlahKoin > 0 && typeof tambahTransaksiDompet === 'function') {
+            var potong = tambahTransaksiDompet(wd.idUser, {
+                tipe: 'debit',
+                jumlah: jumlahKoin,
+                keterangan: 'Withdraw disetujui (ID: ' + id + ')',
+                refId: id,
+                kategori: 'withdraw'
+            });
+
+            // ═══ FIX: Rollback kalau gagal potong ═══
+            if (!potong.sukses) {
+                updateStatusWithdrawGlobal(id, 'Menunggu', 'Rollback: gagal potong saldo');
+                return {
+                    sukses: false,
+                    pesan: 'Gagal potong saldo: ' + potong.pesan
+                };
             }
+        }
 
-            var hasilUpdate = updateStatusWithdrawGlobal(id, 'Disetujui', catatan || 'Disetujui SA');
-            if (!hasilUpdate.sukses) return hasilUpdate;
+        kirimNotifVerifikasiCoinKeUser(wd.idUser, 'withdraw_setuju', wd, catatan);
 
-            // Kurangi saldo coin user (kalau belum dipotong saat pengajuan)
-            var jumlahKoin = parseInt(wd.jumlahKoin, 10) || 0;
-            if (jumlahKoin > 0 && typeof tambahTransaksiDompet === 'function') {
-                // Cek dulu apakah saldo user dikurangi saat pengajuan atau saat approval
-                // Konvensi: potong saat approval (biar aman)
-                tambahTransaksiDompet(wd.idUser, {
-                    tipe: 'debit',
-                    jumlah: jumlahKoin,
-                    keterangan: 'Withdraw disetujui (ID: ' + id + ')',
-                    refId: id,
-                    kategori: 'withdraw'
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(
+                (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA',
+                'Setujui Withdraw',
+                wd.namaPemohon + ' (' + wd.idUser + ') -' + jumlahKoin + ' Coin'
+            );
+        }
+
+        // ═══ FIX: Catat Log Audit SA ═══
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keuangan',
+                    subKategori: 'approve_withdraw',
+                    aksi: 'Setujui Withdraw',
+                    level: jumlahKoin >= 500 ? 'warning' : 'info',
+                    deskripsi: wd.namaPemohon + ' -' + jumlahKoin +
+                               ' coin | Rp ' + totalRupiah.toLocaleString('id-ID'),
+                    target: { tipe: 'user', id: wd.idUser, nama: wd.namaPemohon },
+                    status: 'sukses'
                 });
             }
+        } catch (e) {}
 
-            kirimNotifVerifikasiCoinKeUser(wd.idUser, 'withdraw_setuju', wd, catatan);
-
-            if (typeof catatAktivitasGlobal === 'function') {
-                catatAktivitasGlobal(
-                    (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA',
-                    'Setujui Withdraw',
-                    wd.namaPemohon + ' (' + wd.idUser + ') -' + jumlahKoin + ' Coin'
-                );
+        // ═══ FIX: Catat Log Coin (audit trail) ═══
+        try {
+            if (typeof catatLogCoinManualGlobal === 'function') {
+                catatLogCoinManualGlobal({
+                    idUser: wd.idUser,
+                    namaUser: wd.namaPemohon,
+                    roleUser: wd.role,
+                    tipe: 'debit',
+                    jumlah: jumlahKoin,
+                    sumber: 'withdraw',
+                    keterangan: 'Withdraw ke ' +
+                        (wd.rekeningTujuan ?
+                            ((wd.rekeningTujuan.bank || '') + ' ' +
+                             (wd.rekeningTujuan.nomor || '')) : '-'),
+                    refId: id
+                });
             }
+        } catch (e) {}
 
-            return { sukses: true, withdraw: hasilUpdate.withdraw };
-        } catch (e) {
-            console.error('prosesSetujuiWithdrawGlobal error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
+        return { sukses: true, withdraw: hasilUpdate.withdraw };
+    } catch (e) {
+        console.error('prosesSetujuiWithdrawGlobal error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+};
 
     // ── (22) prosesTolakWithdrawGlobal ──
     window.prosesTolakWithdrawGlobal = function(id, catatan) {
@@ -25642,69 +26081,99 @@ function exportIntervensiCSVGlobal() {
     // ── (16) _lacNormalisasiDompetUser ──
     // Scan semua dompet_<idUser> di localStorage
     function _lacNormalisasiDompetUser() {
-        var hasil = [];
-        try {
-            var listUser = (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif))
-                ? dataAkunAktif : [];
+    var hasil = [];
+    try {
+        // ═══ FIX: Scan langsung dari localStorage by prefix ═══
+        var total = localStorage.length;
+        var listDompet = [];
 
-            // Kalau dataAkunAktif kosong, coba dari dataLoginUser
-            if (listUser.length === 0 && typeof dataLoginUser !== 'undefined') {
-                listUser = Array.isArray(dataLoginUser) ? dataLoginUser : [];
-            }
+        for (var i = 0; i < total; i++) {
+            var key = localStorage.key(i);
+            if (!key || key.indexOf('dompet_') !== 0) continue;
 
-            listUser.forEach(function(u) {
-                if (!u) return;
-                var idUser = u.id || u.idUser;
-                if (!idUser) return;
+            var idUser = key.replace('dompet_', '');
+            if (!idUser) continue;
 
-                var dompet = null;
-                try {
-                    var s = localStorage.getItem('dompet_' + idUser);
-                    if (s) dompet = JSON.parse(s);
-                } catch (e) {}
-                if (!dompet || !Array.isArray(dompet.transactions)) return;
+            try {
+                var raw = localStorage.getItem(key);
+                if (!raw) continue;
+                var dompet = JSON.parse(raw);
+                if (dompet && typeof dompet === 'object') {
+                    listDompet.push({ idUser: idUser, dompet: dompet });
+                }
+            } catch (e) {}
+        }
 
-                dompet.transactions.forEach(function(trx) {
-                    if (!trx) return;
+        listDompet.forEach(function(item) {
+            var idUser = item.idUser;
+            var dompet = item.dompet;
+            if (!Array.isArray(dompet.transactions)) return;
 
-                    var sumber = _lacMapSumber(trx.kategori);
+            var user = null;
+            try {
+                if (typeof getDataIdUser === 'function') {
+                    user = getDataIdUser(idUser);
+                }
+            } catch (e) {}
 
-                    // Skip kalau sudah di-cover oleh normalisasi khusus
-                    // (topup, withdraw, intervensi) → biar tidak double
-                    if (sumber === 'topup' || sumber === 'withdraw' ||
-                        sumber === 'intervensi-SA' || sumber === 'transfer') {
-                        return;
+            dompet.transactions.forEach(function(trx) {
+                if (!trx) return;
+
+                var sumber = _lacMapSumber(trx.kategori);
+
+                if (sumber === 'topup' || sumber === 'withdraw' ||
+                    sumber === 'intervensi-SA' || sumber === 'transfer') {
+                    return;
+                }
+
+                var item2 = {
+                    id: 'LAC-DM-' + (trx.id || Date.now() + Math.random()),
+                    waktu: _lacNormalizeTanggal(trx.waktu),
+                    idUser: idUser,
+                    namaUser: user ? (user.nama || idUser) : _lacGetNamaUser(idUser),
+                    roleUser: user ? (user.role || '-') : _lacGetRoleUser(idUser),
+                    tipe: trx.tipe || 'credit',
+                    jumlah: parseFloat(trx.jumlah) || 0,
+                    saldoSebelum: trx.saldoSebelum || 0,
+                    saldoSesudah: trx.saldoSesudah || 0,
+                    sumber: sumber,
+                    lawanTransaksi: null,
+                    keterangan: trx.keterangan || '-',
+                    refId: trx.refId || null,
+                    meta: {
+                        oleh: trx.oleh || '-',
+                        kategoriAsli: trx.kategori || '-',
+                        orphan: !user
+                    },
+                    severityLevel: 'normal',
+                    flagSuspicious: false,
+                    alasanSuspicious: []
+                };
+
+                // ═══ FIX: Tandai orphan sebagai suspicious ═══
+                if (!user) {
+                    item2.flagSuspicious = true;
+                    item2.alasanSuspicious.push(
+                        'Dompet orphan — user ' + idUser + ' sudah tidak ada di sistem'
+                    );
+                    if (_lacBandingkanSeverity(item2.severityLevel, 'medium') < 0) {
+                        item2.severityLevel = 'medium';
                     }
+                }
 
-                    var item = {
-                        id: 'LAC-DM-' + (trx.id || Date.now()),
-                        waktu: _lacNormalizeTanggal(trx.waktu),
-                        idUser: idUser,
-                        namaUser: _lacGetNamaUser(idUser),
-                        roleUser: u.role || _lacGetRoleUser(idUser),
-                        tipe: trx.tipe || 'credit',
-                        jumlah: parseFloat(trx.jumlah) || 0,
-                        saldoSebelum: trx.saldoSebelum || 0,
-                        saldoSesudah: trx.saldoSesudah || 0,
-                        sumber: sumber,
-                        lawanTransaksi: null,
-                        keterangan: trx.keterangan || '-',
-                        refId: trx.refId || null,
-                        meta: {
-                            oleh: trx.oleh || '-',
-                            kategoriAsli: trx.kategori || '-'
-                        },
-                        severityLevel: 'normal',
-                        flagSuspicious: false,
-                        alasanSuspicious: []
-                    };
-                    item.severityLevel = _lacHitungSeverity(item);
-                    hasil.push(item);
-                });
+                item2.severityLevel = _lacHitungSeverity(item2);
+                hasil.push(item2);
             });
-        } catch (e) { console.warn('_lacNormalisasiDompetUser error:', e); }
-        return hasil;
+        });
+
+        console.log('✅ _lacNormalisasiDompetUser: ' + listDompet.length +
+            ' dompet di-scan (termasuk orphan)');
+
+    } catch (e) {
+        console.warn('_lacNormalisasiDompetUser error:', e);
     }
+    return hasil;
+}
 
     // ── (17) _lacNormalisasiKonversiGif ──
     function _lacNormalisasiKonversiGif() {
@@ -25966,6 +26435,23 @@ function exportIntervensiCSVGlobal() {
             }
         });
 
+		        // ═══ FIX: Aturan 6 — Dompet Orphan ═══
+        semua.forEach(function(item) {
+            if (!item || !item.idUser) return;
+            if (item.meta && item.meta.orphan === true) {
+                item.flagSuspicious = true;
+                item.alasanSuspicious = item.alasanSuspicious || [];
+                if (item.alasanSuspicious.indexOf('Dompet orphan — user tidak ada') === -1) {
+                    item.alasanSuspicious.push('Dompet orphan — user tidak ada');
+                }
+                if (_lacBandingkanSeverity(item.severityLevel, 'high') < 0) {
+                    item.severityLevel = 'high';
+                }
+            }
+        });
+
+        return semua;
+		
         // Aturan 5: Withdraw tanpa topup (coin dari mana?)
         Object.keys(byUser).forEach(function(idUser) {
             var logs = byUser[idUser];
@@ -28138,81 +28624,87 @@ function exportGrosirCSVGlobal(filter) {
     // ── (1) loadRiwayatPenjualanCoinAll ⭐ ──
     // Ambil semua top-up dengan status Lunas = penjualan coin platform
     window.loadRiwayatPenjualanCoinAll = function() {
+    try {
+        var rawTopUp = [];
         try {
-            // Sumber utama: dataTopUpHistory
-            var rawTopUp = [];
-            try {
-                var s = localStorage.getItem(KEY_TOPUP);
-                rawTopUp = s ? JSON.parse(s) : [];
-                if (!Array.isArray(rawTopUp)) rawTopUp = [];
-            } catch (e) {
-                console.warn('loadRiwayatPenjualanCoinAll parse error:', e);
-                rawTopUp = [];
-            }
+            var s = localStorage.getItem(KEY_TOPUP);
+            rawTopUp = s ? JSON.parse(s) : [];
+            if (!Array.isArray(rawTopUp)) rawTopUp = [];
+        } catch (e) { rawTopUp = []; }
 
-            // Fallback ke fungsi global kalau ada
-            if (rawTopUp.length === 0 && typeof loadTopUpHistoryGlobal === 'function') {
-                rawTopUp = loadTopUpHistoryGlobal();
-            }
-
-            // Filter hanya status Lunas = penjualan berhasil
-            var hasil = rawTopUp.filter(function(t) {
-                return t && t.status === 'Lunas';
-            });
-
-            // Normalisasi field
-            hasil = hasil.map(function(t) {
-                var coin = parseInt(t.jumlahKoin, 10) || 0;
-                var rp = parseFloat(t.totalRupiah) || 0;
-                var hpc = coin > 0 ? Math.round(rp / coin) : 0;
-
-                return {
-                    // Identitas
-                    id: t.id || t.idTrx || '-',
-                    idUser: t.idUser || '-',
-                    namaPembeli: t.namaPembeli || t.namaUser || '-',
-                    role: t.role || '-',
-                    roleUser: t.roleUser || t.role || '-',
-
-                    // Keuangan
-                    jumlahKoin: coin,
-                    totalRupiah: rp,
-                    hargaPerCoin: hpc,
-                    fee: t.fee || 0,
-
-                    // Metode (raw + kategori)
-                    metode: t.metode || '-',
-                    metodeKategori: _hitungKategoriMetode(t.metode),
-
-                    // Verifikasi
-                    status: t.status,
-                    kodeVerifikasi: t.kodeVerifikasi || t.kode || null,
-                    verifiedBy: t.verifiedBy || '-',
-                    verifiedAt: t.verifiedAt || t.updatedAt || null,
-
-                    // Tanggal
-                    createdAt: t.createdAt || t.tanggal || null,
-                    tanggal: t.tanggal || (t.createdAt ? t.createdAt.split('T')[0] : null),
-
-                    // Bukti & keterangan
-                    buktiTransfer: t.buktiTransfer || t.bukti || null,
-                    keterangan: t.keterangan || null
-                };
-            });
-
-            // Sort terbaru dulu
-            hasil.sort(function(a, b) {
-                var ta = new Date(b.verifiedAt || b.createdAt || 0).getTime();
-                var tb = new Date(a.verifiedAt || a.createdAt || 0).getTime();
-                return ta - tb;
-            });
-
-            return hasil;
-        } catch (e) {
-            console.error('loadRiwayatPenjualanCoinAll error:', e);
-            return [];
+        if (rawTopUp.length === 0 && typeof loadTopUpHistoryGlobal === 'function') {
+            rawTopUp = loadTopUpHistoryGlobal();
         }
-    };
+
+        var hasil = rawTopUp.filter(function(t) {
+            return t && t.status === 'Lunas';
+        });
+
+        // ═══ FIX: Cross-check saldo user + deteksi orphan ═══
+        hasil = hasil.map(function(t) {
+            var coin = parseInt(t.jumlahKoin, 10) || 0;
+            var rp   = parseFloat(t.totalRupiah) || 0;
+            var hpc  = coin > 0 ? Math.round(rp / coin) : 0;
+
+            var saldoUser = 0;
+            try {
+                if (typeof getSaldoDompet === 'function') {
+                    saldoUser = parseFloat(getSaldoDompet(t.idUser)) || 0;
+                }
+            } catch (e) {}
+
+            var userExists = false;
+            try {
+                if (typeof getDataIdUser === 'function') {
+                    userExists = !!getDataIdUser(t.idUser);
+                }
+            } catch (e) {}
+
+            return {
+                id: t.id || t.idTrx || '-',
+                idUser: t.idUser || '-',
+                namaPembeli: t.namaPembeli || t.namaUser || '-',
+                role: t.role || '-',
+                roleUser: t.roleUser || t.role || '-',
+
+                jumlahKoin: coin,
+                totalRupiah: rp,
+                hargaPerCoin: hpc,
+                fee: t.fee || 0,
+
+                metode: t.metode || '-',
+                metodeKategori: _hitungKategoriMetode(t.metode),
+
+                status: t.status,
+                kodeVerifikasi: t.kodeVerifikasi || t.kode || null,
+                verifiedBy: t.verifiedBy || '-',
+                verifiedAt: t.verifiedAt || t.updatedAt || null,
+
+                createdAt: t.createdAt || t.tanggal || null,
+                tanggal: t.tanggal || (t.createdAt ? t.createdAt.split('T')[0] : null),
+
+                buktiTransfer: t.buktiTransfer || t.bukti || null,
+                keterangan: t.keterangan || null,
+
+                // ═══ Field baru: cross-check ═══
+                saldoSaatIni: saldoUser,
+                userExists: userExists,
+                flagOrphan: !userExists
+            };
+        });
+
+        hasil.sort(function(a, b) {
+            var ta = new Date(b.verifiedAt || b.createdAt || 0).getTime();
+            var tb = new Date(a.verifiedAt || a.createdAt || 0).getTime();
+            return ta - tb;
+        });
+
+        return hasil;
+    } catch (e) {
+        console.error('loadRiwayatPenjualanCoinAll error:', e);
+        return [];
+    }
+};
 
     // ── (2) getPenjualanCoinByIdGlobal ──
     window.getPenjualanCoinByIdGlobal = function(id) {
@@ -28351,56 +28843,71 @@ function exportGrosirCSVGlobal(filter) {
 
     // ── (6) hitungStatistikPenjualanCoinGlobal ⭐ ──
     window.hitungStatistikPenjualanCoinGlobal = function(periode, dariStr, sampaiStr) {
-        try {
-            var allData = loadRiwayatPenjualanCoinAll();
-            var data = _filterPenjualanCoinByPeriode(
-                allData, periode || 'semua', dariStr, sampaiStr
-            );
+    try {
+        var allData = loadRiwayatPenjualanCoinAll();
+        var data = _filterPenjualanCoinByPeriode(
+            allData, periode || 'semua', dariStr, sampaiStr
+        );
 
-            var totalCoin = 0;
-            var totalRp = 0;
-            var tertinggi = 0;
-            var terendah = Infinity;
-            var adaData = false;
+        var totalCoin = 0;
+        var totalRp = 0;
+        var tertinggi = 0;
+        var terendah = Infinity;
+        var adaData = false;
 
-            data.forEach(function(t) {
-                var coin = parseInt(t.jumlahKoin, 10) || 0;
-                var rp = parseFloat(t.totalRupiah) || 0;
-                var hpc = coin > 0 ? (rp / coin) : 0;
+        // ═══ FIX: Hitung statistik tambahan ═══
+        var totalOrphan = 0;
+        var totalRpOrphan = 0;
 
-                totalCoin += coin;
-                totalRp += rp;
-                adaData = true;
+        data.forEach(function(t) {
+            var coin = parseInt(t.jumlahKoin, 10) || 0;
+            var rp = parseFloat(t.totalRupiah) || 0;
+            var hpc = coin > 0 ? (rp / coin) : 0;
 
-                if (hpc > tertinggi) tertinggi = hpc;
-                if (hpc > 0 && hpc < terendah) terendah = hpc;
-            });
+            totalCoin += coin;
+            totalRp += rp;
+            adaData = true;
 
-            var totalTrx = data.length;
-            var rataHarga = totalCoin > 0 ? Math.round(totalRp / totalCoin) : 0;
-            var rataPerTrx = totalTrx > 0 ? Math.round(totalRp / totalTrx) : 0;
+            if (hpc > tertinggi) tertinggi = hpc;
+            if (hpc > 0 && hpc < terendah) terendah = hpc;
 
-            return {
-                totalCoin: totalCoin,
-                totalRp: totalRp,
-                totalTrx: totalTrx,
-                rataHarga: rataHarga,
-                rataPerTrx: rataPerTrx,
-                hargaTertinggi: Math.round(tertinggi),
-                hargaTerendah: adaData && terendah !== Infinity ? Math.round(terendah) : 0,
-                periode: periode || 'semua',
-                dari: dariStr || null,
-                sampai: sampaiStr || null
-            };
-        } catch (e) {
-            console.error('hitungStatistikPenjualanCoinGlobal error:', e);
-            return {
-                totalCoin: 0, totalRp: 0, totalTrx: 0,
-                rataHarga: 0, rataPerTrx: 0,
-                hargaTertinggi: 0, hargaTerendah: 0
-            };
-        }
-    };
+            // ═══ Orphan detection ═══
+            if (t.flagOrphan) {
+                totalOrphan++;
+                totalRpOrphan += rp;
+            }
+        });
+
+        var totalTrx = data.length;
+        var rataHarga = totalCoin > 0 ? Math.round(totalRp / totalCoin) : 0;
+        var rataPerTrx = totalTrx > 0 ? Math.round(totalRp / totalTrx) : 0;
+
+        return {
+            totalCoin: totalCoin,
+            totalRp: totalRp,
+            totalTrx: totalTrx,
+            rataHarga: rataHarga,
+            rataPerTrx: rataPerTrx,
+            hargaTertinggi: Math.round(tertinggi),
+            hargaTerendah: adaData && terendah !== Infinity ? Math.round(terendah) : 0,
+            periode: periode || 'semua',
+            dari: dariStr || null,
+            sampai: sampaiStr || null,
+            // ═══ Field baru ═══
+            totalOrphan: totalOrphan,
+            totalRpOrphan: totalRpOrphan,
+            flagAdaOrphan: totalOrphan > 0
+        };
+    } catch (e) {
+        console.error('hitungStatistikPenjualanCoinGlobal error:', e);
+        return {
+            totalCoin: 0, totalRp: 0, totalTrx: 0,
+            rataHarga: 0, rataPerTrx: 0,
+            hargaTertinggi: 0, hargaTerendah: 0,
+            totalOrphan: 0, totalRpOrphan: 0, flagAdaOrphan: false
+        };
+    }
+};
 
     // ── (7) hitungPenjualanCoinPerRoleGlobal ⭐ ──
     window.hitungPenjualanCoinPerRoleGlobal = function(periode, dariStr, sampaiStr) {
@@ -29224,6 +29731,498 @@ function exportGrosirCSVGlobal(filter) {
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK R 0.10.66 (Aktif Only)                  ═══ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 0.10.66-A — FUNGSI GLOBAL LAPORAN AUTO-RECOVERY    -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_0_10_66_A_AUTO_RECOVERY() {
+    if (window._blokR01066ADone) return;
+    window._blokR01066ADone = true;
+
+    var KEY_RECOVERY_LOG = 'dataRecoveryLog';
+
+    // ═══════════════════════════════════════════════════════════
+    // (1) deteksiAnomaliCoinGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.deteksiAnomaliCoinGlobal = function() {
+        try {
+            var log = (typeof loadLogAktivitasCoinGlobal === 'function')
+                ? loadLogAktivitasCoinGlobal() : [];
+
+            var anomali = [];
+
+            log.forEach(function(item) {
+                if (!item) return;
+
+                var selisih = (parseFloat(item.saldoSesudah) || 0) -
+                              (parseFloat(item.saldoSebelum) || 0);
+                var delta = (item.tipe === 'credit' ? 1 : -1) *
+                            (parseFloat(item.jumlah) || 0);
+
+                if (item.saldoSebelum > 0 && Math.abs(selisih - delta) > 0.01) {
+                    anomali.push({
+                        tipe: 'saldo_tidak_konsisten',
+                        logId: item.id,
+                        idUser: item.idUser,
+                        detail: 'Selisih: ' + selisih + ', seharusnya: ' + delta,
+                        level: 'critical'
+                    });
+                }
+
+                if ((parseFloat(item.saldoSesudah) || 0) < 0) {
+                    anomali.push({
+                        tipe: 'saldo_negatif',
+                        logId: item.id,
+                        idUser: item.idUser,
+                        detail: 'Saldo sesudah: ' + item.saldoSesudah,
+                        level: 'critical'
+                    });
+                }
+
+                if (item.tipe === 'debit' &&
+                    parseFloat(item.saldoSebelum) < parseFloat(item.jumlah)) {
+                    anomali.push({
+                        tipe: 'debit_tanpa_saldo',
+                        logId: item.id,
+                        idUser: item.idUser,
+                        detail: 'Saldo: ' + item.saldoSebelum +
+                                ', debit: ' + item.jumlah,
+                        level: 'critical'
+                    });
+                }
+
+                if (item.meta && item.meta.orphan === true) {
+                    anomali.push({
+                        tipe: 'orphan_dompet',
+                        logId: item.id,
+                        idUser: item.idUser,
+                        detail: 'Dompet orphan (user tidak ada)',
+                        level: 'warning'
+                    });
+                }
+            });
+
+            return {
+                sukses: true,
+                total: anomali.length,
+                list: anomali
+            };
+        } catch (e) {
+            console.error('deteksiAnomaliCoinGlobal error:', e);
+            return { sukses: false, pesan: e.message, total: 0, list: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (2) rekonsiliasiSaldoUserGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.rekonsiliasiSaldoUserGlobal = function(idUser) {
+        if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+        try {
+            var saldoAktual = 0;
+            if (typeof getSaldoDompet === 'function') {
+                saldoAktual = parseFloat(getSaldoDompet(idUser)) || 0;
+            }
+
+            var log = (typeof loadLogAktivitasCoinGlobal === 'function')
+                ? loadLogAktivitasCoinGlobal() : [];
+            var logUser = log.filter(function(l) { return l && l.idUser === idUser; });
+
+            var saldoTerakhirLog = 0;
+            if (logUser.length > 0) {
+                logUser.sort(function(a, b) {
+                    return new Date(a.waktu) - new Date(b.waktu);
+                });
+                saldoTerakhirLog = parseFloat(
+                    logUser[logUser.length - 1].saldoSesudah
+                ) || 0;
+            }
+
+            var selisih = saldoAktual - saldoTerakhirLog;
+
+            return {
+                sukses: true,
+                idUser: idUser,
+                saldoAktual: saldoAktual,
+                saldoTerakhirLog: saldoTerakhirLog,
+                selisih: selisih,
+                konsisten: Math.abs(selisih) < 0.01,
+                totalLog: logUser.length
+            };
+        } catch (e) {
+            console.error('rekonsiliasiSaldoUserGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (3) rekonsiliasiMassalGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.rekonsiliasiMassalGlobal = function() {
+        try {
+            var semua = [];
+            var tidakKonsisten = [];
+
+            for (var i = 0; i < localStorage.length; i++) {
+                var key = localStorage.key(i);
+                if (!key || key.indexOf('dompet_') !== 0) continue;
+                var idUser = key.replace('dompet_', '');
+                if (!idUser) continue;
+
+                var r = rekonsiliasiSaldoUserGlobal(idUser);
+                if (r.sukses) {
+                    semua.push(r);
+                    if (!r.konsisten) tidakKonsisten.push(r);
+                }
+            }
+
+            return {
+                sukses: true,
+                totalUser: semua.length,
+                totalTidakKonsisten: tidakKonsisten.length,
+                detail: tidakKonsisten.slice(0, 50)
+            };
+        } catch (e) {
+            console.error('rekonsiliasiMassalGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (4) perbaikiSaldoUserGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.perbaikiSaldoUserGlobal = function(idUser, konfirmasi) {
+        if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+        if (!konfirmasi) return { sukses: false, pesan: 'Butuh { konfirmasi: true }' };
+
+        try {
+            var r = rekonsiliasiSaldoUserGlobal(idUser);
+            if (!r.sukses) return r;
+            if (r.konsisten) return { sukses: true, pesan: 'Saldo sudah konsisten.' };
+
+            var saldoLama = r.saldoAktual;
+            var saldoBaru = r.saldoTerakhirLog;
+
+            try {
+                var backupKey = 'backup_dompet_' + idUser + '_recovery_' + Date.now();
+                var current = localStorage.getItem('dompet_' + idUser);
+                if (current) localStorage.setItem(backupKey, current);
+            } catch (e) {}
+
+            if (typeof setSaldoDompet === 'function') {
+                var set = setSaldoDompet(idUser, saldoBaru);
+                if (!set.sukses) return set;
+            }
+
+            catatRecoveryLogGlobal({
+                aksi: 'perbaiki_saldo',
+                idUser: idUser,
+                saldoLama: saldoLama,
+                saldoBaru: saldoBaru,
+                selisih: r.selisih,
+                keterangan: 'Auto-recovery saldo berdasarkan log terakhir'
+            });
+
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keuangan',
+                    subKategori: 'auto_recovery',
+                    aksi: 'Perbaiki Saldo User',
+                    level: 'warning',
+                    deskripsi: 'Saldo ' + idUser + ': ' + saldoLama + ' → ' + saldoBaru,
+                    target: { tipe: 'user', id: idUser },
+                    status: 'sukses'
+                });
+            }
+
+            return {
+                sukses: true,
+                idUser: idUser,
+                saldoLama: saldoLama,
+                saldoBaru: saldoBaru,
+                pesan: 'Saldo diperbaiki: ' + saldoLama + ' → ' + saldoBaru
+            };
+        } catch (e) {
+            console.error('perbaikiSaldoUserGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (5) rollbackTransaksiCoinGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.rollbackTransaksiCoinGlobal = function(idTransaksi, alasan) {
+        if (!idTransaksi) return { sukses: false, pesan: 'ID transaksi tidak valid.' };
+        if (!alasan || alasan.length < 5) {
+            return { sukses: false, pesan: 'Alasan minimal 5 karakter.' };
+        }
+
+        try {
+            var log = (typeof loadLogAktivitasCoinGlobal === 'function')
+                ? loadLogAktivitasCoinGlobal() : [];
+            var trx = log.find(function(l) {
+                return l && (l.id === idTransaksi || l.refId === idTransaksi);
+            });
+
+            if (!trx) {
+                return { sukses: false, pesan: 'Transaksi tidak ditemukan di log.' };
+            }
+
+            var tipeBalik = trx.tipe === 'credit' ? 'debit' : 'credit';
+            var jumlah = parseFloat(trx.jumlah) || 0;
+
+            if (typeof tambahTransaksiDompet !== 'function') {
+                return { sukses: false, pesan: 'Fungsi tambahTransaksiDompet tidak tersedia.' };
+            }
+
+            var hasil = tambahTransaksiDompet(trx.idUser, {
+                tipe: tipeBalik,
+                jumlah: jumlah,
+                keterangan: 'ROLLBACK: ' + trx.keterangan + ' — ' + alasan,
+                refId: idTransaksi,
+                kategori: 'rollback'
+            });
+
+            if (!hasil.sukses) return hasil;
+
+            catatRecoveryLogGlobal({
+                aksi: 'rollback',
+                idTransaksi: idTransaksi,
+                idUser: trx.idUser,
+                tipeAsli: trx.tipe,
+                tipeBalik: tipeBalik,
+                jumlah: jumlah,
+                alasan: alasan
+            });
+
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keuangan',
+                    subKategori: 'rollback',
+                    aksi: 'Rollback Transaksi Coin',
+                    level: 'critical',
+                    deskripsi: 'Rollback ' + idTransaksi + ' (' + jumlah + ' coin) — ' + alasan,
+                    target: { tipe: 'user', id: trx.idUser },
+                    status: 'sukses'
+                });
+            }
+
+            return {
+                sukses: true,
+                idTransaksi: idTransaksi,
+                tipeBalik: tipeBalik,
+                jumlah: jumlah,
+                pesan: 'Rollback berhasil: ' + tipeBalik + ' ' + jumlah + ' coin'
+            };
+        } catch (e) {
+            console.error('rollbackTransaksiCoinGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (6) catatRecoveryLogGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.catatRecoveryLogGlobal = function(data) {
+        try {
+            var log = loadRecoveryLogGlobal();
+            var idUser = (typeof getIdUserAktif === 'function') ? getIdUserAktif() : 'SA';
+
+            log.unshift({
+                id: 'RCV-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                waktu: new Date().toISOString(),
+                oleh: idUser,
+                aksi: data.aksi,
+                idUser: data.idUser,
+                idTransaksi: data.idTransaksi || null,
+                saldoLama: data.saldoLama || null,
+                saldoBaru: data.saldoBaru || null,
+                selisih: data.selisih || null,
+                jumlah: data.jumlah || null,
+                alasan: data.alasan || null,
+                keterangan: data.keterangan || '-'
+            });
+
+            if (log.length > 200) log = log.slice(0, 200);
+
+            localStorage.setItem(KEY_RECOVERY_LOG, JSON.stringify(log));
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (7) loadRecoveryLogGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.loadRecoveryLogGlobal = function() {
+        try {
+            var s = localStorage.getItem(KEY_RECOVERY_LOG);
+            var arr = s ? JSON.parse(s) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) {
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (8) getRingkasanAutoRecoveryGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.getRingkasanAutoRecoveryGlobal = function() {
+        try {
+            var anomali = deteksiAnomaliCoinGlobal();
+            var rekonsiliasi = rekonsiliasiMassalGlobal();
+            var logRecovery = loadRecoveryLogGlobal();
+
+            return {
+                sukses: true,
+                anomali: {
+                    total: anomali.total || 0,
+                    critical: (anomali.list || []).filter(function(a) {
+                        return a.level === 'critical';
+                    }).length
+                },
+                rekonsiliasi: {
+                    totalUser: rekonsiliasi.totalUser || 0,
+                    totalTidakKonsisten: rekonsiliasi.totalTidakKonsisten || 0
+                },
+                recovery: {
+                    totalLog: logRecovery.length,
+                    terakhir: logRecovery.length > 0 ? logRecovery[0].waktu : null
+                }
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (9) hapusRecoveryLogGlobal
+    // ═══════════════════════════════════════════════════════════
+    window.hapusRecoveryLogGlobal = function(opsi) {
+        opsi = opsi || {};
+        if (!opsi.konfirmasi) {
+            return { sukses: false, pesan: 'Butuh { konfirmasi: true }' };
+        }
+        try {
+            localStorage.removeItem(KEY_RECOVERY_LOG);
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    console.log('✅ BLOK R 0.10.66-A — Laporan Auto-Recovery terpasang (9 fungsi).');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 0.10.66-A -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+// ═══════════════════════════════════════════════════════════
+// FUNGSI GLOBAL: Aktivasi Akun Terisolir
+// ═══════════════════════════════════════════════════════════
+window.aktivasiAkunTerisolirGlobal = function(idUser, alasan, idSA) {
+    if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+    if (!alasan || alasan.length < 10) {
+        return { sukses: false, pesan: 'Alasan minimal 10 karakter.' };
+    }
+
+    try {
+        var key = 'dataSewaAplikasi_' + idUser;
+        var s = localStorage.getItem(key);
+        if (!s) return { sukses: false, pesan: 'Data sewa tidak ditemukan.' };
+
+        var data = JSON.parse(s);
+        if (!data || data.status !== 'suspend') {
+            return { sukses: false, pesan: 'Akun tidak dalam status suspend.' };
+        }
+
+        var adminId = idSA || (typeof getIdUserAktif === 'function'
+            ? getIdUserAktif() : 'SA');
+        var now = new Date().toISOString();
+
+        // Backup
+        localStorage.setItem(key + '_backup_' + Date.now(), s);
+
+        // Ubah status
+        data.status           = 'aktif';
+        data.tanggalAktivasi  = now;
+        data.aktivasiOleh     = adminId;
+        data.alasanAktivasi   = alasan;
+        delete data.tanggalSuspend;
+        delete data.alasanSuspend;
+
+        localStorage.setItem(key, JSON.stringify(data));
+
+        var user = null;
+        try {
+            if (typeof getDataIdUser === 'function') {
+                user = getDataIdUser(idUser);
+            }
+        } catch (e) {}
+
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(adminId, 'Aktivasi Akun Terisolir',
+                (user ? user.nama : idUser) + ' (' + idUser + ') — ' + alasan);
+        }
+
+        // ═══ FIX: Catat Log Audit SA ═══
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'manajemen_akun',
+                    subKategori: 'aktivasi_terisolir',
+                    aksi: 'Aktivasi Akun Terisolir',
+                    level: 'warning',
+                    deskripsi: (user ? user.nama : idUser) + ' — ' + alasan,
+                    target: { tipe: 'user', id: idUser, nama: user ? user.nama : '-' },
+                    status: 'sukses',
+                    metadata: { alasan: alasan }
+                });
+            }
+        } catch (e) {}
+
+        // ═══ FIX: Catat Log Coin (audit trail) ═══
+        try {
+            if (typeof catatLogCoinManualGlobal === 'function') {
+                catatLogCoinManualGlobal({
+                    idUser: idUser,
+                    namaUser: user ? user.nama : idUser,
+                    roleUser: user ? user.role : '-',
+                    tipe: 'credit',
+                    jumlah: 0,
+                    sumber: 'audit',
+                    keterangan: 'Aktivasi akun terisolir: ' + alasan,
+                    refId: 'AKTIVASI_' + Date.now()
+                });
+            }
+        } catch (e) {}
+
+        // ═══ FIX: Kirim notif chat ke user ═══
+        try {
+            if (typeof kirimPesan === 'function') {
+                kirimPesan(idUser,
+                    '✅ AKUN ANDA TELAH DIAKTIFKAN\n\n' +
+                    'Alasan: ' + alasan + '\n\n' +
+                    'Sekarang Anda bisa login kembali dan menggunakan semua fitur.',
+                    'text');
+            }
+        } catch (e) {}
+
+        return {
+            sukses: true,
+            idUser: idUser,
+            alasan: alasan,
+            pesan: 'Akun berhasil diaktifkan kembali.'
+        };
+    } catch (e) {
+        console.error('aktivasiAkunTerisolirGlobal error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+};
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 0.10.67 — FUNGSI GLOBAL DASBOR JASA ═══════════ -->
@@ -31043,69 +32042,122 @@ function exportGrosirCSVGlobal(filter) {
     // ── (11) approveBuktiBayarSewaGlobal ⭐ ──
     // Dipanggil saat SA klik "Setujui" bukti bayar
     window.approveBuktiBayarSewaGlobal = function(idTagihan, idAdmin) {
-        if (!idTagihan) return { sukses: false, pesan: 'ID tagihan tidak valid.' };
+    if (!idTagihan) return { sukses: false, pesan: 'ID tagihan tidak valid.' };
 
-        try {
-            var data = loadDataTagihanSewaGlobal();
-            var idx = data.findIndex(function(t) { return t && t.id === idTagihan; });
-            if (idx === -1) return { sukses: false, pesan: 'Tagihan tidak ditemukan.' };
+    try {
+        var data = loadDataTagihanSewaGlobal();
+        var idx = data.findIndex(function(t) { return t && t.id === idTagihan; });
+        if (idx === -1) return { sukses: false, pesan: 'Tagihan tidak ditemukan.' };
 
-            var tagihan = data[idx];
-            if (tagihan.status === 'lunas') {
-                return { sukses: false, pesan: 'Tagihan ini sudah lunas.' };
-            }
-
-            var now = new Date().toISOString();
-
-            // Update status tagihan
-            data[idx].status = 'lunas';
-            data[idx].verifiedBy = idAdmin || 'SA';
-            data[idx].verifiedAt = now;
-            data[idx].updatedAt = now;
-
-            var hasil = saveDataTagihanSewaGlobal(data);
-            if (!hasil.sukses) return hasil;
-
-            // Aktifkan kembali sewa user (kalau suspend)
-            _pbAktifkanSewaUser(tagihan.idUser, tagihan);
-
-            // Kirim notif chat ke user
-            _pbKirimNotifChatKeUser(tagihan.idUser, 'lunas', tagihan);
-
-            // Catat aktivitas
-            if (typeof catatAktivitasGlobal === 'function') {
-                catatAktivitasGlobal(
-                    idAdmin || 'SA',
-                    'Setujui Bayar Sewa',
-                    tagihan.nama + ' (' + tagihan.idUser + ') - ' +
-                    tagihan.periodeTagihan + ' ' + _pbRupiah(tagihan.jumlahTagihan)
-                );
-            }
-
-            // Log audit (kalau tersedia)
-            try {
-                if (typeof catatLogAuditSAGlobal === 'function') {
-                    catatLogAuditSAGlobal({
-                        kategori: 'keuangan',
-                        subKategori: 'approve_sewa',
-                        aksi: 'Approve Bayar Sewa',
-                        level: 'info',
-                        deskripsi: tagihan.nama + ' - ' + tagihan.periodeTagihan,
-                        target: { tipe: 'user', id: tagihan.idUser, nama: tagihan.nama },
-                        status: 'sukses',
-                        metadata: { jumlah: tagihan.jumlahTagihan, periode: tagihan.periodeTagihan }
-                    });
-                }
-            } catch (e) {}
-
-            console.log('✅ approveBuktiBayarSewaGlobal: ' + tagihan.nama + ' → lunas');
-
-            return { sukses: true, tagihan: data[idx] };
-        } catch (e) {
-            console.error('approveBuktiBayarSewaGlobal error:', e);
-            return { sukses: false, pesan: e.message };
+        var tagihan = data[idx];
+        if (tagihan.status === 'lunas') {
+            return { sukses: false, pesan: 'Tagihan ini sudah lunas.' };
         }
-    };
+
+        var now = new Date().toISOString();
+        var idSA = idAdmin || (typeof getIdUserAktif === 'function'
+            ? getIdUserAktif() : 'SA');
+
+        data[idx].status     = 'lunas';
+        data[idx].verifiedBy = idSA;
+        data[idx].verifiedAt = now;
+        data[idx].updatedAt  = now;
+
+        var hasil = saveDataTagihanSewaGlobal(data);
+        if (!hasil.sukses) return hasil;
+
+        // ═══ FIX: Auto-potong coin seller (kalau bayar pakai coin) ═══
+        var metodeBayar   = tagihan.metodePembayaran || 'transfer';
+        var jumlahTagihan = parseFloat(tagihan.jumlahTagihan) || 0;
+        var coinTerpotong = 0;
+
+        if (metodeBayar === 'coin' && jumlahTagihan > 0) {
+            var settingEko = (typeof getSettingEkonomiLengkapGlobal === 'function')
+                ? getSettingEkonomiLengkapGlobal()
+                : { hargaJual: 1000 };
+            var hargaJual = parseFloat(settingEko.hargaJual) || 1000;
+            coinTerpotong = Math.ceil(jumlahTagihan / hargaJual);
+
+            if (typeof tambahTransaksiDompet === 'function') {
+                var potong = tambahTransaksiDompet(tagihan.idUser, {
+                    tipe: 'debit',
+                    jumlah: coinTerpotong,
+                    keterangan: 'Bayar sewa ' + (tagihan.periodeTagihan || '-'),
+                    refId: idTagihan,
+                    kategori: 'sewa'
+                });
+
+                if (!potong.sukses) {
+                    data[idx].status = 'menunggu_verifikasi';
+                    data[idx].verifiedBy = null;
+                    data[idx].verifiedAt = null;
+                    saveDataTagihanSewaGlobal(data);
+                    return {
+                        sukses: false,
+                        pesan: 'Gagal potong coin seller: ' + potong.pesan
+                    };
+                }
+            }
+        }
+
+        _pbAktifkanSewaUser(tagihan.idUser, tagihan);
+        _pbKirimNotifChatKeUser(tagihan.idUser, 'lunas', tagihan);
+
+        if (typeof catatAktivitasGlobal === 'function') {
+            catatAktivitasGlobal(idSA, 'Setujui Bayar Sewa',
+                tagihan.nama + ' (' + tagihan.idUser + ') - ' +
+                tagihan.periodeTagihan + ' ' + _pbRupiah(tagihan.jumlahTagihan) +
+                (coinTerpotong > 0 ? ' (-' + coinTerpotong + ' coin)' : '')
+            );
+        }
+
+        // ═══ FIX: Catat Log Coin ═══
+        if (coinTerpotong > 0 && typeof catatLogCoinManualGlobal === 'function') {
+            catatLogCoinManualGlobal({
+                idUser: tagihan.idUser,
+                namaUser: tagihan.nama,
+                roleUser: tagihan.role,
+                tipe: 'debit',
+                jumlah: coinTerpotong,
+                sumber: 'sewa',
+                keterangan: 'Bayar sewa ' + tagihan.periodeTagihan +
+                            ' | Rp ' + jumlahTagihan.toLocaleString('id-ID'),
+                refId: idTagihan
+            });
+        }
+
+        // ═══ FIX: Catat Log Audit SA ═══
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori: 'keuangan',
+                    subKategori: 'approve_sewa',
+                    aksi: 'Approve Bayar Sewa',
+                    level: 'info',
+                    deskripsi: tagihan.nama + ' - ' + tagihan.periodeTagihan +
+                               (coinTerpotong > 0 ? ' (-' + coinTerpotong + ' coin)' : ''),
+                    target: { tipe: 'user', id: tagihan.idUser, nama: tagihan.nama },
+                    status: 'sukses',
+                    metadata: {
+                        jumlah: tagihan.jumlahTagihan,
+                        periode: tagihan.periodeTagihan,
+                        coinTerpotong: coinTerpotong,
+                        metodeBayar: metodeBayar
+                    }
+                });
+            }
+        } catch (e) {}
+
+        return {
+            sukses: true,
+            tagihan: data[idx],
+            coinTerpotong: coinTerpotong
+        };
+    } catch (e) {
+        console.error('approveBuktiBayarSewaGlobal error:', e);
+        return { sukses: false, pesan: e.message };
+    }
+};
 
     // ── (12) tolakBuktiBayarSewaGlobal ⭐ ──
     // Dipanggil saat SA klik "Tolak" bukti bayar
