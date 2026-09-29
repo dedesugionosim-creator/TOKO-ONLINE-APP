@@ -35839,6 +35839,33 @@ window.getUserLengkapGlobal = function() {
         return Math.ceil(h / _getRateCoin());
     }
 
+    // Ambil master Coin Wajib dari Setting Ekonomi (SA = master)
+    function _getCoinWajibMaster() {
+        var def = 1;
+        try {
+            if (typeof getSettingEkonomiLengkapGlobal === 'function') {
+                var s = getSettingEkonomiLengkapGlobal();
+                if (s && s.coinWajib > 0) return parseInt(s.coinWajib, 10);
+            } else if (typeof getSettingEkonomiGlobal === 'function') {
+                var s2 = getSettingEkonomiGlobal();
+                if (s2 && s2.coinWajib > 0) return parseInt(s2.coinWajib, 10);
+            }
+        } catch (e) {}
+        return def;
+    }
+
+    // Cap maks Coin Wajib
+    function _getCoinWajibCap() {
+        var def = 100;
+        try {
+            if (typeof getSettingEkonomiLengkapGlobal === 'function') {
+                var s = getSettingEkonomiLengkapGlobal();
+                if (s && s.capMaksCoinWajib > 0) return parseInt(s.capMaksCoinWajib, 10);
+            }
+        } catch (e) {}
+        return def;
+    }
+
     // Hitung sisa hari ke tanggal kadaluarsa
     function _hitungSisaHari(tgl) {
         if (!tgl) return null;
@@ -35882,7 +35909,13 @@ window.getUserLengkapGlobal = function() {
 
         // Stok
         produk.stok = parseInt(produk.stok, 10) || 0;
-        produk.coinWajib     = parseInt(produk.coinWajib, 10) || 1;
+
+        // Coin Wajib — RATCHET (default dari Setting Ekonomi)
+        var masterCoin = _getCoinWajibMaster();
+        var inputCoin = parseInt(produk.coinWajib, 10);
+        if (isNaN(inputCoin) || inputCoin < masterCoin) inputCoin = masterCoin;
+        produk.coinWajib = inputCoin;
+
         produk.satuan = produk.satuan || 'pcs';
         produk.berat = parseFloat(produk.berat) || 0;
 
@@ -36060,6 +36093,20 @@ window.getUserLengkapGlobal = function() {
                 return { sukses: false, pesan: 'Harga jual harus > 0.' };
             }
 
+            // ═══ Validasi Coin Wajib (RATCHET: minimal = master) ═══
+            var coinMaster = _getCoinWajibMaster();
+            var coinCap    = _getCoinWajibCap();
+            var coinInput  = parseInt(opts.coinWajib, 10);
+            if (isNaN(coinInput) || coinInput < coinMaster) {
+                coinInput = coinMaster;
+            }
+            if (coinInput > coinCap) {
+                return {
+                    sukses: false,
+                    pesan: 'Coin Wajib maksimal ' + coinCap + ' Coin.'
+                };
+            }
+
             var data = window.loadProdukGlobal(role);
             var now = new Date().toISOString();
 
@@ -36081,7 +36128,7 @@ window.getUserLengkapGlobal = function() {
                 hargaGrosir: parseFloat(opts.hargaGrosir) || 0,
                 hargaBeli: parseFloat(opts.hargaBeli) || 0,
                 stok: stok,
-                stokMinimum: parseInt(opts.stokMinimum, 10) || 5,
+                coinWajib: coinInput,
                 satuan: opts.satuan || 'pcs',
                 berat: parseFloat(opts.berat) || 0,
                 foto: opts.foto || '',
@@ -36114,7 +36161,8 @@ window.getUserLengkapGlobal = function() {
             if (typeof catatAktivitasGlobal === 'function') {
                 catatAktivitasGlobal(idOwner, 'Tambah Produk',
                     '[' + role + '] ' + produkBaru.nama +
-                    ' (' + produkBaru.kode + ') — ' + _rupiah(hargaRp));
+                    ' (' + produkBaru.kode + ') — ' + _rupiah(hargaRp) +
+                    ' | Coin Wajib: ' + produkBaru.coinWajib);
             }
 
             return { sukses: true, produk: produkBaru };
@@ -36145,6 +36193,28 @@ window.getUserLengkapGlobal = function() {
             }
             if (foundRole === null) {
                 return { sukses: false, pesan: 'Produk tidak ditemukan.' };
+            }
+
+            // ═══ Validasi RATCHET Coin Wajib ═══
+            if (updates.coinWajib !== undefined) {
+                var valLama = parseInt(dataFound[foundIdx].coinWajib, 10) || 1;
+                var valBaru = parseInt(updates.coinWajib, 10);
+                if (isNaN(valBaru) || valBaru < 1) {
+                    return { sukses: false, pesan: 'Coin Wajib minimal 1 Coin.' };
+                }
+                if (valBaru < valLama) {
+                    return {
+                        sukses: false,
+                        pesan: '🔒 RATCHET: Coin Wajib tidak boleh turun. Nilai lama: ' + valLama
+                    };
+                }
+                var coinCap = _getCoinWajibCap();
+                if (valBaru > coinCap) {
+                    return {
+                        sukses: false,
+                        pesan: 'Coin Wajib maksimal ' + coinCap + ' Coin.'
+                    };
+                }
             }
 
             var allowed = [
@@ -36336,8 +36406,7 @@ window.getUserLengkapGlobal = function() {
                 idOwner = getIdUserAktif();
             }
             return window.getProdukByOwnerGlobal(idOwner, role).filter(function(p) {
-                return p.status === 'Aktif' &&
-                       p.stok <= (parseInt(p.stokMinimum, 10) || 5);
+                return p.status === 'Aktif' && p.stok <= 5;
             });
         } catch (e) { return []; }
     };
@@ -36370,7 +36439,7 @@ window.getUserLengkapGlobal = function() {
                     stat.aktif++;
                     totalHarga += p.harga;
                     if (p.stok === 0) stat.stokHabis++;
-                    else if (p.stok <= (parseInt(p.stokMinimum, 10) || 5)) stat.stokRendah++;
+                    else if (p.stok <= 5) stat.stokRendah++;
                 } else if (p.status === 'Nonaktif') stat.nonaktif++;
                 else if (p.status === 'Dihapus') stat.dihapus++;
 
@@ -36570,9 +36639,9 @@ window.getUserLengkapGlobal = function() {
     window.getBadgeStokProdukGlobal = function(produk) {
         if (!produk) return '';
         var stok = parseInt(produk.stok, 10) || 0;
-        var min = parseInt(produk.coinWajib, 10) || 1;
+        var minStok = 5;
         if (stok === 0) return '<span class="badge bg-danger">Habis</span>';
-        if (stok <= min) return '<span class="badge bg-warning text-dark">Stok: ' + stok + '</span>';
+        if (stok <= minStok) return '<span class="badge bg-warning text-dark">Stok: ' + stok + '</span>';
         return '<span class="badge bg-success">Stok: ' + stok + '</span>';
     };
 
@@ -36611,7 +36680,7 @@ window.getUserLengkapGlobal = function() {
 
             var lines = [
                 'No;Kode;Nama;Kategori;Satuan;Harga Rp;Harga Coin;Stok;' +
-                'Total Nilai;Tgl Input;Tgl Kadaluarsa;Status;Terjual;' +
+                'Coin Wajib;Total Nilai;Tgl Input;Tgl Kadaluarsa;Status;Terjual;' +
                 'Publik;Kecuali Minimal;Rating'
             ];
 
@@ -36628,6 +36697,7 @@ window.getUserLengkapGlobal = function() {
                     parseFloat(p.hargaJualRp || p.harga) || 0,
                     parseInt(p.hargaJualCoin, 10) || 0,
                     parseInt(p.stok, 10) || 0,
+                    parseInt(p.coinWajib, 10) || 1,
                     parseFloat(p.totalNilaiRp) || 0,
                     esc(p.tglInput || '-'),
                     esc(p.tglKadaluarsa || '-') + ' (' + kadTeks + ')',
@@ -36722,7 +36792,7 @@ window.getUserLengkapGlobal = function() {
                     hargaGrosir: item.hargaGrosir,
                     hargaBeli: item.hargaBeli,
                     stok: item.stok,
-                    stokMinimum: item.stokMinimum,
+                    coinWajib: item.coinWajib,
                     satuan: item.satuan,
                     berat: item.berat,
                     foto: item.foto,
@@ -36762,6 +36832,7 @@ window.getUserLengkapGlobal = function() {
         if (!produk) return '';
         var harga = _rupiah(produk.harga);
         var coin = parseInt(produk.hargaJualCoin, 10) || 0;
+        var coinWajib = parseInt(produk.coinWajib, 10) || 1;
         var foto = produk.foto ||
             'https://placehold.co/300x300/FF8C00/ffffff?text=' +
             encodeURIComponent((produk.nama || 'P').substring(0, 2).toUpperCase());
@@ -36801,6 +36872,10 @@ window.getUserLengkapGlobal = function() {
                         badgeStok +
                     '</div>' +
                     '<div class="small text-warning">🪙 ' + coin + ' coin</div>' +
+                    '<div class="small text-danger">' +
+                        '<i class="fas fa-lock me-1" style="font-size:9px;"></i>' +
+                        'Wajib ' + coinWajib + ' coin' +
+                    '</div>' +
                     hargaGrosirHtml +
                     '<div class="d-flex justify-content-between align-items-center mt-2">' +
                         '<small class="text-muted">' +
@@ -36824,7 +36899,7 @@ window.getUserLengkapGlobal = function() {
     window.renderTabelProdukGlobal = function(list) {
         if (!Array.isArray(list)) list = [];
         if (list.length === 0) {
-            return '<tr><td colspan="10" class="text-center text-muted py-4">' +
+            return '<tr><td colspan="11" class="text-center text-muted py-4">' +
                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
                    'Belum ada produk.</td></tr>';
         }
@@ -36846,6 +36921,13 @@ window.getUserLengkapGlobal = function() {
                 ? '<i class="fas fa-globe text-info" title="Publik"></i>'
                 : '<i class="fas fa-eye-slash text-muted" title="Privat"></i>';
 
+            var coinWajib = parseInt(p.coinWajib, 10) || 1;
+            var coinMaster = _getCoinWajibMaster();
+            var badgeCoin = coinWajib > coinMaster
+                ? '<span class="badge bg-danger"><i class="fas fa-arrow-up me-1" style="font-size:9px;"></i>' +
+                  coinWajib + ' 🪙</span>'
+                : '<span class="badge bg-warning text-dark">' + coinWajib + ' 🪙</span>';
+
             html += '<tr>' +
                 '<td>' + (i + 1) + '</td>' +
                 '<td><small><code>' + _esc(p.kode) + '</code></small></td>' +
@@ -36856,6 +36938,7 @@ window.getUserLengkapGlobal = function() {
                 '<td class="text-end"><small class="text-warning">🪙 ' +
                     (parseInt(p.hargaJualCoin, 10) || 0) + '</small></td>' +
                 '<td class="text-center">' + window.getBadgeStokProdukGlobal(p) + '</td>' +
+                '<td class="text-center">' + badgeCoin + '</td>' +
                 '<td class="text-center ' + kadWarna + '"><small>' + kadTeks + '</small></td>' +
                 '<td class="text-center">' + badgePublik + '</td>' +
                 '<td>' +
@@ -36927,10 +37010,11 @@ window.getUserLengkapGlobal = function() {
     console.log('      • Modul 9 Render        (2): kartu, tabel');
     console.log('      • Modul 10 Seeder       (1): seed demo');
     console.log('   🎯 Field: kode, kategori, satuan, stok, hargaRp, hargaCoin,');
-    console.log('              totalNilai, tglInput, tglKadaluarsa, foto,');
-    console.log('              tampilPublik, kecualikanMinimal');
+    console.log('              coinWajib (RATCHET), totalNilai, tglInput,');
+    console.log('              tglKadaluarsa, foto, tampilPublik, kecualikanMinimal');
     console.log('   ⚡ Auto-hitung: hargaCoin (rate dari R 0.10.45), totalNilai');
-    console.log('   🔗 Integrasi: R 0.10.45 (rate) + R 0.10.105 (pengecualian)');
+    console.log('   🔒 RATCHET: coinWajib hanya bisa naik (min = master SA)');
+    console.log('   🔗 Integrasi: R 0.10.45 (rate + master coinWajib) + R 0.10.105');
 
 })();
 </script>
