@@ -20934,10 +20934,16 @@ var KEY_SEWA_AKUN_PREFIX  = 'dataSewaAplikasi_';
 // --- A. EKONOMI COIN ---
 
 // --- 1. GET DEFAULT SETTING EKONOMI ---
+// ═══════════════════════════════════════════════════════════
+// FIX: Coin Wajib — TANPA RATCHET
+// Range bebas 1–100 (naik & turun sama-sama boleh)
+// ═══════════════════════════════════════════════════════════
 function getDefaultSettingEkonomiGlobal() {
     return {
         minimalBelanja: 50000,
-        coinWajib: 5,
+        coinWajib: 1,
+        coinWajibMin: 1,
+        coinWajibMax: 100,
         hargaJual: 1000,
         hargaBeli: 900,
         feeSawer: 5,
@@ -20962,7 +20968,17 @@ function getSettingEkonomiLengkapGlobal() {
         stored = {};
     }
 
-    return Object.assign({}, def, stored);
+    var hasil = Object.assign({}, def, stored);
+
+    // ── FIX: pastikan coinWajib murni dari stored (tanpa ratchet) ──
+    // Tidak ada pembandingan "nilai lama / nilai tertinggi".
+    // Nilai apa pun 1–100 langsung dipakai apa adanya.
+    var cw = parseInt(hasil.coinWajib, 10);
+    if (isNaN(cw) || cw < 1) cw = 1;
+    if (cw > 100) cw = 100;
+    hasil.coinWajib = cw;
+
+    return hasil;
 }
 
 // --- 3. SIMPAN SETTING EKONOMI ---
@@ -20972,8 +20988,33 @@ function saveSettingEkonomiGlobal(data) {
             return { sukses: false, pesan: 'Data tidak valid.' };
         }
 
+        // ═══════════════════════════════════════════════════════
+        // FIX: Clamp nilai — TANPA RATCHET
+        // coinWajib  : 1 – 100 (boleh turun & naik bebas)
+        // minimalBelanja : >= 0
+        // ═══════════════════════════════════════════════════════
+        if (data.coinWajib !== undefined) {
+            var cw = parseInt(data.coinWajib, 10);
+            if (isNaN(cw) || cw < 1) cw = 1;
+            if (cw > 100) cw = 100;
+            data.coinWajib = cw;
+        }
+
+        if (data.minimalBelanja !== undefined) {
+            var mb = parseFloat(data.minimalBelanja);
+            if (isNaN(mb) || mb < 0) mb = 0;
+            data.minimalBelanja = mb;
+        }
+
         var current = getSettingEkonomiLengkapGlobal();
 
+        // Deteksi perubahan penting SEBELUM update
+        var hargaJualLama   = parseFloat(current.hargaJual) || 1000;
+        var hargaBeliLama   = parseFloat(current.hargaBeli) || 900;
+        var feePlatformLama = parseFloat(current.feePlatform) || 2;
+        var feeSawerLama    = parseFloat(current.feeSawer) || 5;
+
+        // ── Merge data (semua nilai diterima apa adanya) ──
         Object.keys(data).forEach(function(k) {
             if (data[k] !== undefined) current[k] = data[k];
         });
@@ -20984,13 +21025,65 @@ function saveSettingEkonomiGlobal(data) {
 
         localStorage.setItem('settingEkonomi', JSON.stringify(current));
 
-        // Catat aktivitas
+        // Catat aktivitas global
         if (typeof catatAktivitasGlobal === 'function') {
             catatAktivitasGlobal(current.updatedBy, 'Setting Ekonomi',
                 'Harga Jual: ' + current.hargaJual +
                 ' | Harga Beli: ' + current.hargaBeli +
-                ' | Min Belanja: ' + current.minimalBelanja
+                ' | Min Belanja: ' + current.minimalBelanja +
+                ' | Coin Wajib: ' + current.coinWajib
             );
+        }
+
+        // ═══ Trigger refresh log coin kalau ada perubahan ekonomi ═══
+        var hargaJualBaru   = parseFloat(current.hargaJual) || 1000;
+        var hargaBeliBaru   = parseFloat(current.hargaBeli) || 900;
+        var feePlatformBaru = parseFloat(current.feePlatform) || 2;
+        var feeSawerBaru    = parseFloat(current.feeSawer) || 5;
+
+        var adaPerubahanEkonomi = (
+            hargaJualLama   !== hargaJualBaru ||
+            hargaBeliLama   !== hargaBeliBaru ||
+            feePlatformLama !== feePlatformBaru ||
+            feeSawerLama    !== feeSawerBaru
+        );
+
+        if (adaPerubahanEkonomi) {
+            console.log('💰 Setting ekonomi berubah — trigger refresh log coin');
+
+            setTimeout(function() {
+                try {
+                    if (typeof refreshLogAktivitasCoinGlobal === 'function') {
+                        refreshLogAktivitasCoinGlobal();
+                        console.log('✅ Log coin di-refresh setelah perubahan setting');
+                    }
+                } catch (e) {
+                    console.warn('Refresh log coin gagal:', e);
+                }
+            }, 500);
+
+            // Catat log audit SA
+            try {
+                if (typeof catatLogAuditSAGlobal === 'function') {
+                    catatLogAuditSAGlobal({
+                        kategori: 'konfigurasi',
+                        subKategori: 'setting_ekonomi',
+                        aksi: 'Update Setting Ekonomi',
+                        level: 'warning',
+                        deskripsi: 'Harga Jual: ' + hargaJualLama + ' → ' + hargaJualBaru +
+                                   ' | Fee Platform: ' + feePlatformLama + '% → ' + feePlatformBaru + '%' +
+                                   ' | Fee Sawer: ' + feeSawerLama + '% → ' + feeSawerBaru + '%',
+                        target: { tipe: 'module', module: 'settingEkonomi' },
+                        status: 'sukses',
+                        metadata: {
+                            hargaJual:   { lama: hargaJualLama,   baru: hargaJualBaru },
+                            hargaBeli:   { lama: hargaBeliLama,   baru: hargaBeliBaru },
+                            feePlatform: { lama: feePlatformLama, baru: feePlatformBaru },
+                            feeSawer:    { lama: feeSawerLama,    baru: feeSawerBaru }
+                        }
+                    });
+                }
+            } catch (e) {}
         }
 
         return { sukses: true, data: current };
@@ -20998,6 +21091,40 @@ function saveSettingEkonomiGlobal(data) {
         console.error('saveSettingEkonomiGlobal error:', e);
         return { sukses: false, pesan: e.message };
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+// HELPER: Set Coin Wajib langsung (bypass apa pun)
+// Range: 1 – 100. Boleh naik & turun tanpa batasan.
+// ═══════════════════════════════════════════════════════════
+function setCoinWajibGlobal(nilaiBaru) {
+    var val = parseInt(nilaiBaru, 10);
+    if (isNaN(val) || val < 1) val = 1;
+    if (val > 100) val = 100;
+
+    return saveSettingEkonomiGlobal({ coinWajib: val });
+}
+
+// ═══════════════════════════════════════════════════════════
+// HELPER: Hapus sisa data ratchet (kalau ada dari versi lama)
+// ═══════════════════════════════════════════════════════════
+function hapusSisaDataRatchetGlobal() {
+    var keys = [
+        'coinWajibHighest',
+        'coinWajib_max_history',
+        'settingEkonomi_ratchet',
+        'ratchetCoinWajib',
+        'coinWajibLock'
+    ];
+    var dihapus = 0;
+    keys.forEach(function(k) {
+        if (localStorage.getItem(k) !== null) {
+            localStorage.removeItem(k);
+            dihapus++;
+            console.log('🗑️ Hapus sisa ratchet key:', k);
+        }
+    });
+    return { sukses: true, dihapus: dihapus };
 }
 
 // --- B. TARIF OJEK ---
