@@ -49033,13 +49033,13 @@ window.getUserLengkapGlobal = function() {
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ╔══════════════════════════════════════════════════════════╗ -->
-<!-- ║   BLOK SEEDER — AKUN KASIR DUMMY 35 (V3 FINAL)           ║ -->
-<!-- ║   Fix: NIK unik prefix 9999 (anti-bentrok dgn owner)     ║ -->
-<!-- ║   Delay 2.5s • Retry 3× • Auto-fix • Idempotent          ║ -->
+<!-- ║   BLOK SEEDER — AKUN KASIR DUMMY 35 (V4 FINAL FIX)       ║ -->
+<!-- ║   Auto-cleanup generic KSR • NIK prefix 9999            ║ -->
+<!-- ║   Delay 2.5s • Retry 3× • Auto-fix • Idempotent         ║ -->
 <!-- ╚══════════════════════════════════════════════════════════╝ -->
 <script>
-(function seederAkunKasirDummy35V3() {
-    var FLAG_V3 = 'seedingAkunKasirDummy35V3';
+(function seederAkunKasirDummy35V4() {
+    var FLAG_V4 = 'seedingAkunKasirDummy35V4';
     var ID_SEEDER_SA = 'ID_TK2R_SA-0001';
     var TOTAL_DIHARAPKAN = 35;
     var MAX_RETRY = 3;
@@ -49050,6 +49050,7 @@ window.getUserLengkapGlobal = function() {
     try {
         localStorage.removeItem('seedingAkunKasirDummy35V1');
         localStorage.removeItem('seedingAkunKasirDummy35V2');
+        localStorage.removeItem('seedingAkunKasirDummy35V3');
         localStorage.removeItem('seedingAkunKasirDummy35Lengkap');
     } catch (e) {}
 
@@ -49085,7 +49086,8 @@ window.getUserLengkapGlobal = function() {
         sudahAda:  0,
         diFix:     0,
         ownerSkip: 0,
-        gagal:     0
+        gagal:     0,
+        dibersihkan: 0
     };
 
     // ═══════════════════════════════════════════════════════════
@@ -49155,30 +49157,148 @@ window.getUserLengkapGlobal = function() {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // ⭐ CLEANUP — HAPUS KASIR GENERIC kodeRole='KSR'
+    // ═══════════════════════════════════════════════════════════
+    function bersihkanKasirGeneric() {
+        var ROLE_TO_KODE = {
+            'Toko':              'KSR_TK',
+            'Pedagang Pasar':    'KSR_PP',
+            'Pedagang Makanan':  'KSR_PM',
+            'Distributor':       'KSR_DST',
+            'Grosir':            'KSR_GR'
+        };
+        var PREFIX_MAP = {
+            'Toko':              'tk',
+            'Pedagang Pasar':    'pp',
+            'Pedagang Makanan':  'pm',
+            'Distributor':       'dist',
+            'Grosir':            'gr'
+        };
+
+        var hapusIds = [];
+        var diFixGeneric = 0;
+
+        var kasirGeneric = (dataLoginUser || []).filter(function(u) {
+            return u && u.role === 'Kasir' && u.kodeRole === 'KSR';
+        });
+
+        if (kasirGeneric.length === 0) return { hapus: 0, fix: 0 };
+
+        console.log('🧹 Cleanup generic KSR: ditemukan ' + kasirGeneric.length + ' akun');
+
+        kasirGeneric.forEach(function(k) {
+            var owner = (dataLoginUser || []).find(function(x) {
+                return x && (x.idUser === k.ownerId || x.id === k.ownerId);
+            });
+
+            // Orphan → hapus
+            if (!owner) {
+                console.log('  🗑️ Orphan: ' + k.username);
+                hapusIds.push(k.idUser || k.id);
+                return;
+            }
+
+            var kodeKasir = ROLE_TO_KODE[owner.role];
+            if (!kodeKasir) {
+                console.log('  🗑️ Role owner tidak dikenal: ' + k.username);
+                hapusIds.push(k.idUser || k.id);
+                return;
+            }
+
+            var prefix = PREFIX_MAP[owner.role];
+            var kecLower = (k.username || '').replace(/^kasir_/, '').toLowerCase();
+            var usernameIdeal = 'ksr_' + prefix + '_' + kecLower;
+
+            // Cek apakah sudah ada kasir dengan kodeRole benar
+            var kasirIdeal = (dataLoginUser || []).find(function(x) {
+                return x && x.username === usernameIdeal;
+            });
+
+            if (kasirIdeal) {
+                // Duplikat → hapus generic
+                console.log('  🗑️ Duplikat: ' + k.username + ' → hapus (sudah ada ' + usernameIdeal + ')');
+                hapusIds.push(k.idUser || k.id);
+            } else {
+                // Fix kodeRole
+                k.kodeRole = kodeKasir;
+                k.kodeOwner = prefix.toUpperCase();
+                diFixGeneric++;
+                console.log('  ✅ Fix: ' + k.username + ' → ' + kodeKasir);
+            }
+        });
+
+        // Hapus dari dataLoginUser
+        if (hapusIds.length > 0) {
+            dataLoginUser = (dataLoginUser || []).filter(function(u) {
+                return hapusIds.indexOf(u.idUser || u.id) === -1;
+            });
+        }
+
+        // Hapus dari dataAkunAktif
+        if (hapusIds.length > 0 &&
+            typeof dataAkunAktif !== 'undefined' &&
+            Array.isArray(dataAkunAktif)) {
+            dataAkunAktif = dataAkunAktif.filter(function(a) {
+                return hapusIds.indexOf(a.id || a.idUser) === -1;
+            });
+        }
+
+        // Sync kodeRole & kodeOwner ke dataAkunAktif
+        if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+            dataAkunAktif.forEach(function(a) {
+                if (!a || a.role !== 'Kasir') return;
+                var login = (dataLoginUser || []).find(function(x) {
+                    return x.username === a.username;
+                });
+                if (login) {
+                    a.kodeRole = login.kodeRole;
+                    a.kodeOwner = login.kodeOwner;
+                }
+            });
+        }
+
+        console.log('  📊 Hasil cleanup: ' + hapusIds.length + ' dihapus, ' +
+                    diFixGeneric + ' di-fix');
+
+        return { hapus: hapusIds.length, fix: diFixGeneric };
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // FUNGSI UTAMA
     // ═══════════════════════════════════════════════════════════
     function jalankanSeeder(retryCount) {
         retryCount = retryCount || 0;
 
         if (typeof buatAkunKasirGlobal !== 'function') {
-            console.warn('⚠️ Seeder Kasir V3: buatAkunKasirGlobal tidak tersedia — retry...');
+            console.warn('⚠️ Seeder Kasir V4: buatAkunKasirGlobal tidak tersedia — retry...');
             if (retryCount < MAX_RETRY) {
-                setTimeout(() => jalankanSeeder(retryCount + 1), RETRY_DELAY);
+                setTimeout(function() { jalankanSeeder(retryCount + 1); }, RETRY_DELAY);
             }
             return;
         }
 
+        // ⭐ STEP 1: Cleanup generic KSR sebelum apapun
+        var hasilCleanup = bersihkanKasirGeneric();
+        if (hasilCleanup.hapus > 0 || hasilCleanup.fix > 0) {
+            statGlobal.dibersihkan += (hasilCleanup.hapus + hasilCleanup.fix);
+            // Simpan hasil cleanup
+            try {
+                localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser || []));
+                localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif || []));
+            } catch (e) {}
+        }
+
         var existingCount = hitungTotalKasir();
-        var flagAktif = localStorage.getItem(FLAG_V3) === 'true';
+        var flagAktif = localStorage.getItem(FLAG_V4) === 'true';
 
         if (flagAktif && existingCount >= TOTAL_DIHARAPKAN) {
-            console.log('ℹ️ Seeder Kasir V3: ' + existingCount + '/' +
+            console.log('ℹ️ Seeder Kasir V4: ' + existingCount + '/' +
                         TOTAL_DIHARAPKAN + ' — lengkap, skip.');
             return;
         }
 
         console.log('');
-        console.log('🚀 Seeder Kasir V3 — RUN #' + (retryCount + 1) +
+        console.log('🚀 Seeder Kasir V4 — RUN #' + (retryCount + 1) +
                     ' (existing: ' + existingCount + '/' + TOTAL_DIHARAPKAN + ')');
 
         var runStat = {
@@ -49209,10 +49329,9 @@ window.getUserLengkapGlobal = function() {
                 }
 
                 var usernameKasir = 'ksr_' + r.prefix + '_' + kecLower;
-
-                // ═══ CEK EXISTING ═══
                 var existing = cariKasirExisting(usernameKasir);
 
+                // ═══ CEK EXISTING ═══
                 if (existing) {
                     var perluFix = false;
 
@@ -49241,9 +49360,9 @@ window.getUserLengkapGlobal = function() {
                 }
 
                 // ═══ BUAT BARU ═══
-                // ⭐ FIX: NIK kasir pakai prefix 9999 (anti-bentrok dgn owner)
+                // NIK pakai prefix 9999 (anti-bentrok dgn owner)
                 var hp    = '0813' + w.kodeNik + r.kodeNik + '01';
-                var nik   = '9999' + w.kodeNik + r.kodeNik + '00000001';  // ← prefix 9999
+                var nik   = '9999' + w.kodeNik + r.kodeNik + '00000001';
                 var email = usernameKasir + '@kasir.local';
 
                 var dataKasir = {
@@ -49321,41 +49440,40 @@ window.getUserLengkapGlobal = function() {
         if (totalFinal < TOTAL_DIHARAPKAN && retryCount < MAX_RETRY) {
             console.log('  🔄 Retry #' + (retryCount + 1) + ' dalam ' +
                         (RETRY_DELAY / 1000) + 's...');
-            setTimeout(() => jalankanSeeder(retryCount + 1), RETRY_DELAY);
+            setTimeout(function() { jalankanSeeder(retryCount + 1); }, RETRY_DELAY);
             return;
         }
 
         // ═══ FINAL ═══
         if (totalFinal >= TOTAL_DIHARAPKAN) {
-            localStorage.setItem(FLAG_V3, 'true');
+            localStorage.setItem(FLAG_V4, 'true');
 
             console.log('');
             console.log('═══════════════════════════════════════════════');
-            console.log('✅ Seeder Kasir V3 SELESAI — ' + totalFinal + ' akun Kasir');
-            console.log('   • Dibuat baru : ' + statGlobal.dibuat);
-            console.log('   • Auto-fix    : ' + statGlobal.diFix);
-            console.log('   • Gagal       : ' + statGlobal.gagal);
+            console.log('✅ Seeder Kasir V4 SELESAI — ' + totalFinal + ' akun Kasir');
+            console.log('   • Dibuat baru    : ' + statGlobal.dibuat);
+            console.log('   • Auto-fix       : ' + statGlobal.diFix);
+            console.log('   • Dibersihkan    : ' + statGlobal.dibersihkan);
+            console.log('   • Gagal          : ' + statGlobal.gagal);
             console.log('═══════════════════════════════════════════════');
 
             try {
                 if (typeof catatAktivitasGlobal === 'function' &&
-                    (statGlobal.dibuat > 0 || statGlobal.diFix > 0)) {
+                    (statGlobal.dibuat > 0 || statGlobal.diFix > 0 || statGlobal.dibersihkan > 0)) {
                     catatAktivitasGlobal(
                         ID_SEEDER_SA,
-                        'Seeder Akun Kasir Dummy 35 V3',
+                        'Seeder Akun Kasir Dummy 35 V4',
                         'Dibuat: ' + statGlobal.dibuat +
                         ' | Fix: ' + statGlobal.diFix +
+                        ' | Bersih: ' + statGlobal.dibersihkan +
                         ' | Total: ' + totalFinal
                     );
                 }
             } catch (e) {}
         } else {
             console.warn('');
-            console.warn('⚠️ Seeder Kasir V3 BELUM LENGKAP: ' + totalFinal + '/' + TOTAL_DIHARAPKAN);
+            console.warn('⚠️ Seeder Kasir V4 BELUM LENGKAP: ' + totalFinal + '/' + TOTAL_DIHARAPKAN);
             console.warn('   Gagal: ' + statGlobal.gagal + ' | Owner missing: ' + statGlobal.ownerSkip);
-            if (statGlobal.gagal === 35 && statGlobal.dibuat === 0) {
-                console.warn('   💡 Semua gagal. Cek pesan error di atas — mungkin NIK/HP/Username masih bentrok.');
-            }
         }
 
         window._seederKasirDummy35LastResult = {
@@ -49371,13 +49489,17 @@ window.getUserLengkapGlobal = function() {
     // MANUAL TRIGGER
     // ═══════════════════════════════════════════════════════════
     window.jalankanSeederKasirManual = function() {
-        console.log('🔧 Manual trigger Seeder Kasir V3...');
+        console.log('🔧 Manual trigger Seeder Kasir V4...');
         try {
-            localStorage.removeItem(FLAG_V3);
+            localStorage.removeItem(FLAG_V4);
             localStorage.removeItem('seedingAkunKasirDummy35V1');
             localStorage.removeItem('seedingAkunKasirDummy35V2');
+            localStorage.removeItem('seedingAkunKasirDummy35V3');
         } catch (e) {}
-        statGlobal = { dibuat: 0, sudahAda: 0, diFix: 0, ownerSkip: 0, gagal: 0 };
+        statGlobal = {
+            dibuat: 0, sudahAda: 0, diFix: 0,
+            ownerSkip: 0, gagal: 0, dibersihkan: 0
+        };
         jalankanSeeder(0);
     };
 
@@ -49385,7 +49507,7 @@ window.getUserLengkapGlobal = function() {
     // START
     // ═══════════════════════════════════════════════════════════
     function startSeeder() {
-        setTimeout(() => jalankanSeeder(0), START_DELAY);
+        setTimeout(function() { jalankanSeeder(0); }, START_DELAY);
     }
 
     if (document.readyState === 'loading') {
@@ -49397,7 +49519,7 @@ window.getUserLengkapGlobal = function() {
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- AKHIR BLOK SEEDER — AKUN KASIR DUMMY 35 (V3 FINAL)         -->
+<!-- AKHIR BLOK SEEDER — AKUN KASIR DUMMY 35 (V4 FINAL FIX)     -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ============================================================ -->
