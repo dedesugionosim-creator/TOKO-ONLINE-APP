@@ -49522,6 +49522,335 @@ window.getUserLengkapGlobal = function() {
 <!-- AKHIR BLOK SEEDER — AKUN KASIR DUMMY 35 (V4 FINAL FIX)     -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ╔══════════════════════════════════════════════════════════╗ -->
+<!-- ║   BLOK PATCH — RENDER TABEL KASIR AKTIF (UNIVERSAL)      ║ -->
+<!-- ║   Auto-inject saat menu dibuka • Auto-refresh            ║ -->
+<!-- ║   Compatible dengan template ID apapun                   ║ -->
+<!-- ╚══════════════════════════════════════════════════════════╝ -->
+<script>
+(function patchRenderTabelKasirAktif() {
+    if (window._patchRenderKasirDone) {
+        console.log('ℹ️ Patch Render Kasir sudah terpasang.');
+        return;
+    }
+    window._patchRenderKasirDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER — Cari tbody di card "Daftar Kasir Aktif"
+    // ═══════════════════════════════════════════════════════════
+    function findTbodyKasir() {
+        // Strategi 1: cari berdasarkan ID yang mungkin
+        var idKandidat = [
+            'tabelKasirBody', 'tabelDaftarKasir', 'tbodyKasir',
+            'tabelKasirAktifBody', 'daftarKasirBody', 'tbodyDaftarKasir',
+            'tabelKasirAktif', 'daftarKasirAktif'
+        ];
+        for (var i = 0; i < idKandidat.length; i++) {
+            var el = document.getElementById(idKandidat[i]);
+            if (el) {
+                // Kalau table, ambil tbody-nya
+                if (el.tagName === 'TABLE') {
+                    var tb = el.querySelector('tbody');
+                    if (tb) return tb;
+                }
+                if (el.tagName === 'TBODY') return el;
+            }
+        }
+
+        // Strategi 2: cari via text header "Daftar Kasir Aktif"
+        var semuaEl = document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong');
+        for (var j = 0; j < semuaEl.length; j++) {
+            var el2 = semuaEl[j];
+            if (!el2.textContent) continue;
+            if (el2.children.length > 0) continue; // hanya leaf
+
+            var txt = el2.textContent.trim();
+            if (txt.indexOf('Daftar Kasir Aktif') === -1) continue;
+
+            // Cari parent card
+            var card = el2.closest('.card');
+            if (!card) continue;
+
+            // Cari tbody pertama di dalam card
+            var tbody = card.querySelector('tbody');
+            if (tbody) return tbody;
+        }
+
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER — Cari badge counter di header card
+    // ═══════════════════════════════════════════════════════════
+    function findBadgeKasir() {
+        var semuaEl = document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong');
+        for (var j = 0; j < semuaEl.length; j++) {
+            var el = semuaEl[j];
+            if (!el.textContent) continue;
+            if (el.children.length > 0) continue;
+
+            if (el.textContent.trim().indexOf('Daftar Kasir Aktif') === -1) continue;
+
+            var card = el.closest('.card');
+            if (!card) continue;
+
+            // Cari badge di header
+            var badge = card.querySelector('.card-header .badge');
+            if (badge) return badge;
+        }
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ESCAPE — XSS Safe
+    // ═══════════════════════════════════════════════════════════
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // FORMAT — Ambil owner ID user aktif
+    // ═══════════════════════════════════════════════════════════
+    function getOwnerIdAktif() {
+        try {
+            if (typeof userAktif !== 'undefined' && userAktif) {
+                return userAktif.idUser || userAktif.id;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CORE — Render Tabel
+    // ═══════════════════════════════════════════════════════════
+    function renderTabelKasirAktifUniversal() {
+        var tbody = findTbodyKasir();
+        if (!tbody) return { sukses: false, alasan: 'tbody tidak ditemukan' };
+
+        var ownerId = getOwnerIdAktif();
+        if (!ownerId) return { sukses: false, alasan: 'userAktif tidak valid' };
+
+        // Ambil data kasir milik owner ini
+        var daftar = [];
+        try {
+            var semua = (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser))
+                ? dataLoginUser
+                : [];
+            daftar = semua.filter(function(k) {
+                return k && k.role === 'Kasir' && k.ownerId === ownerId;
+            });
+        } catch (e) {
+            console.warn('[Patch Kasir] Baca dataLoginUser error:', e);
+        }
+
+        // Update badge counter
+        var badge = findBadgeKasir();
+        if (badge) {
+            badge.textContent = daftar.length;
+            badge.className = 'badge bg-light text-dark';
+        }
+
+        // Render
+        if (daftar.length === 0) {
+            tbody.innerHTML =
+                '<tr><td colspan="6" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Belum ada kasir terdaftar.' +
+                '</td></tr>';
+            return { sukses: true, jumlah: 0 };
+        }
+
+        var html = '';
+        daftar.forEach(function(k, i) {
+            var statusBadge = '';
+            var st = k.statusVerifikasi || k.status || 'Aktif';
+            if (st === 'Aktif') statusBadge = '<span class="badge bg-success">Aktif</span>';
+            else if (st === 'Nonaktif') statusBadge = '<span class="badge bg-secondary">Nonaktif</span>';
+            else if (st === 'Diblokir') statusBadge = '<span class="badge bg-danger">Diblokir</span>';
+            else statusBadge = '<span class="badge bg-light text-dark">' + esc(st) + '</span>';
+
+            var idEsc = (k.idUser || k.id || '').replace(/'/g, "\\'");
+
+            html += '<tr>' +
+                '<td>' + (i + 1) + '</td>' +
+                '<td><strong>' + esc(k.nama || '-') + '</strong>' +
+                    '<br><small class="text-muted">' + esc(k.kodeRole || '-') + '</small>' +
+                '</td>' +
+                '<td>' + esc(k.username || '-') + '</td>' +
+                '<td>' + esc(k.hp || '-') + '</td>' +
+                '<td>' + statusBadge + '</td>' +
+                '<td>' +
+                    '<button class="btn btn-sm btn-outline-info me-1" ' +
+                            'onclick="if(typeof editKasirAktif===\'function\')editKasirAktif(\'' + idEsc + '\');else alert(\'Fitur edit belum tersedia\')" ' +
+                            'title="Detail">' +
+                        '<i class="fas fa-eye"></i>' +
+                    '</button>' +
+                    '<button class="btn btn-sm btn-outline-danger" ' +
+                            'onclick="if(typeof hapusKasirAktif===\'function\')hapusKasirAktif(\'' + idEsc + '\');else alert(\'Fitur hapus belum tersedia\')" ' +
+                            'title="Hapus">' +
+                        '<i class="fas fa-trash"></i>' +
+                    '</button>' +
+                '</td>' +
+            '</tr>';
+        });
+        tbody.innerHTML = html;
+
+        return { sukses: true, jumlah: daftar.length };
+    }
+
+    // Expose global
+    window.renderTabelKasirAktifUniversal = renderTabelKasirAktifUniversal;
+    window.forceRenderKasir = renderTabelKasirAktifUniversal;
+
+    // ═══════════════════════════════════════════════════════════
+    // AUTO-INJECT — MutationObserver dengan guard
+    // ═══════════════════════════════════════════════════════════
+    var _lastRenderKey = '';
+    var _renderScheduled = false;
+
+    function renderWithGuard() {
+        if (_renderScheduled) return;
+        _renderScheduled = true;
+
+        setTimeout(function() {
+            _renderScheduled = false;
+            try {
+                var tbody = findTbodyKasir();
+                if (!tbody) return;
+
+                // Guard: hitung signature dari tbody + jumlah kasir
+                var ownerId = getOwnerIdAktif() || '';
+                var jumlah = 0;
+                try {
+                    jumlah = (dataLoginUser || []).filter(function(k) {
+                        return k && k.role === 'Kasir' && k.ownerId === ownerId;
+                    }).length;
+                } catch (e) {}
+
+                var key = ownerId + '|' + jumlah + '|' + tbody.children.length;
+                if (key === _lastRenderKey) return;
+                _lastRenderKey = key;
+
+                renderTabelKasirAktifUniversal();
+            } catch (e) {
+                console.warn('[Patch Kasir] renderWithGuard error:', e);
+            }
+        }, 150);
+    }
+
+    // Observer pada #kontenDasbor
+    function startObserver() {
+        var konten = document.getElementById('kontenDasbor');
+        if (!konten) {
+            // Retry
+            setTimeout(startObserver, 500);
+            return;
+        }
+        if (konten._patchKasirObserved) return;
+        konten._patchKasirObserved = true;
+
+        var observer = new MutationObserver(function(mutations) {
+            // Cek apakah ada element baru yang relevan
+            for (var i = 0; i < mutations.length; i++) {
+                var m = mutations[i];
+                if (m.type === 'childList' && m.addedNodes && m.addedNodes.length > 0) {
+                    renderWithGuard();
+                    return;
+                }
+            }
+        });
+
+        observer.observe(konten, {
+            childList: true,
+            subtree: true
+        });
+
+        console.log('✅ [Patch Kasir] Observer terpasang di #kontenDasbor');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // SAFETY NET — interval ringan (fallback)
+    // ═══════════════════════════════════════════════════════════
+    function startFallbackInterval() {
+        setInterval(function() {
+            try {
+                var tbody = findTbodyKasir();
+                if (!tbody) return;
+
+                // Cek apakah tbody masih kosong padahal data ada
+                var txt = tbody.textContent || '';
+                if (txt.indexOf('Belum ada kasir') === -1 &&
+                    txt.indexOf('Loading') === -1 &&
+                    txt.length > 50) {
+                    return; // sudah ada isinya
+                }
+
+                var ownerId = getOwnerIdAktif();
+                if (!ownerId) return;
+
+                var jumlah = (dataLoginUser || []).filter(function(k) {
+                    return k && k.role === 'Kasir' && k.ownerId === ownerId;
+                }).length;
+
+                // Kalau data ada tapi tbody masih "Belum ada kasir" → render
+                if (jumlah > 0 && txt.indexOf('Belum ada kasir') !== -1) {
+                    renderTabelKasirAktifUniversal();
+                }
+            } catch (e) {}
+        }, 1500);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // HOOK — Setelah buat akun kasir baru, refresh tabel
+    // ═══════════════════════════════════════════════════════════
+    function hookBuatKasir() {
+        var original = window.buatAkunKasirGlobal;
+        if (typeof original !== 'function') {
+            setTimeout(hookBuatKasir, 500);
+            return;
+        }
+        if (original._patchedRenderTabel) return;
+
+        window.buatAkunKasirGlobal = function() {
+            var hasil = original.apply(this, arguments);
+            if (hasil && hasil.sukses) {
+                setTimeout(renderTabelKasirAktifUniversal, 300);
+            }
+            return hasil;
+        };
+        window.buatAkunKasirGlobal._patchedRenderTabel = true;
+        console.log('✅ [Patch Kasir] Hook buatAkunKasirGlobal terpasang');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // START
+    // ═══════════════════════════════════════════════════════════
+    function start() {
+        startObserver();
+        startFallbackInterval();
+        hookBuatKasir();
+
+        // Render langsung kalau tbody sudah ada
+        setTimeout(renderTabelKasirAktifUniversal, 500);
+        setTimeout(renderTabelKasirAktifUniversal, 1500);
+
+        console.log('✅ [Patch Kasir] Aktif — akan auto-render tabel Daftar Kasir Aktif');
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start);
+    } else {
+        start();
+    }
+
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK PATCH — RENDER TABEL KASIR AKTIF                -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 <!-- ============================================================ -->
 <!-- ===== PERBAIKAN FUNGSI LOGIN & NAVIGASI (REVISI) ===== -->
 <!-- ============================================================ -->
