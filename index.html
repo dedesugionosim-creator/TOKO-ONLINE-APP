@@ -23756,6 +23756,1104 @@
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL VERIFIKASI TOPUP ═══════════ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL LOG AKTIVITAS COIN (ENGINE) ═══════ -->
+<!-- ═══ Dipakai oleh: R 10.53 (Log Aktivitas Coin UI) ════════ -->
+<!-- ═══ Foundation: Core System (1-8) + Dompet R2Coin (10.46) ═ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_LOG_AKTIVITAS_COIN_ENGINE() {
+    if (window._blokLogCoinEngineDone) {
+        console.log('ℹ️ BLOK LOG AKTIVITAS COIN ENGINE sudah terpasang.');
+        return;
+    }
+    window._blokLogCoinEngineDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    var KEY_LOG = 'dataLogAktivitasCoin';
+    var MAX_LOG = 5000;
+    var MAX_TRACE_HOP = 20;
+
+    // ── Label & warna per sumber transaksi ──
+    window.LAC_SUMBER_LABEL = window.LAC_SUMBER_LABEL || {
+        'topup':           { label: 'Top-Up',       warna: 'success',   ikon: 'fas fa-arrow-down' },
+        'withdraw':        { label: 'Withdraw',     warna: 'danger',    ikon: 'fas fa-arrow-up' },
+        'transfer':        { label: 'Transfer',     warna: 'info',      ikon: 'fas fa-exchange-alt' },
+        'intervensi-SA':   { label: 'Intervensi SA',warna: 'warning',   ikon: 'fas fa-shield-alt' },
+        'konversi-gif':    { label: 'Konversi GIF', warna: 'primary',   ikon: 'fas fa-gift' },
+        'reward':          { label: 'Reward',       warna: 'success',   ikon: 'fas fa-star' },
+        'ojek':            { label: 'Ojek',         warna: 'danger',    ikon: 'fas fa-motorcycle' },
+        'belanja':         { label: 'Belanja',      warna: 'info',      ikon: 'fas fa-shopping-cart' },
+        'rollback':        { label: 'Rollback',     warna: 'secondary', ikon: 'fas fa-undo' },
+        'umum':            { label: 'Umum',         warna: 'secondary', ikon: 'fas fa-coins' }
+    };
+
+    // ── Threshold suspicious ──
+    var THRESHOLD = {
+        amountHigh:    100000,   // > 100rb coin = high
+        amountCritical: 500000,  // > 500rb coin = critical
+        freqPerHour:   10,       // > 10 trx/jam = suspicious
+        rapidSeconds:  5,        // 2 trx dalam 5 detik = suspicious
+        zeroBalance:   0
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _lacNow() { return new Date().toISOString(); }
+
+    function _lacIdAdmin() {
+        try {
+            if (typeof getIdUserAktif === 'function') {
+                var id = getIdUserAktif();
+                if (id) return id;
+            }
+        } catch (e) {}
+        return 'SA';
+    }
+
+    function _lacNamaAdmin() {
+        try {
+            if (typeof getNamaUserAktif === 'function') {
+                return getNamaUserAktif() || 'SuperAdmin';
+            }
+        } catch (e) {}
+        return 'SuperAdmin';
+    }
+
+    function _lacGenerateId() {
+        try {
+            if (typeof hfGenIdShort === 'function') return hfGenIdShort('LOG');
+        } catch (e) {}
+        return 'LOG_' + Date.now().toString(36) + '_' +
+               Math.random().toString(36).substring(2, 7);
+    }
+
+    function _lacLoad() {
+        try {
+            var data;
+            if (typeof hfLoadJSON === 'function') {
+                data = hfLoadJSON(KEY_LOG, []);
+            } else {
+                var s = localStorage.getItem(KEY_LOG);
+                data = s ? JSON.parse(s) : [];
+            }
+            return Array.isArray(data) ? data : [];
+        } catch (e) {
+            console.error('_lacLoad error:', e.message);
+            return [];
+        }
+    }
+
+    function _lacSave(list) {
+        try {
+            if (!Array.isArray(list)) list = [];
+            if (list.length > MAX_LOG) list = list.slice(0, MAX_LOG);
+
+            if (typeof hfSaveJSON === 'function') {
+                return hfSaveJSON(KEY_LOG, list);
+            }
+            localStorage.setItem(KEY_LOG, JSON.stringify(list));
+            return { sukses: true };
+        } catch (e) {
+            console.error('_lacSave error:', e.message);
+            if (e.name === 'QuotaExceededError') {
+                return { sukses: false, pesan: 'Storage penuh. Bersihkan log lama.' };
+            }
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    function _lacUserInfo(idUser) {
+        if (!idUser) return { idUser: idUser, nama: '-', role: '-' };
+        try {
+            if (typeof getDataIdUser === 'function') {
+                var u = getDataIdUser(idUser);
+                if (u) {
+                    return {
+                        idUser: idUser,
+                        nama: u.nama || '-',
+                        role: u.role || '-'
+                    };
+                }
+            }
+        } catch (e) {}
+        return { idUser: idUser, nama: idUser, role: '-' };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — LOAD LOG (PUBLIC)
+    // ═══════════════════════════════════════════════════════════
+    window.loadLogAktivitasCoinGlobal = function() {
+        try {
+            var list = _lacLoad();
+            // Sort: terbaru dulu
+            list.sort(function(a, b) {
+                return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+            });
+            return list;
+        } catch (e) {
+            console.error('loadLogAktivitasCoinGlobal error:', e);
+            return [];
+        }
+    };
+
+    window.getLogCoinByIdGlobal = function(idLog) {
+        try {
+            if (!idLog) return null;
+            var list = _lacLoad();
+            return list.find(function(l) { return l && l.id === idLog; }) || null;
+        } catch (e) {
+            console.error('getLogCoinByIdGlobal error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — CORE: TAMBAH LOG ENTRY
+    // ═══════════════════════════════════════════════════════════
+    window.tambahLogAktivitasCoinGlobal = function(payload) {
+        try {
+            if (!payload || typeof payload !== 'object') {
+                return { sukses: false, pesan: 'Payload tidak valid.' };
+            }
+
+            var idUser = payload.idUser;
+            if (!idUser) {
+                return { sukses: false, pesan: 'ID user wajib diisi.' };
+            }
+
+            var info = _lacUserInfo(idUser);
+            var now = _lacNow();
+
+            var entry = {
+                id:               _lacGenerateId(),
+                waktu:            now,
+                idUser:           idUser,
+                namaUser:         payload.namaUser || info.nama,
+                roleUser:         payload.roleUser || info.role,
+                tipe:             payload.tipe === 'debit' ? 'debit' : 'credit',
+                jumlah:           Math.abs(parseFloat(payload.jumlah) || 0),
+                saldoSebelum:     parseFloat(payload.saldoSebelum) || 0,
+                saldoSesudah:     parseFloat(payload.saldoSesudah) || 0,
+                sumber:           payload.sumber || 'umum',
+                keterangan:       payload.keterangan || '-',
+                refId:            payload.refId || null,
+                idAdmin:          payload.idAdmin || null,
+                adminNama:        payload.adminNama || null,
+                lawanTransaksi:   payload.lawanTransaksi || null,
+                meta:             payload.meta || {},
+                flagSuspicious:   false,
+                alasanSuspicious: [],
+                severityLevel:    'normal',
+                createdAt:        now
+            };
+
+            // ── Deteksi suspicious ──
+            _lacDeteksiSuspicious(entry);
+
+            // ── Simpan ──
+            var list = _lacLoad();
+            list.unshift(entry);
+            if (list.length > MAX_LOG) list = list.slice(0, MAX_LOG);
+
+            var save = _lacSave(list);
+            if (!save.sukses) return save;
+
+            return { sukses: true, log: entry };
+        } catch (e) {
+            console.error('tambahLogAktivitasCoinGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — DETEKSI SUSPICIOUS
+    // ═══════════════════════════════════════════════════════════
+    function _lacDeteksiSuspicious(entry) {
+        try {
+            var alasan = [];
+            var maxSeverity = 'normal';
+
+            function setSeverity(level) {
+                var order = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
+                if (order[level] > order[maxSeverity]) {
+                    maxSeverity = level;
+                }
+            }
+
+            // ── Rule 1: Jumlah besar ──
+            if (entry.jumlah >= THRESHOLD.amountCritical) {
+                alasan.push('Jumlah sangat besar (≥ ' +
+                    THRESHOLD.amountCritical.toLocaleString('id-ID') + ' coin)');
+                setSeverity('critical');
+            } else if (entry.jumlah >= THRESHOLD.amountHigh) {
+                alasan.push('Jumlah besar (≥ ' +
+                    THRESHOLD.amountHigh.toLocaleString('id-ID') + ' coin)');
+                setSeverity('high');
+            }
+
+            // ── Rule 2: Saldo negatif atau tidak konsisten ──
+            if (entry.tipe === 'debit' && entry.saldoSesudah < 0) {
+                alasan.push('Saldo jadi negatif setelah debit');
+                setSeverity('critical');
+            }
+
+            var expectedSaldo = entry.tipe === 'credit'
+                ? entry.saldoSebelum + entry.jumlah
+                : entry.saldoSebelum - entry.jumlah;
+
+            if (Math.abs(expectedSaldo - entry.saldoSesudah) > 0.01) {
+                alasan.push('Saldo tidak konsisten (expected: ' +
+                    expectedSaldo + ', got: ' + entry.saldoSesudah + ')');
+                setSeverity('high');
+            }
+
+            // ── Rule 3: Frekuensi tinggi (> 10 trx dalam 1 jam) ──
+            var list = _lacLoad();
+            var now = Date.now();
+            var oneHourAgo = now - 3600000;
+
+            var recentCount = list.filter(function(l) {
+                if (!l || l.idUser !== entry.idUser) return false;
+                var t = new Date(l.waktu || 0).getTime();
+                return t > oneHourAgo;
+            }).length;
+
+            if (recentCount >= THRESHOLD.freqPerHour) {
+                alasan.push('Frekuensi tinggi: ' + recentCount + ' transaksi dalam 1 jam');
+                setSeverity('high');
+            }
+
+            // ── Rule 4: 2 trx dalam 5 detik (rapid fire) ──
+            if (list.length > 0) {
+                var last = list[0];
+                if (last && last.idUser === entry.idUser) {
+                    var diff = Math.abs(
+                        new Date(entry.waktu).getTime() -
+                        new Date(last.waktu || 0).getTime()
+                    ) / 1000;
+                    if (diff < THRESHOLD.rapidSeconds) {
+                        alasan.push('Transaksi berturut-turut dalam ' +
+                            diff.toFixed(1) + ' detik');
+                        setSeverity('medium');
+                    }
+                }
+            }
+
+            // ── Rule 5: Intervensi SA (selalu di-flag) ──
+            if (entry.sumber === 'intervensi-SA') {
+                alasan.push('Intervensi manual oleh SuperAdmin');
+                setSeverity('medium');
+            }
+
+            // ── Rule 6: Rollback ──
+            if (entry.sumber === 'rollback') {
+                alasan.push('Rollback transaksi terdeteksi');
+                setSeverity('medium');
+            }
+
+            // ── Set hasil ──
+            entry.alasanSuspicious = alasan;
+            entry.flagSuspicious = alasan.length > 0;
+            entry.severityLevel = maxSeverity;
+
+            // Auto-set severity kalau tidak ada alasan
+            if (!entry.flagSuspicious) {
+                entry.severityLevel = 'normal';
+            }
+
+        } catch (e) {
+            console.warn('_lacDeteksiSuspicious error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.hitungStatistikLogCoinGlobal = function() {
+        try {
+            var list = _lacLoad();
+            var stat = {
+                totalLog:          0,
+                suspiciousCount:   0,
+                criticalCount:     0,
+                highCount:         0,
+                mediumCount:       0,
+                lowCount:          0,
+                normalCount:       0,
+                totalCoinMasuk:    0,
+                totalCoinKeluar:   0,
+                totalCoinBeredar:  0,
+                perSumber:         {}
+            };
+
+            list.forEach(function(l) {
+                if (!l) return;
+                stat.totalLog++;
+
+                if (l.flagSuspicious) stat.suspiciousCount++;
+
+                var sev = l.severityLevel || 'normal';
+                if (sev === 'critical')      stat.criticalCount++;
+                else if (sev === 'high')     stat.highCount++;
+                else if (sev === 'medium')   stat.mediumCount++;
+                else if (sev === 'low')      stat.lowCount++;
+                else                         stat.normalCount++;
+
+                var jml = parseFloat(l.jumlah) || 0;
+                if (l.tipe === 'credit') stat.totalCoinMasuk += jml;
+                else                     stat.totalCoinKeluar += jml;
+
+                var sumber = l.sumber || 'umum';
+                if (!stat.perSumber[sumber]) {
+                    stat.perSumber[sumber] = { jumlah: 0, count: 0 };
+                }
+                stat.perSumber[sumber].jumlah += jml;
+                stat.perSumber[sumber].count++;
+            });
+
+            stat.totalCoinBeredar = stat.totalCoinMasuk - stat.totalCoinKeluar;
+
+            return stat;
+        } catch (e) {
+            console.error('hitungStatistikLogCoinGlobal error:', e);
+            return {
+                totalLog: 0, suspiciousCount: 0, criticalCount: 0, highCount: 0,
+                mediumCount: 0, lowCount: 0, normalCount: 0,
+                totalCoinMasuk: 0, totalCoinKeluar: 0, totalCoinBeredar: 0,
+                perSumber: {}
+            };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — GET SUSPICIOUS
+    // ═══════════════════════════════════════════════════════════
+    window.getLogSuspiciousGlobal = function() {
+        try {
+            var list = _lacLoad();
+            return list.filter(function(l) { return l && l.flagSuspicious; });
+        } catch (e) {
+            console.error('getLogSuspiciousGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — REFRESH AUDIT (re-scan suspicious)
+    // ═══════════════════════════════════════════════════════════
+    window.refreshLogAktivitasCoinGlobal = function() {
+        try {
+            var list = _lacLoad();
+            if (list.length === 0) {
+                return {
+                    sukses: true,
+                    jumlah: 0,
+                    pesan: 'Log kosong.'
+                };
+            }
+
+            // Re-scan setiap entry
+            var suspiciousCount = 0;
+            var updated = 0;
+
+            list.forEach(function(l) {
+                if (!l) return;
+
+                // Reset flag dulu
+                l.flagSuspicious = false;
+                l.alasanSuspicious = [];
+                l.severityLevel = 'normal';
+
+                // Re-deteksi
+                _lacDeteksiSuspicious(l);
+
+                if (l.flagSuspicious) suspiciousCount++;
+                updated++;
+            });
+
+            var save = _lacSave(list);
+            if (!save.sukses) return save;
+
+            // Catat aktivitas
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(
+                        _lacIdAdmin(),
+                        'Refresh Audit Log Coin',
+                        updated + ' log di-scan, ' + suspiciousCount + ' suspicious'
+                    );
+                }
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                jumlah: updated,
+                suspicious: suspiciousCount,
+                pesan: 'Refresh selesai.'
+            };
+        } catch (e) {
+            console.error('refreshLogAktivitasCoinGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — TRACE CHAIN TRANSAKSI
+    // ═══════════════════════════════════════════════════════════
+    window.traceAsalCoinTransaksiGlobal = function(idLog) {
+        try {
+            if (!idLog) return { sukses: false, pesan: 'ID log tidak valid.' };
+
+            var start = window.getLogCoinByIdGlobal(idLog);
+            if (!start) return { sukses: false, pesan: 'Log tidak ditemukan.' };
+
+            var chain = [];
+            var visited = {};
+            var current = start;
+            var hop = 0;
+            var maxSeverity = 'normal';
+
+            function upgradeSeverity(level) {
+                var order = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
+                if (order[level] > order[maxSeverity]) maxSeverity = level;
+            }
+
+            while (current && hop < MAX_TRACE_HOP) {
+                if (visited[current.id]) break;
+                visited[current.id] = true;
+
+                chain.push({
+                    level:      hop,
+                    id:         current.id,
+                    waktu:      current.waktu,
+                    idUser:     current.idUser,
+                    nama:       current.namaUser,
+                    role:       current.roleUser,
+                    tipe:       current.tipe,
+                    jumlah:     current.jumlah,
+                    sumber:     current.sumber,
+                    keterangan: current.keterangan,
+                    refId:      current.refId,
+                    severity:   current.severityLevel
+                });
+
+                upgradeSeverity(current.severityLevel || 'normal');
+
+                // Cari parent via refId
+                if (!current.refId) break;
+
+                var next = null;
+                var list = _lacLoad();
+
+                // Cari entry yang id === refId
+                next = list.find(function(l) {
+                    return l && l.id === current.refId;
+                });
+
+                // Kalau tidak ada, cari entry dengan refId sama (hubungan transfer)
+                if (!next && current.sumber === 'transfer') {
+                    next = list.find(function(l) {
+                        return l && l.refId === current.refId &&
+                               l.id !== current.id;
+                    });
+                }
+
+                if (!next) break;
+                current = next;
+                hop++;
+            }
+
+            return {
+                sukses:       true,
+                idTrx:        idLog,
+                hopCount:     chain.length,
+                chain:        chain,
+                maxSeverity:  maxSeverity,
+                isSuspicious: chain.some(function(c) {
+                    var l = window.getLogCoinByIdGlobal(c.id);
+                    return l && l.flagSuspicious;
+                })
+            };
+        } catch (e) {
+            console.error('traceAsalCoinTransaksiGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — TRACE USER
+    // ═══════════════════════════════════════════════════════════
+    window.traceAsalCoinUserGlobal = function(idUser) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+            var info = _lacUserInfo(idUser);
+            var list = _lacLoad().filter(function(l) {
+                return l && l.idUser === idUser;
+            });
+
+            if (list.length === 0) {
+                return {
+                    sukses:          true,
+                    idUser:          idUser,
+                    nama:            info.nama,
+                    role:            info.role,
+                    saldoSekarang:   (typeof getSaldoDompet === 'function')
+                                        ? getSaldoDompet(idUser) : 0,
+                    totalCoinMasuk:  0,
+                    totalCoinKeluar: 0,
+                    suspiciousCount: 0,
+                    breakdown:       {},
+                    timeline:        [],
+                    pesan:           'Belum ada aktivitas.'
+                };
+            }
+
+            // ── Hitung stats ──
+            var totalMasuk = 0;
+            var totalKeluar = 0;
+            var suspiciousCount = 0;
+            var breakdown = {};
+
+            list.forEach(function(l) {
+                var jml = parseFloat(l.jumlah) || 0;
+                if (l.tipe === 'credit') totalMasuk += jml;
+                else                     totalKeluar += jml;
+
+                if (l.flagSuspicious) suspiciousCount++;
+
+                var s = l.sumber || 'umum';
+                if (!breakdown[s]) breakdown[s] = { jumlah: 0, count: 0 };
+                breakdown[s].jumlah += jml;
+                breakdown[s].count++;
+            });
+
+            // ── Timeline 50 terakhir ──
+            list.sort(function(a, b) {
+                return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+            });
+            var timeline = list.slice(0, 50).map(function(l) {
+                return {
+                    waktu:      l.waktu,
+                    tipe:       l.tipe,
+                    jumlah:     l.jumlah,
+                    sumber:     l.sumber,
+                    keterangan: l.keterangan
+                };
+            });
+
+            return {
+                sukses:          true,
+                idUser:          idUser,
+                nama:            info.nama,
+                role:            info.role,
+                saldoSekarang:   (typeof getSaldoDompet === 'function')
+                                    ? getSaldoDompet(idUser) : 0,
+                totalCoinMasuk:  totalMasuk,
+                totalCoinKeluar: totalKeluar,
+                suspiciousCount: suspiciousCount,
+                breakdown:       breakdown,
+                timeline:        timeline,
+                totalTransaksi:  list.length
+            };
+        } catch (e) {
+            console.error('traceAsalCoinUserGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — CLEAR LOG
+    // ═══════════════════════════════════════════════════════════
+    window.clearLogAktivitasCoinGlobal = function(opts) {
+        opts = opts || {};
+        if (!opts.konfirmasi) {
+            return { sukses: false, pesan: 'Butuh { konfirmasi: true }.' };
+        }
+
+        try {
+            var list = _lacLoad();
+            var jumlah = list.length;
+
+            // Backup dulu
+            if (jumlah > 0) {
+                try {
+                    localStorage.setItem(
+                        'backup_log_coin_' + Date.now(),
+                        JSON.stringify(list)
+                    );
+                } catch (e) {}
+            }
+
+            var save = _lacSave([]);
+            if (!save.sukses) return save;
+
+            // Catat aktivitas
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(
+                        _lacIdAdmin(),
+                        'Clear Log Aktivitas Coin',
+                        jumlah + ' log dihapus'
+                    );
+                }
+            } catch (e) {}
+
+            return { sukses: true, dihapus: jumlah };
+        } catch (e) {
+            console.error('clearLogAktivitasCoinGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — EXPORT JSON
+    // ═══════════════════════════════════════════════════════════
+    window.exportLogCoinJSONGlobal = function(filter) {
+        filter = filter || {};
+        try {
+            var list = _lacLoad();
+
+            // Filter opsional
+            if (filter.sumber) {
+                list = list.filter(function(l) {
+                    return l && l.sumber === filter.sumber;
+                });
+            }
+            if (filter.idUser) {
+                list = list.filter(function(l) {
+                    return l && l.idUser === filter.idUser;
+                });
+            }
+            if (filter.suspiciousOnly) {
+                list = list.filter(function(l) {
+                    return l && l.flagSuspicious;
+                });
+            }
+
+            var stat = window.hitungStatistikLogCoinGlobal();
+
+            var payload = {
+                _meta: {
+                    versi:        '1.0',
+                    tipe:         'toko-online-2r-log-coin',
+                    timestamp:    _lacNow(),
+                    exportedBy:   _lacIdAdmin(),
+                    total:        list.length,
+                    statistik:    stat
+                },
+                data: list
+            };
+
+            return {
+                sukses: true,
+                json:   JSON.stringify(payload, null, 2),
+                total:  list.length
+            };
+        } catch (e) {
+            console.error('exportLogCoinJSONGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — EXPORT CSV
+    // ═══════════════════════════════════════════════════════════
+    window.exportLogCoinCSVGlobal = function(filter) {
+        filter = filter || {};
+        try {
+            var list = _lacLoad();
+
+            if (filter.sumber) {
+                list = list.filter(function(l) { return l && l.sumber === filter.sumber; });
+            }
+            if (filter.suspiciousOnly) {
+                list = list.filter(function(l) { return l && l.flagSuspicious; });
+            }
+
+            if (list.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada data.' };
+            }
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 ||
+                    s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = [
+                'No,Waktu,ID Log,ID User,Nama User,Role,Tipe,Jumlah,' +
+                'Saldo Sebelum,Saldo Sesudah,Sumber,Keterangan,' +
+                'Severity,Flag Suspicious,Alasan Suspicious,Ref ID'
+            ];
+
+            list.forEach(function(l, i) {
+                lines.push([
+                    i + 1,
+                    esc(l.waktu),
+                    esc(l.id),
+                    esc(l.idUser),
+                    esc(l.namaUser),
+                    esc(l.roleUser),
+                    esc(l.tipe),
+                    esc(l.jumlah),
+                    esc(l.saldoSebelum),
+                    esc(l.saldoSesudah),
+                    esc(l.sumber),
+                    esc(l.keterangan),
+                    esc(l.severityLevel),
+                    l.flagSuspicious ? 'YES' : 'NO',
+                    esc((l.alasanSuspicious || []).join(' | ')),
+                    esc(l.refId || '-')
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'log_coin_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+
+            try {
+                var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = namaFile;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+            } catch (e) {
+                return { sukses: false, pesan: e.message };
+            }
+
+            return { sukses: true, namaFile: namaFile, total: list.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — AUTO-LOG HOOK (integrasi dengan 10.46)
+    // ═══════════════════════════════════════════════════════════
+    // Hook ke fungsi tambahTransaksiDompet dari BLOK 10.46
+    // agar setiap transaksi otomatis tercatat di log
+    (function _installHook() {
+        if (typeof window.tambahTransaksiDompet !== 'function') {
+            // Retry nanti
+            setTimeout(_installHook, 1000);
+            return;
+        }
+
+        var origTrx = window.tambahTransaksiDompet;
+        if (origTrx._lacHooked) return;
+
+        window.tambahTransaksiDompet = function(idUser, payload) {
+            var hasil = origTrx.call(this, idUser, payload);
+
+            // Auto-log kalau sukses
+            if (hasil && hasil.sukses) {
+                try {
+                    var trx = hasil.transaksi || {};
+                    var kategori = payload.kategori || 'umum';
+                    var sumber = 'umum';
+
+                    // Map kategori → sumber
+                    var map = {
+                        'topup_approved':    'topup',
+                        'topup_manual_sa':   'intervensi-SA',
+                        'withdraw_approved': 'withdraw',
+                        'transfer_keluar':   'transfer',
+                        'transfer_masuk':    'transfer',
+                        'intervensi_sa':     'intervensi-SA',
+                        'rollback':          'rollback',
+                        'reward':            'reward',
+                        'konversi_gif':      'konversi-gif',
+                        'ojek':              'ojek',
+                        'belanja':           'belanja'
+                    };
+                    sumber = map[kategori] || kategori || 'umum';
+
+                    window.tambahLogAktivitasCoinGlobal({
+                        idUser:       idUser,
+                        tipe:         trx.tipe || payload.tipe,
+                        jumlah:       trx.jumlah || payload.jumlah,
+                        saldoSebelum: trx.saldoSebelum,
+                        saldoSesudah: trx.saldoSesudah,
+                        sumber:       sumber,
+                        keterangan:   trx.keterangan || payload.keterangan,
+                        refId:        trx.id,
+                        idAdmin:      trx.idAdmin || null,
+                        adminNama:    trx.adminNama || null
+                    });
+                } catch (e) {
+                    console.warn('Auto-log trx error:', e);
+                }
+            }
+
+            return hasil;
+        };
+        window.tambahTransaksiDompet._lacHooked = true;
+
+        console.log('✅ Auto-log hook terpasang ke tambahTransaksiDompet');
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — MIGRASI: scan dompet lama yang belum ter-log
+    // ═══════════════════════════════════════════════════════════
+    window.migrasiLogDariDompetGlobal = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof tambahTransaksiDompet !== 'function') {
+                return { sukses: false, pesan: 'Fungsi dompet tidak tersedia.' };
+            }
+
+            // Cek map dompet
+            var map = {};
+            try {
+                var raw = localStorage.getItem('dataDompetR2Coin');
+                map = raw ? JSON.parse(raw) : {};
+                if (!map || typeof map !== 'object') map = {};
+            } catch (e) {
+                return { sukses: false, pesan: 'Gagal baca map dompet.' };
+            }
+
+            // Kumpulkan log existing (untuk cek duplikat)
+            var existing = _lacLoad();
+            var existingIds = {};
+            existing.forEach(function(l) {
+                if (l && l.refId) existingIds[l.refId] = true;
+            });
+
+            var berhasil = 0;
+            var dilewati = 0;
+            var detail = [];
+
+            Object.keys(map).forEach(function(idUser) {
+                var d = map[idUser];
+                if (!d || !Array.isArray(d.transactions)) return;
+
+                d.transactions.forEach(function(trx) {
+                    if (!trx || !trx.id) return;
+                    if (existingIds[trx.id]) {
+                        dilewati++;
+                        return;
+                    }
+
+                    var kategori = trx.kategori || 'umum';
+                    var sumber = 'umum';
+                    var mapSumber = {
+                        'topup_approved':    'topup',
+                        'topup_manual_sa':   'intervensi-SA',
+                        'withdraw_approved': 'withdraw',
+                        'transfer_keluar':   'transfer',
+                        'transfer_masuk':    'transfer',
+                        'intervensi_sa':     'intervensi-SA',
+                        'rollback':          'rollback',
+                        'reset_sa':          'intervensi-SA'
+                    };
+                    sumber = mapSumber[kategori] || kategori || 'umum';
+
+                    var r = window.tambahLogAktivitasCoinGlobal({
+                        idUser:       idUser,
+                        tipe:         trx.tipe,
+                        jumlah:       trx.jumlah,
+                        saldoSebelum: trx.saldoSebelum,
+                        saldoSesudah: trx.saldoSesudah,
+                        sumber:       sumber,
+                        keterangan:   trx.keterangan || '-',
+                        refId:        trx.id,
+                        idAdmin:      trx.idAdmin || null,
+                        adminNama:    trx.adminNama || null
+                    });
+
+                    if (r.sukses) berhasil++;
+                    else detail.push({ idUser: idUser, trxId: trx.id, pesan: r.pesan });
+                });
+            });
+
+            // Catat aktivitas
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(
+                        _lacIdAdmin(),
+                        'Migrasi Log Coin',
+                        berhasil + ' log, ' + dilewati + ' dilewati'
+                    );
+                }
+            } catch (e) {}
+
+            return {
+                sukses:    true,
+                berhasil:  berhasil,
+                dilewati:  dilewati,
+                total:     berhasil + dilewati,
+                detail:    detail.slice(0, 10)
+            };
+        } catch (e) {
+            console.error('migrasiLogDariDompetGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — CLEANUP LOG LAMA
+    // ═══════════════════════════════════════════════════════════
+    window.cleanupLogCoinLamaGlobal = function(opts) {
+        opts = opts || {};
+        var maxHari = parseInt(opts.maxHari, 10) || 90;
+
+        try {
+            var list = _lacLoad();
+            var batas = Date.now() - (maxHari * 86400000);
+
+            var baru = list.filter(function(l) {
+                if (!l || !l.waktu) return true;
+                var t = new Date(l.waktu).getTime();
+                if (isNaN(t)) return true;
+                return t >= batas;
+            });
+
+            var dihapus = list.length - baru.length;
+
+            if (dihapus === 0) {
+                return { sukses: true, dihapus: 0, pesan: 'Tidak ada log lama.' };
+            }
+
+            if (!opts.konfirmasi) {
+                return {
+                    sukses: true,
+                    dihapus: dihapus,
+                    committed: false,
+                    pesan: 'Butuh { konfirmasi: true } untuk hapus ' +
+                           dihapus + ' log > ' + maxHari + ' hari.'
+                };
+            }
+
+            var save = _lacSave(baru);
+            if (!save.sukses) return save;
+
+            try {
+                if (typeof catatAktivitasGlobal === 'function') {
+                    catatAktivitasGlobal(
+                        _lacIdAdmin(),
+                        'Cleanup Log Coin',
+                        dihapus + ' log > ' + maxHari + ' hari dihapus'
+                    );
+                }
+            } catch (e) {}
+
+            return { sukses: true, dihapus: dihapus, committed: true };
+        } catch (e) {
+            console.error('cleanupLogCoinLamaGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 17] — RINGKASAN & DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.getRingkasanLogCoinGlobal = function() {
+        try {
+            var stat = window.hitungStatistikLogCoinGlobal();
+            return 'Log: ' + stat.totalLog +
+                   ' | Suspicious: ' + stat.suspiciousCount +
+                   ' | Critical: ' + stat.criticalCount +
+                   ' | Coin Beredar: ' + stat.totalCoinBeredar.toLocaleString('id-ID');
+        } catch (e) {
+            return 'Error: ' + e.message;
+        }
+    };
+
+    window.debugLogCoinGlobal = function() {
+        try {
+            var stat = window.hitungStatistikLogCoinGlobal();
+            var suspicious = window.getLogSuspiciousGlobal();
+
+            var info = {
+                statistik:      stat,
+                totalSuspicious: suspicious.length,
+                sampleSuspicious: suspicious.slice(0, 3),
+                sampleLog:      _lacLoad().slice(0, 3),
+                config: {
+                    KEY_LOG:        KEY_LOG,
+                    MAX_LOG:        MAX_LOG,
+                    MAX_TRACE_HOP:  MAX_TRACE_HOP,
+                    THRESHOLD:      THRESHOLD
+                }
+            };
+            console.log('🔍 debugLogCoinGlobal:', info);
+            return info;
+        } catch (e) {
+            console.error('debugLogCoinGlobal error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 18] — AUTO-INIT
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            var count = _lacLoad().length;
+            console.log('✅ Log Aktivitas Coin Engine: ' + count + ' log tersimpan');
+
+            // Auto-migrasi kalau log kosong & dompet ada transaksi
+            if (count === 0) {
+                if (typeof window.migrasiLogDariDompetGlobal === 'function') {
+                    console.log('📦 Mencoba auto-migrasi dari dompet...');
+                    // Delay lebih lama biar dompet siap
+                    setTimeout(function() {
+                        var r = window.migrasiLogDariDompetGlobal();
+                        if (r.sukses && r.berhasil > 0) {
+                            console.log('✅ Auto-migrasi: ' + r.berhasil + ' log');
+                        }
+                    }, 2000);
+                }
+            }
+        } catch (e) {
+            console.warn('Auto-init log coin error:', e.message);
+        }
+    }, 3000);
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK LOG AKTIVITAS COIN ENGINE terpasang.');
+    console.log('   📦 Modul:');
+    console.log('   1.  Konstanta: KEY_LOG, MAX_LOG, LAC_SUMBER_LABEL, THRESHOLD');
+    console.log('   2.  Helper: generateId, userInfo, load/save');
+    console.log('   3.  READ: loadLogAktivitasCoinGlobal, getLogCoinByIdGlobal');
+    console.log('   4.  CORE: tambahLogAktivitasCoinGlobal(payload)');
+    console.log('   5.  DETECT: _lacDeteksiSuspicious (6 rules)');
+    console.log('   6.  STATS: hitungStatistikLogCoinGlobal');
+    console.log('   7.  GET: getLogSuspiciousGlobal');
+    console.log('   8.  REFRESH: refreshLogAktivitasCoinGlobal ← untuk UI');
+    console.log('   9.  TRACE: traceAsalCoinTransaksiGlobal ← untuk UI');
+    console.log('   10. TRACE: traceAsalCoinUserGlobal ← untuk UI');
+    console.log('   11. CLEAR: clearLogAktivitasCoinGlobal ← untuk UI');
+    console.log('   12. EXPORT: exportLogCoinJSONGlobal ← untuk UI');
+    console.log('   13. EXPORT: exportLogCoinCSVGlobal');
+    console.log('   14. HOOK: auto-log dari tambahTransaksiDompet (10.46)');
+    console.log('   15. MIGRASI: migrasiLogDariDompetGlobal');
+    console.log('   16. CLEANUP: cleanupLogCoinLamaGlobal');
+    console.log('   17. DEBUG: debugLogCoinGlobal + ringkasan');
+    console.log('   18. AUTO-INIT: migrasi otomatis dari dompet');
+    console.log('   🎯 Entry: tambahLogAktivitasCoinGlobal(payload)');
+    console.log('   🎯 Hook otomatis ke 10.46 — semua transaksi ke-log!');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK LOG AKTIVITAS COIN ENGINE ════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL PROFIL UNIVERSAL ═══════════════════════ -->
 <!-- ═══ Dipakai oleh: R 10.2 s/d R 36.2 (Semua Profil Role)      ═══ -->
@@ -55187,15 +56285,49 @@ function toggleStatusWilayah(id) {
 <!-- ============================================================ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- BLOK R 10.47 — VERIFIKASI TOP-UP & WITHDRAW (JS)          -->
+<!-- BLOK R 10.47 — VERIFIKASI TOP-UP & WITHDRAW (JS) — REVISI  -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <script>
 (function BLOK_R_10_47_VERIFIKASI_COIN() {
+    // ═══════════════════════════════════════════════════════════
+    // GUARD PINTAR — cek benar-benar siap sebelum skip
+    // ═══════════════════════════════════════════════════════════
     if (window._blokR1047Done) {
-        console.log('ℹ️ BLOK R 10.47 sudah terpasang.');
-        return;
+        var sudahSiap = (
+            typeof window.tampilkanVerifikasiCoinSA === 'function' &&
+            typeof window.vfcSetTab === 'function'
+        );
+        if (sudahSiap) {
+            console.log('ℹ️ BLOK R 10.47 sudah terpasang — skip.');
+            return;
+        }
+        // Flag true tapi belum siap → reset & re-init
+        console.warn('⚠️ Flag R 10.47 ada tapi belum siap — RE-INIT ulang...');
+        window._blokR1047Done = false;
     }
     window._blokR1047Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // AUTO-CLEANUP container duplikat
+    // ═══════════════════════════════════════════════════════════
+    (function autoCleanup1047() {
+        var containers = document.querySelectorAll('[id="verifikasiCoinContainer"]');
+        if (containers.length > 1) {
+            for (var i = 0; i < containers.length - 1; i++) {
+                containers[i].remove();
+            }
+            console.log('🧹 Cleanup: hapus ' + (containers.length - 1) +
+                        ' container duplikat 10.47');
+        }
+        ['vfcModalTopup', 'vfcModalWithdraw', 'vfcModalTolak'].forEach(function(id) {
+            var modals = document.querySelectorAll('[id="' + id + '"]');
+            if (modals.length > 1) {
+                for (var i = 0; i < modals.length - 1; i++) {
+                    modals[i].remove();
+                }
+            }
+        });
+    })();
 
     // ═══════════════════════════════════════════════════════════
     // STATE
@@ -55258,18 +56390,15 @@ function toggleStatusWilayah(id) {
     function vfcToast(pesan, tipe) {
         var el = document.getElementById('vfcNotifGlobal');
         if (!el) { console.log(pesan); return; }
-
         var warna = {
             success: 'alert-success',
             danger:  'alert-danger',
             warning: 'alert-warning',
             info:    'alert-info'
         }[tipe] || 'alert-info';
-
         el.className = 'alert ' + warna;
         el.innerHTML = pesan;
         el.classList.remove('d-none');
-
         setTimeout(function() { el.classList.add('d-none'); }, 3500);
     }
 
@@ -55287,45 +56416,99 @@ function toggleStatusWilayah(id) {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // (1) ENTRY POINT
+    // (1) ENTRY POINT — REVISI dengan error handling detail
     // ═══════════════════════════════════════════════════════════
     window.tampilkanVerifikasiCoinSA = function() {
         try {
+            console.log('🚀 [10.47] Mulai tampilkanVerifikasiCoinSA...');
+
             if (typeof tutupMenu === 'function') tutupMenu();
 
+            // ── Cek kontenDasbor ──
             var konten = document.getElementById('kontenDasbor');
-            if (!konten) { console.error('❌ #kontenDasbor tidak ditemukan'); return; }
+            if (!konten) {
+                console.error('❌ [10.47] #kontenDasbor tidak ditemukan');
+                alert('Error: #kontenDasbor tidak ditemukan');
+                return;
+            }
             if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
 
+            // ── Cache template (dengan fallback) ──
             if (!window._tplVerifikasiCoin) {
                 var c = document.getElementById('verifikasiCoinContainer');
-                if (!c) {
+
+                // Kalau tidak ada container, coba cari di dalam kontenDasbor
+                if (!c && konten.innerHTML.indexOf('verifikasiCoinContainer') !== -1) {
+                    console.log('🔍 [10.47] Cari container di dalam kontenDasbor...');
+                    // Konten sudah di-inject, skip cache
+                    konten.style.display = 'block';
+                    console.log('✅ [10.47] Container sudah ada di DOM');
+                } else if (!c) {
+                    console.error('❌ [10.47] #verifikasiCoinContainer tidak ditemukan!');
                     if (typeof tampilkanPlaceholderMenu === 'function') {
                         tampilkanPlaceholderMenu('Verifikasi Top-Up & Withdraw', '10.47');
                     }
                     return;
+                } else {
+                    window._tplVerifikasiCoin = c.innerHTML;
+                    try { c.remove(); } catch (e) {}
+                    console.log('✅ [10.47] Template di-cache (' +
+                                window._tplVerifikasiCoin.length + ' chars)');
                 }
-                window._tplVerifikasiCoin = c.innerHTML;
-                c.remove();
-                console.log('✅ Template Verifikasi Coin di-cache');
             }
 
-            konten.innerHTML = window._tplVerifikasiCoin;
+            // ── Inject HTML ──
+            if (window._tplVerifikasiCoin) {
+                konten.innerHTML = window._tplVerifikasiCoin;
+                console.log('✅ [10.47] HTML di-inject ke #kontenDasbor');
+            }
 
+            // ── Reset state ──
             vfcState.tabAktif = 'topup';
             vfcState.pageTopup = 1;
             vfcState.pageWithdraw = 1;
+            vfcState.pageRiwayat = 1;
 
+            // ── Render bertahap dengan error handling ──
             setTimeout(function() {
-                vfcRenderStatistik();
-                vfcRenderAlertPending();
-                vfcSetTab('topup');
-                console.log('✅ BLOK 10.47 — Verifikasi Coin rendered');
-            }, 200);
+                try {
+                    vfcRenderStatistik();
+                    console.log('✅ [10.47] Statistik OK');
+                } catch (e) {
+                    console.error('❌ [10.47] Render statistik error:', e);
+                }
+                try {
+                    vfcRenderAlertPending();
+                    console.log('✅ [10.47] Alert OK');
+                } catch (e) {
+                    console.error('❌ [10.47] Render alert error:', e);
+                }
+                try {
+                    vfcSetTab('topup');
+                    console.log('✅ [10.47] Tab default OK');
+                } catch (e) {
+                    console.error('❌ [10.47] Set tab error:', e);
+                }
+                console.log('═══════════════════════════════════');
+                console.log('✅ [10.47] Render selesai!');
+                console.log('═══════════════════════════════════');
+            }, 100);
 
         } catch (e) {
-            console.error('tampilkanVerifikasiCoinSA error:', e);
+            console.error('❌ [10.47] tampilkanVerifikasiCoinSA error:', e);
+            console.error('   Stack:', e.stack);
         }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // (1b) FORCE RENDER — untuk console
+    // ═══════════════════════════════════════════════════════════
+    window.vfcForceRender = function() {
+        console.log('🔧 [10.47] Force render...');
+        // Reset cache biar fresh
+        delete window._tplVerifikasiCoin;
+        // Panggil
+        window.tampilkanVerifikasiCoinSA();
     };
 
     // ═══════════════════════════════════════════════════════════
@@ -55351,7 +56534,7 @@ function toggleStatusWilayah(id) {
             vfcSetText('vfcStatPendingTopup', statTopup.menunggu || 0);
             vfcSetText('vfcStatPendingWithdraw', statWd.menunggu || 0);
 
-            // Diproses hari ini (topup lunas/ditolak + withdraw disetujui/ditolak)
+            // Diproses hari ini
             var todayStr = new Date().toISOString().substring(0, 10);
             var totalHariIni = 0;
 
@@ -55379,7 +56562,7 @@ function toggleStatusWilayah(id) {
 
             vfcSetText('vfcStatHariIni', totalHariIni);
 
-            // Total nilai pending
+            // Nilai pending
             var nilaiPending = (statTopup.totalRupiah || 0) + (statWd.totalRupiah || 0);
             vfcSetText('vfcStatTotalNilai', vfcRupiah(nilaiPending));
 
@@ -55434,36 +56617,44 @@ function toggleStatusWilayah(id) {
                             'onclick="vfcSetTab(\'topup\')">' +
                         'Proses Sekarang →</button>' +
                 '</div>';
-
-        } catch (e) {}
+        } catch (e) {
+            console.error('vfcRenderAlertPending error:', e);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
     // (5) SET TAB
     // ═══════════════════════════════════════════════════════════
     window.vfcSetTab = function(tab) {
-        vfcState.tabAktif = tab || 'topup';
+        try {
+            vfcState.tabAktif = tab || 'topup';
 
-        document.querySelectorAll('#vfcTabs .nav-link').forEach(function(a) {
-            if (a.getAttribute('data-vfc-tab') === vfcState.tabAktif) {
-                a.classList.add('active');
-            } else {
-                a.classList.remove('active');
+            document.querySelectorAll('#vfcTabs .nav-link').forEach(function(a) {
+                if (a.getAttribute('data-vfc-tab') === vfcState.tabAktif) {
+                    a.classList.add('active');
+                } else {
+                    a.classList.remove('active');
+                }
+            });
+
+            var container = document.getElementById('vfcTabContent');
+            if (!container) {
+                console.warn('⚠️ [10.47] #vfcTabContent tidak ada');
+                return;
             }
-        });
 
-        var container = document.getElementById('vfcTabContent');
-        if (!container) return;
-
-        if (vfcState.tabAktif === 'topup') {
-            container.innerHTML = vfcRenderTabTopup();
-            vfcRenderTabelTopup(1);
-        } else if (vfcState.tabAktif === 'withdraw') {
-            container.innerHTML = vfcRenderTabWithdraw();
-            vfcRenderTabelWithdraw(1);
-        } else if (vfcState.tabAktif === 'riwayat') {
-            container.innerHTML = vfcRenderTabRiwayat();
-            vfcRenderTabelRiwayat(1);
+            if (vfcState.tabAktif === 'topup') {
+                container.innerHTML = vfcRenderTabTopup();
+                vfcRenderTabelTopup(1);
+            } else if (vfcState.tabAktif === 'withdraw') {
+                container.innerHTML = vfcRenderTabWithdraw();
+                vfcRenderTabelWithdraw(1);
+            } else if (vfcState.tabAktif === 'riwayat') {
+                container.innerHTML = vfcRenderTabRiwayat();
+                vfcRenderTabelRiwayat(1);
+            }
+        } catch (e) {
+            console.error('vfcSetTab error:', e);
         }
     };
 
@@ -55591,7 +56782,6 @@ function toggleStatusWilayah(id) {
                 ? cariTopUpByFilter({ cari: cari, role: role, status: status, tanggal: tgl })
                 : [];
 
-            // Sort terbaru dulu
             list.sort(function(a, b) {
                 return new Date(b.createdAt || b.tanggal || 0) -
                        new Date(a.createdAt || a.tanggal || 0);
@@ -55610,7 +56800,6 @@ function toggleStatusWilayah(id) {
                 return;
             }
 
-            // Pagination
             var total = list.length;
             var perPage = vfcState.perPage;
             var totalPages = Math.ceil(total / perPage) || 1;
@@ -55628,7 +56817,6 @@ function toggleStatusWilayah(id) {
             var bNext = document.getElementById('vfcBtnNextTopup');
             if (bNext) bNext.disabled = (vfcState.pageTopup === totalPages);
 
-            // Render baris
             var html = '';
             paged.forEach(function(t, idx) {
                 var nomor = start + idx + 1;
@@ -55848,7 +57036,6 @@ function toggleStatusWilayah(id) {
                 return;
             }
 
-            // Pagination
             var total = list.length;
             var perPage = vfcState.perPage;
             var totalPages = Math.ceil(total / perPage) || 1;
@@ -55880,7 +57067,6 @@ function toggleStatusWilayah(id) {
                 else badgeStatus = '<span class="badge bg-secondary">' + vfcEsc(w.status) + '</span>';
 
                 var rek = w.rekeningTujuan || {};
-                var rekTeks = (rek.bank || '-') + ' ' + (rek.nomor || '');
                 var rekDisplay =
                     '<small><strong>' + vfcEsc(rek.bank || '-') + '</strong><br>' +
                     vfcEsc(rek.nomor || '-') + '<br>' +
@@ -56015,7 +57201,7 @@ function toggleStatusWilayah(id) {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // (11) RENDER TABEL RIWAYAT (GABUNGAN TOPUP + WITHDRAW)
+    // (11) RENDER TABEL RIWAYAT
     // ═══════════════════════════════════════════════════════════
     window.vfcRenderTabelRiwayat = function(hal) {
         var tbody = document.getElementById('vfcTabelRiwayat');
@@ -56027,7 +57213,6 @@ function toggleStatusWilayah(id) {
             var cari = (document.getElementById('vfcFilterRiwayatCari')?.value || '')
                 .toLowerCase().trim();
 
-            // Gabung topup + withdraw yang sudah diproses
             var combined = [];
 
             try {
@@ -56070,7 +57255,6 @@ function toggleStatusWilayah(id) {
                 });
             } catch (e) {}
 
-            // Filter cari
             if (cari) {
                 combined = combined.filter(function(r) {
                     var s = (r.nama + ' ' + r.idUser + ' ' + r.catatan).toLowerCase();
@@ -56078,7 +57262,6 @@ function toggleStatusWilayah(id) {
                 });
             }
 
-            // Sort terbaru dulu
             combined.sort(function(a, b) {
                 return new Date(b.waktuVerif || 0) - new Date(a.waktuVerif || 0);
             });
@@ -56171,14 +57354,11 @@ function toggleStatusWilayah(id) {
             if (!t) { vfcToast('❌ Top-up tidak ditemukan.', 'danger'); return; }
 
             vfcState.detailIdTopup = id;
-
             var u = vfcUserInfo(t.idUser);
             var roleColor = (typeof saWarnaRole === 'function')
                 ? saWarnaRole(t.role || u.role) : '#6C757D';
 
             var html = '';
-
-            // Header
             html += '<div class="row g-3 mb-3">';
             html += '<div class="col-md-4 text-center">';
             html += '<div class="rounded-circle mx-auto mb-2" ' +
@@ -56191,7 +57371,6 @@ function toggleStatusWilayah(id) {
                     vfcEsc(t.role || u.role || '-') + '</span>';
             html += '</div>';
 
-            // Stats
             html += '<div class="col-md-8"><div class="row g-2">';
             html += '<div class="col-6"><div class="card border-0 bg-light">' +
                 '<div class="card-body p-2 text-center">' +
@@ -56204,9 +57383,8 @@ function toggleStatusWilayah(id) {
                 '<h5 class="fw-bold mb-0">' + vfcRupiah(t.totalRupiah) + '</h5>' +
                 '</div></div></div>';
             html += '</div></div>';
-            html += '</div>'; // row
+            html += '</div>';
 
-            // Detail table
             html += '<table class="table table-sm table-borderless">';
             html += '<tr><td class="text-muted" style="width:150px;">ID Transaksi</td>' +
                     '<td><code>' + vfcEsc(t.id || '-') + '</code></td></tr>';
@@ -56216,8 +57394,7 @@ function toggleStatusWilayah(id) {
                     '<td>' + vfcEsc(t.kodeVerifikasi || '-') + '</td></tr>';
             html += '<tr><td class="text-muted">Tanggal Ajuan</td>' +
                     '<td>' + vfcFormatTgl(t.createdAt || t.tanggal) + '</td></tr>';
-            html += '<tr><td class="text-muted">Status</td>' +
-                    '<td>';
+            html += '<tr><td class="text-muted">Status</td><td>';
             if (t.status === 'Menunggu') html += '<span class="badge bg-warning text-dark">Menunggu</span>';
             else if (t.status === 'Lunas') html += '<span class="badge bg-success">Lunas</span>';
             else if (t.status === 'Ditolak') html += '<span class="badge bg-danger">Ditolak</span>';
@@ -56237,7 +57414,6 @@ function toggleStatusWilayah(id) {
             }
             html += '</table>';
 
-            // Bukti transfer
             var bukti = t.buktiTransfer || t.bukti;
             if (bukti) {
                 html += '<hr>';
@@ -56285,16 +57461,12 @@ function toggleStatusWilayah(id) {
             if (!w) { vfcToast('❌ Withdraw tidak ditemukan.', 'danger'); return; }
 
             vfcState.detailIdWithdraw = id;
-
             var u = vfcUserInfo(w.idUser);
             var roleColor = (typeof saWarnaRole === 'function')
                 ? saWarnaRole(w.role || u.role) : '#6C757D';
-
             var rek = w.rekeningTujuan || {};
 
             var html = '';
-
-            // Header
             html += '<div class="row g-3 mb-3">';
             html += '<div class="col-md-4 text-center">';
             html += '<div class="rounded-circle mx-auto mb-2" ' +
@@ -56307,7 +57479,6 @@ function toggleStatusWilayah(id) {
                     vfcEsc(w.role || u.role || '-') + '</span>';
             html += '</div>';
 
-            // Stats
             html += '<div class="col-md-8"><div class="row g-2">';
             html += '<div class="col-4"><div class="card border-0 bg-light">' +
                 '<div class="card-body p-2 text-center">' +
@@ -56326,9 +57497,8 @@ function toggleStatusWilayah(id) {
                     vfcRupiah(w.diterima || w.totalRupiah) + '</h5>' +
                 '</div></div></div>';
             html += '</div></div>';
-            html += '</div>'; // row
+            html += '</div>';
 
-            // Rekening tujuan
             html += '<div class="alert alert-info">';
             html += '<h6 class="fw-bold mb-2"><i class="fas fa-university me-1"></i>Rekening Tujuan</h6>';
             html += '<table class="table table-sm table-borderless mb-0">';
@@ -56340,7 +57510,6 @@ function toggleStatusWilayah(id) {
                     '<td>' + vfcEsc(rek.atasNama || '-') + '</td></tr>';
             html += '</table></div>';
 
-            // Detail table
             html += '<table class="table table-sm table-borderless">';
             html += '<tr><td class="text-muted" style="width:150px;">ID Transaksi</td>' +
                     '<td><code>' + vfcEsc(w.id || '-') + '</code></td></tr>';
@@ -56362,7 +57531,6 @@ function toggleStatusWilayah(id) {
             }
             html += '</table>';
 
-            // Warning
             html += '<div class="alert alert-warning small mb-0">' +
                 '<i class="fas fa-info-circle me-1"></i>' +
                 '<strong>Penting:</strong> Setujui withdraw akan otomatis ' +
@@ -56522,7 +57690,6 @@ function toggleStatusWilayah(id) {
             document.getElementById('vfcTolakCounter').textContent = '0';
             document.getElementById('vfcTolakNotif').classList.add('d-none');
 
-            // Info target
             var item = null;
             if (tipe === 'topup') {
                 item = (typeof getTopUpByIdGlobal === 'function')
@@ -56708,19 +57875,16 @@ function toggleStatusWilayah(id) {
     };
 
     // ═══════════════════════════════════════════════════════════
-    // (20) EVENT LISTENERS — Terima event
+    // (20) EVENT LISTENERS
     // ═══════════════════════════════════════════════════════════
     window.addEventListener('r2coin:topup-manual-sa', function(e) {
         console.log('📥 10.47 terima topup-manual-sa:', e.detail);
-        // Refresh kalau tab topup/riwayat sedang aktif
         if (vfcState.tabAktif === 'topup') vfcRenderTabelTopup(vfcState.pageTopup);
         if (vfcState.tabAktif === 'riwayat') vfcRenderTabelRiwayat(1);
         vfcRenderStatistik();
     });
 
     window.addEventListener('r2coin:transfer-sa', function(e) {
-        // Transfer SA tidak perlu refresh tabel 10.47
-        // Hanya log
         console.log('📥 10.47: transfer SA tercatat:', e.detail);
     });
 
@@ -56738,21 +57902,1108 @@ function toggleStatusWilayah(id) {
     window.menuHandlers['tampilkanVerifikasiTopUp'] = window.menuHandlers['tampilkanVerifikasiCoinSA'];
 
     // ═══════════════════════════════════════════════════════════
+    // (22) EXPOSE PRIVATE FUNCTIONS untuk debug
+    // ═══════════════════════════════════════════════════════════
+    window.vfcRenderStatistik = vfcRenderStatistik;
+    window.vfcRenderAlertPending = vfcRenderAlertPending;
+    window.vfcRenderTabTopup = vfcRenderTabTopup;
+    window.vfcRenderTabWithdraw = vfcRenderTabWithdraw;
+    window.vfcRenderTabRiwayat = vfcRenderTabRiwayat;
+
+    // ═══════════════════════════════════════════════════════════
     // LOG
     // ═══════════════════════════════════════════════════════════
-    console.log('✅ BLOK R 10.47 — Verifikasi Top-Up & Withdraw terpasang.');
+    console.log('✅ BLOK R 10.47 (REVISI) — Verifikasi Top-Up & Withdraw terpasang.');
     console.log('   📦 3 Tab: Top-Up | Withdraw | Riwayat');
-    console.log('   ⚡ Emit events: r2coin:topup-approved, r2coin:topup-rejected,');
-    console.log('                   r2coin:withdraw-approved, r2coin:withdraw-rejected');
-    console.log('   📥 Listen events: r2coin:topup-manual-sa, r2coin:transfer-sa');
+    console.log('   🔧 Debug: vfcForceRender(), vfcRenderStatistik()');
     console.log('   🎯 Handler: verifikasiTopUp / tampilkanVerifikasiCoinSA');
-    console.log('   💾 Storage: dataTopUpHistory, dataWithdrawalRequests');
 
 })();
 </script>
-<!-- ============================================================ -->
-<!-- ===== AKHIR BLOK R 10.47 (JS) ============================= -->
-<!-- ============================================================ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- AKHIR BLOK R 10.47 (JS) — REVISI                           -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.53 — LOG AKTIVITAS COIN (HTML) ═════════════ -->
+<!-- ═══ Audit Trail + Trace Chain + Suspicious Detector ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div id="logAktivitasCoinContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-history me-2"></i>Log Aktivitas Coin
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Audit trail semua pergerakan R2Coin + deteksi anomali.
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-warning btn-sm" onclick="lacRefreshAudit(this)">
+                    <i class="fas fa-sync-alt me-1"></i> Refresh Audit
+                </button>
+                <button class="btn btn-info btn-sm text-white" onclick="lacExportJSON()">
+                    <i class="fas fa-file-code me-1"></i> Export
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left"></i> Kembali
+                </button>
+            </div>
+        </div>
+
+        <!-- ══════════ STATISTIK 6 KARTU ══════════ -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-2 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-list fa-2x mb-2 text-primary"></i>
+                        <h5 class="fw-bold mb-0" id="lacStatTotal">0</h5>
+                        <small class="text-muted">Total Log</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-exclamation-triangle fa-2x mb-2 text-warning"></i>
+                        <h5 class="fw-bold mb-0" id="lacStatSuspicious">0</h5>
+                        <small class="text-muted">Suspicious</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-fire fa-2x mb-2 text-danger"></i>
+                        <h5 class="fw-bold mb-0" id="lacStatCritical">0</h5>
+                        <small class="text-muted">Critical</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-arrow-up fa-2x mb-2 text-success"></i>
+                        <h5 class="fw-bold mb-0" id="lacStatHigh">0</h5>
+                        <small class="text-muted">High</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-arrow-down fa-2x mb-2 text-success"></i>
+                        <h5 class="fw-bold mb-0" id="lacStatCoinMasuk">0</h5>
+                        <small class="text-muted">Coin Masuk</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-wallet fa-2x mb-2 text-info"></i>
+                        <h5 class="fw-bold mb-0" id="lacStatCoinBeredar">0</h5>
+                        <small class="text-muted">Coin Beredar</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ FILTER & PENCARIAN ══════════ -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <label class="fw-bold small">
+                            <i class="fas fa-search me-1"></i>Cari
+                        </label>
+                        <input type="text" id="lacFilterCari" class="form-control form-control-sm"
+                               placeholder="User / ID / keterangan..."
+                               oninput="lacRenderTabel(1)">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small">Sumber</label>
+                        <select id="lacFilterSumber" class="form-select form-select-sm"
+                                onchange="lacRenderTabel(1)">
+                            <option value="">Semua</option>
+                            <option value="topup">Top-Up</option>
+                            <option value="withdraw">Withdraw</option>
+                            <option value="transfer">Transfer</option>
+                            <option value="intervensi-SA">Intervensi SA</option>
+                            <option value="konversi-gif">Konversi GIF</option>
+                            <option value="reward">Reward</option>
+                            <option value="ojek">Ojek</option>
+                            <option value="belanja">Belanja</option>
+                            <option value="rollback">Rollback</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small">Severity</label>
+                        <select id="lacFilterSeverity" class="form-select form-select-sm"
+                                onchange="lacRenderTabel(1)">
+                            <option value="">Semua</option>
+                            <option value="critical">🔥 Critical</option>
+                            <option value="high">⚠️ High</option>
+                            <option value="medium">ℹ️ Medium</option>
+                            <option value="low">• Low</option>
+                            <option value="normal">• Normal</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small">Tipe</label>
+                        <select id="lacFilterTipe" class="form-select form-select-sm"
+                                onchange="lacRenderTabel(1)">
+                            <option value="">Semua</option>
+                            <option value="credit">⬆️ Masuk (Credit)</option>
+                            <option value="debit">⬇️ Keluar (Debit)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="btn-group w-100" role="group">
+                            <button class="btn btn-sm btn-outline-danger"
+                                    id="lacBtnSuspicious"
+                                    onclick="lacFilterSuspicious(this)">
+                                <i class="fas fa-exclamation-triangle me-1"></i>
+                                <span id="lacBtnSuspiciousLabel">Hanya Suspicious</span>
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary"
+                                    onclick="lacResetFilter()" title="Reset filter">
+                                <i class="fas fa-undo"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-2 d-flex justify-content-between flex-wrap gap-2 align-items-center">
+                    <span class="badge bg-dark" id="lacInfoJumlah">0 log</span>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            onclick="lacBersihkanLog()">
+                        <i class="fas fa-broom me-1"></i>Bersihkan Log
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ TABEL LOG ══════════ -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#1976D2;">
+                <span><i class="fas fa-list me-2"></i>Riwayat Aktivitas Coin</span>
+                <span class="badge bg-light text-dark" id="lacTotalLog">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:120px;">Waktu</th>
+                                <th>User</th>
+                                <th style="width:70px;" class="text-center">Tipe</th>
+                                <th class="text-end" style="width:110px;">Jumlah</th>
+                                <th style="width:130px;">Sumber</th>
+                                <th style="width:110px;">Severity</th>
+                                <th style="width:70px;" class="text-center">Flag</th>
+                                <th style="width:130px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="lacTabelBody">
+                            <tr>
+                                <td colspan="8" class="text-center text-muted py-4">
+                                    <i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>
+                                    Klik <strong>Refresh Audit</strong> untuk memuat log.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                <span class="text-muted small" id="lacInfoPagination">Halaman 1 dari 1</span>
+                <div>
+                    <button class="btn btn-sm btn-outline-secondary me-1"
+                            id="lacBtnPrev" onclick="lacUbahHalaman(-1)" disabled>
+                        <i class="fas fa-chevron-left"></i> Sebelumnya
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            id="lacBtnNext" onclick="lacUbahHalaman(1)">
+                        Selanjutnya <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ MODAL DETAIL LOG ══════════ -->
+<div class="modal fade" id="lacModalDetail" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-info-circle me-2"></i>Detail Log Aktivitas
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="lacDetailBody">
+                <p class="text-muted text-center">Memuat...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ MODAL TRACE CHAIN ══════════ -->
+<div class="modal fade" id="lacModalTrace" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#6F42C1;">
+                <h5 class="modal-title">
+                    <i class="fas fa-project-diagram me-2"></i>Trace Chain Transaksi
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="lacTraceBody">
+                <p class="text-muted text-center">Memuat...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ MODAL TRACE USER ══════════ -->
+<div class="modal fade" id="lacModalTraceUser" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title">
+                    <i class="fas fa-user-search me-2"></i>Trace Asal Coin User
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="lacTraceUserBody">
+                <p class="text-muted text-center">Memuat...</p>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.53 (HTML) ═══════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.53 — LOG AKTIVITAS COIN (UI HANDLER) ═══════ -->
+<!-- ═══ Wajib ada SETELAH engine JS R 0.10.53 ════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_10_53_LOG_COIN_UI() {
+    // ── Guard idempotency ──
+    if (window._blokR1053UIDone) {
+        console.log('ℹ️ BLOK 10.53 UI sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR1053UIDone = true;
+
+    // ═══════════════════════════════════════════════════════
+    // STATE LOKAL
+    // ═══════════════════════════════════════════════════════
+    var lacState = {
+        page: 1,
+        perPage: 20,
+        filterSuspiciousOnly: false,
+        cacheList: []
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // HELPER: ESCAPE HTML (untuk render)
+    // ═══════════════════════════════════════════════════════
+    function lacEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // HELPER: ESCAPE JS (untuk onclick argument)
+    // ═══════════════════════════════════════════════════════
+    function lacEscJs(s) {
+        return String(s == null ? '' : s)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '&quot;')
+            .replace(/\n/g, '\\n');
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // HELPER: FORMAT TANGGAL
+    // ═══════════════════════════════════════════════════════
+    function lacTgl(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            });
+        } catch (e) { return '-'; }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // HELPER: FORMAT ANGKA
+    // ═══════════════════════════════════════════════════════
+    function lacNum(n) {
+        n = parseFloat(n) || 0;
+        return n.toLocaleString('id-ID');
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // HELPER: BADGE SEVERITY
+    // ═══════════════════════════════════════════════════════
+    function lacBadgeSeverity(sev) {
+        var map = {
+            critical: { cls: 'bg-danger',             icon: 'fa-fire',                 label: 'Critical' },
+            high:     { cls: 'bg-warning text-dark',  icon: 'fa-exclamation-triangle', label: 'High' },
+            medium:   { cls: 'bg-info text-dark',     icon: 'fa-info-circle',          label: 'Medium' },
+            low:      { cls: 'bg-secondary',          icon: 'fa-minus',                label: 'Low' },
+            normal:   { cls: 'bg-light text-dark',    icon: 'fa-circle',               label: 'Normal' }
+        };
+        var m = map[sev] || map.normal;
+        return '<span class="badge ' + m.cls + '" style="font-size:10px;">' +
+            '<i class="fas ' + m.icon + ' me-1"></i>' + m.label + '</span>';
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // HELPER: BADGE SUMBER
+    // ═══════════════════════════════════════════════════════
+    function lacBadgeSumber(sumber) {
+        var map = window.LAC_SUMBER_LABEL || {};
+        var info = map[sumber] || { label: sumber, warna: 'secondary', ikon: 'fas fa-question' };
+        return '<span class="badge bg-' + info.warna + '" style="font-size:10px;">' +
+            '<i class="' + info.ikon + ' me-1"></i>' + lacEsc(info.label) + '</span>';
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // (1) TAMPILKAN HALAMAN — entry point
+    // ═══════════════════════════════════════════════════════
+    window.tampilkanLogAktivitasCoin = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.error('❌ #kontenDasbor tidak ditemukan');
+                return;
+            }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            // ── Cache template (hanya sekali) ──
+            if (!window._tplLogAktivitasCoin) {
+                var c = document.getElementById('logAktivitasCoinContainer');
+                if (!c) {
+                    console.warn('⚠️ Container #logAktivitasCoinContainer tidak ada');
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Log Aktivitas Coin', '10.53');
+                    }
+                    return;
+                }
+                window._tplLogAktivitasCoin = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Log Aktivitas Coin di-cache & dihapus');
+            }
+
+            konten.innerHTML = window._tplLogAktivitasCoin;
+
+            // Reset state
+            lacState.page = 1;
+            lacState.filterSuspiciousOnly = false;
+
+            // Reset label tombol suspicious
+            var lbl = document.getElementById('lacBtnSuspiciousLabel');
+            if (lbl) lbl.textContent = 'Hanya Suspicious';
+
+            setTimeout(function() {
+                lacRenderSemua();
+                console.log('✅ BLOK 10.53 — Log Aktivitas Coin rendered');
+            }, 200);
+
+        } catch (e) {
+            console.error('tampilkanLogAktivitasCoin error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (2) RENDER SEMUA (statistik + tabel)
+    // ═══════════════════════════════════════════════════════
+    function lacRenderSemua() {
+        lacRenderStatistik();
+        lacRenderTabel(1);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // (3) RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════
+    function lacRenderStatistik() {
+        if (typeof hitungStatistikLogCoinGlobal !== 'function') {
+            console.warn('⚠️ hitungStatistikLogCoinGlobal belum tersedia');
+            return;
+        }
+
+        var stat = hitungStatistikLogCoinGlobal();
+
+        var el1 = document.getElementById('lacStatTotal');
+        if (el1) el1.textContent = lacNum(stat.totalLog);
+
+        var el2 = document.getElementById('lacStatSuspicious');
+        if (el2) el2.textContent = lacNum(stat.suspiciousCount);
+
+        var el3 = document.getElementById('lacStatCritical');
+        if (el3) el3.textContent = lacNum(stat.criticalCount);
+
+        var el4 = document.getElementById('lacStatHigh');
+        if (el4) el4.textContent = lacNum(stat.highCount);
+
+        var el5 = document.getElementById('lacStatCoinMasuk');
+        if (el5) el5.textContent = lacNum(Math.round(stat.totalCoinMasuk));
+
+        var el6 = document.getElementById('lacStatCoinBeredar');
+        if (el6) el6.textContent = lacNum(Math.round(stat.totalCoinBeredar));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // (4) RENDER TABEL LOG
+    // ═══════════════════════════════════════════════════════
+    window.lacRenderTabel = function(hal) {
+        try {
+            if (hal) lacState.page = hal;
+
+            var tbody = document.getElementById('lacTabelBody');
+            if (!tbody) return;
+
+            if (typeof loadLogAktivitasCoinGlobal !== 'function') {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger py-4">' +
+                    '❌ Engine JS 10.53 belum dimuat.</td></tr>';
+                return;
+            }
+
+            var list = loadLogAktivitasCoinGlobal();
+            if (!Array.isArray(list)) list = [];
+
+            // ── Ambil nilai filter ──
+            var cari = (document.getElementById('lacFilterCari')?.value || '')
+                .toLowerCase().trim();
+            var fSumber   = document.getElementById('lacFilterSumber')?.value || '';
+            var fSeverity = document.getElementById('lacFilterSeverity')?.value || '';
+            var fTipe     = document.getElementById('lacFilterTipe')?.value || '';
+
+            // ── Filter ──
+            var filtered = list.filter(function(l) {
+                if (!l) return false;
+
+                if (lacState.filterSuspiciousOnly && !l.flagSuspicious) return false;
+                if (fSumber   && l.sumber !== fSumber) return false;
+                if (fSeverity && l.severityLevel !== fSeverity) return false;
+                if (fTipe     && l.tipe !== fTipe) return false;
+
+                if (cari) {
+                    var s = (l.namaUser || '') + ' ' + (l.idUser || '') + ' ' +
+                            (l.keterangan || '') + ' ' + (l.sumber || '');
+                    if (s.toLowerCase().indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            lacState.cacheList = filtered;
+
+            // ── Update info jumlah ──
+            var elInfo = document.getElementById('lacInfoJumlah');
+            if (elInfo) {
+                elInfo.textContent = filtered.length + ' log' +
+                    (lacState.filterSuspiciousOnly ? ' (suspicious)' : '');
+            }
+
+            var elTotal = document.getElementById('lacTotalLog');
+            if (elTotal) elTotal.textContent = filtered.length;
+
+            // ── Pagination ──
+            var totalPages = Math.ceil(filtered.length / lacState.perPage) || 1;
+            if (lacState.page > totalPages) lacState.page = totalPages;
+            if (lacState.page < 1) lacState.page = 1;
+
+            var start = (lacState.page - 1) * lacState.perPage;
+            var paged = filtered.slice(start, start + lacState.perPage);
+
+            var elPag = document.getElementById('lacInfoPagination');
+            if (elPag) elPag.textContent =
+                'Halaman ' + lacState.page + ' dari ' + totalPages;
+
+            var btnPrev = document.getElementById('lacBtnPrev');
+            if (btnPrev) btnPrev.disabled = (lacState.page === 1);
+
+            var btnNext = document.getElementById('lacBtnNext');
+            if (btnNext) btnNext.disabled = (lacState.page === totalPages);
+
+            // ── Empty state ──
+            if (paged.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    (list.length === 0
+                        ? 'Log kosong. Klik <strong>Refresh Audit</strong> untuk scan.'
+                        : 'Tidak ada log cocok dengan filter.') +
+                    '</td></tr>';
+                return;
+            }
+
+            // ── Render rows ──
+            var html = '';
+            paged.forEach(function(l) {
+                var tipeIcon = l.tipe === 'credit'
+                    ? '<i class="fas fa-arrow-down text-success"></i>'
+                    : '<i class="fas fa-arrow-up text-danger"></i>';
+                var tipeClass = l.tipe === 'credit' ? 'text-success' : 'text-danger';
+                var tipeSign  = l.tipe === 'credit' ? '+' : '-';
+
+                var flagBadge = l.flagSuspicious
+                    ? '<span class="badge bg-danger"><i class="fas fa-flag"></i></span>'
+                    : '<span class="text-muted">-</span>';
+
+                // ✅ FIX #3: escape JS untuk argument onclick
+                var idEsc      = lacEscJs(l.id);
+                var idUserEsc  = lacEscJs(l.idUser);
+
+                var rowStyle = '';
+                if (l.severityLevel === 'critical') {
+                    rowStyle = ' style="background:#FFEBEE;"';
+                } else if (l.flagSuspicious) {
+                    rowStyle = ' style="background:#FFF3F3;"';
+                }
+
+                html += '<tr' + rowStyle + '>' +
+                    '<td><small class="text-muted">' + lacTgl(l.waktu) + '</small></td>' +
+                    '<td>' +
+                        '<strong>' + lacEsc(l.namaUser || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + lacEsc(l.roleUser || '-') + '</small>' +
+                    '</td>' +
+                    '<td class="text-center">' + tipeIcon + '</td>' +
+                    '<td class="text-end ' + tipeClass + ' fw-bold">' +
+                        tipeSign + lacNum(Math.abs(l.jumlah)) +
+                    '</td>' +
+                    '<td>' + lacBadgeSumber(l.sumber) + '</td>' +
+                    '<td>' + lacBadgeSeverity(l.severityLevel) + '</td>' +
+                    '<td class="text-center">' + flagBadge + '</td>' +
+                    '<td>' +
+                        '<button class="btn btn-sm btn-outline-primary me-1" ' +
+                                'onclick="lacBukaDetail(\'' + idEsc + '\')" ' +
+                                'title="Detail">' +
+                            '<i class="fas fa-eye"></i></button>' +
+                        '<button class="btn btn-sm btn-outline-info me-1" ' +
+                                'onclick="lacTraceChain(\'' + idEsc + '\')" ' +
+                                'title="Trace Chain">' +
+                            '<i class="fas fa-project-diagram"></i></button>' +
+                        '<button class="btn btn-sm btn-outline-success" ' +
+                                'onclick="lacTraceUser(\'' + idUserEsc + '\')" ' +
+                                'title="Trace User">' +
+                            '<i class="fas fa-user-search"></i></button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+
+        } catch (e) {
+            console.error('lacRenderTabel error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (5) UBAH HALAMAN
+    // ═══════════════════════════════════════════════════════
+    window.lacUbahHalaman = function(delta) {
+        lacState.page += delta;
+        lacRenderTabel();
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (6) FILTER SUSPICIOUS ONLY (toggle)
+    // ═══════════════════════════════════════════════════════
+    window.lacFilterSuspicious = function(btn) {
+        lacState.filterSuspiciousOnly = !lacState.filterSuspiciousOnly;
+
+        // Update visual tombol
+        if (btn) {
+            if (lacState.filterSuspiciousOnly) {
+                btn.classList.remove('btn-outline-danger');
+                btn.classList.add('btn-danger');
+            } else {
+                btn.classList.remove('btn-danger');
+                btn.classList.add('btn-outline-danger');
+            }
+        }
+
+        lacRenderTabel(1);
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (7) RESET FILTER
+    // ═══════════════════════════════════════════════════════
+    window.lacResetFilter = function() {
+        ['lacFilterCari', 'lacFilterSumber', 'lacFilterSeverity', 'lacFilterTipe']
+            .forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+        lacState.filterSuspiciousOnly = false;
+
+        var btn = document.getElementById('lacBtnSuspicious');
+        if (btn) {
+            btn.classList.remove('btn-danger');
+            btn.classList.add('btn-outline-danger');
+        }
+
+        lacRenderTabel(1);
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (8) REFRESH AUDIT  ✅ FIX #1
+    // ═══════════════════════════════════════════════════════
+    window.lacRefreshAudit = function(btn) {
+        if (typeof refreshLogAktivitasCoinGlobal !== 'function') {
+            alert('❌ Engine 10.53 belum dimuat.');
+            return;
+        }
+
+        // Disable tombol sementara
+        if (btn && !btn.disabled) {
+            btn.disabled = true;
+            var originalHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Scanning...';
+
+            setTimeout(function() {
+                try {
+                    var hasil = refreshLogAktivitasCoinGlobal();
+
+                    if (hasil.sukses) {
+                        lacRenderSemua();
+
+                        var totalSusp = 0;
+                        if (typeof getLogSuspiciousGlobal === 'function') {
+                            totalSusp = getLogSuspiciousGlobal().length;
+                        }
+
+                        alert('✅ Audit selesai.\n' +
+                              'Total log: ' + hasil.jumlah + '\n' +
+                              'Suspicious: ' + totalSusp);
+                    } else {
+                        alert('❌ ' + hasil.pesan);
+                    }
+                } catch (e) {
+                    console.error('lacRefreshAudit error:', e);
+                    alert('❌ Error: ' + e.message);
+                } finally {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
+            }, 100);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (9) BUKA DETAIL LOG
+    // ═══════════════════════════════════════════════════════
+    window.lacBukaDetail = function(idLog) {
+        try {
+            var log = typeof getLogCoinByIdGlobal === 'function'
+                ? getLogCoinByIdGlobal(idLog)
+                : null;
+
+            if (!log) {
+                alert('❌ Log tidak ditemukan.');
+                return;
+            }
+
+            var body = document.getElementById('lacDetailBody');
+            if (!body) return;
+
+            var html = '';
+
+            // Header
+            html += '<div class="alert alert-light border mb-3">';
+            html += '<div class="d-flex justify-content-between align-items-start mb-2 flex-wrap gap-2">';
+            html += '<div>' + lacBadgeSumber(log.sumber) + ' ' +
+                    lacBadgeSeverity(log.severityLevel) + '</div>';
+            if (log.flagSuspicious) {
+                html += '<span class="badge bg-danger">' +
+                        '<i class="fas fa-flag me-1"></i>SUSPICIOUS</span>';
+            }
+            html += '</div>';
+            html += '<h5 class="fw-bold mb-1">' + lacEsc(log.namaUser || '-') + '</h5>';
+            html += '<small class="text-muted">' +
+                    lacEsc(log.idUser || '-') + ' • ' +
+                    lacEsc(log.roleUser || '-') + '</small>';
+            html += '</div>';
+
+            // Detail
+            html += '<table class="table table-sm">';
+            html += '<tr><td class="text-muted" style="width:150px;">ID Log</td>' +
+                    '<td><code>' + lacEsc(log.id) + '</code></td></tr>';
+            html += '<tr><td class="text-muted">Waktu</td>' +
+                    '<td>' + lacTgl(log.waktu) + '</td></tr>';
+            html += '<tr><td class="text-muted">Tipe</td><td>' +
+                    (log.tipe === 'credit'
+                        ? '<span class="text-success">Credit (+)</span>'
+                        : '<span class="text-danger">Debit (-)</span>') +
+                    '</td></tr>';
+            html += '<tr><td class="text-muted">Jumlah</td>' +
+                    '<td><strong>' + lacNum(Math.abs(log.jumlah)) + ' Coin</strong></td></tr>';
+            html += '<tr><td class="text-muted">Saldo Sebelum</td>' +
+                    '<td>' + lacNum(log.saldoSebelum || 0) + '</td></tr>';
+            html += '<tr><td class="text-muted">Saldo Sesudah</td>' +
+                    '<td>' + lacNum(log.saldoSesudah || 0) + '</td></tr>';
+            html += '<tr><td class="text-muted">Keterangan</td>' +
+                    '<td>' + lacEsc(log.keterangan || '-') + '</td></tr>';
+            if (log.refId) {
+                html += '<tr><td class="text-muted">Ref ID</td>' +
+                        '<td><code>' + lacEsc(log.refId) + '</code></td></tr>';
+            }
+            html += '</table>';
+
+            // Lawan transaksi
+            if (log.lawanTransaksi) {
+                html += '<div class="mt-3">';
+                html += '<h6 class="fw-bold"><i class="fas fa-exchange-alt me-1"></i>' +
+                        'Lawan Transaksi</h6>';
+                html += '<div class="alert alert-info mb-0">';
+                html += '<strong>' + lacEsc(log.lawanTransaksi.nama || '-') + '</strong><br>';
+                html += '<small>' + lacEsc(log.lawanTransaksi.idUser || '-') + ' • ' +
+                        lacEsc(log.lawanTransaksi.role || '-') + '</small>';
+                html += '</div></div>';
+            }
+
+            // Alasan suspicious
+            if (log.flagSuspicious &&
+                Array.isArray(log.alasanSuspicious) &&
+                log.alasanSuspicious.length > 0) {
+                html += '<div class="mt-3">';
+                html += '<h6 class="fw-bold text-danger">' +
+                        '<i class="fas fa-exclamation-triangle me-1"></i>' +
+                        'Alasan Suspicious</h6>';
+                html += '<ul class="list-group list-group-flush">';
+                log.alasanSuspicious.forEach(function(a) {
+                    html += '<li class="list-group-item list-group-item-danger">' +
+                            lacEsc(a) + '</li>';
+                });
+                html += '</ul></div>';
+            }
+
+            // Meta
+            if (log.meta && typeof log.meta === 'object' &&
+                Object.keys(log.meta).length > 0) {
+                html += '<div class="mt-3">';
+                html += '<h6 class="fw-bold">' +
+                        '<i class="fas fa-info-circle me-1"></i>Metadata</h6>';
+                html += '<pre class="bg-light p-2 rounded" style="font-size:12px;max-height:200px;overflow:auto;">' +
+                        lacEsc(JSON.stringify(log.meta, null, 2)) + '</pre>';
+                html += '</div>';
+            }
+
+            body.innerHTML = html;
+            new bootstrap.Modal(document.getElementById('lacModalDetail')).show();
+
+        } catch (e) {
+            console.error('lacBukaDetail error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (10) TRACE CHAIN
+    // ═══════════════════════════════════════════════════════
+    window.lacTraceChain = function(idLog) {
+        try {
+            if (typeof traceAsalCoinTransaksiGlobal !== 'function') {
+                alert('❌ Fungsi trace tidak tersedia.');
+                return;
+            }
+
+            var hasil = traceAsalCoinTransaksiGlobal(idLog);
+            if (!hasil.sukses) {
+                alert('❌ ' + hasil.pesan);
+                return;
+            }
+
+            var body = document.getElementById('lacTraceBody');
+            if (!body) return;
+
+            var html = '';
+
+            // Summary
+            html += '<div class="alert alert-info mb-3">';
+            html += '<div class="row g-2 small">';
+            html += '<div class="col-md-3"><strong>ID Transaksi:</strong><br>' +
+                    '<code>' + lacEsc(hasil.idTrx) + '</code></div>';
+            html += '<div class="col-md-3"><strong>Total Hop:</strong><br>' +
+                    hasil.hopCount + '</div>';
+            html += '<div class="col-md-3"><strong>Max Severity:</strong><br>' +
+                    lacBadgeSeverity(hasil.maxSeverity) + '</div>';
+            html += '<div class="col-md-3"><strong>Suspicious:</strong><br>' +
+                    (hasil.isSuspicious
+                        ? '<span class="badge bg-danger">YA</span>'
+                        : '<span class="badge bg-success">TIDAK</span>') +
+                    '</div>';
+            html += '</div></div>';
+
+            // Chain visual
+            if (!Array.isArray(hasil.chain) || hasil.chain.length === 0) {
+                html += '<p class="text-muted text-center py-3">' +
+                        'Tidak ada chain yang bisa di-trace.</p>';
+            } else {
+                hasil.chain.forEach(function(item, idx) {
+                    var warna = item.severity === 'critical' ? '#DC3545' :
+                                item.severity === 'high'     ? '#FFC107' :
+                                item.severity === 'medium'   ? '#17A2B8' :
+                                '#6C757D';
+
+                    html += '<div class="card border-0 shadow-sm mb-2" ' +
+                            'style="border-left:5px solid ' + warna + ' !important;">';
+                    html += '<div class="card-body p-2">';
+                    html += '<div class="d-flex justify-content-between align-items-start flex-wrap gap-1">';
+                    html += '<div>' +
+                            '<span class="badge bg-dark me-2">Level ' + idx + '</span>' +
+                            lacBadgeSumber(item.sumber) +
+                            '</div>';
+                    html += lacBadgeSeverity(item.severity);
+                    html += '</div>';
+                    html += '<div class="mt-2 small">' +
+                            '<strong>' + lacEsc(item.nama || '-') + '</strong> ' +
+                            '<span class="text-muted">(' + lacEsc(item.role || '-') + ')</span>' +
+                            '</div>';
+                    html += '<div class="small mt-1">' +
+                            (item.tipe === 'credit'
+                                ? '<span class="text-success">+' + lacNum(item.jumlah) + '</span>'
+                                : '<span class="text-danger">-'  + lacNum(item.jumlah) + '</span>') +
+                            ' <span class="text-muted">• ' + lacTgl(item.waktu) + '</span>' +
+                            '</div>';
+                    html += '<div class="small text-muted mt-1">' +
+                            lacEsc(item.keterangan || '-') + '</div>';
+                    html += '</div></div>';
+
+                    if (idx < hasil.chain.length - 1) {
+                        html += '<div class="text-center text-muted my-1">' +
+                                '<i class="fas fa-arrow-down"></i></div>';
+                    }
+                });
+            }
+
+            body.innerHTML = html;
+            new bootstrap.Modal(document.getElementById('lacModalTrace')).show();
+
+        } catch (e) {
+            console.error('lacTraceChain error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (11) TRACE USER
+    // ═══════════════════════════════════════════════════════
+    window.lacTraceUser = function(idUser) {
+        try {
+            if (!idUser) {
+                alert('❌ ID user tidak valid.');
+                return;
+            }
+
+            if (typeof traceAsalCoinUserGlobal !== 'function') {
+                alert('❌ Fungsi trace user tidak tersedia.');
+                return;
+            }
+
+            var hasil = traceAsalCoinUserGlobal(idUser);
+            if (!hasil.sukses) {
+                alert('❌ ' + hasil.pesan);
+                return;
+            }
+
+            var body = document.getElementById('lacTraceUserBody');
+            if (!body) return;
+
+            var html = '';
+
+            // Header user
+            html += '<div class="alert alert-success mb-3">';
+            html += '<h5 class="fw-bold mb-1">' + lacEsc(hasil.nama || '-') + '</h5>';
+            html += '<small>' + lacEsc(hasil.idUser) + ' • ' +
+                    lacEsc(hasil.role || '-') + '</small>';
+            html += '</div>';
+
+            // Stats grid
+            html += '<div class="row g-2 mb-3">';
+            html += '<div class="col-md-3 col-6"><div class="card border-0 bg-light">' +
+                '<div class="card-body text-center p-2">' +
+                '<small class="text-muted d-block">Saldo Sekarang</small>' +
+                '<strong class="text-primary fs-6">' +
+                lacNum(hasil.saldoSekarang) + '</strong>' +
+                '</div></div></div>';
+            html += '<div class="col-md-3 col-6"><div class="card border-0 bg-light">' +
+                '<div class="card-body text-center p-2">' +
+                '<small class="text-muted d-block">Total Masuk</small>' +
+                '<strong class="text-success fs-6">+' +
+                lacNum(hasil.totalCoinMasuk) + '</strong>' +
+                '</div></div></div>';
+            html += '<div class="col-md-3 col-6"><div class="card border-0 bg-light">' +
+                '<div class="card-body text-center p-2">' +
+                '<small class="text-muted d-block">Total Keluar</small>' +
+                '<strong class="text-danger fs-6">-' +
+                lacNum(hasil.totalCoinKeluar) + '</strong>' +
+                '</div></div></div>';
+            html += '<div class="col-md-3 col-6"><div class="card border-0 bg-light">' +
+                '<div class="card-body text-center p-2">' +
+                '<small class="text-muted d-block">Suspicious</small>' +
+                '<strong class="' +
+                (hasil.suspiciousCount > 0 ? 'text-danger' : 'text-success') +
+                ' fs-6">' + hasil.suspiciousCount + '</strong>' +
+                '</div></div></div>';
+            html += '</div>';
+
+            // Breakdown per sumber
+            var breakdown = hasil.breakdown || {};
+            var keys = Object.keys(breakdown);
+            if (keys.length > 0) {
+                html += '<h6 class="fw-bold mt-3">' +
+                        '<i class="fas fa-chart-pie me-1"></i>Breakdown per Sumber</h6>';
+                html += '<table class="table table-sm">';
+                html += '<thead class="table-light"><tr>' +
+                        '<th>Sumber</th>' +
+                        '<th class="text-end">Jumlah Coin</th>' +
+                        '<th class="text-end">Transaksi</th>' +
+                        '</tr></thead><tbody>';
+                keys.forEach(function(k) {
+                    html += '<tr>' +
+                        '<td>' + lacBadgeSumber(k) + '</td>' +
+                        '<td class="text-end">' + lacNum(breakdown[k].jumlah) + '</td>' +
+                        '<td class="text-end">' + breakdown[k].count + '</td>' +
+                        '</tr>';
+                });
+                html += '</tbody></table>';
+            }
+
+            // Timeline
+            var timeline = hasil.timeline || [];
+            if (timeline.length > 0) {
+                html += '<h6 class="fw-bold mt-3">' +
+                        '<i class="fas fa-stream me-1"></i>Timeline (50 terakhir)</h6>';
+                html += '<div style="max-height:300px;overflow-y:auto;" ' +
+                        'class="border rounded p-2">';
+                timeline.forEach(function(t) {
+                    var color = t.tipe === 'credit' ? 'success' : 'danger';
+                    html += '<div class="border-bottom pb-1 mb-1 small">' +
+                        '<span class="text-muted">' + lacTgl(t.waktu) + '</span> ' +
+                        lacBadgeSumber(t.sumber) + ' ' +
+                        '<span class="text-' + color + ' fw-bold">' +
+                            (t.tipe === 'credit' ? '+' : '-') +
+                            lacNum(t.jumlah) +
+                        '</span>' +
+                        '<div class="text-muted">' +
+                            lacEsc(t.keterangan || '-') + '</div>' +
+                        '</div>';
+                });
+                html += '</div>';
+            }
+
+            body.innerHTML = html;
+            new bootstrap.Modal(document.getElementById('lacModalTraceUser')).show();
+
+        } catch (e) {
+            console.error('lacTraceUser error:', e);
+            alert('❌ Error: ' + e.message);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (12) BERSIHKAN LOG  ✅ FIX #2 (tombol Verifikasi Chain dihapus)
+    // ═══════════════════════════════════════════════════════
+    window.lacBersihkanLog = function() {
+        try {
+            if (typeof clearLogAktivitasCoinGlobal !== 'function') {
+                alert('❌ Fungsi clear tidak tersedia.');
+                return;
+            }
+
+            if (!confirm('⚠️ Hapus SEMUA log aktivitas coin?\n\n' +
+                         'Tindakan ini tidak bisa dibatalkan.')) {
+                return;
+            }
+
+            var hasil = clearLogAktivitasCoinGlobal({ konfirmasi: true });
+
+            if (hasil.sukses) {
+                lacState.page = 1;
+                lacState.cacheList = [];
+                lacRenderSemua();
+                alert('✅ Log berhasil dibersihkan.');
+            } else {
+                alert('❌ ' + hasil.pesan);
+            }
+        } catch (e) {
+            console.error('lacBersihkanLog error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (13) EXPORT JSON
+    // ═══════════════════════════════════════════════════════
+    window.lacExportJSON = function() {
+        try {
+            if (typeof exportLogCoinJSONGlobal !== 'function') {
+                alert('❌ Fungsi export tidak tersedia.');
+                return;
+            }
+
+            var hasil = exportLogCoinJSONGlobal();
+            if (!hasil.sukses) {
+                alert('❌ ' + hasil.pesan);
+                return;
+            }
+
+            var blob = new Blob([hasil.json], {
+                type: 'application/json;charset=utf-8'
+            });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'log_aktivitas_coin_' +
+                new Date().toISOString().split('T')[0] + '.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            alert('✅ Export berhasil.');
+        } catch (e) {
+            console.error('lacExportJSON error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════
+    // (14) HANDLER MENU
+    // ═══════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanLogAktivitasCoin'] =
+        window.tampilkanLogAktivitasCoin;
+    window.menuHandlers['logAktivitasCoin'] =
+        window.tampilkanLogAktivitasCoin;
+
+    console.log('✅ BLOK R 10.53 — Log Aktivitas Coin (UI) terpasang.');
+    console.log('   UI Handler: 14 fungsi (fixed)');
+    console.log('   ✅ Fix #1: lacRefreshAudit(btn) — tombol di-pass eksplisit');
+    console.log('   ✅ Fix #2: lacCekIntegritas dihapus (bukan ranah 10.53)');
+    console.log('   ✅ Fix #3: lacEscJs() — escape JS untuk onclick');
+    console.log('   ✅ Fix #4: container di-cache & dihapus benar');
+    console.log('   ✅ Fix #5: null-guard di semua akses DOM');
+    console.log('   ✅ Fix #6: tombol verifikasi chain dihapus dari HTML');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.53 (UI HANDLER) ════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 11.2 — PROFIL TOKO (HTML)                            -->
