@@ -4387,6 +4387,1066 @@
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL PERSETUJUAN AKUN SA ═════════════════ -->
+<!-- ═══ Dipakai oleh: R 10.4 (Persetujuan Akun UI)            ═══ -->
+<!-- ═══ Foundation: Core System (1-8) + Verifikasi Global SA   ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_PERSETUJUAN_AKUN_SA() {
+    if (window._blokPersetujuanAkunSADone) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL PERSETUJUAN AKUN SA sudah terpasang.');
+        return;
+    }
+    window._blokPersetujuanAkunSADone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA & KONFIGURASI IJIN AKSES
+    // ═══════════════════════════════════════════════════════════
+    var KEY_AKUN_AKTIF = 'dataAkunAktif';
+    var KEY_LOGIN_USER = 'dataLoginUser';
+    var KEY_VERIFIKASI = 'dataVerifikasiDokumen';
+    var KEY_KONFIG_IJIN = 'konfigIjinAksesGlobal';
+
+    var STATUS_PENDING  = 'Pending';
+    var STATUS_AKTIF    = 'Aktif';
+    var STATUS_DITOLAK  = 'Ditolak';
+
+    // ── Ijin akses default per menu ──
+    // Setiap menu punya daftar kodeRole yang boleh akses
+    var IJIN_DEFAULT = {
+        'persetujuanAkun':  ['SA', 'CS', 'ADM'],
+        'kelolaAkunAktif':  ['SA', 'CS', 'ADM'],
+        'verifikasiDokumen': ['SA', 'CS', 'ADM'],
+        'settingEkonomi':   ['SA'],
+        'auditLog':         ['SA'],
+        'broadcast':        ['SA', 'MKT']
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _paEsc(s) {
+        if (typeof hfEscHtml === 'function') return hfEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function _paNow() {
+        return new Date().toISOString();
+    }
+
+    function _paGetIdAdmin() {
+        try {
+            if (typeof getIdUserAktif === 'function') {
+                var id = getIdUserAktif();
+                if (id) return id;
+            }
+        } catch (e) {}
+        return 'SA';
+    }
+
+    function _paGetRoleDisplay() {
+        try {
+            if (typeof getRoleUserAktif === 'function') {
+                return getRoleUserAktif() || '';
+            }
+        } catch (e) {}
+        return '';
+    }
+
+    function _paGetKodeRoleUser() {
+        try {
+            if (typeof userAktif !== 'undefined' && userAktif && userAktif.kodeRole) {
+                return String(userAktif.kodeRole).toUpperCase();
+            }
+        } catch (e) {}
+        var role = _paGetRoleDisplay();
+        var map = {
+            'SuperAdmin':       'SA',
+            'Customer Service': 'CS',
+            'Staf Admin':       'ADM',
+            'Staf Marketing':   'MKT'
+        };
+        return map[role] || '';
+    }
+
+    function _paReadArray(key) {
+        try {
+            if (Array.isArray(window[key])) return window[key];
+            if (typeof hfLoadJSON === 'function') {
+                var v = hfLoadJSON(key, []);
+                return Array.isArray(v) ? v : [];
+            }
+            var s = localStorage.getItem(key);
+            var arr = s ? JSON.parse(s) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+
+    function _paSaveArray(key, data) {
+        try {
+            if (!Array.isArray(data)) data = [];
+            if (typeof hfSaveJSON === 'function') {
+                var r = hfSaveJSON(key, data);
+                return r && r.sukses !== false ? { sukses: true } : r;
+            }
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    function _paCatatAktivitas(aksi, detail) {
+        try {
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(_paGetIdAdmin(), aksi, detail);
+            }
+        } catch (e) {}
+    }
+
+    function _paCatatAudit(subKategori, aksi, level, deskripsi, target) {
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori:    'manajemen_akun',
+                    subKategori: subKategori || 'persetujuan_akun',
+                    aksi:        aksi        || 'Aksi Persetujuan',
+                    level:       level       || 'info',
+                    deskripsi:   deskripsi   || '',
+                    target:      target      || { tipe: 'sistem' },
+                    status:      'sukses'
+                });
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — ACCESS CONTROL (TERPUSAT)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── Load config ijin dari storage ──
+    function _paLoadConfigIjin() {
+        try {
+            var v = null;
+            if (typeof hfLoadJSON === 'function') {
+                v = hfLoadJSON(KEY_KONFIG_IJIN, null);
+            } else {
+                var s = localStorage.getItem(KEY_KONFIG_IJIN);
+                v = s ? JSON.parse(s) : null;
+            }
+            return (v && typeof v === 'object') ? v : {};
+        } catch (e) { return {}; }
+    }
+
+    function _paSaveConfigIjin(config) {
+        try {
+            if (typeof hfSaveJSON === 'function') {
+                return hfSaveJSON(KEY_KONFIG_IJIN, config);
+            }
+            localStorage.setItem(KEY_KONFIG_IJIN, JSON.stringify(config));
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══ CORE: cekIjinAksesGlobal ═══
+    window.cekIjinAksesGlobal = function(kodeRole, menuKey) {
+        try {
+            // 1. SuperAdmin selalu bisa
+            var roleDisplay = _paGetRoleDisplay();
+            if (roleDisplay === 'SuperAdmin') return true;
+
+            // 2. Normalisasi kodeRole
+            var kode = String(kodeRole || _paGetKodeRoleUser() || '').toUpperCase().trim();
+            if (!kode) return false;
+
+            // 3. Cek konfigurasi custom dulu
+            var config = _paLoadConfigIjin();
+            if (menuKey && config[menuKey] && Array.isArray(config[menuKey])) {
+                return config[menuKey].indexOf(kode) !== -1;
+            }
+
+            // 4. Cek default
+            if (menuKey && IJIN_DEFAULT[menuKey]) {
+                return IJIN_DEFAULT[menuKey].indexOf(kode) !== -1;
+            }
+
+            // 5. Fallback: kalau menuKey tidak dikenal, cek userAktif.akses khusus
+            try {
+                if (typeof userAktif !== 'undefined' && userAktif) {
+                    if (Array.isArray(userAktif.aksesMenu)) {
+                        return userAktif.aksesMenu.indexOf(menuKey) !== -1;
+                    }
+                }
+            } catch (e) {}
+
+            return false;
+        } catch (e) {
+            console.error('cekIjinAksesGlobal error:', e);
+            return false;
+        }
+    };
+
+    // ═══ Get konfigurasi ijin (untuk UI manajemen) ═══
+    window.getKonfigIjinAksesGlobal = function() {
+        try {
+            var config = _paLoadConfigIjin();
+            var hasil = {};
+
+            // Merge default + custom
+            Object.keys(IJIN_DEFAULT).forEach(function(menu) {
+                hasil[menu] = (config[menu] && Array.isArray(config[menu]))
+                    ? config[menu].slice()
+                    : IJIN_DEFAULT[menu].slice();
+            });
+
+            // Tambahkan custom menu baru
+            Object.keys(config).forEach(function(menu) {
+                if (!hasil[menu] && Array.isArray(config[menu])) {
+                    hasil[menu] = config[menu].slice();
+                }
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('getKonfigIjinAksesGlobal error:', e);
+            return {};
+        }
+    };
+
+    // ═══ Delegate ijin akses ═══
+    window.delegateIjinAksesGlobal = function(menuKey, daftarKodeRole) {
+        try {
+            if (!menuKey) return { sukses: false, pesan: 'MenuKey tidak valid.' };
+
+            var config = _paLoadConfigIjin();
+
+            if (daftarKodeRole === null || daftarKodeRole === undefined) {
+                delete config[menuKey];
+            } else if (Array.isArray(daftarKodeRole)) {
+                config[menuKey] = daftarKodeRole.map(function(k) {
+                    return String(k).toUpperCase().trim();
+                }).filter(Boolean);
+            } else {
+                return { sukses: false, pesan: 'Daftar role harus array.' };
+            }
+
+            var r = _paSaveConfigIjin(config);
+            if (!r.sukses) return r;
+
+            _paCatatAktivitas('Delegasi Ijin Akses',
+                menuKey + ' → ' + JSON.stringify(config[menuKey] || 'reset'));
+
+            return { sukses: true, config: window.getKonfigIjinAksesGlobal() };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ Reset ijin akses ke default ═══
+    window.resetIjinAksesGlobal = function(opts) {
+        opts = opts || {};
+        if (!opts.konfirmasi) {
+            return { sukses: false, pesan: 'Butuh { konfirmasi: true }' };
+        }
+        try {
+            var backup = localStorage.getItem(KEY_KONFIG_IJIN);
+            if (backup) {
+                localStorage.setItem('backup_ijin_' + Date.now(), backup);
+            }
+            localStorage.removeItem(KEY_KONFIG_IJIN);
+
+            _paCatatAktivitas('Reset Ijin Akses', 'Konfigurasi dikembalikan ke default');
+            return { sukses: true, config: window.getKonfigIjinAksesGlobal() };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ Ambil daftar role yang bisa akses menu ═══
+    window.getRoleBolehAksesGlobal = function(menuKey) {
+        try {
+            var config = window.getKonfigIjinAksesGlobal();
+            return config[menuKey] ? config[menuKey].slice() : [];
+        } catch (e) {
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — READ (PENDING, STATISTIK, BREAKDOWN)
+    // ═══════════════════════════════════════════════════════════
+
+    // ═══ Get 1 pending by ID ═══
+    window.getPendingPersetujuanByIdGlobal = function(idUser) {
+        if (!idUser) return null;
+        try {
+            var list = (typeof loadDataPendingAkun === 'function')
+                ? loadDataPendingAkun() : [];
+            return list.find(function(p) {
+                return p && (p.idUser === idUser || p.id === idUser);
+            }) || null;
+        } catch (e) {
+            console.error('getPendingPersetujuanByIdGlobal error:', e);
+            return null;
+        }
+    };
+
+    // ═══ Get semua pending (delegasi loadDataPendingAkun) ═══
+    window.getAllPendingPersetujuanGlobal = function() {
+        try {
+            if (typeof loadDataPendingAkun === 'function') {
+                return loadDataPendingAkun() || [];
+            }
+            return [];
+        } catch (e) {
+            console.error('getAllPendingPersetujuanGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══ Filter + cari pending ═══
+    window.cariPendingPersetujuanGlobal = function(filter) {
+        filter = filter || {};
+        try {
+            var semua = window.getAllPendingPersetujuanGlobal();
+            var fRole   = filter.role   || '';
+            var fSumber = filter.sumber || '';
+            var cari    = (filter.cari || '').toLowerCase().trim();
+
+            var hasil = semua.filter(function(p) {
+                if (!p) return false;
+                if (fRole   && p.role   !== fRole)   return false;
+                if (fSumber && p.sumber !== fSumber) return false;
+                if (cari) {
+                    var s = [
+                        p.nama || '',
+                        p.idUser || '',
+                        p.username || '',
+                        p.hp || '',
+                        p.email || ''
+                    ].join(' ').toLowerCase();
+                    if (s.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            // Sort: terbaru dulu
+            hasil.sort(function(a, b) {
+                return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('cariPendingPersetujuanGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══ Statistik 4 counter ═══
+    window.hitungStatistikPersetujuanGlobal = function() {
+        try {
+            var semuaPending = window.getAllPendingPersetujuanGlobal();
+            var totalPending = semuaPending.length;
+
+            // Butuh perhatian: pending > 1 hari
+            var now = Date.now();
+            var butuhPerhatian = 0;
+            semuaPending.forEach(function(p) {
+                if (!p.createdAt) return;
+                try {
+                    var t = new Date(p.createdAt).getTime();
+                    if (!isNaN(t) && (now - t) > 86400000) butuhPerhatian++;
+                } catch (e) {}
+            });
+
+            // Disetujui & ditolak hari ini
+            var todayStr = new Date().toISOString().substring(0, 10);
+            var akunAktif = _paReadArray(KEY_AKUN_AKTIF);
+            var disetujuiHariIni = 0;
+            var ditolakHariIni = 0;
+
+            akunAktif.forEach(function(a) {
+                if (!a || !a.verifiedAt) return;
+                if (String(a.verifiedAt).substring(0, 10) !== todayStr) return;
+                if (a.status === 'Aktif') disetujuiHariIni++;
+                else if (a.status === 'Ditolak') ditolakHariIni++;
+            });
+
+            return {
+                pending:            totalPending,
+                disetujuiHariIni:   disetujuiHariIni,
+                ditolakHariIni:     ditolakHariIni,
+                butuhPerhatian:     butuhPerhatian
+            };
+        } catch (e) {
+            console.error('hitungStatistikPersetujuanGlobal error:', e);
+            return { pending: 0, disetujuiHariIni: 0, ditolakHariIni: 0, butuhPerhatian: 0 };
+        }
+    };
+
+    // ═══ Breakdown per role ═══
+    window.getBreakdownPersetujuanPerRoleGlobal = function() {
+        try {
+            var semua = window.getAllPendingPersetujuanGlobal();
+            var perRole = {};
+
+            semua.forEach(function(p) {
+                if (!p || !p.role) return;
+                perRole[p.role] = (perRole[p.role] || 0) + 1;
+            });
+
+            var hasil = Object.keys(perRole).map(function(role) {
+                return { role: role, jumlah: perRole[role] };
+            });
+
+            // Sort: Jasa prioritas, lalu terbanyak
+            hasil.sort(function(a, b) {
+                if (a.role === 'Jasa' && b.role !== 'Jasa') return -1;
+                if (b.role === 'Jasa' && a.role !== 'Jasa') return 1;
+                return b.jumlah - a.jumlah;
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('getBreakdownPersetujuanPerRoleGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — CORE APPROVE
+    // ═══════════════════════════════════════════════════════════
+
+    window.setujuiAkunPersetujuanGlobal = function(idUser, idAdmin, opts) {
+        opts = opts || {};
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+            idAdmin = idAdmin || _paGetIdAdmin();
+
+            var now = _paNow();
+            var namaUser = idUser;
+
+            // ── 1. Ambil data dari pending (untuk nama) ──
+            var pending = window.getPendingPersetujuanByIdGlobal(idUser);
+            if (pending && pending.nama) namaUser = pending.nama;
+
+            // ── 2. Update dataLoginUser ──
+            var login = _paReadArray(KEY_LOGIN_USER);
+            var idxLogin = login.findIndex(function(u) {
+                return u && (u.idUser === idUser || u.id === idUser);
+            });
+
+            if (idxLogin !== -1) {
+                login[idxLogin].statusVerifikasi = STATUS_AKTIF;
+                login[idxLogin].status = STATUS_AKTIF;
+                login[idxLogin].verifiedAt = now;
+                login[idxLogin].verifiedBy = idAdmin;
+                login[idxLogin].alasanTolak = '';
+                login[idxLogin].updatedAt = now;
+                if (!namaUser || namaUser === idUser) {
+                    namaUser = login[idxLogin].nama || idUser;
+                }
+                _paSaveArray(KEY_LOGIN_USER, login);
+            }
+
+            // ── 3. Update / push ke dataAkunAktif ──
+            var akun = _paReadArray(KEY_AKUN_AKTIF);
+            var idxAkun = akun.findIndex(function(a) {
+                return a && (a.id === idUser || a.idUser === idUser);
+            });
+
+            if (idxAkun !== -1) {
+                akun[idxAkun].statusVerifikasi = STATUS_AKTIF;
+                akun[idxAkun].status = STATUS_AKTIF;
+                akun[idxAkun].verifiedAt = now;
+                akun[idxAkun].verifiedBy = idAdmin;
+                akun[idxAkun].alasanTolak = '';
+                akun[idxAkun].updatedAt = now;
+            } else if (idxLogin !== -1) {
+                // Auto-push dari login
+                var src = login[idxLogin];
+                akun.push({
+                    id:               src.idUser || src.id,
+                    idUser:           src.idUser || src.id,
+                    nama:             src.nama,
+                    role:             src.role,
+                    kodeRole:         src.kodeRole,
+                    username:         src.username,
+                    password:         src.password,
+                    hp:               src.hp,
+                    email:            src.email,
+                    alamat:           src.alamat,
+                    alamatKtp:        src.alamatKtp || src.alamat,
+                    lat:              src.lat,
+                    lng:              src.lng,
+                    nik_ktp:          src.nik_ktp,
+                    fotoUrl:          src.fotoUrl || '',
+                    ownerId:          src.ownerId || null,
+                    status:           STATUS_AKTIF,
+                    statusVerifikasi: STATUS_AKTIF,
+                    statusLangganan:  src.statusLangganan || 'Free',
+                    createdBy:        src.createdBy || 'SELF_REGISTER',
+                    createdAt:        src.createdAt || now,
+                    verifiedAt:       now,
+                    verifiedBy:       idAdmin,
+                    updatedAt:        now
+                });
+            }
+            _paSaveArray(KEY_AKUN_AKTIF, akun);
+
+            // ── 4. Sync ke profil_<id> ──
+            try {
+                var profilKey = 'profil_' + idUser;
+                var profilRaw = localStorage.getItem(profilKey);
+                if (profilRaw) {
+                    var profil = JSON.parse(profilRaw);
+                    if (profil && typeof profil === 'object') {
+                        profil.status = STATUS_AKTIF;
+                        profil.statusVerifikasi = STATUS_AKTIF;
+                        profil.verifiedAt = now;
+                        profil.updatedAt = now;
+                        localStorage.setItem(profilKey, JSON.stringify(profil));
+                    }
+                }
+            } catch (e) {}
+
+            // ── 5. Simpan via core system ──
+            try {
+                if (typeof simpanDataKeLocalStorage === 'function') {
+                    simpanDataKeLocalStorage();
+                }
+            } catch (e) {}
+
+            // ── 6. Update userIndex ──
+            try {
+                if (typeof userIndexUpdate === 'function') {
+                    userIndexUpdate(idUser, {
+                        status: STATUS_AKTIF,
+                        statusVerifikasi: STATUS_AKTIF,
+                        verifiedAt: now,
+                        verifiedBy: idAdmin
+                    });
+                }
+            } catch (e) {}
+
+            // ── 7. Catat aktivitas ──
+            _paCatatAktivitas(
+                'Setujui Akun',
+                'Akun ' + namaUser + ' (' + idUser + ') disetujui'
+            );
+
+            _paCatatAudit(
+                'setujui_akun',
+                'Setujui Akun',
+                'info',
+                namaUser + ' (' + idUser + ')',
+                { tipe: 'user', id: idUser, nama: namaUser }
+            );
+
+            return {
+                sukses: true,
+                idUser: idUser,
+                nama:   namaUser,
+                status: STATUS_AKTIF,
+                verifiedAt: now,
+                verifiedBy: idAdmin
+            };
+
+        } catch (e) {
+            console.error('setujuiAkunPersetujuanGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — CORE REJECT
+    // ═══════════════════════════════════════════════════════════
+
+    window.tolakAkunPersetujuanGlobal = function(idUser, idAdmin, alasan, opts) {
+        opts = opts || {};
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+            idAdmin = idAdmin || _paGetIdAdmin();
+
+            alasan = (alasan || '').trim();
+            if (alasan.length < 10) {
+                return { sukses: false, pesan: 'Alasan minimal 10 karakter.' };
+            }
+
+            var now = _paNow();
+            var namaUser = idUser;
+
+            // ── 1. Ambil data pending ──
+            var pending = window.getPendingPersetujuanByIdGlobal(idUser);
+            if (pending && pending.nama) namaUser = pending.nama;
+
+            // ── 2. Update dataLoginUser ──
+            var login = _paReadArray(KEY_LOGIN_USER);
+            var idxLogin = login.findIndex(function(u) {
+                return u && (u.idUser === idUser || u.id === idUser);
+            });
+
+            if (idxLogin !== -1) {
+                login[idxLogin].statusVerifikasi = STATUS_DITOLAK;
+                login[idxLogin].status = STATUS_DITOLAK;
+                login[idxLogin].alasanTolak = alasan;
+                login[idxLogin].verifiedAt = now;
+                login[idxLogin].verifiedBy = idAdmin;
+                login[idxLogin].updatedAt = now;
+                if (!namaUser || namaUser === idUser) {
+                    namaUser = login[idxLogin].nama || idUser;
+                }
+                _paSaveArray(KEY_LOGIN_USER, login);
+            }
+
+            // ── 3. Update dataAkunAktif (kalau ada) ──
+            var akun = _paReadArray(KEY_AKUN_AKTIF);
+            var idxAkun = akun.findIndex(function(a) {
+                return a && (a.id === idUser || a.idUser === idUser);
+            });
+
+            if (idxAkun !== -1) {
+                akun[idxAkun].statusVerifikasi = STATUS_DITOLAK;
+                akun[idxAkun].status = STATUS_DITOLAK;
+                akun[idxAkun].alasanTolak = alasan;
+                akun[idxAkun].verifiedAt = now;
+                akun[idxAkun].verifiedBy = idAdmin;
+                akun[idxAkun].updatedAt = now;
+                _paSaveArray(KEY_AKUN_AKTIF, akun);
+            }
+
+            // ── 4. Sync ke profil_<id> ──
+            try {
+                var profilKey = 'profil_' + idUser;
+                var profilRaw = localStorage.getItem(profilKey);
+                if (profilRaw) {
+                    var profil = JSON.parse(profilRaw);
+                    if (profil && typeof profil === 'object') {
+                        profil.status = STATUS_DITOLAK;
+                        profil.statusVerifikasi = STATUS_DITOLAK;
+                        profil.alasanTolak = alasan;
+                        profil.verifiedAt = now;
+                        profil.updatedAt = now;
+                        localStorage.setItem(profilKey, JSON.stringify(profil));
+                    }
+                }
+            } catch (e) {}
+
+            // ── 5. Simpan ──
+            try {
+                if (typeof simpanDataKeLocalStorage === 'function') {
+                    simpanDataKeLocalStorage();
+                }
+            } catch (e) {}
+
+            // ── 6. Update userIndex ──
+            try {
+                if (typeof userIndexUpdate === 'function') {
+                    userIndexUpdate(idUser, {
+                        status: STATUS_DITOLAK,
+                        statusVerifikasi: STATUS_DITOLAK,
+                        alasanTolak: alasan,
+                        verifiedAt: now,
+                        verifiedBy: idAdmin
+                    });
+                }
+            } catch (e) {}
+
+            // ── 7. Catat aktivitas ──
+            _paCatatAktivitas(
+                'Tolak Akun',
+                'Akun ' + namaUser + ' (' + idUser + ') ditolak. Alasan: ' + alasan
+            );
+
+            _paCatatAudit(
+                'tolak_akun',
+                'Tolak Akun',
+                'warning',
+                namaUser + ' (' + idUser + ') — ' + alasan,
+                { tipe: 'user', id: idUser, nama: namaUser }
+            );
+
+            return {
+                sukses: true,
+                idUser: idUser,
+                nama:   namaUser,
+                status: STATUS_DITOLAK,
+                alasan: alasan,
+                verifiedAt: now,
+                verifiedBy: idAdmin
+            };
+
+        } catch (e) {
+            console.error('tolakAkunPersetujuanGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — BULK ACTIONS
+    // ═══════════════════════════════════════════════════════════
+
+    window.bulkSetujuiAkunPersetujuanGlobal = function(idList, idAdmin, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(idList) || idList.length === 0) {
+                return { sukses: false, pesan: 'Daftar ID kosong.' };
+            }
+            idAdmin = idAdmin || _paGetIdAdmin();
+
+            var berhasil = 0;
+            var gagal = 0;
+            var detail = [];
+
+            idList.forEach(function(id) {
+                var r = window.setujuiAkunPersetujuanGlobal(id, idAdmin, { silent: true });
+                if (r && r.sukses) berhasil++;
+                else {
+                    gagal++;
+                    detail.push({ id: id, pesan: (r && r.pesan) || 'Gagal' });
+                }
+            });
+
+            _paCatatAktivitas(
+                'Bulk Setujui Akun',
+                'Berhasil: ' + berhasil + ', Gagal: ' + gagal +
+                ' dari ' + idList.length
+            );
+
+            return {
+                sukses:   true,
+                total:    idList.length,
+                berhasil: berhasil,
+                gagal:    gagal,
+                detail:   detail
+            };
+        } catch (e) {
+            console.error('bulkSetujuiAkunPersetujuanGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.bulkTolakAkunPersetujuanGlobal = function(idList, idAdmin, alasan, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(idList) || idList.length === 0) {
+                return { sukses: false, pesan: 'Daftar ID kosong.' };
+            }
+            idAdmin = idAdmin || _paGetIdAdmin();
+
+            alasan = (alasan || '').trim();
+            if (alasan.length < 10) {
+                return { sukses: false, pesan: 'Alasan minimal 10 karakter.' };
+            }
+
+            var berhasil = 0;
+            var gagal = 0;
+            var detail = [];
+
+            idList.forEach(function(id) {
+                var r = window.tolakAkunPersetujuanGlobal(id, idAdmin, alasan, { silent: true });
+                if (r && r.sukses) berhasil++;
+                else {
+                    gagal++;
+                    detail.push({ id: id, pesan: (r && r.pesan) || 'Gagal' });
+                }
+            });
+
+            _paCatatAktivitas(
+                'Bulk Tolak Akun',
+                'Berhasil: ' + berhasil + ', Gagal: ' + gagal +
+                ' dari ' + idList.length + '. Alasan: ' + alasan
+            );
+
+            return {
+                sukses:   true,
+                total:    idList.length,
+                berhasil: berhasil,
+                gagal:    gagal,
+                detail:   detail
+            };
+        } catch (e) {
+            console.error('bulkTolakAkunPersetujuanGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ Setujui semua terfilter ═══
+    window.bulkSetujuiTerfilterPersetujuanGlobal = function(filter, idAdmin) {
+        try {
+            var list = window.cariPendingPersetujuanGlobal(filter || {});
+            if (list.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada akun terfilter.' };
+            }
+            var ids = list.map(function(p) {
+                return p.idUser || p.id;
+            }).filter(Boolean);
+            return window.bulkSetujuiAkunPersetujuanGlobal(ids, idAdmin);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — SYNC HELPER
+    // ═══════════════════════════════════════════════════════════
+
+    window.syncStatusPersetujuanAkunGlobal = function(idUser, statusBaru, extra) {
+        try {
+            if (!idUser || !statusBaru) {
+                return { sukses: false, pesan: 'Parameter tidak valid.' };
+            }
+
+            var extraObj = (extra && typeof extra === 'object') ? extra : {};
+            var now = _paNow();
+
+            // Update dataLoginUser
+            var login = _paReadArray(KEY_LOGIN_USER);
+            var idx1 = login.findIndex(function(u) {
+                return u && (u.idUser === idUser || u.id === idUser);
+            });
+            if (idx1 !== -1) {
+                login[idx1].status = statusBaru;
+                login[idx1].statusVerifikasi = statusBaru;
+                login[idx1].updatedAt = now;
+                Object.keys(extraObj).forEach(function(k) {
+                    login[idx1][k] = extraObj[k];
+                });
+                _paSaveArray(KEY_LOGIN_USER, login);
+            }
+
+            // Update dataAkunAktif
+            var akun = _paReadArray(KEY_AKUN_AKTIF);
+            var idx2 = akun.findIndex(function(a) {
+                return a && (a.id === idUser || a.idUser === idUser);
+            });
+            if (idx2 !== -1) {
+                akun[idx2].status = statusBaru;
+                akun[idx2].statusVerifikasi = statusBaru;
+                akun[idx2].updatedAt = now;
+                Object.keys(extraObj).forEach(function(k) {
+                    akun[idx2][k] = extraObj[k];
+                });
+                _paSaveArray(KEY_AKUN_AKTIF, akun);
+            }
+
+            return { sukses: true, updated: (idx1 !== -1 || idx2 !== -1) };
+        } catch (e) {
+            console.error('syncStatusPersetujuanAkunGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — EXPORT
+    // ═══════════════════════════════════════════════════════════
+
+    window.exportPendingPersetujuanCSVGlobal = function(filter) {
+        try {
+            var data = window.cariPendingPersetujuanGlobal(filter || {});
+            if (data.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada data untuk diexport.' };
+            }
+
+            function esc(v) {
+                if (v === null || v === undefined) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var header = [
+                'No', 'ID User', 'Nama', 'Role', 'Username', 'HP', 'Email',
+                'Alamat KTP', 'NIK KTP', 'Sumber', 'Lat', 'Lng', 'Tgl Daftar'
+            ];
+            var lines = [header.join(',')];
+
+            data.forEach(function(p, i) {
+                lines.push([
+                    i + 1,
+                    esc(p.idUser),
+                    esc(p.nama),
+                    esc(p.role),
+                    esc(p.username),
+                    esc(p.hp),
+                    esc(p.email),
+                    esc(p.alamatKtp || p.alamat),
+                    esc(p.nik_ktp),
+                    esc(p.sumber),
+                    esc(p.lat),
+                    esc(p.lng),
+                    esc(p.createdAt)
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'persetujuan_akun_' +
+                new Date().toISOString().split('T')[0] + '_' +
+                Date.now() + '.csv';
+
+            try {
+                var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = namaFile;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+            } catch (e) {
+                return { sukses: false, pesan: 'Gagal download: ' + e.message };
+            }
+
+            _paCatatAktivitas('Export CSV Persetujuan Akun',
+                data.length + ' akun pending diexport ke ' + namaFile);
+
+            return { sukses: true, namaFile: namaFile, total: data.length };
+        } catch (e) {
+            console.error('exportPendingPersetujuanCSVGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — DEBUG & BONUS
+    // ═══════════════════════════════════════════════════════════
+
+    // ═══ Cek kelengkapan dokumen (helper) ═══
+    window.cekKelengkapanPendingGlobal = function(idUser) {
+        try {
+            var p = window.getPendingPersetujuanByIdGlobal(idUser);
+            if (!p) {
+                return { lengkap: false, kurang: ['Pending tidak ditemukan'] };
+            }
+
+            var wajib = ['nama', 'hp', 'email', 'alamatKtp', 'nik_ktp'];
+            var kurang = [];
+            wajib.forEach(function(f) {
+                var v = p[f] || (f === 'alamatKtp' ? p.alamat : null);
+                if (!v || String(v).trim() === '' || v === '-') {
+                    kurang.push(f);
+                }
+            });
+
+            return {
+                lengkap: kurang.length === 0,
+                kurang: kurang,
+                pending: p
+            };
+        } catch (e) {
+            return { lengkap: false, kurang: ['Error: ' + e.message] };
+        }
+    };
+
+    // ═══ Reset semua pending jadi rejected (cleanup) ═══
+    window.cleanupPendingLamaGlobal = function(opsi) {
+        opsi = opsi || {};
+        var minHari = parseInt(opsi.minHari, 10) || 7;
+
+        try {
+            var semua = window.getAllPendingPersetujuanGlobal();
+            var now = Date.now();
+            var batas = minHari * 86400000;
+            var lama = semua.filter(function(p) {
+                if (!p.createdAt) return false;
+                var t = new Date(p.createdAt).getTime();
+                return !isNaN(t) && (now - t) > batas;
+            });
+
+            if (!opsi.konfirmasi) {
+                return {
+                    sukses: true,
+                    total: lama.length,
+                    ids: lama.map(function(p) { return p.idUser; }),
+                    committed: false
+                };
+            }
+
+            var berhasil = 0;
+            lama.forEach(function(p) {
+                var r = window.tolakAkunPersetujuanGlobal(
+                    p.idUser,
+                    _paGetIdAdmin(),
+                    'Auto-tolak: pending > ' + minHari + ' hari',
+                    { silent: true }
+                );
+                if (r.sukses) berhasil++;
+            });
+
+            _paCatatAktivitas('Cleanup Pending Lama',
+                berhasil + ' akun pending > ' + minHari + ' hari ditolak otomatis');
+
+            return { sukses: true, total: berhasil, committed: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ Statistik ringkas 1-line ═══
+    window.getStatistikRingkasPersetujuanGlobal = function() {
+        var s = window.hitungStatistikPersetujuanGlobal();
+        return 'Pending: ' + s.pending +
+               ' | Disetujui hari ini: ' + s.disetujuiHariIni +
+               ' | Ditolak hari ini: ' + s.ditolakHariIni +
+               ' | Perhatian: ' + s.butuhPerhatian;
+    };
+
+    // ═══ Debug ═══
+    window.debugPersetujuanAkunGlobal = function() {
+        try {
+            var info = {
+                roleUser:      _paGetRoleDisplay(),
+                kodeRoleUser:  _paGetKodeRoleUser(),
+                ijinPersetujuan: window.cekIjinAksesGlobal(_paGetKodeRoleUser(), 'persetujuanAkun'),
+                statistik:     window.hitungStatistikPersetujuanGlobal(),
+                breakdown:     window.getBreakdownPersetujuanPerRoleGlobal(),
+                totalPending:  window.getAllPendingPersetujuanGlobal().length,
+                konfigIjin:    window.getKonfigIjinAksesGlobal()
+            };
+            console.log('🔍 debugPersetujuanAkunGlobal:', info);
+            return info;
+        } catch (e) {
+            console.error('debugPersetujuanAkunGlobal error:', e);
+            return null;
+        }
+    };
+
+    // ═══ Daftar role yang boleh akses persetujuan ═══
+    window.getRoleBolehPersetujuanAkunGlobal = function() {
+        return window.getRoleBolehAksesGlobal('persetujuanAkun');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK FUNGSI GLOBAL PERSETUJUAN AKUN SA terpasang.');
+    console.log('   📦 Modul:');
+    console.log('   1.  Konstanta & Konfigurasi Ijin Akses Default');
+    console.log('   2.  Helper Internal');
+    console.log('   3.  ACCESS: cekIjinAksesGlobal + delegateIjinAksesGlobal');
+    console.log('   4.  READ: getPending, cariPending, statistik, breakdown');
+    console.log('   5.  CORE: setujuiAkunPersetujuanGlobal()');
+    console.log('   6.  CORE: tolakAkunPersetujuanGlobal()');
+    console.log('   7.  BULK: bulkSetujui/Tolak + bulkSetujuiTerfilter');
+    console.log('   8.  SYNC: syncStatusPersetujuanAkunGlobal()');
+    console.log('   9.  EXPORT: exportPendingPersetujuanCSVGlobal()');
+    console.log('   10. BONUS: cleanupPendingLama, debug, statistik ringkas');
+    console.log('   🎯 Entry: setujuiAkunPersetujuanGlobal(id, admin)');
+    console.log('   🔒 Access: SA + CS + ADM (configurable via delegateIjinAksesGlobal)');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL PERSETUJUAN AKUN SA ═══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI AKUN SA ══════════════════ -->
 <!-- ═══ Dipakai oleh: R 10.7, SA Dasbor, Notifikasi, Audit    ═══ -->
 <!-- ═══ Foundation: Core System (1-8) + R 0.11.1(1)          ═══ -->
@@ -13460,6 +14520,1345 @@ function gantiPasswordSA(event) {
 </script>
 <!-- ============================================================ -->
 <!-- ===== AKHIR BLOK R 10.3 (JS) =============================== -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN (HTML) ================ -->
+<!-- ===== Container + 2 Modal — Clean Version =================== -->
+<!-- ===== Support 22 role termasuk JASA + KASIR ================= -->
+<!-- ============================================================ -->
+
+<div id="persetujuanAkunContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-user-check me-2"></i>Persetujuan Akun
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Setujui / tolak akun dengan status <strong>Pending</strong>.
+                    Akses: <strong>SA + CS + ADM</strong> (bisa didelegasikan via Role & Akses).
+                </small>
+            </div>
+            <button class="btn btn-outline-light" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H2 — STATISTIK ══════════ -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-hourglass-half fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanPending">0</h4>
+                        <small class="text-muted">Pending</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanDisetujui">0</h4>
+                        <small class="text-muted">Disetujui Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-times-circle fa-2x mb-2 text-danger"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanDitolak">0</h4>
+                        <small class="text-muted">Ditolak Hari Ini</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-exclamation-triangle fa-2x mb-2 text-info"></i>
+                        <h4 class="fw-bold mb-0" id="statPersetujuanPerhatian">0</h4>
+                        <small class="text-muted">Butuh Perhatian</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H3 — BREAKDOWN PER ROLE ══════════ -->
+        <div id="saBreakdownPerRolePersetujuan" class="mb-3"></div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H4 — FILTER & PENCARIAN ══════════ -->
+        <div class="card border-0 shadow mb-4">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-4">
+                        <label class="fw-bold small">
+                            <i class="fas fa-search me-1"></i>Cari Akun
+                        </label>
+                        <input type="text" id="cariPersetujuanAkun" class="form-control form-control-sm"
+                               placeholder="Nama / ID / Username / HP / Email..."
+                               onkeyup="renderTabelPersetujuanAkun(1)">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold small">
+                            <i class="fas fa-filter me-1"></i>Filter Role
+                        </label>
+                        <select id="filterRolePersetujuanAkun" class="form-select form-select-sm"
+                                onchange="renderTabelPersetujuanAkun(1)">
+                            <option value="">Semua Role</option>
+                            <optgroup label="— Seller / Mitra —">
+                                <option value="Toko">Toko</option>
+                                <option value="Ojek">Ojek</option>
+                                <option value="Pedagang Pasar">Pedagang Pasar</option>
+                                <option value="Pedagang Makanan">Pedagang Makanan</option>
+                                <option value="COD Seller">COD Seller</option>
+                                <option value="Grosir">Grosir</option>
+                                <option value="Distributor">Distributor</option>
+                                <option value="Jasa">⭐ Jasa</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="fw-bold small">
+                            <i class="fas fa-filter me-1"></i>Sumber
+                        </label>
+                        <select id="filterSumberPersetujuanAkun" class="form-select form-select-sm"
+                                onchange="renderTabelPersetujuanAkun(1)">
+                            <option value="">Semua</option>
+                            <option value="Daftar">Daftar</option>
+                            <option value="Ajukan">Ajukan</option>
+                            <option value="SA">Buat SA</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 text-end">
+                        <button class="btn btn-outline-secondary btn-sm w-100"
+                                onclick="resetFilterPersetujuanAkun()">
+                            <i class="fas fa-undo me-1"></i> Reset
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mt-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div>
+                        <span class="badge bg-dark" id="infoJumlahPersetujuanAkun">0 Data</span>
+                        <span class="badge bg-info text-dark ms-1" id="infoSumberPersetujuanAkun">
+                            <i class="fas fa-user-check me-1"></i>
+                            Akses: <strong id="infoRoleAdminAktif">-</strong>
+                        </span>
+                    </div>
+                    <button class="btn btn-sm btn-outline-success"
+                            onclick="setujuiSemuaTerfilterPersetujuan()">
+                        <i class="fas fa-check-double me-1"></i>
+                        Setujui Semua Terfilter
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.4.H5 — TABEL ══════════ -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background-color: #1976D2;">
+                <span>
+                    <i class="fas fa-list me-2"></i>
+                    Daftar Akun Menunggu Persetujuan
+                </span>
+                <span class="badge bg-light text-dark" id="totalPersetujuanAkun">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th>Nama / ID</th>
+                                <th>Role</th>
+                                <th>Username</th>
+                                <th style="width:180px;">
+                                    No. HP
+                                    <i class="fas fa-phone text-primary ms-1"></i>
+                                </th>
+                                <th style="width:100px;">Sumber</th>
+                                <th>Tgl Daftar</th>
+                                <th>Durasi</th>
+                                <th style="width:160px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelPersetujuanAkun">
+                            <tr>
+                                <td colspan="9" class="text-center text-muted py-4">
+                                    Memuat data...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
+                    <span class="text-muted" id="infoPaginationPersetujuanAkun">
+                        Halaman 1 dari 1
+                    </span>
+                </div>
+                <div>
+                    <button class="btn btn-outline-secondary btn-sm me-1"
+                            id="btnPrevPersetujuanAkun"
+                            onclick="ubahHalamanPersetujuanAkun('prev')" disabled>
+                        <i class="fas fa-chevron-left"></i> Sebelumnya
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm"
+                            id="btnNextPersetujuanAkun"
+                            onclick="ubahHalamanPersetujuanAkun('next')">
+                        Selanjutnya <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══════════ MODAL DETAIL PERSETUJUAN ══════════ -->
+<div class="modal fade" id="modalDetailPersetujuanAkun" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-user-circle me-2"></i>Detail Akun Menunggu Persetujuan
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="modalDetailPersetujuanBody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+            <div class="modal-footer d-flex justify-content-between flex-wrap gap-2">
+                <button type="button" class="btn btn-danger"
+                        onclick="bukaModalTolakPersetujuanDariDetail()">
+                    <i class="fas fa-times me-1"></i> Tolak
+                </button>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        Tutup
+                    </button>
+                    <button type="button" class="btn btn-success"
+                            onclick="setujuiAkunDariDetail()">
+                        <i class="fas fa-check me-1"></i> Setujui
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ MODAL ALASAN TOLAK ══════════ -->
+<div class="modal fade" id="modalAlasanTolakPersetujuan" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color: #DC3545;">
+                <h5 class="modal-title">
+                    <i class="fas fa-times-circle me-2"></i>Alasan Penolakan Akun
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="tolakPersetujuanUserId" value="">
+                <div class="mb-3">
+                    <label class="fw-bold">Nama Pemohon</label>
+                    <input type="text" id="tolakPersetujuanNama"
+                           class="form-control bg-light" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold">
+                        Alasan Penolakan <span class="text-danger">*</span>
+                    </label>
+                    <textarea id="tolakPersetujuanAlasan" class="form-control" rows="4"
+                              placeholder="Contoh: Data KTP tidak sesuai / Foto blur / NIK tidak valid..."
+                              minlength="10" maxlength="300" required></textarea>
+                    <small class="text-muted">
+                        Minimal 10 karakter. Alasan akan disimpan di audit log.
+                    </small>
+                </div>
+                <div class="alert alert-warning small mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Akun yang ditolak <strong>tidak dapat login</strong>.
+                    Pemohon dapat mengajukan ulang pendaftaran.
+                </div>
+                <div id="notifTolakPersetujuan" class="alert d-none mt-3"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    Batal
+                </button>
+                <button type="button" class="btn btn-danger"
+                        onclick="konfirmasiTolakPersetujuan()">
+                    <i class="fas fa-check me-1"></i> Konfirmasi Tolak
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.4 (HTML) ============================= -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.4 – PERSETUJUAN AKUN (JS) ================== -->
+<!-- ============================================================ -->
+<script>
+(function BLOK_R_10_4_PERSETUJUAN_AKUN() {
+
+    // ── Guard idempotency ──
+    if (window._blokR104Done) {
+        console.log('ℹ️ BLOK R 10.4 sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR104Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // STATE LOKAL UI
+    // ═══════════════════════════════════════════════════════════
+    var paState = {
+        page: 1,
+        perPage: 10,
+        detailIdAktif: null
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function paEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function paSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function paGetVal(id) {
+        var el = document.getElementById(id);
+        return el ? el.value : '';
+    }
+
+    function paSetVal(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.value = val;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (1) — TAMPILKAN HALAMAN PERSETUJUAN AKUN
+    // ------------------------------------------------------------
+    // Cek akses role, cache template, render statistik + tabel
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanPersetujuanAkun = function() {
+        try {
+            // ── Cek akses role (SA + CS + ADM by default) ──
+            var roleDisplay = (typeof userAktif !== 'undefined' && userAktif && userAktif.role)
+                ? userAktif.role : '-';
+            var kodeRole = (typeof userAktif !== 'undefined' && userAktif && userAktif.kodeRole)
+                ? userAktif.kodeRole : null;
+
+            var isSA = (roleDisplay === 'SuperAdmin');
+            var bisaAkses = isSA;
+
+            // Cek delegasi via global 0.10.36
+            if (!bisaAkses && typeof cekIjinAksesGlobal === 'function') {
+                bisaAkses = cekIjinAksesGlobal(kodeRole, 'persetujuanAkun');
+            }
+
+            if (!bisaAkses) {
+                if (typeof tampilkanPlaceholderMenu === 'function') {
+                    tampilkanPlaceholderMenu('Akses Ditolak', '10.4');
+                } else {
+                    alert('❌ Anda tidak punya akses ke menu ini.');
+                }
+                return;
+            }
+
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.error('❌ #kontenDasbor tidak ditemukan');
+                return;
+            }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplPersetujuanAkun) {
+                var c = document.getElementById('persetujuanAkunContainer');
+                if (!c) {
+                    console.error('❌ Container #persetujuanAkunContainer tidak ada');
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Persetujuan Akun', '10.4');
+                    }
+                    return;
+                }
+                window._tplPersetujuanAkun = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Persetujuan Akun di-cache & dihapus');
+            }
+
+            konten.innerHTML = window._tplPersetujuanAkun;
+            paState.page = 1;
+
+            setTimeout(function() {
+                paRenderBreakdownPerRole();
+                paRenderStatistik();
+                paRenderRoleAksesInfo();
+                paRenderTabel(1);
+                console.log('✅ BLOK R 10.4 — Persetujuan Akun rendered');
+            }, 200);
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (1) tampilkanPersetujuanAkun error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (2) — AMBIL DATA PENDING (via global 0.10.3)
+    // ═══════════════════════════════════════════════════════════
+    function paAmbilDataPending() {
+        try {
+            if (typeof loadDataPendingAkun === 'function') {
+                return loadDataPendingAkun() || [];
+            }
+            return [];
+        } catch (e) {
+            console.error('paAmbilDataPending error:', e);
+            return [];
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (3) — RENDER STATISTIK (4 CARD)
+    // ═══════════════════════════════════════════════════════════
+    function paRenderStatistik() {
+        try {
+            var semuaPending = paAmbilDataPending();
+            var totalPending = semuaPending.length;
+
+            // Hitung yang butuh perhatian (pending > 1 hari)
+            var butuhPerhatian = 0;
+            var now = Date.now();
+            semuaPending.forEach(function(p) {
+                if (!p.createdAt) return;
+                try {
+                    var t = new Date(p.createdAt).getTime();
+                    if (!isNaN(t) && (now - t) > (24 * 60 * 60 * 1000)) {
+                        butuhPerhatian++;
+                    }
+                } catch (e) {}
+            });
+
+            // Hitung disetujui & ditolak hari ini
+            var todayStr = new Date().toISOString().substring(0, 10);
+            var disetujuiHariIni = 0;
+            var ditolakHariIni = 0;
+
+            try {
+                var akunAktif = Array.isArray(dataAkunAktif) ? dataAkunAktif : [];
+                akunAktif.forEach(function(a) {
+                    if (!a || !a.verifiedAt) return;
+                    if (String(a.verifiedAt).substring(0, 10) !== todayStr) return;
+                    if (a.status === 'Aktif') disetujuiHariIni++;
+                    else if (a.status === 'Ditolak') ditolakHariIni++;
+                });
+            } catch (e) {}
+
+            paSetText('statPersetujuanPending',   totalPending);
+            paSetText('statPersetujuanDisetujui', disetujuiHariIni);
+            paSetText('statPersetujuanDitolak',   ditolakHariIni);
+            paSetText('statPersetujuanPerhatian', butuhPerhatian);
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (3) paRenderStatistik error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (4) — RENDER INFO AKSES ROLE
+    // ═══════════════════════════════════════════════════════════
+    function paRenderRoleAksesInfo() {
+        var roleDisplay = (typeof userAktif !== 'undefined' && userAktif && userAktif.role)
+            ? userAktif.role : '-';
+        paSetText('infoRoleAdminAktif', roleDisplay);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (5) — RENDER BREAKDOWN PER ROLE (CHIPS)
+    // ═══════════════════════════════════════════════════════════
+    function paRenderBreakdownPerRole() {
+        var container = document.getElementById('saBreakdownPerRolePersetujuan');
+        if (!container) return;
+
+        var semua = paAmbilDataPending();
+        var perRole = {};
+
+        semua.forEach(function(p) {
+            if (!p || !p.role) return;
+            perRole[p.role] = (perRole[p.role] || 0) + 1;
+        });
+
+        var roles = Object.keys(perRole);
+
+        if (roles.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        // Sort: Jasa prioritas, lalu terbanyak
+        roles.sort(function(a, b) {
+            if (a === 'Jasa' && b !== 'Jasa') return -1;
+            if (b === 'Jasa' && a !== 'Jasa') return 1;
+            return perRole[b] - perRole[a];
+        });
+
+        var warnaMap = {
+            'Toko': 'bg-warning text-dark',
+            'Pedagang Pasar': 'bg-success',
+            'Pedagang Makanan': 'bg-warning text-dark',
+            'COD Seller': 'bg-info text-dark',
+            'Grosir': 'bg-info text-dark',
+            'Distributor': 'bg-primary',
+            'Ojek': 'bg-danger',
+            'Jasa': 'bg-danger',
+            'Developer Properti': 'bg-dark',
+            'Dealer dan Showroom': 'bg-dark',
+            'Finance Multifinance': 'bg-dark'
+        };
+
+        var html = '' +
+            '<div class="card border-0 shadow-sm bg-white">' +
+                '<div class="card-body py-2">' +
+                    '<div class="d-flex align-items-center flex-wrap gap-2">' +
+                        '<small class="fw-bold text-muted me-2">' +
+                            '<i class="fas fa-layer-group me-1"></i>Pending per Role:' +
+                        '</small>';
+
+        roles.forEach(function(role) {
+            var jumlah = perRole[role];
+            var kelasWarna = warnaMap[role] || 'bg-secondary';
+            var ikon = role === 'Jasa' ? '⚙️ ' : '';
+            var roleEsc = role.replace(/'/g, "\\'");
+
+            html += '' +
+                '<button type="button" class="btn btn-sm ' + kelasWarna + '" ' +
+                        'style="font-size:12px;" ' +
+                        'onclick="paFilterRoleCepat(\'' + roleEsc + '\')">' +
+                    ikon + paEsc(role) +
+                    ' <span class="badge bg-light text-dark ms-1">' + jumlah + '</span>' +
+                '</button>';
+        });
+
+        html += '</div></div></div>';
+        container.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (6) — FILTER CEPAT VIA CHIP
+    // ═══════════════════════════════════════════════════════════
+    window.paFilterRoleCepat = function(role) {
+        paSetVal('filterRolePersetujuanAkun', role);
+        paRenderTabel(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (7) — RENDER TABEL (CORE)
+    // ------------------------------------------------------------
+    // Sumber data: loadDataPendingAkun() dari BLOK R 01.0 (14)
+    // ═══════════════════════════════════════════════════════════
+    window.renderTabelPersetujuanAkun = function(hal) {
+        try {
+            paState.page = hal || 1;
+
+            var tbody = document.getElementById('tabelPersetujuanAkun');
+            if (!tbody) return;
+
+            var allData = paAmbilDataPending();
+
+            // ── Filter ──
+            var cari   = (paGetVal('cariPersetujuanAkun') || '').toLowerCase().trim();
+            var fRole  = paGetVal('filterRolePersetujuanAkun') || '';
+            var fSumber= paGetVal('filterSumberPersetujuanAkun') || '';
+
+            var dataFilter = allData.filter(function(p) {
+                if (!p) return false;
+                if (fRole && p.role !== fRole) return false;
+                if (fSumber && p.sumber !== fSumber) return false;
+
+                if (cari) {
+                    var s = (p.nama || '') + ' ' + (p.idUser || '') + ' ' +
+                            (p.username || '') + ' ' + (p.hp || '') + ' ' +
+                            (p.email || '');
+                    if (s.toLowerCase().indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            // ── Sort terbaru dulu ──
+            dataFilter.sort(function(a, b) {
+                return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+            });
+
+            // ── Info ──
+            paSetText('infoJumlahPersetujuanAkun', dataFilter.length + ' Data');
+            paSetText('totalPersetujuanAkun', dataFilter.length);
+            paRenderStatistik();
+            paRenderBreakdownPerRole();
+
+            // ── Pagination ──
+            var totalPages = Math.ceil(dataFilter.length / paState.perPage) || 1;
+            if (paState.page > totalPages) paState.page = totalPages;
+            if (paState.page < 1) paState.page = 1;
+
+            var start = (paState.page - 1) * paState.perPage;
+            var paged = dataFilter.slice(start, start + paState.perPage);
+
+            paSetText('infoPaginationPersetujuanAkun',
+                'Halaman ' + paState.page + ' dari ' + totalPages);
+
+            var btnPrev = document.getElementById('btnPrevPersetujuanAkun');
+            if (btnPrev) btnPrev.disabled = (paState.page === 1);
+
+            var btnNext = document.getElementById('btnNextPersetujuanAkun');
+            if (btnNext) btnNext.disabled = (paState.page === totalPages);
+
+            // ── Kosong ──
+            if (paged.length === 0) {
+                tbody.innerHTML = '' +
+                    '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Tidak ada akun menunggu persetujuan.' +
+                    '</td></tr>';
+                return;
+            }
+
+            // ── Render baris ──
+            var html = '';
+            paged.forEach(function(p, index) {
+                html += paRenderBaris(p, start + index + 1);
+            });
+            tbody.innerHTML = html;
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (7) renderTabelPersetujuanAkun error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (8) — RENDER 1 BARIS TABEL
+    // ═══════════════════════════════════════════════════════════
+    function paRenderBaris(p, nomor) {
+
+        // ── Role badge ──
+        var warnaRole = {
+            'Toko':                 'bg-warning text-dark',
+            'Pedagang Pasar':       'bg-success',
+            'Pedagang Makanan':     'bg-warning text-dark',
+            'COD Seller':           'bg-info text-dark',
+            'Grosir':               'bg-info text-dark',
+            'Distributor':          'bg-primary',
+            'Ojek':                 'bg-danger',
+            'Jasa':                 'bg-danger',
+            'Developer Properti':   'bg-dark',
+            'Dealer dan Showroom':  'bg-dark',
+            'Finance Multifinance': 'bg-dark'
+        }[p.role] || 'bg-secondary';
+
+        var ikonRole = p.role === 'Jasa' ? '⚙️ ' : '';
+        var roleBadge = '<span class="badge ' + warnaRole + '">' +
+            ikonRole + paEsc(p.role || '-') + '</span>';
+
+        // ── Sumber badge ──
+        var badgeSumber = p.sumber === 'Ajukan'
+            ? '<span class="badge bg-primary">Ajukan</span>'
+            : (p.sumber === 'SA'
+                ? '<span class="badge bg-dark">SA</span>'
+                : '<span class="badge bg-info text-dark">Daftar</span>');
+
+        // ── Tanggal daftar ──
+        var tglDaftar = '-';
+        try {
+            if (p.createdAt) {
+                tglDaftar = new Date(p.createdAt).toLocaleDateString('id-ID', {
+                    day: '2-digit', month: 'short', year: 'numeric'
+                });
+            }
+        } catch (e) {}
+
+        // ── Durasi ──
+        var durasi = '-';
+        try {
+            if (p.createdAt) {
+                var t = new Date(p.createdAt).getTime();
+                var selisih = Date.now() - t;
+                if (!isNaN(t)) {
+                    if (selisih < 60 * 60 * 1000) {
+                        durasi = Math.round(selisih / 60000) + ' mnt';
+                    } else if (selisih < 24 * 60 * 60 * 1000) {
+                        durasi = Math.round(selisih / 3600000) + ' jam';
+                    } else {
+                        durasi = Math.round(selisih / 86400000) + ' hari';
+                    }
+
+                    // Warning kalau > 1 hari
+                    if (selisih > 24 * 60 * 60 * 1000) {
+                        durasi = '<span class="text-danger fw-bold">' + durasi + '</span>';
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // ── HP ──
+        var hpDisplay = p.hp && p.hp !== '-'
+            ? '<a href="javascript:void(0)" ' +
+              'onclick="paCopyHp(\'' + p.hp + '\')" ' +
+              'class="text-decoration-none" title="Klik copy">' +
+              '<i class="fas fa-copy me-1 text-primary"></i>' + paEsc(p.hp) + '</a>'
+            : '<span class="text-muted">-</span>';
+
+        var idEsc = (p.idUser || '').replace(/'/g, "\\'");
+
+        return '' +
+        '<tr>' +
+            '<td>' + nomor + '</td>' +
+            '<td>' +
+                '<strong>' + paEsc(p.nama || '-') + '</strong><br>' +
+                '<small class="text-muted">' + paEsc(p.idUser || '-') + '</small>' +
+            '</td>' +
+            '<td>' + roleBadge + '</td>' +
+            '<td><small>' + paEsc(p.username || '-') + '</small></td>' +
+            '<td>' + hpDisplay + '</td>' +
+            '<td>' + badgeSumber + '</td>' +
+            '<td><small>' + tglDaftar + '</small></td>' +
+            '<td><small>' + durasi + '</small></td>' +
+            '<td>' +
+                '<button class="btn btn-sm btn-outline-success me-1" ' +
+                        'onclick="paSetujuiLangsung(\'' + idEsc + '\')" ' +
+                        'title="Setujui">' +
+                    '<i class="fas fa-check"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-danger me-1" ' +
+                        'onclick="bukaModalTolakPersetujuan(\'' + idEsc + '\')" ' +
+                        'title="Tolak">' +
+                    '<i class="fas fa-times"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-info" ' +
+                        'onclick="paBukaDetail(\'' + idEsc + '\')" ' +
+                        'title="Detail">' +
+                    '<i class="fas fa-eye"></i>' +
+                '</button>' +
+            '</td>' +
+        '</tr>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (9) — PAGINATION
+    // ═══════════════════════════════════════════════════════════
+    window.ubahHalamanPersetujuanAkun = function(arah) {
+        if (arah === 'prev' && paState.page > 1) {
+            renderTabelPersetujuanAkun(paState.page - 1);
+        } else if (arah === 'next') {
+            renderTabelPersetujuanAkun(paState.page + 1);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (10) — RESET FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.resetFilterPersetujuanAkun = function() {
+        paSetVal('cariPersetujuanAkun', '');
+        paSetVal('filterRolePersetujuanAkun', '');
+        paSetVal('filterSumberPersetujuanAkun', '');
+        paRenderTabel(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (11) — COPY HP
+    // ═══════════════════════════════════════════════════════════
+    window.paCopyHp = function(hp) {
+        if (!hp) return;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(hp).then(function() {
+                paToast('✅ No. HP dicopy: ' + hp, 'success');
+            }).catch(function() {
+                paFallbackCopy(hp);
+            });
+        } else {
+            paFallbackCopy(hp);
+        }
+    };
+
+    function paFallbackCopy(teks) {
+        var ta = document.createElement('textarea');
+        ta.value = teks;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            paToast('✅ No. HP dicopy: ' + teks, 'success');
+        } catch (e) {
+            alert('Gagal copy. Nomor: ' + teks);
+        }
+        document.body.removeChild(ta);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (12) — BUKA DETAIL AKUN
+    // ═══════════════════════════════════════════════════════════
+    window.paBukaDetail = function(idUser) {
+        try {
+            var semua = paAmbilDataPending();
+            var p = semua.find(function(x) { return x.idUser === idUser; });
+            if (!p) {
+                alert('❌ Data tidak ditemukan.');
+                return;
+            }
+
+            paState.detailIdAktif = idUser;
+
+            var body = document.getElementById('modalDetailPersetujuanBody');
+            if (!body) return;
+
+            var warnaRole = {
+                'Toko': 'bg-warning text-dark', 'Pedagang Pasar': 'bg-success',
+                'Pedagang Makanan': 'bg-warning text-dark',
+                'COD Seller': 'bg-info text-dark', 'Grosir': 'bg-info text-dark',
+                'Distributor': 'bg-primary', 'Ojek': 'bg-danger', 'Jasa': 'bg-danger',
+                'Developer Properti': 'bg-dark', 'Dealer dan Showroom': 'bg-dark',
+                'Finance Multifinance': 'bg-dark'
+            }[p.role] || 'bg-secondary';
+
+            var html = '' +
+            '<div class="row g-3">' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Nama Lengkap</label>' +
+                    '<div class="fw-bold">' + paEsc(p.nama || '-') + '</div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Role</label>' +
+                    '<div><span class="badge ' + warnaRole + '">' +
+                        paEsc(p.role || '-') + '</span></div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">ID User</label>' +
+                    '<div><code>' + paEsc(p.idUser || '-') + '</code></div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Username</label>' +
+                    '<div>' + paEsc(p.username || '-') + '</div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">No. HP</label>' +
+                    '<div>' + paEsc(p.hp || '-') + '</div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Email</label>' +
+                    '<div>' + paEsc(p.email || '-') + '</div>' +
+                '</div>' +
+                '<div class="col-12">' +
+                    '<label class="text-muted small fw-bold">Alamat KTP</label>' +
+                    '<div>' + paEsc(p.alamatKtp || p.alamat || '-') + '</div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Alamat Domisili</label>' +
+                    '<div>' + paEsc(p.alamat || '-') + '</div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">NIK KTP</label>' +
+                    '<div><code>' + paEsc(p.nik_ktp || '-') + '</code></div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Sumber</label>' +
+                    '<div><span class="badge bg-info text-dark">' +
+                        paEsc(p.sumber || 'Daftar') + '</span></div>' +
+                '</div>' +
+                '<div class="col-md-6">' +
+                    '<label class="text-muted small fw-bold">Tanggal Daftar</label>' +
+                    '<div>' + (p.createdAt ?
+                        new Date(p.createdAt).toLocaleString('id-ID') : '-') + '</div>' +
+                '</div>';
+
+            // ── Koordinat GPS ──
+            if (p.lat && p.lng) {
+                html += '' +
+                '<div class="col-12">' +
+                    '<label class="text-muted small fw-bold">Koordinat GPS</label>' +
+                    '<div>' +
+                        '<a href="https://www.google.com/maps?q=' + p.lat + ',' + p.lng + '" ' +
+                           'target="_blank" class="btn btn-sm btn-outline-primary">' +
+                            '<i class="fas fa-map-marked-alt me-1"></i>' +
+                            p.lat + ', ' + p.lng +
+                        '</a>' +
+                    '</div>' +
+                '</div>';
+            }
+
+            html += '</div>';
+
+            body.innerHTML = html;
+
+            new bootstrap.Modal(
+                document.getElementById('modalDetailPersetujuanAkun')
+            ).show();
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (12) paBukaDetail error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (13) — SETUJUI LANGSUNG (dari tabel)
+    // ═══════════════════════════════════════════════════════════
+    window.paSetujuiLangsung = function(idUser) {
+        if (!confirm('Setujui akun ini?\n\nID: ' + idUser)) return;
+        paProsesSetujui(idUser);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (14) — SETUJUI DARI DETAIL (dari modal)
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiAkunDariDetail = function() {
+        var idUser = paState.detailIdAktif;
+        if (!idUser) return;
+
+        if (!confirm('Setujui akun ini?\n\nID: ' + idUser)) return;
+
+        var modal = bootstrap.Modal.getInstance(
+            document.getElementById('modalDetailPersetujuanAkun'));
+        if (modal) modal.hide();
+
+        paProsesSetujui(idUser);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (15) — PROSES SETUJUI (CORE)
+    // ------------------------------------------------------------
+    // Update status di dataLoginUser & dataAkunAktif → Aktif
+    // Catat aktivitas
+    // ═══════════════════════════════════════════════════════════
+    function paProsesSetujui(idUser) {
+        try {
+            if (!idUser) return;
+
+            var idAdmin = (typeof getIdUserAktif === 'function')
+                ? getIdUserAktif() : 'SA';
+            var now = new Date().toISOString();
+            var namaUser = idUser;
+
+            // ── Update dataLoginUser ──
+            if (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser)) {
+                var u = dataLoginUser.find(function(x) { return x.idUser === idUser; });
+                if (u) {
+                    u.statusVerifikasi = 'Aktif';
+                    u.status = 'Aktif';
+                    u.verifiedAt = now;
+                    u.verifiedBy = idAdmin;
+                    namaUser = u.nama || idUser;
+                }
+            }
+
+            // ── Update / tambah dataAkunAktif ──
+            if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+                var a = dataAkunAktif.find(function(x) { return x.id === idUser; });
+                if (a) {
+                    a.statusVerifikasi = 'Aktif';
+                    a.status = 'Aktif';
+                    a.verifiedAt = now;
+                    a.verifiedBy = idAdmin;
+                } else {
+                    // Copy dari dataLoginUser
+                    var src = (typeof dataLoginUser !== 'undefined')
+                        ? dataLoginUser.find(function(x) { return x.idUser === idUser; })
+                        : null;
+                    if (src) {
+                        dataAkunAktif.push({
+                            id: src.idUser,
+                            nama: src.nama,
+                            role: src.role,
+                            kodeRole: src.kodeRole,
+                            username: src.username,
+                            password: src.password,
+                            hp: src.hp,
+                            email: src.email,
+                            alamat: src.alamat,
+                            alamatKtp: src.alamatKtp || src.alamat,
+                            lat: src.lat,
+                            lng: src.lng,
+                            status: 'Aktif',
+                            statusVerifikasi: 'Aktif',
+                            nik_ktp: src.nik_ktp,
+                            statusLangganan: src.statusLangganan || 'Free',
+                            fotoUrl: src.fotoUrl || '',
+                            ownerId: src.ownerId || null,
+                            createdBy: src.createdBy || 'SELF_REGISTER',
+                            createdAt: src.createdAt,
+                            verifiedAt: now,
+                            verifiedBy: idAdmin
+                        });
+                    }
+                }
+            }
+
+            // ── Simpan ──
+            try {
+                localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser || []));
+                localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif || []));
+            } catch (e) {
+                console.warn('Gagal simpan akun:', e);
+            }
+
+            // ── Catat aktivitas ──
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idAdmin, 'Setujui Akun',
+                    'Akun ' + namaUser + ' (' + idUser + ') disetujui');
+            }
+
+            // ── Catat log audit (opsional) ──
+            try {
+                if (typeof catatLogAuditSAGlobal === 'function') {
+                    catatLogAuditSAGlobal({
+                        kategori: 'manajemen_akun',
+                        subKategori: 'setujui_akun',
+                        aksi: 'Setujui Akun',
+                        level: 'info',
+                        deskripsi: namaUser + ' (' + idUser + ') disetujui',
+                        target: { tipe: 'user', id: idUser, nama: namaUser },
+                        status: 'sukses'
+                    });
+                }
+            } catch (e) {}
+
+            paToast('✅ Akun "' + namaUser + '" disetujui.', 'success');
+
+            // ── Refresh ──
+            paRenderTabel(paState.page);
+            paRenderBreakdownPerRole();
+            paRenderStatistik();
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (15) paProsesSetujui error:', e);
+            paToast('❌ Gagal menyetujui: ' + e.message, 'danger');
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (16) — BUKA MODAL TOLAK (dari tabel)
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalTolakPersetujuan = function(idUser) {
+        try {
+            var semua = paAmbilDataPending();
+            var p = semua.find(function(x) { return x.idUser === idUser; });
+            if (!p) {
+                alert('❌ Data tidak ditemukan.');
+                return;
+            }
+
+            paState.detailIdAktif = idUser;
+            paSetVal('tolakPersetujuanUserId', idUser);
+            paSetVal('tolakPersetujuanNama', p.nama || '-');
+            paSetVal('tolakPersetujuanAlasan', '');
+
+            var notif = document.getElementById('notifTolakPersetujuan');
+            if (notif) notif.classList.add('d-none');
+
+            new bootstrap.Modal(
+                document.getElementById('modalAlasanTolakPersetujuan')
+            ).show();
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (16) bukaModalTolakPersetujuan error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (17) — BUKA MODAL TOLAK (dari detail)
+    // ═══════════════════════════════════════════════════════════
+    window.bukaModalTolakPersetujuanDariDetail = function() {
+        var idUser = paState.detailIdAktif;
+        if (!idUser) return;
+
+        // Tutup modal detail dulu
+        var detailModal = bootstrap.Modal.getInstance(
+            document.getElementById('modalDetailPersetujuanAkun'));
+        if (detailModal) detailModal.hide();
+
+        setTimeout(function() {
+            bukaModalTolakPersetujuan(idUser);
+        }, 300);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (18) — KONFIRMASI TOLAK (CORE)
+    // ═══════════════════════════════════════════════════════════
+    window.konfirmasiTolakPersetujuan = function() {
+        try {
+            var idUser = paGetVal('tolakPersetujuanUserId');
+            var alasan = (paGetVal('tolakPersetujuanAlasan') || '').trim();
+            var notif  = document.getElementById('notifTolakPersetujuan');
+
+            function showNotif(msg, tipe) {
+                if (!notif) return;
+                notif.className = 'alert alert-' + tipe;
+                notif.innerHTML = msg;
+                notif.classList.remove('d-none');
+            }
+
+            if (!idUser) {
+                showNotif('❌ ID user tidak valid.', 'danger');
+                return;
+            }
+
+            if (alasan.length < 10) {
+                showNotif('⚠️ Alasan minimal 10 karakter.', 'warning');
+                return;
+            }
+
+            var idAdmin = (typeof getIdUserAktif === 'function')
+                ? getIdUserAktif() : 'SA';
+            var now = new Date().toISOString();
+            var namaUser = idUser;
+
+            // ── Update dataLoginUser → Ditolak ──
+            if (typeof dataLoginUser !== 'undefined' && Array.isArray(dataLoginUser)) {
+                var u = dataLoginUser.find(function(x) { return x.idUser === idUser; });
+                if (u) {
+                    u.statusVerifikasi = 'Ditolak';
+                    u.status = 'Ditolak';
+                    u.alasanTolak = alasan;
+                    u.verifiedAt = now;
+                    u.verifiedBy = idAdmin;
+                    namaUser = u.nama || idUser;
+                }
+            }
+
+            // ── Update dataAkunAktif → Ditolak (kalau ada) ──
+            if (typeof dataAkunAktif !== 'undefined' && Array.isArray(dataAkunAktif)) {
+                var a = dataAkunAktif.find(function(x) { return x.id === idUser; });
+                if (a) {
+                    a.statusVerifikasi = 'Ditolak';
+                    a.status = 'Ditolak';
+                    a.alasanTolak = alasan;
+                    a.verifiedAt = now;
+                    a.verifiedBy = idAdmin;
+                }
+            }
+
+            // ── Simpan ──
+            try {
+                localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser || []));
+                localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif || []));
+            } catch (e) {}
+
+            // ── Catat aktivitas ──
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idAdmin, 'Tolak Akun',
+                    'Akun ' + namaUser + ' (' + idUser + ') ditolak. Alasan: ' + alasan);
+            }
+
+            try {
+                if (typeof catatLogAuditSAGlobal === 'function') {
+                    catatLogAuditSAGlobal({
+                        kategori: 'manajemen_akun',
+                        subKategori: 'tolak_akun',
+                        aksi: 'Tolak Akun',
+                        level: 'warning',
+                        deskripsi: namaUser + ' (' + idUser + ') — ' + alasan,
+                        target: { tipe: 'user', id: idUser, nama: namaUser },
+                        status: 'sukses'
+                    });
+                }
+            } catch (e) {}
+
+            showNotif('✅ Akun <strong>' + paEsc(namaUser) +
+                '</strong> ditolak.', 'success');
+
+            setTimeout(function() {
+                var modal = bootstrap.Modal.getInstance(
+                    document.getElementById('modalAlasanTolakPersetujuan'));
+                if (modal) modal.hide();
+
+                paRenderTabel(paState.page);
+                paRenderBreakdownPerRole();
+                paRenderStatistik();
+            }, 1000);
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (18) konfirmasiTolakPersetujuan error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (19) — SETUJUI SEMUA TERFILTER (BULK)
+    // ═══════════════════════════════════════════════════════════
+    window.setujuiSemuaTerfilterPersetujuan = function() {
+        try {
+            var allData = paAmbilDataPending();
+
+            // ── Filter sama seperti tabel ──
+            var cari   = (paGetVal('cariPersetujuanAkun') || '').toLowerCase().trim();
+            var fRole  = paGetVal('filterRolePersetujuanAkun') || '';
+            var fSumber= paGetVal('filterSumberPersetujuanAkun') || '';
+
+            var target = allData.filter(function(p) {
+                if (!p) return false;
+                if (fRole && p.role !== fRole) return false;
+                if (fSumber && p.sumber !== fSumber) return false;
+                if (cari) {
+                    var s = (p.nama || '') + ' ' + (p.idUser || '') + ' ' +
+                            (p.username || '') + ' ' + (p.hp || '') + ' ' +
+                            (p.email || '');
+                    if (s.toLowerCase().indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            if (target.length === 0) {
+                alert('⚠️ Tidak ada akun terfilter untuk disetujui.');
+                return;
+            }
+
+            if (!confirm('Setujui SEMUA ' + target.length + ' akun terfilter?\n\n' +
+                    'Tindakan ini tidak bisa dibatalkan.')) return;
+
+            var idAdmin = (typeof getIdUserAktif === 'function')
+                ? getIdUserAktif() : 'SA';
+            var now = new Date().toISOString();
+            var berhasil = 0;
+
+            target.forEach(function(p) {
+                var idUser = p.idUser;
+
+                // Update dataLoginUser
+                if (Array.isArray(dataLoginUser)) {
+                    var u = dataLoginUser.find(function(x) { return x.idUser === idUser; });
+                    if (u) {
+                        u.statusVerifikasi = 'Aktif';
+                        u.status = 'Aktif';
+                        u.verifiedAt = now;
+                        u.verifiedBy = idAdmin;
+                    }
+                }
+
+                // Update dataAkunAktif
+                if (Array.isArray(dataAkunAktif)) {
+                    var a = dataAkunAktif.find(function(x) { return x.id === idUser; });
+                    if (a) {
+                        a.statusVerifikasi = 'Aktif';
+                        a.status = 'Aktif';
+                        a.verifiedAt = now;
+                        a.verifiedBy = idAdmin;
+                    }
+                }
+
+                berhasil++;
+            });
+
+            try {
+                localStorage.setItem('dataLoginUser', JSON.stringify(dataLoginUser || []));
+                localStorage.setItem('dataAkunAktif', JSON.stringify(dataAkunAktif || []));
+            } catch (e) {}
+
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(idAdmin, 'Bulk Setujui Akun',
+                    berhasil + ' akun disetujui sekaligus');
+            }
+
+            paToast('✅ ' + berhasil + ' akun disetujui.', 'success');
+
+            paRenderTabel(1);
+            paRenderBreakdownPerRole();
+            paRenderStatistik();
+
+        } catch (e) {
+            console.error('BLOK R 10.4 (19) setujuiSemuaTerfilter error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (20) — TOAST NOTIFIKASI
+    // ═══════════════════════════════════════════════════════════
+    function paToast(pesan, tipe) {
+        var warna = {
+            success: '#28A745',
+            danger:  '#DC3545',
+            warning: '#FFC107',
+            info:    '#17A2B8'
+        }[tipe] || '#28A745';
+
+        var toast = document.createElement('div');
+        toast.textContent = pesan;
+        toast.style.cssText =
+            'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+            'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+            'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+            'max-width:320px;transition:opacity 0.3s, transform 0.3s;';
+        document.body.appendChild(toast);
+
+        setTimeout(function() {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            setTimeout(function() {
+                if (toast.parentNode) document.body.removeChild(toast);
+            }, 300);
+        }, 2500);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.4 (21) — HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['persetujuanAkun'] = function() {
+        if (typeof window.tampilkanPersetujuanAkun === 'function') {
+            window.tampilkanPersetujuanAkun();
+        }
+    };
+    window.menuHandlers['tampilkanPersetujuanAkun'] =
+        window.menuHandlers['persetujuanAkun'];
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 10.4 — Persetujuan Akun (JS) terpasang.');
+    console.log('   (1)  tampilkanPersetujuanAkun');
+    console.log('   (2)  paAmbilDataPending (via loadDataPendingAkun)');
+    console.log('   (3)  paRenderStatistik');
+    console.log('   (4)  paRenderRoleAksesInfo');
+    console.log('   (5)  paRenderBreakdownPerRole');
+    console.log('   (6)  paFilterRoleCepat');
+    console.log('   (7)  renderTabelPersetujuanAkun');
+    console.log('   (8)  paRenderBaris');
+    console.log('   (9)  ubahHalamanPersetujuanAkun');
+    console.log('   (10) resetFilterPersetujuanAkun');
+    console.log('   (11) paCopyHp');
+    console.log('   (12) paBukaDetail');
+    console.log('   (13) paSetujuiLangsung');
+    console.log('   (14) setujuiAkunDariDetail');
+    console.log('   (15) paProsesSetujui (CORE)');
+    console.log('   (16) bukaModalTolakPersetujuan');
+    console.log('   (17) bukaModalTolakPersetujuanDariDetail');
+    console.log('   (18) konfirmasiTolakPersetujuan (CORE)');
+    console.log('   (19) setujuiSemuaTerfilterPersetujuan (BULK)');
+    console.log('   (20) paToast');
+    console.log('   (21) menuHandlers.persetujuanAkun');
+    console.log('   📊 Data: loadDataPendingAkun() dari BLOK R 01.0 (14)');
+    console.log('   ⚡ Aksi: update dataLoginUser + dataAkunAktif + catatAktivitasGlobal');
+
+})();
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.4 (JS) =============================== -->
 <!-- ============================================================ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
