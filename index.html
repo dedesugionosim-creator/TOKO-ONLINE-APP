@@ -3361,6 +3361,1032 @@
 <!-- ═══ AKHIR BLOK CORE SYSTEM (8) ═══════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL KELOLA AKUN SA ══════════════════════ -->
+<!-- ═══ Dipakai oleh: R 10.3 (Kelola Akun Aktif UI)          ═══ -->
+<!-- ═══ Foundation: Core System (1-8) + Verifikasi Global SA  ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_KELOLA_AKUN_SA() {
+    if (window._blokKelolaAkunSADone) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL KELOLA AKUN SA sudah terpasang.');
+        return;
+    }
+    window._blokKelolaAkunSADone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA & MAP AKSES
+    // ═══════════════════════════════════════════════════════════
+    var STATUS_VALID = ['Aktif', 'Diblokir', 'Nonaktif', 'Dihapus'];
+    var ROLE_SUPERADMIN_NAMA = 'SuperAdmin';
+    var KODE_ROLE_SA = 'SA';
+
+    // Kode role yang punya akses default
+    var AKSES_DEFAULT = {
+        'SA':  { akses: true, bisaHapus: true,  bisaBulk: true  },
+        'CS':  { akses: true, bisaHapus: false, bisaBulk: true  },
+        'ADM': { akses: true, bisaHapus: false, bisaBulk: true  }
+    };
+
+    // Catatan otomatis untuk blokir
+    var CATATAN_BLOKIR_OTOMATIS =
+        'Akun anda terblokir silahkan hubungi customerservice untuk ' +
+        'pengajuan buka akun. Jika anda tidak menerima pemblokiran akun ' +
+        'Terimakasih.';
+
+    // Map status → aksi yang valid (untuk target bulk)
+    var TRANSISI_STATUS = {
+        blokir:      ['Aktif'],
+        nonaktifkan: ['Aktif'],
+        hapus:       ['Aktif'],
+        aktifkan:    ['Diblokir', 'Nonaktif', 'Dihapus']
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _kaEsc(s) {
+        if (typeof hfEscHtml === 'function') return hfEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function _kaNow() {
+        return new Date().toISOString();
+    }
+
+    function _kaGetIdAdmin() {
+        try {
+            if (typeof getIdUserAktif === 'function') {
+                var id = getIdUserAktif();
+                if (id) return id;
+            }
+        } catch (e) {}
+        return 'SA';
+    }
+
+    function _kaGetRoleDisplay() {
+        try {
+            if (typeof getRoleUserAktif === 'function') {
+                return getRoleUserAktif() || '';
+            }
+        } catch (e) {}
+        return '';
+    }
+
+    function _kaGetKodeRoleUser() {
+        try {
+            if (typeof userAktif !== 'undefined' && userAktif && userAktif.kodeRole) {
+                return String(userAktif.kodeRole).toUpperCase();
+            }
+        } catch (e) {}
+        // Fallback: konversi role display
+        var role = _kaGetRoleDisplay();
+        var map = {
+            'SuperAdmin':           'SA',
+            'Customer Service':     'CS',
+            'Staf Admin':           'ADM'
+        };
+        return map[role] || '';
+    }
+
+    function _kaReadArray(key) {
+        try {
+            if (Array.isArray(window[key])) return window[key];
+            if (typeof hfLoadJSON === 'function') {
+                var v = hfLoadJSON(key, []);
+                return Array.isArray(v) ? v : [];
+            }
+            var s = localStorage.getItem(key);
+            var arr = s ? JSON.parse(s) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+
+    function _kaSaveArray(key, data) {
+        try {
+            if (!Array.isArray(data)) data = [];
+            if (typeof hfSaveJSON === 'function') {
+                var r = hfSaveJSON(key, data);
+                return r && r.sukses !== false ? { sukses: true } : r;
+            }
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    function _kaCatatAktivitas(aksi, detail) {
+        try {
+            if (typeof catatAktivitasGlobal === 'function') {
+                catatAktivitasGlobal(_kaGetIdAdmin(), aksi, detail);
+            }
+        } catch (e) {}
+    }
+
+    function _kaCatatAudit(kategori, sub, aksi, level, deskripsi, target, status) {
+        try {
+            if (typeof catatLogAuditSAGlobal === 'function') {
+                catatLogAuditSAGlobal({
+                    kategori:    kategori || 'manajemen_akun',
+                    subKategori: sub      || 'kelola_akun',
+                    aksi:        aksi     || 'Aksi Kelola Akun',
+                    level:       level    || 'info',
+                    deskripsi:   deskripsi|| '',
+                    target:      target   || { tipe: 'sistem' },
+                    status:      status   || 'sukses'
+                });
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — ACCESS CONTROL
+    // ═══════════════════════════════════════════════════════════
+    window.bisaAksesKelolaAkunGlobal = function(kodeRole) {
+        try {
+            // Normalisasi
+            var kode = String(kodeRole || '').toUpperCase().trim();
+            var roleDisplay = _kaGetRoleDisplay();
+
+            // 1. SuperAdmin selalu bisa
+            if (roleDisplay === ROLE_SUPERADMIN_NAMA) {
+                return { akses: true, bisaHapus: true, bisaBulk: true, role: ROLE_SUPERADMIN_NAMA };
+            }
+
+            // 2. Cek config user (delegasi custom)
+            var config = _kaLoadAksesConfig();
+            if (kode && config[kode] && config[kode].akses === true) {
+                return Object.assign({ role: roleDisplay }, config[kode]);
+            }
+
+            // 3. Cek default AKSES_DEFAULT
+            if (kode && AKSES_DEFAULT[kode]) {
+                return Object.assign({ role: roleDisplay }, AKSES_DEFAULT[kode]);
+            }
+
+            // 4. Fallback: cek dari userAktif
+            try {
+                if (typeof userAktif !== 'undefined' && userAktif) {
+                    if (userAktif.role === ROLE_SUPERADMIN_NAMA) {
+                        return { akses: true, bisaHapus: true, bisaBulk: true };
+                    }
+                    if (AKSES_DEFAULT[userAktif.kodeRole]) {
+                        return Object.assign(
+                            { role: userAktif.role },
+                            AKSES_DEFAULT[userAktif.kodeRole]
+                        );
+                    }
+                }
+            } catch (e) {}
+
+            return { akses: false, bisaHapus: false, bisaBulk: false };
+        } catch (e) {
+            console.error('bisaAksesKelolaAkunGlobal error:', e);
+            return { akses: false, bisaHapus: false, bisaBulk: false };
+        }
+    };
+
+    function _kaLoadAksesConfig() {
+        try {
+            if (typeof hfLoadJSON === 'function') {
+                var v = hfLoadJSON('konfigAksesKelolaAkun', {});
+                return (v && typeof v === 'object') ? v : {};
+            }
+            var s = localStorage.getItem('konfigAksesKelolaAkun');
+            var obj = s ? JSON.parse(s) : {};
+            return (obj && typeof obj === 'object') ? obj : {};
+        } catch (e) { return {}; }
+    }
+
+    // Delegate akses ke role/kode tertentu
+    window.delegateAksesKelolaAkunGlobal = function(kodeRole, config) {
+        try {
+            if (!kodeRole) return { sukses: false, pesan: 'Kode role tidak valid.' };
+            var kode = String(kodeRole).toUpperCase().trim();
+            var current = _kaLoadAksesConfig();
+
+            if (config === null || config === undefined) {
+                delete current[kode];
+            } else {
+                current[kode] = {
+                    akses:     config.akses     !== false,
+                    bisaHapus: config.bisaHapus === true,
+                    bisaBulk:  config.bisaBulk  !== false
+                };
+            }
+
+            _kaSaveConfigAkses(current);
+
+            _kaCatatAktivitas('Delegasi Akses Kelola Akun',
+                kode + ' → ' + JSON.stringify(current[kode] || {}));
+
+            return { sukses: true, config: current };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    function _kaSaveConfigAkses(config) {
+        try {
+            if (typeof hfSaveJSON === 'function') {
+                hfSaveJSON('konfigAksesKelolaAkun', config);
+            } else {
+                localStorage.setItem('konfigAksesKelolaAkun', JSON.stringify(config));
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — LOAD MULTI-SOURCE + DEDUPE + EXCLUDE SA
+    // ═══════════════════════════════════════════════════════════
+    window.loadSemuaAkunKelolaGlobal = function() {
+        try {
+            var seen = {};
+            var hasil = [];
+
+            // Sumber 1: dataAkunAktif (utama — data lengkap)
+            var akunAktif = _kaReadArray('dataAkunAktif');
+            akunAktif.forEach(function(a) {
+                if (!a) return;
+                var id = a.id || a.idUser;
+                if (!id) return;
+                if (seen[id]) return;
+                if (a.role === ROLE_SUPERADMIN_NAMA) return; // exclude SA
+                seen[id] = true;
+                hasil.push(_kaNormalisasiAkun(a, id));
+            });
+
+            // Sumber 2: dataLoginUser (tambahan yang belum ada)
+            var loginUsers = _kaReadArray('dataLoginUser');
+            loginUsers.forEach(function(u) {
+                if (!u) return;
+                var id = u.idUser || u.id;
+                if (!id) return;
+                if (seen[id]) return;
+                if (u.role === ROLE_SUPERADMIN_NAMA) return;
+                seen[id] = true;
+                hasil.push(_kaNormalisasiAkun(u, id));
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('loadSemuaAkunKelolaGlobal error:', e);
+            return [];
+        }
+    };
+
+    function _kaNormalisasiAkun(a, id) {
+        return {
+            id:               id,
+            nama:             a.nama || '-',
+            username:         a.username || '-',
+            role:             a.role || '-',
+            kodeRole:         a.kodeRole || '-',
+            hp:               a.hp || '',
+            email:            a.email || '',
+            alamat:           a.alamat || a.alamatKtp || '',
+            alamatKtp:        a.alamatKtp || a.alamat || '',
+            nik_ktp:          a.nik_ktp || a.nikKtp || '',
+            status:           _kaStatusFinal(a),
+            statusVerifikasi: a.statusVerifikasi || 'Aktif',
+            statusLangganan:  a.statusLangganan || 'Free',
+            ownerId:          a.ownerId || null,
+            fotoUrl:          a.fotoUrl || a.fotoProfilUrl || '',
+            createdAt:        a.createdAt || a.tanggalDaftar || null,
+            // Field audit
+            blokirOleh:       a.blokirOleh || null,
+            alasanBlokir:     a.alasanBlokir || null,
+            blokirAt:         a.blokirAt || null,
+            nonaktifOleh:     a.nonaktifOleh || null,
+            alasanNonaktif:   a.alasanNonaktif || null,
+            nonaktifAt:       a.nonaktifAt || null,
+            dihapusOleh:      a.dihapusOleh || null,
+            alasanHapus:      a.alasanHapus || null,
+            dihapusAt:        a.dihapusAt || null,
+            aktifOleh:        a.aktifOleh || null,
+            alasanAktif:      a.alasanAktif || null,
+            aktifAt:          a.aktifAt || null,
+            // Raw
+            _raw:             a
+        };
+    }
+
+    function _kaStatusFinal(a) {
+        // Prioritas: field 'status' > 'statusVerifikasi'
+        var s = a.status || a.statusVerifikasi || 'Aktif';
+        if (STATUS_VALID.indexOf(s) === -1) return 'Aktif';
+        return s;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — QUERY: STATISTIK, CARI, GET, TARGET-BULK
+    // ═══════════════════════════════════════════════════════════
+    window.hitungStatistikKelolaAkunGlobal = function() {
+        try {
+            var semua = window.loadSemuaAkunKelolaGlobal();
+            var stat = {
+                total:     semua.length,
+                aktif:     0,
+                diblokir:  0,
+                nonaktif:  0,
+                dihapus:   0,
+                perRole:   {},
+                perStatus: {}
+            };
+
+            semua.forEach(function(a) {
+                var s = a.status;
+                if (s === 'Aktif')         stat.aktif++;
+                else if (s === 'Diblokir') stat.diblokir++;
+                else if (s === 'Nonaktif') stat.nonaktif++;
+                else if (s === 'Dihapus')  stat.dihapus++;
+
+                stat.perStatus[s] = (stat.perStatus[s] || 0) + 1;
+
+                if (a.role) {
+                    stat.perRole[a.role] = (stat.perRole[a.role] || 0) + 1;
+                }
+            });
+
+            return stat;
+        } catch (e) {
+            console.error('hitungStatistikKelolaAkunGlobal error:', e);
+            return { total: 0, aktif: 0, diblokir: 0, nonaktif: 0, dihapus: 0, perRole: {}, perStatus: {} };
+        }
+    };
+
+    window.cariAkunKelolaGlobal = function(filter) {
+        filter = filter || {};
+        try {
+            var semua = window.loadSemuaAkunKelolaGlobal();
+            var fRole   = filter.role   || '';
+            var fStatus = filter.status || '';
+            var cari    = (filter.cari || '').toLowerCase().trim();
+
+            var hasil = semua.filter(function(a) {
+                if (fRole   && a.role   !== fRole)   return false;
+                if (fStatus && a.status !== fStatus) return false;
+
+                if (cari) {
+                    var haystack = [
+                        a.nama || '',
+                        a.id || '',
+                        a.username || '',
+                        a.hp || '',
+                        a.email || '',
+                        a.alamat || ''
+                    ].join(' ').toLowerCase();
+                    if (haystack.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            // Sort: Aktif dulu, lalu nama A-Z
+            hasil.sort(function(a, b) {
+                var statusOrder = { 'Aktif': 0, 'Diblokir': 1, 'Nonaktif': 2, 'Dihapus': 3 };
+                var oa = statusOrder[a.status] || 99;
+                var ob = statusOrder[b.status] || 99;
+                if (oa !== ob) return oa - ob;
+                return String(a.nama || '').localeCompare(String(b.nama || ''), 'id');
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('cariAkunKelolaGlobal error:', e);
+            return [];
+        }
+    };
+
+    window.getAkunKelolaByIdGlobal = function(idUser) {
+        if (!idUser) return null;
+        try {
+            var semua = window.loadSemuaAkunKelolaGlobal();
+            return semua.find(function(a) {
+                return a && (a.id === idUser || a.idUser === idUser);
+            }) || null;
+        } catch (e) {
+            console.error('getAkunKelolaByIdGlobal error:', e);
+            return null;
+        }
+    };
+
+    window.getTargetBulkKelolaGlobal = function(aksi, filter) {
+        try {
+            if (!aksi || !TRANSISI_STATUS[aksi]) return [];
+
+            var statusTarget = TRANSISI_STATUS[aksi];
+            var semua = window.cariAkunKelolaGlobal(filter || {});
+
+            return semua.filter(function(a) {
+                return statusTarget.indexOf(a.status) !== -1;
+            });
+        } catch (e) {
+            console.error('getTargetBulkKelolaGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — CORE ACTIONS (BLOKIR / NONAKTIFKAN / HAPUS / AKTIFKAN)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── Internal: Update status di semua sumber ──
+    function _kaUpdateStatusSemua(idUser, statusBaru, extra) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+            if (STATUS_VALID.indexOf(statusBaru) === -1) {
+                return { sukses: false, pesan: 'Status tidak valid.' };
+            }
+
+            var now = _kaNow();
+            var extraObj = (extra && typeof extra === 'object') ? extra : {};
+            var updated = 0;
+
+            // ── Update di dataAkunAktif ──
+            var akun = _kaReadArray('dataAkunAktif');
+            var idx = akun.findIndex(function(a) {
+                return a && (a.id === idUser || a.idUser === idUser);
+            });
+
+            if (idx !== -1) {
+                akun[idx].status = statusBaru;
+                akun[idx].statusVerifikasi = (statusBaru === 'Aktif') ? 'Aktif' :
+                                             (statusBaru === 'Diblokir') ? 'Diblokir' :
+                                             (statusBaru === 'Nonaktif') ? 'Nonaktif' :
+                                             (statusBaru === 'Dihapus') ? 'Dihapus' : akun[idx].statusVerifikasi;
+                akun[idx].updatedAt = now;
+                Object.keys(extraObj).forEach(function(k) {
+                    akun[idx][k] = extraObj[k];
+                });
+                _kaSaveArray('dataAkunAktif', akun);
+                updated++;
+            }
+
+            // ── Update di dataLoginUser ──
+            var login = _kaReadArray('dataLoginUser');
+            var idx2 = login.findIndex(function(u) {
+                return u && (u.idUser === idUser || u.id === idUser);
+            });
+
+            if (idx2 !== -1) {
+                login[idx2].status = statusBaru;
+                login[idx2].statusVerifikasi = akun[idx >= 0 ? idx : 0]
+                    ? akun[idx].statusVerifikasi : statusBaru;
+                login[idx2].updatedAt = now;
+                Object.keys(extraObj).forEach(function(k) {
+                    login[idx2][k] = extraObj[k];
+                });
+                _kaSaveArray('dataLoginUser', login);
+                updated++;
+            }
+
+            // ── Update di profil_<id> ──
+            try {
+                var profilKey = 'profil_' + idUser;
+                var profilRaw = localStorage.getItem(profilKey);
+                if (profilRaw) {
+                    var profil = JSON.parse(profilRaw);
+                    if (profil && typeof profil === 'object') {
+                        profil.status = statusBaru;
+                        profil.updatedAt = now;
+                        Object.keys(extraObj).forEach(function(k) {
+                            profil[k] = extraObj[k];
+                        });
+                        localStorage.setItem(profilKey, JSON.stringify(profil));
+                        updated++;
+                    }
+                }
+            } catch (e) {}
+
+            // ── Update userIndex ──
+            try {
+                if (typeof userIndexUpdate === 'function') {
+                    var updates = { status: statusBaru };
+                    Object.keys(extraObj).forEach(function(k) { updates[k] = extraObj[k]; });
+                    userIndexUpdate(idUser, updates);
+                }
+            } catch (e) {}
+
+            // ── Simpan via core system ──
+            try {
+                if (typeof simpanDataKeLocalStorage === 'function') {
+                    simpanDataKeLocalStorage();
+                }
+            } catch (e) {}
+
+            if (updated === 0) {
+                return { sukses: false, pesan: 'Akun tidak ditemukan di semua sumber.' };
+            }
+
+            return { sukses: true, status: statusBaru, updated: updated };
+        } catch (e) {
+            console.error('_kaUpdateStatusSemua error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══ BLOKIR ═══
+    window.blokirAkunKelolaGlobal = function(idUser, alasan, idAdmin) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+            idAdmin = idAdmin || _kaGetIdAdmin();
+            alasan = (alasan || '').trim() || 'Tidak disebutkan';
+
+            var akun = window.getAkunKelolaByIdGlobal(idUser);
+            if (!akun) return { sukses: false, pesan: 'Akun tidak ditemukan.' };
+
+            var now = _kaNow();
+            var extra = {
+                blokirOleh:     idAdmin,
+                alasanBlokir:   alasan,
+                blokirAt:       now,
+                catatanOtomatis: CATATAN_BLOKIR_OTOMATIS
+            };
+
+            var r = _kaUpdateStatusSemua(idUser, 'Diblokir', extra);
+            if (!r.sukses) return r;
+
+            _kaCatatAktivitas('Blokir Akun',
+                akun.nama + ' (' + akun.role + ') — ' + alasan);
+
+            _kaCatatAudit('manajemen_akun', 'blokir_akun', 'Blokir Akun',
+                'warning', akun.nama + ' — ' + alasan,
+                { tipe: 'user', id: idUser, nama: akun.nama }, 'sukses');
+
+            return {
+                sukses:  true,
+                idUser:  idUser,
+                nama:    akun.nama,
+                role:    akun.role,
+                status:  'Diblokir',
+                alasan:  alasan
+            };
+        } catch (e) {
+            console.error('blokirAkunKelolaGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ NONAKTIFKAN ═══
+    window.nonaktifkanAkunKelolaGlobal = function(idUser, alasan, idAdmin) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+            idAdmin = idAdmin || _kaGetIdAdmin();
+            alasan = (alasan || '').trim() || 'Tidak disebutkan';
+
+            var akun = window.getAkunKelolaByIdGlobal(idUser);
+            if (!akun) return { sukses: false, pesan: 'Akun tidak ditemukan.' };
+
+            var now = _kaNow();
+            var extra = {
+                nonaktifOleh:   idAdmin,
+                alasanNonaktif: alasan,
+                nonaktifAt:     now
+            };
+
+            var r = _kaUpdateStatusSemua(idUser, 'Nonaktif', extra);
+            if (!r.sukses) return r;
+
+            _kaCatatAktivitas('Nonaktifkan Akun',
+                akun.nama + ' (' + akun.role + ') — ' + alasan);
+
+            _kaCatatAudit('manajemen_akun', 'nonaktifkan_akun', 'Nonaktifkan Akun',
+                'warning', akun.nama + ' — ' + alasan,
+                { tipe: 'user', id: idUser, nama: akun.nama }, 'sukses');
+
+            return {
+                sukses:  true,
+                idUser:  idUser,
+                nama:    akun.nama,
+                role:    akun.role,
+                status:  'Nonaktif',
+                alasan:  alasan
+            };
+        } catch (e) {
+            console.error('nonaktifkanAkunKelolaGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ HAPUS (SOFT DELETE) ═══
+    window.hapusAkunKelolaGlobal = function(idUser, alasan, idAdmin) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+
+            // Cek akses hapus
+            var akses = window.bisaAksesKelolaAkunGlobal(_kaGetKodeRoleUser());
+            if (!akses.akses || !akses.bisaHapus) {
+                return { sukses: false, pesan: 'Anda tidak punya izin menghapus akun.' };
+            }
+
+            idAdmin = idAdmin || _kaGetIdAdmin();
+            alasan = (alasan || '').trim() || 'Tidak disebutkan';
+
+            var akun = window.getAkunKelolaByIdGlobal(idUser);
+            if (!akun) return { sukses: false, pesan: 'Akun tidak ditemukan.' };
+
+            var now = _kaNow();
+            var extra = {
+                dihapusOleh: idAdmin,
+                alasanHapus: alasan,
+                dihapusAt:   now
+            };
+
+            var r = _kaUpdateStatusSemua(idUser, 'Dihapus', extra);
+            if (!r.sukses) return r;
+
+            _kaCatatAktivitas('Hapus Akun (Soft)',
+                akun.nama + ' (' + akun.role + ') — ' + alasan);
+
+            _kaCatatAudit('manajemen_akun', 'hapus_akun', 'Hapus Akun',
+                'warning', akun.nama + ' — ' + alasan,
+                { tipe: 'user', id: idUser, nama: akun.nama }, 'sukses');
+
+            return {
+                sukses:  true,
+                idUser:  idUser,
+                nama:    akun.nama,
+                role:    akun.role,
+                status:  'Dihapus',
+                alasan:  alasan
+            };
+        } catch (e) {
+            console.error('hapusAkunKelolaGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ AKTIFKAN (RESTORE) ═══
+    window.aktifkanAkunKelolaGlobal = function(idUser, alasan, idAdmin) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user tidak valid.' };
+            idAdmin = idAdmin || _kaGetIdAdmin();
+            alasan = (alasan || '').trim() || 'Dipulihkan oleh admin';
+
+            var akun = window.getAkunKelolaByIdGlobal(idUser);
+            if (!akun) return { sukses: false, pesan: 'Akun tidak ditemukan.' };
+
+            var now = _kaNow();
+            var extra = {
+                aktifOleh:        idAdmin,
+                alasanAktif:      alasan,
+                aktifAt:          now,
+                // Reset field audit (opsional)
+                catatanOtomatis:  '',
+                verifiedAt:       now,
+                verifiedBy:       idAdmin
+            };
+
+            var r = _kaUpdateStatusSemua(idUser, 'Aktif', extra);
+            if (!r.sukses) return r;
+
+            _kaCatatAktivitas('Aktifkan Akun',
+                akun.nama + ' (' + akun.role + ') — ' + alasan);
+
+            _kaCatatAudit('manajemen_akun', 'aktifkan_akun', 'Aktifkan Akun',
+                'info', akun.nama + ' — ' + alasan,
+                { tipe: 'user', id: idUser, nama: akun.nama }, 'sukses');
+
+            return {
+                sukses:  true,
+                idUser:  idUser,
+                nama:    akun.nama,
+                role:    akun.role,
+                status:  'Aktif',
+                alasan:  alasan
+            };
+        } catch (e) {
+            console.error('aktifkanAkunKelolaGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — BULK ACTIONS
+    // ═══════════════════════════════════════════════════════════
+    window.bulkAksiKelolaGlobal = function(idList, aksi, alasan, idAdmin) {
+        try {
+            if (!Array.isArray(idList) || idList.length === 0) {
+                return { sukses: false, pesan: 'Daftar ID kosong.' };
+            }
+            if (!aksi) return { sukses: false, pesan: 'Aksi tidak valid.' };
+
+            idAdmin = idAdmin || _kaGetIdAdmin();
+            alasan = (alasan || '').trim() || 'Bulk action oleh admin';
+
+            var fn = {
+                'blokir':      window.blokirAkunKelolaGlobal,
+                'nonaktifkan': window.nonaktifkanAkunKelolaGlobal,
+                'hapus':       window.hapusAkunKelolaGlobal,
+                'aktifkan':    window.aktifkanAkunKelolaGlobal
+            }[aksi];
+
+            if (typeof fn !== 'function') {
+                return { sukses: false, pesan: 'Aksi tidak didukung.' };
+            }
+
+            var berhasil = 0;
+            var gagal = 0;
+            var detail = [];
+
+            idList.forEach(function(id) {
+                var r = fn(id, alasan, idAdmin);
+                if (r && r.sukses) berhasil++;
+                else {
+                    gagal++;
+                    detail.push({ id: id, pesan: (r && r.pesan) || 'Gagal' });
+                }
+            });
+
+            // Catat aktivitas bulk
+            _kaCatatAktivitas('Bulk ' + aksi.toUpperCase(),
+                'Berhasil: ' + berhasil + ', Gagal: ' + gagal +
+                ' dari ' + idList.length + ' akun. Alasan: ' + alasan);
+
+            _kaCatatAudit('manajemen_akun', 'bulk_aksi', 'Bulk ' + aksi,
+                gagal > 0 ? 'warning' : 'info',
+                idList.length + ' akun — ' + alasan,
+                { tipe: 'bulk', aksi: aksi, total: idList.length },
+                'sukses');
+
+            return {
+                sukses:   true,
+                total:    idList.length,
+                berhasil: berhasil,
+                gagal:    gagal,
+                detail:   detail
+            };
+        } catch (e) {
+            console.error('bulkAksiKelolaGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — EXPORT CSV & JSON
+    // ═══════════════════════════════════════════════════════════
+    window.exportAkunKelolaCSVGlobal = function(filter) {
+        try {
+            var data = window.cariAkunKelolaGlobal(filter || {});
+            if (data.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada data untuk diexport.' };
+            }
+
+            function esc(v) {
+                if (v === null || v === undefined) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var header = [
+                'No', 'ID User', 'Nama', 'Username', 'Role', 'Kode Role',
+                'HP', 'Email', 'Alamat', 'NIK KTP',
+                'Status', 'Status Verifikasi', 'Langganan',
+                'Diblokir Oleh', 'Alasan Blokir', 'Blokir At',
+                'Nonaktif Oleh', 'Alasan Nonaktif', 'Nonaktif At',
+                'Dihapus Oleh', 'Alasan Hapus', 'Dihapus At',
+                'Dibuat'
+            ];
+
+            var lines = [header.join(',')];
+            data.forEach(function(a, i) {
+                lines.push([
+                    i + 1,
+                    esc(a.id),
+                    esc(a.nama),
+                    esc(a.username),
+                    esc(a.role),
+                    esc(a.kodeRole),
+                    esc(a.hp),
+                    esc(a.email),
+                    esc(a.alamat),
+                    esc(a.nik_ktp),
+                    esc(a.status),
+                    esc(a.statusVerifikasi),
+                    esc(a.statusLangganan),
+                    esc(a.blokirOleh),
+                    esc(a.alasanBlokir),
+                    esc(a.blokirAt),
+                    esc(a.nonaktifOleh),
+                    esc(a.alasanNonaktif),
+                    esc(a.nonaktifAt),
+                    esc(a.dihapusOleh),
+                    esc(a.alasanHapus),
+                    esc(a.dihapusAt),
+                    esc(a.createdAt)
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'kelola_akun_' +
+                new Date().toISOString().split('T')[0] + '_' +
+                Date.now() + '.csv';
+
+            // Trigger download
+            try {
+                var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = namaFile;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+            } catch (e) {
+                return { sukses: false, pesan: 'Gagal download: ' + e.message };
+            }
+
+            _kaCatatAktivitas('Export CSV Kelola Akun',
+                data.length + ' akun diexport ke ' + namaFile);
+
+            return { sukses: true, namaFile: namaFile, total: data.length };
+        } catch (e) {
+            console.error('exportAkunKelolaCSVGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.exportAkunKelolaJSONGlobal = function(filter) {
+        try {
+            var data = window.cariAkunKelolaGlobal(filter || {});
+            if (data.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada data untuk diexport.' };
+            }
+
+            // Strip _raw agar hasil bersih
+            var bersih = data.map(function(a) {
+                var copy = Object.assign({}, a);
+                delete copy._raw;
+                return copy;
+            });
+
+            var json = JSON.stringify({
+                exportedAt: new Date().toISOString(),
+                total:      bersih.length,
+                filter:     filter || {},
+                data:       bersih
+            }, null, 2);
+
+            _kaCatatAktivitas('Export JSON Kelola Akun',
+                data.length + ' akun diexport');
+
+            return { sukses: true, json: json, total: bersih.length };
+        } catch (e) {
+            console.error('exportAkunKelolaJSONGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — BONUS: RESET, RINGKAS, DEBUG, AUTO-REPAIR
+    // ═══════════════════════════════════════════════════════════
+
+    // ═══ Reset status akun ke Aktif (force) ═══
+    window.resetStatusAkunGlobal = function(idUser, idAdmin) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID tidak valid.' };
+            idAdmin = idAdmin || _kaGetIdAdmin();
+
+            var r = _kaUpdateStatusSemua(idUser, 'Aktif', {
+                aktifOleh:  idAdmin,
+                alasanAktif:'Reset oleh admin',
+                aktifAt:    _kaNow()
+            });
+
+            if (r.sukses) {
+                _kaCatatAktivitas('Reset Status Akun',
+                    idUser + ' direset ke Aktif');
+            }
+            return r;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══ Statistik ringkas (1-line) ═══
+    window.getStatistikRingkasKelolaAkunGlobal = function() {
+        var s = window.hitungStatistikKelolaAkunGlobal();
+        return 'Total: ' + s.total +
+               ' | Aktif: ' + s.aktif +
+               ' | Blokir: ' + s.diblokir +
+               ' | Nonaktif: ' + s.nonaktif +
+               ' | Dihapus: ' + s.dihapus;
+    };
+
+    // ═══ Auto-repair: sinkron status antar sumber ═══
+    window.repairStatusAkunGlobal = function(opts) {
+        opts = opts || {};
+        try {
+            var akunAktif = _kaReadArray('dataAkunAktif');
+            var login = _kaReadArray('dataLoginUser');
+            var repaired = 0;
+            var detail = [];
+
+            // Sinkron: dataAkunAktif → dataLoginUser
+            akunAktif.forEach(function(a) {
+                if (!a) return;
+                var id = a.id || a.idUser;
+                if (!id) return;
+
+                var u = login.find(function(x) {
+                    return x && (x.idUser === id || x.id === id);
+                });
+                if (!u) return;
+
+                var statusAkun  = _kaStatusFinal(a);
+                var statusLogin = u.status || u.statusVerifikasi || 'Aktif';
+
+                if (statusAkun !== statusLogin) {
+                    u.status = statusAkun;
+                    u.statusVerifikasi = a.statusVerifikasi || statusAkun;
+                    u.updatedAt = _kaNow();
+                    repaired++;
+                    detail.push({
+                        id: id,
+                        dari: statusLogin,
+                        ke: statusAkun
+                    });
+                }
+            });
+
+            if (repaired > 0 && opts.commit !== false) {
+                _kaSaveArray('dataLoginUser', login);
+                _kaCatatAktivitas('Repair Status Akun',
+                    repaired + ' akun disinkronkan');
+            }
+
+            return {
+                sukses:   true,
+                repaired: repaired,
+                detail:   detail,
+                committed: opts.commit !== false
+            };
+        } catch (e) {
+            console.error('repairStatusAkunGlobal error:', e);
+            return { sukses: false, pesan: e.message, repaired: 0 };
+        }
+    };
+
+    // ═══ Debug ═══
+    window.debugKelolaAkunGlobal = function() {
+        try {
+            var info = {
+                aksesUser:   window.bisaAksesKelolaAkunGlobal(_kaGetKodeRoleUser()),
+                roleUser:    _kaGetRoleDisplay(),
+                kodeRoleUser: _kaGetKodeRoleUser(),
+                statistik:   window.hitungStatistikKelolaAkunGlobal(),
+                totalAkun:   window.loadSemuaAkunKelolaGlobal().length,
+                configAkses: _kaLoadAksesConfig()
+            };
+            console.log('🔍 debugKelolaAkunGlobal:', info);
+            return info;
+        } catch (e) {
+            console.error('debugKelolaAkunGlobal error:', e);
+            return null;
+        }
+    };
+
+    // ═══ Daftar akun by role (helper) ═══
+    window.getAkunByRoleKelolaGlobal = function(role) {
+        if (!role) return [];
+        return window.cariAkunKelolaGlobal({ role: role });
+    };
+
+    // ═══ Daftar akun by status (helper) ═══
+    window.getAkunByStatusKelolaGlobal = function(status) {
+        if (!status) return [];
+        return window.cariAkunKelolaGlobal({ status: status });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK FUNGSI GLOBAL KELOLA AKUN SA terpasang.');
+    console.log('   📦 Modul:');
+    console.log('   1.  Konstanta & Map Akses (SA, CS, ADM)');
+    console.log('   2.  Helper Internal');
+    console.log('   3.  ACCESS: bisaAksesKelolaAkunGlobal + delegateAksesKelolaAkunGlobal');
+    console.log('   4.  LOAD: loadSemuaAkunKelolaGlobal (multi-source, dedupe, exclude SA)');
+    console.log('   5.  QUERY: hitungStatistik, cariAkun, getAkunById, getTargetBulk');
+    console.log('   6.  CORE: blokir/nonaktifkan/hapus/aktifkanAkunKelolaGlobal');
+    console.log('   7.  BULK: bulkAksiKelolaGlobal');
+    console.log('   8.  EXPORT: exportAkunKelolaCSVGlobal + JSON');
+    console.log('   9.  BONUS: resetStatus, repairStatus, debug, statistik ringkas');
+    console.log('   🎯 Entry: blokirAkunKelolaGlobal(id, alasan, admin)');
+    console.log('   🔒 Auto-note blokir terpasang (atur D.5)');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL KELOLA AKUN SA ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI AKUN SA ══════════════════ -->
 <!-- ═══ Dipakai oleh: R 10.7, SA Dasbor, Notifikasi, Audit    ═══ -->
 <!-- ═══ Foundation: Core System (1-8) + R 0.11.1(1)          ═══ -->
@@ -64726,6 +65752,1355 @@ function gantiPasswordSA(event) {
 <!-- AKHIR BLOK R 11.11(5) — BUAT AKUN KASIR GROSIR (JS) -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.3 – KELOLA AKUN AKTIF SUPERADMIN (HTML) === -->
+<!-- ============================================================ -->
+
+<div id="kelolaAkunAktifContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ SUB-BLOK 10.3.H1 — HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-users-cog me-2"></i>Kelola Akun Aktif
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Kelola status akun: Aktif / Diblokir / Nonaktif / Dihapus.
+                    Akses: <strong>SA + CS + ADM</strong> (bisa didelegasikan).
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-success btn-sm" onclick="kaExportCSV()">
+                    <i class="fas fa-file-csv me-1"></i>Export CSV
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="kaExportJSON()">
+                    <i class="fas fa-file-code me-1"></i>Export JSON
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i>Kembali
+                </button>
+            </div>
+        </div>
+        <!-- ══════════ AKHIR SUB-BLOK 10.3.H1 ══════════ -->
+
+        <!-- ══════════ SUB-BLOK 10.3.H2 — STATISTIK STATUS ══════════ -->
+        <div class="row mb-4 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="kaStatAktif">0</h4>
+                        <small class="text-muted">Aktif</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-ban fa-2x mb-2 text-danger"></i>
+                        <h4 class="fw-bold mb-0" id="kaStatDiblokir">0</h4>
+                        <small class="text-muted">Diblokir</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-user-slash fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="kaStatNonaktif">0</h4>
+                        <small class="text-muted">Nonaktif</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-trash-alt fa-2x mb-2 text-secondary"></i>
+                        <h4 class="fw-bold mb-0" id="kaStatDihapus">0</h4>
+                        <small class="text-muted">Dihapus</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- ══════════ AKHIR SUB-BLOK 10.3.H2 ══════════ -->
+
+        <!-- ══════════ SUB-BLOK 10.3.H3 — BREAKDOWN PER ROLE ══════════ -->
+        <div id="kaBreakdownPerRole" class="mb-3"></div>
+        <!-- ══════════ AKHIR SUB-BLOK 10.3.H3 ══════════ -->
+
+        <!-- ══════════ SUB-BLOK 10.3.H4 — FILTER & PENCARIAN ══════════ -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-3">
+                        <label class="fw-bold small">
+                            <i class="fas fa-filter me-1"></i>Filter Role
+                        </label>
+                        <select id="kaFilterRole" class="form-select form-select-sm"
+                                onchange="kaRenderTabel(1)">
+                            <option value="">Semua Role</option>
+                            <optgroup label="— Seller / Mitra —">
+                                <option value="Toko">Toko</option>
+                                <option value="Ojek">Ojek</option>
+                                <option value="Pedagang Pasar">Pedagang Pasar</option>
+                                <option value="Pedagang Makanan">Pedagang Makanan</option>
+                                <option value="COD Seller">COD Seller</option>
+                                <option value="Grosir">Grosir</option>
+                                <option value="Distributor">Distributor</option>
+                                <option value="Jasa">⚙️ Jasa</option>
+                            </optgroup>
+                            <optgroup label="— Profesional —">
+                                <option value="Developer Properti">Developer Properti</option>
+                                <option value="Dealer dan Showroom">Dealer dan Showroom</option>
+                                <option value="Finance Multifinance">Finance Multifinance</option>
+                            </optgroup>
+                            <optgroup label="— Non-Seller —">
+                                <option value="Customer">Customer</option>
+                                <option value="Kasir">Kasir</option>
+                                <option value="Staf Admin">Staf Admin</option>
+                                <option value="Staf Marketing">Staf Marketing</option>
+                                <option value="Staf Penagihan">Staf Penagihan</option>
+                                <option value="Customer Service">Customer Service</option>
+                                <option value="Event Organizer">Event Organizer</option>
+                                <option value="Organisasi">Organisasi</option>
+                                <option value="Individu">Individu</option>
+                                <option value="Staf Owner Toko">Staf Owner Toko</option>
+                                <option value="Staf Owner Ojek">Staf Owner Ojek</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="fw-bold small">
+                            <i class="fas fa-filter me-1"></i>Status
+                        </label>
+                        <select id="kaFilterStatus" class="form-select form-select-sm"
+                                onchange="kaRenderTabel(1)">
+                            <option value="">Semua Status</option>
+                            <option value="Aktif">Aktif</option>
+                            <option value="Diblokir">Diblokir</option>
+                            <option value="Nonaktif">Nonaktif</option>
+                            <option value="Dihapus">Dihapus</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="fw-bold small">
+                            <i class="fas fa-search me-1"></i>Cari Akun
+                        </label>
+                        <input type="text" id="kaCariAkun" class="form-control form-control-sm"
+                               placeholder="Nama / ID / Username / HP / Email..."
+                               onkeyup="kaRenderTabel(1)">
+                    </div>
+                    <div class="col-md-3 text-end">
+                        <button class="btn btn-outline-secondary btn-sm w-100"
+                                onclick="kaResetFilter()">
+                            <i class="fas fa-undo me-1"></i>Reset Filter
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div>
+                        <span class="badge bg-dark" id="kaInfoJumlah">0 Data</span>
+                        <span class="badge bg-info text-dark ms-1" id="kaInfoAkses">
+                            <i class="fas fa-user-shield me-1"></i>
+                            Akses: <strong id="kaRoleAksesAktif">-</strong>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- ══════════ AKHIR SUB-BLOK 10.3.H4 ══════════ -->
+
+        <!-- ══════════ SUB-BLOK 10.3.H5 — BULK ACTION ══════════ -->
+        <div class="card border-0 shadow mb-3">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <span class="fw-bold text-muted small me-2">
+                        <i class="fas fa-layer-group me-1"></i>
+                        Bulk Action <small>(ke akun terfilter)</small>:
+                    </span>
+                    <button class="btn btn-sm btn-outline-danger"
+                            onclick="kaBukaModalBulk('blokir')">
+                        <i class="fas fa-ban me-1"></i>Blokir Semua
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning"
+                            onclick="kaBukaModalBulk('nonaktifkan')">
+                        <i class="fas fa-user-slash me-1"></i>Nonaktifkan Semua
+                    </button>
+                    <button class="btn btn-sm btn-outline-success"
+                            onclick="kaBukaModalBulk('aktifkan')">
+                        <i class="fas fa-check-circle me-1"></i>Aktifkan Semua
+                    </button>
+                </div>
+            </div>
+        </div>
+        <!-- ══════════ AKHIR SUB-BLOK 10.3.H5 ══════════ -->
+
+        <!-- ══════════ SUB-BLOK 10.3.H6 — TABEL ══════════ -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background-color: #1976D2;">
+                <span><i class="fas fa-list me-2"></i>Daftar Akun</span>
+                <span class="badge bg-light text-dark" id="kaTotalData">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th>ID User</th>
+                                <th>Nama</th>
+                                <th>Role</th>
+                                <th>HP</th>
+                                <th>Email</th>
+                                <th style="width:100px;">Status</th>
+                                <th style="width:230px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="kaTabelBody">
+                            <tr><td colspan="8" class="text-center text-muted py-4">
+                                Memuat data...
+                            </td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
+                    <span class="text-muted small" id="kaPaginationInfo">Halaman 1 dari 1</span>
+                </div>
+                <div>
+                    <button class="btn btn-outline-secondary btn-sm me-1"
+                            id="kaBtnPrev" onclick="kaUbahHalaman('prev')" disabled>
+                        <i class="fas fa-chevron-left"></i> Sebelumnya
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm"
+                            id="kaBtnNext" onclick="kaUbahHalaman('next')">
+                        Selanjutnya <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <!-- ══════════ AKHIR SUB-BLOK 10.3.H6 ══════════ -->
+
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.3.H7 — MODAL ALASAN AKSI ══════════ -->
+<div class="modal fade" id="kaModalAlasan" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" id="kaModalAlasanHeader"
+                 style="background-color:#DC3545;">
+                <h5 class="modal-title" id="kaModalAlasanTitle">
+                    <i class="fas fa-edit me-2"></i>Konfirmasi Aksi
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="kaAksiKode" value="">
+                <input type="hidden" id="kaAksiTargetId" value="">
+
+                <div class="alert alert-light border small mb-3" id="kaAksiInfoAkun">
+                    <i class="fas fa-user me-1"></i>Loading...
+                </div>
+
+                <div class="mb-3">
+                    <label class="fw-bold">
+                        Alasan <span class="text-danger">*</span>
+                    </label>
+                    <textarea id="kaAlasan" class="form-control" rows="4"
+                              placeholder="Masukkan alasan (minimal 10 karakter)..."
+                              maxlength="300" required></textarea>
+                    <small class="text-muted">
+                        Minimal 10 karakter. Tersimpan di audit log.
+                    </small>
+                </div>
+
+                <div class="alert alert-warning small d-none" id="kaCatatanOtomatisInfo">
+                    <i class="fas fa-info-circle me-1"></i>
+                    <strong>Catatan otomatis (blokir):</strong><br>
+                    "Akun anda terblokir silahkan hubungi customerservice untuk
+                    pengajuan buka akun. Jika anda tidak menerima pemblokiran akun
+                    Terimakasih."
+                </div>
+
+                <div id="kaNotifAksi" class="alert d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn text-white" id="kaBtnKonfirmasiAksi"
+                        style="background-color:#DC3545;"
+                        onclick="kaKonfirmasiAksi()">
+                    <i class="fas fa-check me-1"></i>Konfirmasi
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ══════════ AKHIR SUB-BLOK 10.3.H7 ══════════ -->
+
+<!-- ══════════ SUB-BLOK 10.3.H8 — MODAL BULK ACTION ══════════ -->
+<div class="modal fade" id="kaModalBulk" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color:#6F42C1;">
+                <h5 class="modal-title" id="kaModalBulkTitle">
+                    <i class="fas fa-layer-group me-2"></i>Bulk Action
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="kaBulkAksi" value="">
+
+                <div class="alert alert-info small">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Aksi akan diterapkan ke <strong id="kaBulkJumlah">0</strong> akun
+                    terfilter (yang statusnya sesuai).
+                </div>
+
+                <div class="mb-3">
+                    <label class="fw-bold">
+                        Alasan <span class="text-danger">*</span>
+                    </label>
+                    <textarea id="kaBulkAlasan" class="form-control" rows="4"
+                              placeholder="Alasan aksi massal (minimal 10 karakter)..."
+                              maxlength="300" required></textarea>
+                    <small class="text-muted">
+                        Minimal 10 karakter. Berlaku untuk semua akun.
+                    </small>
+                </div>
+
+                <div id="kaBulkPreview" class="border rounded p-2 small"
+                     style="max-height:150px;overflow-y:auto;background:#f8f9fa;">
+                    <em class="text-muted">Memuat preview...</em>
+                </div>
+
+                <div id="kaBulkNotif" class="alert d-none mt-3"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn text-white"
+                        style="background-color:#6F42C1;"
+                        onclick="kaKonfirmasiBulk()">
+                    <i class="fas fa-check me-1"></i>Proses Bulk
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ══════════ AKHIR SUB-BLOK 10.3.H8 ══════════ -->
+
+<!-- ══════════ SUB-BLOK 10.3.H9 — MODAL DETAIL AKUN ══════════ -->
+<div class="modal fade" id="kaModalDetail" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background-color:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-user-circle me-2"></i>Detail Akun
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="kaDetailBody">
+                <p class="text-muted text-center py-3">Memuat...</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary"
+                        data-bs-dismiss="modal">Tutup</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ══════════ AKHIR SUB-BLOK 10.3.H9 ══════════ -->
+
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.3 (HTML) ============================= -->
+<!-- ============================================================ -->
+
+<!-- ============================================================ -->
+<!-- ===== BLOK R 10.3 – KELOLA AKUN AKTIF (JS) ================= -->
+<!-- ============================================================ -->
+<script>
+(function BLOK_R_10_3_KELOLA_AKUN() {
+
+    // ── Guard idempotency ──
+    if (window._blokR103Done) {
+        console.log('ℹ️ BLOK R 10.3 sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR103Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // STATE LOKAL UI
+    // ═══════════════════════════════════════════════════════════
+    var kaState = {
+        page: 1,
+        perPage: 10,
+        detailIdAktif: null
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function kaEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function kaSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function kaGetVal(id) {
+        var el = document.getElementById(id);
+        return el ? el.value : '';
+    }
+
+    function kaSetVal(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.value = val;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (1) — TAMPILKAN HALAMAN KELOLA AKUN AKTIF
+    // ------------------------------------------------------------
+    // Cek akses via bisaAksesKelolaAkunGlobal()
+    // Cache template, render statistik + breakdown + tabel
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanKelolaAkunAktif = function() {
+        try {
+            // ── Cek akses ──
+            var kodeRole = (typeof userAktif !== 'undefined' && userAktif && userAktif.kodeRole)
+                ? userAktif.kodeRole : null;
+            var roleDisplay = (typeof userAktif !== 'undefined' && userAktif && userAktif.role)
+                ? userAktif.role : '-';
+            var isSA = (roleDisplay === 'SuperAdmin');
+            var bisaAkses = isSA;
+
+            if (!bisaAkses && typeof bisaAksesKelolaAkunGlobal === 'function') {
+                var cek = bisaAksesKelolaAkunGlobal(kodeRole);
+                bisaAkses = (cek && cek.akses);
+            }
+
+            if (!bisaAkses) {
+                if (typeof tampilkanPlaceholderMenu === 'function') {
+                    tampilkanPlaceholderMenu('Akses Ditolak', '10.3');
+                } else {
+                    alert('❌ Anda tidak punya akses ke menu ini.');
+                }
+                return;
+            }
+
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.error('❌ #kontenDasbor tidak ditemukan');
+                return;
+            }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplKelolaAkunAktif) {
+                var c = document.getElementById('kelolaAkunAktifContainer');
+                if (!c) {
+                    console.error('❌ Container #kelolaAkunAktifContainer tidak ada');
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Kelola Akun Aktif', '10.3');
+                    }
+                    return;
+                }
+                window._tplKelolaAkunAktif = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Kelola Akun Aktif di-cache & dihapus');
+            }
+
+            konten.innerHTML = window._tplKelolaAkunAktif;
+            kaState.page = 1;
+
+            setTimeout(function() {
+                kaRenderBreakdownPerRole();
+                kaRenderStatistik();
+                kaRenderRoleAksesInfo();
+                kaRenderTabel(1);
+                console.log('✅ BLOK R 10.3 — Kelola Akun Aktif rendered');
+            }, 200);
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (1) tampilkanKelolaAkunAktif error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (2) — RENDER STATISTIK (4 CARD)
+    // ═══════════════════════════════════════════════════════════
+    function kaRenderStatistik() {
+        if (typeof hitungStatistikKelolaAkunGlobal !== 'function') return;
+
+        var stat = hitungStatistikKelolaAkunGlobal();
+
+        kaSetText('kaStatAktif',    stat.aktif    || 0);
+        kaSetText('kaStatDiblokir', stat.diblokir || 0);
+        kaSetText('kaStatNonaktif', stat.nonaktif || 0);
+        kaSetText('kaStatDihapus',  stat.dihapus  || 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (3) — RENDER INFO AKSES ROLE
+    // ═══════════════════════════════════════════════════════════
+    function kaRenderRoleAksesInfo() {
+        var roleDisplay = (typeof userAktif !== 'undefined' && userAktif && userAktif.role)
+            ? userAktif.role : '-';
+        kaSetText('kaRoleAksesAktif', roleDisplay);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (4) — RENDER BREAKDOWN PER ROLE (CHIPS)
+    // ═══════════════════════════════════════════════════════════
+    function kaRenderBreakdownPerRole() {
+        var container = document.getElementById('kaBreakdownPerRole');
+        if (!container) return;
+
+        var stat = (typeof hitungStatistikKelolaAkunGlobal === 'function')
+            ? hitungStatistikKelolaAkunGlobal()
+            : { perRole: {} };
+
+        var perRole = stat.perRole || {};
+        var roles = Object.keys(perRole);
+
+        if (roles.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        // Sort: Jasa prioritas, lalu terbanyak
+        roles.sort(function(a, b) {
+            if (a === 'Jasa' && b !== 'Jasa') return -1;
+            if (b === 'Jasa' && a !== 'Jasa') return 1;
+            return perRole[b] - perRole[a];
+        });
+
+        var warnaMap = {
+            'Toko':                 'bg-warning text-dark',
+            'Pedagang Pasar':       'bg-success',
+            'Pedagang Makanan':     'bg-warning text-dark',
+            'COD Seller':           'bg-info text-dark',
+            'Grosir':               'bg-info text-dark',
+            'Distributor':          'bg-primary',
+            'Ojek':                 'bg-danger',
+            'Jasa':                 'bg-danger',
+            'Developer Properti':   'bg-dark',
+            'Dealer dan Showroom':  'bg-dark',
+            'Finance Multifinance': 'bg-dark',
+            'Customer':             'bg-secondary',
+            'Kasir':                'bg-success',
+            'Staf Admin':           'bg-primary',
+            'Staf Marketing':       'bg-primary',
+            'Staf Penagihan':       'bg-primary',
+            'Customer Service':     'bg-primary',
+            'Event Organizer':      'bg-secondary',
+            'Organisasi':           'bg-secondary',
+            'Individu':             'bg-secondary',
+            'Staf Owner Toko':      'bg-info text-dark',
+            'Staf Owner Ojek':      'bg-info text-dark'
+        };
+
+        var html = '' +
+            '<div class="card border-0 shadow-sm bg-white">' +
+                '<div class="card-body py-2">' +
+                    '<div class="d-flex align-items-center flex-wrap gap-2">' +
+                        '<small class="fw-bold text-muted me-2">' +
+                            '<i class="fas fa-layer-group me-1"></i>Akun per Role:' +
+                        '</small>';
+
+        roles.forEach(function(role) {
+            var jumlah = perRole[role];
+            var kelasWarna = warnaMap[role] || 'bg-secondary';
+            var ikon = role === 'Jasa' ? '⚙️ ' : '';
+            var roleEsc = role.replace(/'/g, "\\'");
+
+            html += '' +
+                '<button type="button" class="btn btn-sm ' + kelasWarna + '" ' +
+                        'style="font-size:12px;" ' +
+                        'onclick="kaFilterRoleCepat(\'' + roleEsc + '\')">' +
+                    ikon + kaEsc(role) +
+                    ' <span class="badge bg-light text-dark ms-1">' + jumlah + '</span>' +
+                '</button>';
+        });
+
+        html += '</div></div></div>';
+        container.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (5) — FILTER CEPAT VIA CHIP
+    // ═══════════════════════════════════════════════════════════
+    window.kaFilterRoleCepat = function(role) {
+        kaSetVal('kaFilterRole', role);
+        kaRenderTabel(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (6) — RENDER TABEL (CORE)
+    // ------------------------------------------------------------
+    // Pakai cariAkunKelolaGlobal() untuk filter + cari
+    // Exclude SuperAdmin otomatis oleh global
+    // ═══════════════════════════════════════════════════════════
+    window.kaRenderTabel = function(hal) {
+        try {
+            kaState.page = hal || 1;
+
+            var tbody = document.getElementById('kaTabelBody');
+            if (!tbody) return;
+
+            if (typeof cariAkunKelolaGlobal !== 'function') {
+                tbody.innerHTML =
+                    '<tr><td colspan="8" class="text-center text-danger py-4">' +
+                    'Fungsi global tidak tersedia.</td></tr>';
+                return;
+            }
+
+            // ── Ambil filter ──
+            var filterRole   = kaGetVal('kaFilterRole') || '';
+            var filterStatus = kaGetVal('kaFilterStatus') || '';
+            var cari         = (kaGetVal('kaCariAkun') || '').toLowerCase().trim();
+
+            // ── Panggil global search ──
+            var hasil = cariAkunKelolaGlobal({
+                role:   filterRole,
+                status: filterStatus,
+                cari:   cari
+            });
+
+            // ── Update info ──
+            kaSetText('kaInfoJumlah', hasil.length + ' Data');
+            kaSetText('kaTotalData',  hasil.length);
+
+            kaRenderStatistik();
+
+            // ── Pagination ──
+            var totalPages = Math.ceil(hasil.length / kaState.perPage) || 1;
+            if (kaState.page > totalPages) kaState.page = totalPages;
+            if (kaState.page < 1) kaState.page = 1;
+
+            var start = (kaState.page - 1) * kaState.perPage;
+            var paged = hasil.slice(start, start + kaState.perPage);
+
+            kaSetText('kaPaginationInfo',
+                'Halaman ' + kaState.page + ' dari ' + totalPages);
+
+            var btnPrev = document.getElementById('kaBtnPrev');
+            if (btnPrev) btnPrev.disabled = (kaState.page === 1);
+
+            var btnNext = document.getElementById('kaBtnNext');
+            if (btnNext) btnNext.disabled = (kaState.page === totalPages);
+
+            // ── Kosong ──
+            if (paged.length === 0) {
+                tbody.innerHTML = '' +
+                    '<tr><td colspan="8" class="text-center text-muted py-4">' +
+                    '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                    'Tidak ada akun ditemukan.</td></tr>';
+                return;
+            }
+
+            // ── Render baris ──
+            var html = '';
+            paged.forEach(function(akun, index) {
+                var nomor = start + index + 1;
+                html += kaRenderBarisAkun(akun, nomor);
+            });
+            tbody.innerHTML = html;
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (6) kaRenderTabel error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (7) — RENDER 1 BARIS TABEL
+    // ═══════════════════════════════════════════════════════════
+    function kaRenderBarisAkun(akun, nomor) {
+
+        // ── Status badge ──
+        var statusBadge = '';
+        var status = akun.status || 'Aktif';
+
+        if (status === 'Aktif') {
+            statusBadge = '<span class="badge bg-success">Aktif</span>';
+        } else if (status === 'Diblokir') {
+            statusBadge = '<span class="badge bg-danger">Diblokir</span>';
+        } else if (status === 'Nonaktif') {
+            statusBadge = '<span class="badge bg-warning text-dark">Nonaktif</span>';
+        } else if (status === 'Dihapus') {
+            statusBadge = '<span class="badge bg-secondary">Dihapus</span>';
+        } else {
+            statusBadge = '<span class="badge bg-light text-dark">' +
+                kaEsc(status) + '</span>';
+        }
+
+        // ── Role badge ──
+        var warnaRole = {
+            'Toko':                 'bg-warning text-dark',
+            'Pedagang Pasar':       'bg-success',
+            'Pedagang Makanan':     'bg-warning text-dark',
+            'COD Seller':           'bg-info text-dark',
+            'Grosir':               'bg-info text-dark',
+            'Distributor':          'bg-primary',
+            'Ojek':                 'bg-danger',
+            'Jasa':                 'bg-danger',
+            'Developer Properti':   'bg-dark',
+            'Dealer dan Showroom':  'bg-dark',
+            'Finance Multifinance': 'bg-dark',
+            'Customer':             'bg-secondary',
+            'Kasir':                'bg-success',
+            'Staf Admin':           'bg-primary',
+            'Staf Marketing':       'bg-primary',
+            'Staf Penagihan':       'bg-primary',
+            'Customer Service':     'bg-primary',
+            'Event Organizer':      'bg-secondary',
+            'Organisasi':           'bg-secondary',
+            'Individu':             'bg-secondary',
+            'Staf Owner Toko':      'bg-info text-dark',
+            'Staf Owner Ojek':      'bg-info text-dark'
+        }[akun.role] || 'bg-secondary';
+
+        var ikonRole = akun.role === 'Jasa' ? '⚙️ ' : '';
+        var roleBadge = '<span class="badge ' + warnaRole + '">' +
+            ikonRole + kaEsc(akun.role || '-') + '</span>';
+
+        // ── HP copy-able ──
+        var hpBersih = (akun.hp || '').toString().replace(/\D/g, '');
+        var hpDisplay = hpBersih
+            ? '<a href="javascript:void(0)" onclick="kaCopyHp(\'' + hpBersih + '\')" ' +
+              'class="text-decoration-none" title="Klik untuk copy">' +
+              '<i class="fas fa-copy me-1 text-primary"></i>' + kaEsc(akun.hp) + '</a>'
+            : '<span class="text-muted">-</span>';
+
+        // ── Tombol aksi (sesuai status) ──
+        var idEsc = (akun.id || '').replace(/'/g, "\\'");
+        var aksiHtml = '';
+
+        if (status === 'Aktif') {
+            aksiHtml =
+                '<button class="btn btn-sm btn-outline-danger me-1" ' +
+                        'onclick="kaBukaModalAksi(\'blokir\', \'' + idEsc + '\')" title="Blokir">' +
+                    '<i class="fas fa-ban"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-warning me-1" ' +
+                        'onclick="kaBukaModalAksi(\'nonaktifkan\', \'' + idEsc + '\')" title="Nonaktifkan">' +
+                    '<i class="fas fa-user-slash"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-secondary me-1" ' +
+                        'onclick="kaBukaModalAksi(\'hapus\', \'' + idEsc + '\')" title="Hapus">' +
+                    '<i class="fas fa-trash"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-info" ' +
+                        'onclick="kaBukaDetail(\'' + idEsc + '\')" title="Detail">' +
+                    '<i class="fas fa-eye"></i>' +
+                '</button>';
+
+        } else if (status === 'Diblokir' || status === 'Nonaktif') {
+            aksiHtml =
+                '<button class="btn btn-sm btn-outline-success me-1" ' +
+                        'onclick="kaBukaModalAksi(\'aktifkan\', \'' + idEsc + '\')" title="Aktifkan">' +
+                    '<i class="fas fa-check-circle"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-secondary me-1" ' +
+                        'onclick="kaBukaModalAksi(\'hapus\', \'' + idEsc + '\')" title="Hapus">' +
+                    '<i class="fas fa-trash"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-info" ' +
+                        'onclick="kaBukaDetail(\'' + idEsc + '\')" title="Detail">' +
+                    '<i class="fas fa-eye"></i>' +
+                '</button>';
+
+        } else if (status === 'Dihapus') {
+            aksiHtml =
+                '<button class="btn btn-sm btn-outline-success me-1" ' +
+                        'onclick="kaBukaModalAksi(\'aktifkan\', \'' + idEsc + '\')" title="Pulihkan">' +
+                    '<i class="fas fa-undo"></i>' +
+                '</button>' +
+                '<button class="btn btn-sm btn-outline-info" ' +
+                        'onclick="kaBukaDetail(\'' + idEsc + '\')" title="Detail">' +
+                    '<i class="fas fa-eye"></i>' +
+                '</button>';
+
+        } else {
+            aksiHtml = '<span class="text-muted small">-</span>';
+        }
+
+        return '' +
+        '<tr>' +
+            '<td>' + nomor + '</td>' +
+            '<td><small>' + kaEsc(akun.id || '-') + '</small></td>' +
+            '<td><strong>' + kaEsc(akun.nama || '-') + '</strong></td>' +
+            '<td>' + roleBadge + '</td>' +
+            '<td>' + hpDisplay + '</td>' +
+            '<td><small>' + kaEsc(akun.email || '-') + '</small></td>' +
+            '<td>' + statusBadge + '</td>' +
+            '<td>' + aksiHtml + '</td>' +
+        '</tr>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (8) — PAGINATION
+    // ═══════════════════════════════════════════════════════════
+    window.kaUbahHalaman = function(arah) {
+        if (arah === 'prev' && kaState.page > 1) {
+            kaRenderTabel(kaState.page - 1);
+        } else if (arah === 'next') {
+            kaRenderTabel(kaState.page + 1);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (9) — RESET FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.kaResetFilter = function() {
+        kaSetVal('kaFilterRole', '');
+        kaSetVal('kaFilterStatus', '');
+        kaSetVal('kaCariAkun', '');
+        kaRenderTabel(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (10) — COPY HP
+    // ═══════════════════════════════════════════════════════════
+    window.kaCopyHp = function(hp) {
+        if (!hp) return;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(hp).then(function() {
+                kaToast('✅ No. HP dicopy: ' + hp, 'success');
+            }).catch(function() {
+                kaFallbackCopy(hp);
+            });
+        } else {
+            kaFallbackCopy(hp);
+        }
+    };
+
+    function kaFallbackCopy(teks) {
+        var ta = document.createElement('textarea');
+        ta.value = teks;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            kaToast('✅ No. HP dicopy: ' + teks, 'success');
+        } catch (e) {
+            alert('Gagal copy. Nomor: ' + teks);
+        }
+        document.body.removeChild(ta);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (11) — BUKA MODAL AKSI (SINGLE)
+    // ═══════════════════════════════════════════════════════════
+    window.kaBukaModalAksi = function(aksi, idUser) {
+        try {
+            if (typeof getAkunKelolaByIdGlobal !== 'function') {
+                alert('Fungsi global tidak tersedia.');
+                return;
+            }
+
+            var akun = getAkunKelolaByIdGlobal(idUser);
+            if (!akun) {
+                alert('❌ Akun tidak ditemukan.');
+                return;
+            }
+
+            kaSetVal('kaAksiKode', aksi);
+            kaSetVal('kaAksiTargetId', idUser);
+            kaSetVal('kaAlasan', '');
+
+            // ── Info akun di modal ──
+            var infoEl = document.getElementById('kaAksiInfoAkun');
+            if (infoEl) {
+                infoEl.innerHTML =
+                    '<strong>' + kaEsc(akun.nama) + '</strong> ' +
+                    '<span class="badge bg-secondary">' + kaEsc(akun.role) + '</span>' +
+                    '<br><small class="text-muted">' +
+                    'ID: ' + kaEsc(akun.id) + ' • Status: ' + kaEsc(akun.status) +
+                    '</small>';
+            }
+
+            // ── Config per aksi ──
+            var config = {
+                blokir:      { label: 'Blokir Akun',      icon: 'fa-ban',          color: '#DC3545' },
+                nonaktifkan: { label: 'Nonaktifkan Akun', icon: 'fa-user-slash',   color: '#FFC107' },
+                hapus:       { label: 'Hapus Akun',       icon: 'fa-trash',        color: '#6C757D' },
+                aktifkan:    { label: 'Aktifkan Akun',    icon: 'fa-check-circle', color: '#28A745' }
+            }[aksi] || { label: 'Aksi', icon: 'fa-edit', color: '#6C757D' };
+
+            var title = document.getElementById('kaModalAlasanTitle');
+            if (title) {
+                title.innerHTML = '<i class="fas ' + config.icon +
+                    ' me-2"></i>' + config.label;
+            }
+
+            var header = document.getElementById('kaModalAlasanHeader');
+            if (header) header.style.background = config.color;
+
+            var btn = document.getElementById('kaBtnKonfirmasiAksi');
+            if (btn) {
+                btn.style.background = config.color;
+                btn.innerHTML = '<i class="fas fa-check me-1"></i>' + config.label;
+            }
+
+            // ── Catatan otomatis (khusus blokir) ──
+            var catatanInfo = document.getElementById('kaCatatanOtomatisInfo');
+            if (catatanInfo) {
+                catatanInfo.classList.toggle('d-none', aksi !== 'blokir');
+            }
+
+            var notif = document.getElementById('kaNotifAksi');
+            if (notif) notif.classList.add('d-none');
+
+            new bootstrap.Modal(document.getElementById('kaModalAlasan')).show();
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (11) kaBukaModalAksi error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (12) — KONFIRMASI AKSI (SINGLE)
+    // ------------------------------------------------------------
+    // Panggil fungsi global 0.10.3 sesuai aksi
+    // ═══════════════════════════════════════════════════════════
+    window.kaKonfirmasiAksi = function() {
+        try {
+            var aksi   = kaGetVal('kaAksiKode');
+            var idUser = kaGetVal('kaAksiTargetId');
+            var alasan = (kaGetVal('kaAlasan') || '').trim();
+            var notif  = document.getElementById('kaNotifAksi');
+
+            function showNotif(msg, tipe) {
+                if (!notif) return;
+                notif.className = 'alert alert-' + tipe;
+                notif.innerHTML = msg;
+                notif.classList.remove('d-none');
+            }
+
+            if (!aksi || !idUser) {
+                showNotif('❌ Data aksi tidak valid.', 'danger');
+                return;
+            }
+
+            if (alasan.length < 10) {
+                showNotif('⚠️ Alasan minimal 10 karakter.', 'warning');
+                return;
+            }
+
+            var idAdmin = (typeof getIdUserAktif === 'function')
+                ? getIdUserAktif() : 'SA';
+
+            var hasil;
+
+            if (aksi === 'blokir' && typeof blokirAkunKelolaGlobal === 'function') {
+                hasil = blokirAkunKelolaGlobal(idUser, alasan, idAdmin);
+            } else if (aksi === 'nonaktifkan' && typeof nonaktifkanAkunKelolaGlobal === 'function') {
+                hasil = nonaktifkanAkunKelolaGlobal(idUser, alasan, idAdmin);
+            } else if (aksi === 'hapus' && typeof hapusAkunKelolaGlobal === 'function') {
+                hasil = hapusAkunKelolaGlobal(idUser, alasan, idAdmin);
+            } else if (aksi === 'aktifkan' && typeof aktifkanAkunKelolaGlobal === 'function') {
+                hasil = aktifkanAkunKelolaGlobal(idUser, alasan, idAdmin);
+            } else {
+                showNotif('❌ Aksi tidak didukung atau fungsi global tidak tersedia.', 'danger');
+                return;
+            }
+
+            if (!hasil || !hasil.sukses) {
+                showNotif('❌ ' + ((hasil && hasil.pesan) || 'Gagal memproses aksi.'), 'danger');
+                return;
+            }
+
+            // ── Sukses ──
+            showNotif('✅ Berhasil! Akun <strong>' +
+                kaEsc(hasil.nama || idUser) + '</strong> diproses.', 'success');
+
+            setTimeout(function() {
+                var modal = bootstrap.Modal.getInstance(
+                    document.getElementById('kaModalAlasan'));
+                if (modal) modal.hide();
+
+                kaRenderTabel(kaState.page);
+                kaRenderBreakdownPerRole();
+            }, 1000);
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (12) kaKonfirmasiAksi error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (13) — BUKA MODAL BULK
+    // ------------------------------------------------------------
+    // Pakai getTargetBulkKelolaGlobal() untuk hitung target
+    // ═══════════════════════════════════════════════════════════
+    window.kaBukaModalBulk = function(aksi) {
+        try {
+            if (typeof getTargetBulkKelolaGlobal !== 'function') {
+                alert('Fungsi global tidak tersedia.');
+                return;
+            }
+
+            var filter = {
+                role:   kaGetVal('kaFilterRole') || '',
+                status: kaGetVal('kaFilterStatus') || '',
+                cari:   (kaGetVal('kaCariAkun') || '').toLowerCase().trim()
+            };
+
+            var target = getTargetBulkKelolaGlobal(aksi, filter);
+
+            if (!target || target.length === 0) {
+                alert('⚠️ Tidak ada akun terfilter yang bisa diproses untuk aksi "' +
+                    aksi + '".');
+                return;
+            }
+
+            kaSetVal('kaBulkAksi', aksi);
+            kaSetVal('kaBulkAlasan', '');
+            kaSetText('kaBulkJumlah', target.length);
+
+            // ── Preview list ──
+            var previewEl = document.getElementById('kaBulkPreview');
+            if (previewEl) {
+                var html = '';
+                target.slice(0, 20).forEach(function(a, i) {
+                    html += '<div>' + (i + 1) + '. <strong>' +
+                        kaEsc(a.nama) + '</strong> ' +
+                        '<span class="badge bg-secondary">' +
+                        kaEsc(a.role) + '</span> ' +
+                        '<small class="text-muted">(' + kaEsc(a.id) + ')</small></div>';
+                });
+                if (target.length > 20) {
+                    html += '<div class="text-muted mt-1"><em>...dan ' +
+                        (target.length - 20) + ' lainnya</em></div>';
+                }
+                previewEl.innerHTML = html;
+            }
+
+            // ── Update title ──
+            var titleEl = document.getElementById('kaModalBulkTitle');
+            if (titleEl) {
+                var label = {
+                    blokir:      'Blokir Massal',
+                    nonaktifkan: 'Nonaktifkan Massal',
+                    aktifkan:    'Aktifkan Massal'
+                }[aksi] || 'Bulk Action';
+                titleEl.innerHTML = '<i class="fas fa-layer-group me-2"></i>' + label;
+            }
+
+            var notif = document.getElementById('kaBulkNotif');
+            if (notif) notif.classList.add('d-none');
+
+            new bootstrap.Modal(document.getElementById('kaModalBulk')).show();
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (13) kaBukaModalBulk error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (14) — KONFIRMASI BULK
+    // ------------------------------------------------------------
+    // Pakai bulkAksiKelolaGlobal() dari global 0.10.3
+    // ═══════════════════════════════════════════════════════════
+    window.kaKonfirmasiBulk = function() {
+        try {
+            var aksi   = kaGetVal('kaBulkAksi');
+            var alasan = (kaGetVal('kaBulkAlasan') || '').trim();
+            var notif  = document.getElementById('kaBulkNotif');
+
+            function showNotif(msg, tipe) {
+                if (!notif) return;
+                notif.className = 'alert alert-' + tipe;
+                notif.innerHTML = msg;
+                notif.classList.remove('d-none');
+            }
+
+            if (!aksi) {
+                showNotif('❌ Aksi tidak valid.', 'danger');
+                return;
+            }
+            if (alasan.length < 10) {
+                showNotif('⚠️ Alasan minimal 10 karakter.', 'warning');
+                return;
+            }
+
+            var filter = {
+                role:   kaGetVal('kaFilterRole') || '',
+                status: kaGetVal('kaFilterStatus') || '',
+                cari:   (kaGetVal('kaCariAkun') || '').toLowerCase().trim()
+            };
+
+            var target = (typeof getTargetBulkKelolaGlobal === 'function')
+                ? getTargetBulkKelolaGlobal(aksi, filter) : [];
+
+            if (target.length === 0) {
+                showNotif('❌ Tidak ada akun target.', 'danger');
+                return;
+            }
+
+            if (!confirm('Proses ' + aksi.toUpperCase() + ' untuk ' +
+                    target.length + ' akun?\n\nLanjut?')) return;
+
+            var idList = target.map(function(a) { return a.id; });
+            var idAdmin = (typeof getIdUserAktif === 'function')
+                ? getIdUserAktif() : 'SA';
+
+            var hasil = (typeof bulkAksiKelolaGlobal === 'function')
+                ? bulkAksiKelolaGlobal(idList, aksi, alasan, idAdmin)
+                : { sukses: false, pesan: 'Fungsi bulk tidak tersedia.' };
+
+            if (!hasil.sukses) {
+                showNotif('❌ ' + hasil.pesan, 'danger');
+                return;
+            }
+
+            showNotif('✅ <strong>' + hasil.berhasil + '</strong> berhasil, ' +
+                '<strong>' + hasil.gagal + '</strong> gagal dari ' +
+                hasil.total + ' akun.', 'success');
+
+            setTimeout(function() {
+                var modal = bootstrap.Modal.getInstance(
+                    document.getElementById('kaModalBulk'));
+                if (modal) modal.hide();
+
+                kaRenderTabel(1);
+                kaRenderBreakdownPerRole();
+                kaRenderStatistik();
+            }, 1500);
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (14) kaKonfirmasiBulk error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (15) — BUKA DETAIL AKUN
+    // ═══════════════════════════════════════════════════════════
+    window.kaBukaDetail = function(idUser) {
+        try {
+            if (typeof getAkunKelolaByIdGlobal !== 'function') return;
+
+            var akun = getAkunKelolaByIdGlobal(idUser);
+            if (!akun) {
+                alert('❌ Akun tidak ditemukan.');
+                return;
+            }
+
+            kaState.detailIdAktif = idUser;
+
+            var body = document.getElementById('kaDetailBody');
+            if (!body) return;
+
+            var html = '<table class="table table-sm table-borderless small mb-0">';
+            html += '<tr><td class="text-muted" style="width:140px;">ID User</td><td><code>' +
+                kaEsc(akun.id) + '</code></td></tr>';
+            html += '<tr><td class="text-muted">Nama</td><td><strong>' +
+                kaEsc(akun.nama) + '</strong></td></tr>';
+            html += '<tr><td class="text-muted">Role</td><td><span class="badge bg-primary">' +
+                kaEsc(akun.role) + '</span></td></tr>';
+            html += '<tr><td class="text-muted">Username</td><td>' +
+                kaEsc(akun.username || '-') + '</td></tr>';
+            html += '<tr><td class="text-muted">HP</td><td>' +
+                kaEsc(akun.hp || '-') + '</td></tr>';
+            html += '<tr><td class="text-muted">Email</td><td>' +
+                kaEsc(akun.email || '-') + '</td></tr>';
+            html += '<tr><td class="text-muted">Alamat</td><td>' +
+                kaEsc(akun.alamat || '-') + '</td></tr>';
+            html += '<tr><td class="text-muted">NIK KTP</td><td>' +
+                kaEsc(akun.nik_ktp || '-') + '</td></tr>';
+            html += '<tr><td class="text-muted">Status</td><td><span class="badge bg-info">' +
+                kaEsc(akun.status) + '</span></td></tr>';
+            html += '<tr><td class="text-muted">Langganan</td><td>' +
+                kaEsc(akun.statusLangganan || 'Free') + '</td></tr>';
+
+            if (akun.createdAt) {
+                html += '<tr><td class="text-muted">Dibuat</td><td>' +
+                    new Date(akun.createdAt).toLocaleString('id-ID') + '</td></tr>';
+            }
+
+            if (akun.blokirOleh) {
+                html += '<tr><td class="text-muted">Diblokir oleh</td><td>' +
+                    kaEsc(akun.blokirOleh) + '<br><small>' +
+                    kaEsc(akun.alasanBlokir || '-') + '</small></td></tr>';
+            }
+            if (akun.nonaktifOleh) {
+                html += '<tr><td class="text-muted">Nonaktif oleh</td><td>' +
+                    kaEsc(akun.nonaktifOleh) + '<br><small>' +
+                    kaEsc(akun.alasanNonaktif || '-') + '</small></td></tr>';
+            }
+            if (akun.dihapusOleh) {
+                html += '<tr><td class="text-muted">Dihapus oleh</td><td>' +
+                    kaEsc(akun.dihapusOleh) + '<br><small>' +
+                    kaEsc(akun.alasanHapus || '-') + '</small></td></tr>';
+            }
+            if (akun.aktifOleh) {
+                html += '<tr><td class="text-muted">Diaktifkan oleh</td><td>' +
+                    kaEsc(akun.aktifOleh) + '<br><small>' +
+                    kaEsc(akun.alasanAktif || '-') + '</small></td></tr>';
+            }
+
+            html += '</table>';
+            body.innerHTML = html;
+
+            new bootstrap.Modal(document.getElementById('kaModalDetail')).show();
+
+        } catch (e) {
+            console.error('BLOK R 10.3 (15) kaBukaDetail error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (16) — EXPORT CSV
+    // ------------------------------------------------------------
+    // Pakai exportAkunKelolaCSVGlobal() dengan filter aktif
+    // ═══════════════════════════════════════════════════════════
+    window.kaExportCSV = function() {
+        if (typeof exportAkunKelolaCSVGlobal !== 'function') {
+            alert('❌ Fungsi export tidak tersedia.');
+            return;
+        }
+
+        var filter = {
+            role:   kaGetVal('kaFilterRole') || '',
+            status: kaGetVal('kaFilterStatus') || '',
+            cari:   (kaGetVal('kaCariAkun') || '').toLowerCase().trim()
+        };
+
+        var hasil = exportAkunKelolaCSVGlobal(filter);
+        if (hasil.sukses) {
+            kaToast('✅ Export selesai: ' + hasil.namaFile, 'success');
+        } else {
+            alert('❌ ' + hasil.pesan);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (17) — EXPORT JSON
+    // ------------------------------------------------------------
+    // Pakai exportAkunKelolaJSONGlobal() dengan filter aktif
+    // ═══════════════════════════════════════════════════════════
+    window.kaExportJSON = function() {
+        if (typeof exportAkunKelolaJSONGlobal !== 'function') {
+            alert('❌ Fungsi export tidak tersedia.');
+            return;
+        }
+
+        var filter = {
+            role:   kaGetVal('kaFilterRole') || '',
+            status: kaGetVal('kaFilterStatus') || '',
+            cari:   (kaGetVal('kaCariAkun') || '').toLowerCase().trim()
+        };
+
+        var hasil = exportAkunKelolaJSONGlobal(filter);
+        if (!hasil.sukses) {
+            alert('❌ ' + hasil.pesan);
+            return;
+        }
+
+        var blob = new Blob([hasil.json], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'kelola_akun_' + new Date().toISOString().split('T')[0] + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        kaToast('✅ Export JSON selesai.', 'success');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (18) — TOAST NOTIFIKASI
+    // ═══════════════════════════════════════════════════════════
+    function kaToast(pesan, tipe) {
+        var warna = {
+            success: '#28A745',
+            danger:  '#DC3545',
+            warning: '#FFC107',
+            info:    '#17A2B8'
+        }[tipe] || '#28A745';
+
+        var toast = document.createElement('div');
+        toast.textContent = pesan;
+        toast.style.cssText =
+            'position:fixed;bottom:20px;right:20px;background:' + warna + ';color:#fff;' +
+            'padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;' +
+            'z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+            'max-width:320px;transition:opacity 0.3s, transform 0.3s;';
+        document.body.appendChild(toast);
+
+        setTimeout(function() {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            setTimeout(function() {
+                if (toast.parentNode) document.body.removeChild(toast);
+            }, 300);
+        }, 2500);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BLOK R 10.3 (19) — HANDLER MENU
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['kelolaAkunAktif'] = function() {
+        if (typeof window.tampilkanKelolaAkunAktif === 'function') {
+            window.tampilkanKelolaAkunAktif();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG KONFIRMASI
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK R 10.3 — Kelola Akun Aktif (UI) terpasang.');
+    console.log('   📋 Menggunakan 40 fungsi global dari BLOK R 0.10.3');
+    console.log('   (1)  tampilkanKelolaAkunAktif');
+    console.log('   (2)  kaRenderStatistik');
+    console.log('   (3)  kaRenderRoleAksesInfo');
+    console.log('   (4)  kaRenderBreakdownPerRole');
+    console.log('   (5)  kaFilterRoleCepat');
+    console.log('   (6)  kaRenderTabel');
+    console.log('   (7)  kaRenderBarisAkun');
+    console.log('   (8)  kaUbahHalaman');
+    console.log('   (9)  kaResetFilter');
+    console.log('   (10) kaCopyHp');
+    console.log('   (11) kaBukaModalAksi');
+    console.log('   (12) kaKonfirmasiAksi');
+    console.log('   (13) kaBukaModalBulk');
+    console.log('   (14) kaKonfirmasiBulk');
+    console.log('   (15) kaBukaDetail');
+    console.log('   (16) kaExportCSV');
+    console.log('   (17) kaExportJSON');
+    console.log('   (18) kaToast');
+    console.log('   (19) menuHandlers.kelolaAkunAktif');
+    console.log('   🔒 Cek akses via bisaAksesKelolaAkunGlobal()');
+    console.log('   📊 Data via loadSemuaAkunKelolaGlobal() + cariAkunKelolaGlobal()');
+    console.log('   ⚡ Aksi via blokirAkunKelolaGlobal() dkk + bulkAksiKelolaGlobal()');
+
+})();
+</script>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.3 (JS) =============================== -->
+<!-- ============================================================ -->
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 10.7 – VERIFIKASI DOKUMEN (HTML)                    -->
