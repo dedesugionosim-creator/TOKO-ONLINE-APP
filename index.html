@@ -36402,28 +36402,24 @@
     // ═══════════════════════════════════════════════════════════
     // [MODUL 6] — INVALIDASI CACHE
     // ═══════════════════════════════════════════════════════════
-    window.invalidasiCacheKasirOwnerGlobal = function(idOwner) {
+        window.invalidasiCacheKasirOwnerGlobal = function(idOwner) {
         try {
             if (idOwner) {
                 window.ksrClearCache('kasir_owner_' + idOwner);
             }
             window.ksrClearCache('kasir_all');
-            return true;
-        } catch (e) { return false; }
-    };
 
-    window.invalidasiCacheKasirByIdGlobal = function(idKasir) {
-        try {
-            if (idKasir) {
-                window.ksrClearCache('kasir_byId_' + idKasir);
+            // FIX T4: bersihkan SEMUA cache 'kasir_byId_*' juga.
+            // Tanpa ini, getKasirByIdGlobal() akan return data LAMA
+            // (status "Aktif") meskipun sudah di-soft-delete.
+            var stats = window.ksrGetCacheStats();
+            if (stats && stats.keys && stats.keys.length > 0) {
+                stats.keys.slice().forEach(function(k) {
+                    if (k && k.indexOf('kasir_byId_') === 0) {
+                        window.ksrClearCache(k);
+                    }
+                });
             }
-            return true;
-        } catch (e) { return false; }
-    };
-
-    window.invalidasiSemuaCacheKasirGlobal = function() {
-        try {
-            window.ksrClearCache();
             return true;
         } catch (e) { return false; }
     };
@@ -38034,8 +38030,34 @@
 
     // ── Statistik lengkap per owner (untuk KPI cards) ──
     window.getStatistikKasirOwnerGlobal = function(idOwner) {
+	    // FIX T6: Daftar field yang WAJIB ada di objek statistik
+    var FIELD_WAJIB_STATISTIK = [
+        'total', 'aktif', 'nonaktif', 'diblokir', 'dihapus',
+        'online', 'offline', 'adaShift',
+        'lengkap', 'setengah', 'kurang',
+        'totalKelengkapan', 'jumlahDihitung', 'rataKelengkapan',
+        'persenAktif', 'persenOnline', 'persenShift',
+        'maxKasir', 'persenKapasitas', 'sisaSlot', 'penuhKapasitas',
+        'perRole', 'perVerifikasi', 'listOnline'
+    ];
+
+    // FIX T6: Pastikan objek statistik selalu punya semua field wajib
+    function _pastikanStatistikLengkap(stat) {
+        if (!stat || typeof stat !== 'object') stat = {};
+        FIELD_WAJIB_STATISTIK.forEach(function(f) {
+            if (!(f in stat)) {
+                if (f === 'perRole' || f === 'perVerifikasi') stat[f] = {};
+                else if (f === 'listOnline') stat[f] = [];
+                else if (f === 'penuhKapasitas') stat[f] = false;
+                else if (f === 'maxKasir' || f === 'sisaSlot') {
+                    stat[f] = window.KSR_MAX_KASIR_PER_OWNER || 50;
+                } else stat[f] = 0;
+            }
+        });
+        return stat;
+    }
         try {
-            if (!idOwner) return _emptyStatistik();
+            if (!idOwner) return _pastikanStatistikLengkap(_emptyStatistik());
 
             var list = window.loadKasirByOwnerGlobal(idOwner);
 
@@ -38106,16 +38128,17 @@
             stat.persenOnline = stat.total > 0 ? Math.round((stat.online / stat.total) * 100) : 0;
             stat.persenShift  = stat.total > 0 ? Math.round((stat.adaShift / stat.total) * 100) : 0;
 
-            // Kapasitas
-            stat.maxKasir = window.KSR_MAX_KASIR_PER_OWNER;
+                        // Kapasitas
+            stat.maxKasir = window.KSR_MAX_KASIR_PER_OWNER || 50;
             stat.persenKapasitas = Math.round((stat.total / stat.maxKasir) * 100);
             stat.sisaSlot = Math.max(0, stat.maxKasir - stat.total);
             stat.penuhKapasitas = stat.total >= stat.maxKasir;
 
-            return stat;
+            // FIX T6: verifikasi semua field wajib ada sebelum return
+            return _pastikanStatistikLengkap(stat);
         } catch (e) {
             console.error('getStatistikKasirOwnerGlobal error:', e);
-            return _emptyStatistik();
+            return _pastikanStatistikLengkap(_emptyStatistik());
         }
     };
 
@@ -39621,26 +39644,42 @@
     }
 
     // ── Get shift aktif kasir (return obj atau null) ──
-    window.getShiftAktifKasirGlobal = function(idKasir) {
+        window.getShiftAktifKasirGlobal = function(idKasir) {
         try {
             if (!idKasir) return null;
 
-            // Cari kode owner dari kasir
+            // Prioritas 1: coba via kaitan kasir-owner (jalur cepat)
             var kodeOwner = window.getKodeOwnerFromKasirGlobal(idKasir);
-            if (!kodeOwner) return null;
-
             var idOwner = window.getOwnerIdFromKasirGlobal(idKasir);
-            if (!idOwner) return null;
 
-            var arr = _loadShiftArray(kodeOwner, idOwner);
+            if (kodeOwner && idOwner) {
+                var arr = _loadShiftArray(kodeOwner, idOwner);
+                for (var i = arr.length - 1; i >= 0; i--) {
+                    var s = arr[i];
+                    if (!s) continue;
+                    if ((s.idKasir === idKasir || s.idUser === idKasir) &&
+                        s.status === 'aktif') {
+                        return s;
+                    }
+                }
+            }
 
-            // Cari shift yang idKasir cocok & status = 'aktif'
-            for (var i = arr.length - 1; i >= 0; i--) {
-                var s = arr[i];
-                if (!s) continue;
-                if ((s.idKasir === idKasir || s.idUser === idKasir) &&
-                    s.status === 'aktif') {
-                    return s;
+            // FIX T5: Fallback — scan SEMUA key 'dataShiftKasir_*' di localStorage.
+            // Ini mengatasi kasus ketika kaitan kasir-owner tidak bisa di-resolve
+            // (misal karena cache bersih atau kasir test dibuat dengan owner random).
+            var shiftPrefix = 'dataShiftKasir_';
+            for (var p = 0; p < localStorage.length; p++) {
+                var key = localStorage.key(p);
+                if (!key || key.indexOf(shiftPrefix) !== 0) continue;
+                var arrP = window.ksrLoadJSON(key, []);
+                if (!Array.isArray(arrP)) continue;
+                for (var q = arrP.length - 1; q >= 0; q--) {
+                    var sp = arrP[q];
+                    if (!sp) continue;
+                    if ((sp.idKasir === idKasir || sp.idUser === idKasir) &&
+                        sp.status === 'aktif') {
+                        return sp;
+                    }
                 }
             }
             return null;
@@ -39737,40 +39776,38 @@
     };
 
     // ── Tutup shift ──
-    window.tutupShiftKasirGlobal = function(idShift, saldoAkhir, catatan) {
+        window.tutupShiftKasirGlobal = function(idShift, saldoAkhir, catatan) {
         try {
             if (!idShift) return { sukses: false, pesan: 'ID Shift kosong.' };
 
-            // Cari di semua owner (scan)
-            var semuaKode = Object.keys(window.KSR_ROLE_CONFIG);
+            // FIX T5: Scan SEMUA key 'dataShiftKasir_*' di localStorage.
+            // Jangan bergantung pada userAktif karena shift bisa milik owner
+            // yang berbeda dari user yang sedang login.
             var found = null;
+            var storageKeyRef = null;
             var arrRef = null;
             var idxRef = -1;
-            var kodeRef = null;
-            var idOwnerRef = null;
 
-            for (var i = 0; i < semuaKode.length; i++) {
-                var kode = semuaKode[i];
-                // Scan semua idOwner di localStorage
-                var prefix = window.getStorageKeyPrefixKasirGlobal(kode);
-                if (!prefix) continue;
+            var shiftPrefix = 'dataShiftKasir_';
+            var keysToCheck = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && k.indexOf(shiftPrefix) === 0) keysToCheck.push(k);
+            }
 
-                // Hmm, kita perlu tahu idOwner. Coba dari userAktif dulu.
-                var idOwner = _getOwnerAktifId();
-                if (!idOwner) continue;
-
-                var arr = _loadShiftArray(kode, idOwner);
-                for (var j = 0; j < arr.length; j++) {
-                    if (arr[j] && arr[j].idShift === idShift) {
-                        found = arr[j];
+            for (var j = 0; j < keysToCheck.length && !found; j++) {
+                var key = keysToCheck[j];
+                var arr = window.ksrLoadJSON(key, []);
+                if (!Array.isArray(arr)) continue;
+                for (var m = 0; m < arr.length; m++) {
+                    if (arr[m] && arr[m].idShift === idShift) {
+                        found = arr[m];
+                        storageKeyRef = key;
                         arrRef = arr;
-                        idxRef = j;
-                        kodeRef = kode;
-                        idOwnerRef = idOwner;
+                        idxRef = m;
                         break;
                     }
                 }
-                if (found) break;
             }
 
             if (!found) {
@@ -39787,8 +39824,13 @@
             found.catatanTutup = catatan || '';
 
             arrRef[idxRef] = found;
-            var save = _saveShiftArray(kodeRef, idOwnerRef, arrRef);
-            if (!save.sukses) return save;
+
+            // Simpan langsung ke storage key yang ditemukan (bukan via helper
+            // yang butuh kodeOwner + idOwner)
+            var save = window.ksrSaveJSON(storageKeyRef, arrRef);
+            if (!save || !save.sukses) {
+                return { sukses: false, pesan: 'Gagal simpan: ' + (save ? save.pesan : 'unknown') };
+            }
 
             window.ksrLog('Tutup Shift', found.idShift);
             _dispatchShiftBerubah('tutup', found);
@@ -108002,6 +108044,32 @@
 
     // ═══ Statistik kasir per owner ═══
     window.getStatistikKasirOwnerGlobal = function(idOwner) {
+	    // FIX T6: Daftar field yang WAJIB ada di objek statistik
+    var FIELD_WAJIB_STATISTIK = [
+        'total', 'aktif', 'nonaktif', 'diblokir', 'dihapus',
+        'online', 'offline', 'adaShift',
+        'lengkap', 'setengah', 'kurang',
+        'totalKelengkapan', 'jumlahDihitung', 'rataKelengkapan',
+        'persenAktif', 'persenOnline', 'persenShift',
+        'maxKasir', 'persenKapasitas', 'sisaSlot', 'penuhKapasitas',
+        'perRole', 'perVerifikasi', 'listOnline'
+    ];
+
+    // FIX T6: Pastikan objek statistik selalu punya semua field wajib
+    function _pastikanStatistikLengkap(stat) {
+        if (!stat || typeof stat !== 'object') stat = {};
+        FIELD_WAJIB_STATISTIK.forEach(function(f) {
+            if (!(f in stat)) {
+                if (f === 'perRole' || f === 'perVerifikasi') stat[f] = {};
+                else if (f === 'listOnline') stat[f] = [];
+                else if (f === 'penuhKapasitas') stat[f] = false;
+                else if (f === 'maxKasir' || f === 'sisaSlot') {
+                    stat[f] = window.KSR_MAX_KASIR_PER_OWNER || 50;
+                } else stat[f] = 0;
+            }
+        });
+        return stat;
+    }
         var list = window.getDaftarKasirByOwnerGlobal(idOwner);
         var stat = {
             total: list.length,
