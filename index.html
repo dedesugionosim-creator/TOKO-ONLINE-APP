@@ -11642,6 +11642,429 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) ═════════════ -->
+<!-- ═══ Dependency: BLOK FUNGSI GLOBAL MEDIA (MD) ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_ORPHAN_MANAGEMENT() {
+    if (window._blokOMDone) return;
+
+    if (!window._blokMDDone || !window._blokMDB2Done) {
+        console.warn('⚠️ BLOK FUNGSI GLOBAL MEDIA (MD) belum terpasang. OM ditunda.');
+        return;
+    }
+    window._blokOMDone = true;
+
+    window.OM_KONSTANTA = window.OM_KONSTANTA || {
+        GRACE_KANDIDAT: 7,
+        GRACE_ORPHAN: 30,
+        KATEGORI_PROTECTED: ['profil', 'avatar_hf', 'verifikasi', 'struk', 'dokumentasi'],
+        AUTO_CLEAN: false,
+        AUTO_CLEAN_INTERVAL_HARI: 7,
+        MAX_PREVIEW: 100,
+        MAX_LOG: 50,
+        KEY_LOG_CLEAN: 'r2coin_om_log_clean',
+        KEY_LAST_CLEAN: 'r2coin_om_last_clean',
+        TINGKAT: { PROTECTED: 0, SEJATI: 1, SEMU: 2, KANDIDAT: 3, VALID: 4 }
+    };
+
+    // [MODUL 2] — CEK PROTEKSI
+    window.omCekProtected = function(media) {
+        try {
+            if (!media) return { protected: false, alasan: null };
+            if (media.protected === true) {
+                return { protected: true, alasan: media.protectedReason || 'Flag protected' };
+            }
+            if (media.kategori &&
+                window.OM_KONSTANTA.KATEGORI_PROTECTED.indexOf(media.kategori) !== -1) {
+                return { protected: true, alasan: 'Kategori terproteksi: ' + media.kategori };
+            }
+            return { protected: false, alasan: null };
+        } catch (e) { return { protected: false, alasan: null }; }
+    };
+
+    window.omTandaiProtected = function(idMedia, alasan) {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false, pesan: 'Media tidak ditemukan' };
+            item.protected = true;
+            item.protectedReason = alasan || 'Manual protect';
+            item.protectedAt = window.mppNow();
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omBatalProtected = function(idMedia) {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false };
+            item.protected = false;
+            item.protectedReason = null;
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omSyncAutoProtected = function() {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false, jumlah: 0 };
+            var jumlah = 0;
+            var katProtected = window.OM_KONSTANTA.KATEGORI_PROTECTED;
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                if (!item || item.protected === true) return;
+                if (item.kategori && katProtected.indexOf(item.kategori) !== -1) {
+                    item.protected = true;
+                    item.protectedReason = 'Auto-protect kategori: ' + item.kategori;
+                    item.protectedAt = window.mppNow();
+                    jumlah++;
+                }
+            });
+            if (jumlah > 0) window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+            return { sukses: true, jumlah: jumlah };
+        } catch (e) { return { sukses: false, jumlah: 0 }; }
+    };
+
+    // [MODUL 3] — KLASIFIKASI
+    window.omKlasifikasi = function(media) {
+        try {
+            if (!media) return { tingkat: 0, nama: 'invalid', alasan: 'Kosong', umurHari: 0 };
+            var T = window.OM_KONSTANTA.TINGKAT;
+            var cek = window.omCekProtected(media);
+            if (cek.protected) return { tingkat: T.PROTECTED, nama: 'protected', alasan: cek.alasan, umurHari: 0 };
+            
+            var umurHari = 0;
+            if (media.dibuatAt) {
+                var t = new Date(media.dibuatAt).getTime();
+                if (!isNaN(t)) umurHari = Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
+            }
+            
+            if (!media.idOwner) return { tingkat: T.SEJATI, nama: 'orphan-sejati', alasan: 'Tanpa owner', umurHari: umurHari };
+            
+            if (media.storageKey) {
+                var data = window.mppLoadJSON(media.storageKey, null);
+                if (!data) return { tingkat: T.SEJATI, nama: 'orphan-sejati', alasan: 'Data hilang', umurHari: umurHari };
+            }
+            
+            var adaRef = Array.isArray(media.referensi) && media.referensi.length > 0;
+            if (adaRef) return { tingkat: T.VALID, nama: 'valid', alasan: 'Punya referensi', umurHari: umurHari };
+            if (umurHari < window.OM_KONSTANTA.GRACE_KANDIDAT) return { tingkat: T.VALID, nama: 'valid', alasan: 'Baru dibuat', umurHari: umurHari };
+            if (umurHari < window.OM_KONSTANTA.GRACE_ORPHAN) return { tingkat: T.KANDIDAT, nama: 'kandidat', alasan: 'Tanpa ref ' + umurHari + ' hari', umurHari: umurHari };
+            return { tingkat: T.SEMU, nama: 'orphan-semu', alasan: 'Tanpa ref > 30 hari', umurHari: umurHari };
+        } catch (e) { return { tingkat: 0, nama: 'error', alasan: e.message, umurHari: 0 }; }
+    };
+
+    window.omScanSemua = function() {
+        try {
+            window.omSyncAutoProtected();
+            var list = window.mdAmbilSemuaMedia({ sortBy: 'dibuatAt', sortDir: 'asc' });
+            var hasil = { protected: [], sejati: [], semu: [], kandidat: [], valid: [], total: list.length };
+            var T = window.OM_KONSTANTA.TINGKAT;
+            list.forEach(function(m) {
+                var k = window.omKlasifikasi(m);
+                var item = Object.assign({}, m, { _tingkat: k.tingkat, _namaTingkat: k.nama, _alasan: k.alasan, _umurHari: k.umurHari });
+                switch (k.tingkat) {
+                    case T.PROTECTED: hasil.protected.push(item); break;
+                    case T.SEJATI: hasil.sejati.push(item); break;
+                    case T.SEMU: hasil.semu.push(item); break;
+                    case T.KANDIDAT: hasil.kandidat.push(item); break;
+                    default: hasil.valid.push(item);
+                }
+            });
+            return hasil;
+        } catch (e) { return { protected: [], sejati: [], semu: [], kandidat: [], valid: [], total: 0 }; }
+    };
+
+    window.omScanTingkat = function(tingkat) {
+        var semua = window.omScanSemua();
+        switch (parseInt(tingkat, 10)) {
+            case 0: return semua.protected;
+            case 1: return semua.sejati;
+            case 2: return semua.semu;
+            case 3: return semua.kandidat;
+            case 4: return semua.valid;
+            default: return [];
+        }
+    };
+
+    // [MODUL 5] — ANALISIS
+    function _hitungTotalSize(list) {
+        var total = 0;
+        (list || []).forEach(function(x) { total += parseInt(x.size, 10) || 0; });
+        return total;
+    }
+
+    window.omStatistikOrphan = function() {
+        try {
+            var scan = window.omScanSemua();
+            function _stat(list) {
+                var size = _hitungTotalSize(list);
+                return { jumlah: list.length, size: size, sizeTeks: window.mdFormatSize(size) };
+            }
+            return {
+                protected: _stat(scan.protected),
+                sejati: _stat(scan.sejati),
+                semu: _stat(scan.semu),
+                kandidat: _stat(scan.kandidat),
+                valid: _stat(scan.valid),
+                total: scan.total
+            };
+        } catch (e) {
+            return { protected: {jumlah:0,sizeTeks:'0 B'}, sejati: {jumlah:0,sizeTeks:'0 B'}, semu: {jumlah:0,sizeTeks:'0 B'}, kandidat: {jumlah:0,sizeTeks:'0 B'}, valid: {jumlah:0,sizeTeks:'0 B'}, total: 0 };
+        }
+    };
+
+    window.omEstimasiHemat = function(opts) {
+        opts = opts || {};
+        try {
+            var stat = window.omStatistikOrphan();
+            var total = 0;
+            var detail = {};
+            if (opts.sejati !== false) { total += stat.sejati.size; detail.sejati = stat.sejati.sizeTeks; }
+            if (opts.semu === true) { total += stat.semu.size; detail.semu = stat.semu.sizeTeks; }
+            if (opts.kandidat === true) { total += stat.kandidat.size; detail.kandidat = stat.kandidat.sizeTeks; }
+            return { total: total, totalTeks: window.mdFormatSize(total), detail: detail };
+        } catch (e) { return { total: 0, totalTeks: '0 B' }; }
+    };
+
+    window.omPreviewHapus = function(tingkatList, limit) {
+        limit = parseInt(limit, 10) || window.OM_KONSTANTA.MAX_PREVIEW;
+        try {
+            if (!Array.isArray(tingkatList)) tingkatList = [1, 2];
+            var scan = window.omScanSemua();
+            var list = [];
+            if (tingkatList.indexOf(1) !== -1) list = list.concat(scan.sejati);
+            if (tingkatList.indexOf(2) !== -1) list = list.concat(scan.semu);
+            if (tingkatList.indexOf(3) !== -1) list = list.concat(scan.kandidat);
+            var total = list.length;
+            var totalSize = _hitungTotalSize(list);
+            return { total: total, size: totalSize, sizeTeks: window.mdFormatSize(totalSize), items: list.slice(0, limit), truncated: total > limit };
+        } catch (e) { return { total: 0, size: 0, sizeTeks: '0 B', items: [] }; }
+    };
+
+    // [MODUL 6] — AKSI
+    function _catatLogAksi(aksi, detail) {
+        try {
+            var key = window.OM_KONSTANTA.KEY_LOG_CLEAN;
+            var data = window.mppLoadJSON(key, { items: [] });
+            if (!Array.isArray(data.items)) data.items = [];
+            data.items.unshift({
+                id: 'OMLOG-' + Date.now(),
+                aksi: aksi, detail: detail || {},
+                oleh: window.gidIdUser() || 'system',
+                waktu: window.mppNow()
+            });
+            if (data.items.length > window.OM_KONSTANTA.MAX_LOG) data.items = data.items.slice(0, window.OM_KONSTANTA.MAX_LOG);
+            window.mppSaveJSON(key, data);
+            window.mppSaveJSON(window.OM_KONSTANTA.KEY_LAST_CLEAN, { waktu: window.mppNow(), aksi: aksi });
+        } catch (e) {}
+    }
+
+    window.omHapusTingkat1 = function(opts) {
+        opts = opts || {};
+        try {
+            var list = window.omScanTingkat(1).filter(function(x) {
+                return !window.omCekProtected(x).protected;
+            });
+            if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
+            var ids = list.map(function(x) { return x.id; });
+            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
+            var hasil = window.mdHapusBatch(ids, { bypass: true });
+            _catatLogAksi('hapus-tingkat-1', { jumlah: hasil.berhasil });
+            try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 1, jumlah: hasil.berhasil }); } catch (e) {}
+            return Object.assign({ sukses: true, tingkat: 1 }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omHapusTingkat2 = function(opts) {
+        opts = opts || {};
+        try {
+            var list = window.omScanTingkat(2).filter(function(x) {
+                return !window.omCekProtected(x).protected;
+            });
+            if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
+            var ids = list.map(function(x) { return x.id; });
+            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
+            var hasil = window.mdHapusBatch(ids, { bypass: true });
+            _catatLogAksi('hapus-tingkat-2', { jumlah: hasil.berhasil });
+            try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 2, jumlah: hasil.berhasil }); } catch (e) {}
+            return Object.assign({ sukses: true, tingkat: 2 }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omHapusSelektif = function(arrayId, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(arrayId) || arrayId.length === 0) return { sukses: false, pesan: 'Array ID kosong' };
+            if (opts.bypassProtected !== true) {
+                arrayId = arrayId.filter(function(id) {
+                    var m = window.mdAmbilMetadata(id);
+                    return m && !window.omCekProtected(m).protected;
+                });
+            }
+            if (arrayId.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
+            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: arrayId.length, ids: arrayId };
+            var hasil = window.mdHapusBatch(arrayId, { bypass: true });
+            _catatLogAksi('hapus-selektif', { jumlah: hasil.berhasil });
+            return Object.assign({ sukses: true }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omHapusAman = function(opts) {
+        opts = opts || {};
+        var r1 = window.omHapusTingkat1(opts);
+        var r2 = window.omHapusTingkat2(opts);
+        return {
+            sukses: true,
+            tingkat1: r1.berhasil || 0, tingkat2: r2.berhasil || 0,
+            berhasil: (r1.berhasil || 0) + (r2.berhasil || 0),
+            gagal: (r1.gagal || 0) + (r2.gagal || 0)
+        };
+    };
+
+    window.omTandaiKandidat = function(arrayId, catatan) {
+        try {
+            if (!Array.isArray(arrayId)) arrayId = [];
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var jumlah = 0;
+            arrayId.forEach(function(id) {
+                var item = index.items[id];
+                if (!item) return;
+                item.kandidatCatatan = catatan || 'Sudah dicek';
+                item.kandidatCekAt = window.mppNow();
+                jumlah++;
+            });
+            if (jumlah > 0) window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+            return { sukses: true, jumlah: jumlah };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omRecheckKandidat = function() { return window.omScanSemua(); };
+
+    // [MODUL 7] — PENCEGAHAN
+    window.omSaranPerbaikan = function() {
+        try {
+            var stat = window.omStatistikOrphan();
+            var saran = [];
+            if (stat.sejati.jumlah > 0) saran.push({ prioritas: 'tinggi', pesan: stat.sejati.jumlah + ' media tanpa owner/hilang. Hapus via Bersihkan Orphan.' });
+            if (stat.semu.jumlah > 0) saran.push({ prioritas: 'sedang', pesan: stat.semu.jumlah + ' media tanpa referensi > 30 hari.' });
+            if (stat.kandidat.jumlah > 0) saran.push({ prioritas: 'rendah', pesan: stat.kandidat.jumlah + ' media kandidat (7-30 hari).' });
+            saran.push({ prioritas: 'info', pesan: 'Tips: pastikan upload mencatat referensi.' });
+            return saran;
+        } catch (e) { return []; }
+    };
+
+    window.omAutoCatatRef = function(idMedia, referensi) {
+        return window.mdTambahReferensi(idMedia, referensi);
+    };
+
+    window.omHookHapusProduk = function(idProduk) {
+        try {
+            var list = window.mdCariByReferensi({ idProduk: idProduk });
+            list.forEach(function(m) {
+                if (Array.isArray(m.referensi)) {
+                    m.referensi = m.referensi.filter(function(r) { return r.idProduk !== idProduk; });
+                }
+            });
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (index && index.items) {
+                list.forEach(function(m) { index.items[m.id] = m; });
+                window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+            }
+            return { sukses: true, jumlah: list.length };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omRefreshLastUsed = function(idMedia) {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false };
+            item.lastUsedAt = window.mppNow();
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+        } catch (e) { return { sukses: false }; }
+    };
+
+    // [MODUL 8] — MONITORING
+    var _watchTimer = null;
+
+    window.omWatchOtomatis = function(aktif) {
+        try {
+            if (_watchTimer) { clearInterval(_watchTimer); _watchTimer = null; }
+            if (aktif === false) return { sukses: true, aktif: false };
+            if (window.OM_KONSTANTA.AUTO_CLEAN !== true) return { sukses: true, aktif: false };
+            var intervalMs = window.OM_KONSTANTA.AUTO_CLEAN_INTERVAL_HARI * 24 * 60 * 60 * 1000;
+            _watchTimer = setInterval(function() {
+                try { window.omHapusTingkat1(); } catch (e) {}
+            }, intervalMs);
+            return { sukses: true, aktif: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omGetRiwayatClean = function(limit) {
+        limit = parseInt(limit, 10) || 20;
+        try {
+            var data = window.mppLoadJSON(window.OM_KONSTANTA.KEY_LOG_CLEAN, { items: [] });
+            if (!Array.isArray(data.items)) return [];
+            return data.items.slice(0, limit);
+        } catch (e) { return []; }
+    };
+
+    window.omBersihkanRiwayat = function() {
+        try {
+            window.mppSaveJSON(window.OM_KONSTANTA.KEY_LOG_CLEAN, { items: [] });
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omGetLastClean = function() {
+        try {
+            return window.mppLoadJSON(window.OM_KONSTANTA.KEY_LAST_CLEAN, null);
+        } catch (e) { return null; }
+    };
+
+    // [MODUL 9] — DEBUG
+    window.debugOM = function() {
+        try {
+            var stat = window.omStatistikOrphan();
+            var info = {
+                versi: '1.0',
+                konfigurasi: {
+                    graceKandidat: window.OM_KONSTANTA.GRACE_KANDIDAT,
+                    graceOrphan: window.OM_KONSTANTA.GRACE_ORPHAN,
+                    autoClean: window.OM_KONSTANTA.AUTO_CLEAN,
+                    kategoriProtected: window.OM_KONSTANTA.KATEGORI_PROTECTED
+                },
+                statistik: stat,
+                saran: window.omSaranPerbaikan(),
+                lastClean: window.omGetLastClean()
+            };
+            console.log('🔍 debugOM:', info);
+            return info;
+        } catch (e) { console.error('debugOM error:', e); return null; }
+    };
+
+    setTimeout(function() {
+        try {
+            var sync = window.omSyncAutoProtected();
+            if (sync.jumlah > 0) console.log('🛡️ OM: Auto-protect ' + sync.jumlah + ' media');
+        } catch (e) {}
+    }, 500);
+
+    console.log('✅ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) terpasang (26 fungsi).');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL SYSTEM ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
