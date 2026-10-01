@@ -170981,6 +170981,2956 @@ function toggleStatusWilayah(id) {
 <!-- AKHIR BLOK R 29.2(1) — PROFIL KASIR TOKO (JS) FINAL v3      -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 29.5.4 — PEMERIKSAAN STOK KASIR TOKO (OPNAME) ═════ -->
+<!-- ═══ Fitur: Input stok fisik kasir → Submit laporan → Owner   ═ -->
+<!-- ═══        review di 11.10 → Approve → Apply ke sistem       ═ -->
+<!-- ═══ Dependency: FG Kasir (1)-(9), MP 1-10, R 29.2(1), 11.10  ═ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<div id="pemeriksaanStokKSR_TK" style="display:none;"></div>
+
+<script>
+(function BLOK_R_29_5_4_PEMERIKSAAN_STOK_KSR_TK() {
+    if (window._blok2954Done) {
+        console.log('ℹ️ BLOK R 29.5.4 sudah terpasang — skip.');
+        return;
+    }
+
+    // ── Guard dependency ──
+    if (!window._blokMPT1Done) {
+        console.warn('⚠️ BLOK 29.5.4: MP-1 belum ada, skip.');
+        return;
+    }
+    if (!window._blokFGKasir1Done) {
+        console.warn('⚠️ BLOK 29.5.4: FG Kasir (1) belum ada, skip.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONFIGURASI
+    // ═══════════════════════════════════════════════════════════
+    var PSK_CONFIG = {
+        kodeRole:    'KSR_TK',
+        kodeOwner:   'TK',
+        containerId: 'pemeriksaanStokKSR_TK',
+        judul:       'Pemeriksaan Stok',
+        sub:         'Cek stok fisik di gudang & laporkan ke owner',
+        ikon:        'fas fa-clipboard-check',
+        warna:       '#FF8C00',
+        warnaGelap:  '#E67E00',
+        actionMenu:  'tampilkanPemeriksaanStokKSR_TK',
+        storageKeyLaporan: function(idOwner) {
+            return 'laporanStok_' + _sanitizeId(idOwner);
+        }
+    };
+    window.PSK_CONFIG = PSK_CONFIG;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — STATE MANAGER
+    // ═══════════════════════════════════════════════════════════
+    var PSK_S = {
+        // UI state
+        page: 1,
+        perPage: 20,
+        tab: 'semua',        // semua | rendah | habis | riwayat
+
+        // Filter
+        f: {
+            cari: '',
+            kategori: ''
+        },
+        sortBy: 'nama',
+        sortDir: 'asc',
+
+        // Data
+        pool: [],           // semua produk owner
+        data: [],           // hasil filter+sort+pagination
+        kategori: [],
+
+        // Setting
+        ambang: 10,
+
+        // Identity (kasir → owner)
+        idUser: null,
+        idOwner: null,
+        kodeOwner: 'TK',
+        roleEfektif: null,
+        namaUser: '',
+        namaToko: '',
+        idShift: null,
+        error: null,
+
+        // Permission flags
+        perm: {
+            inputStok: false,
+            submitLaporan: false,
+            lihatRiwayat: false
+        },
+
+        // Input kasir (per produk)
+        // Format: { idProduk: { stokFisik: number, catatan: string } }
+        itemsInput: {},
+
+        // Draft (auto-save)
+        draftSavedAt: null,
+
+        // Riwayat
+        listLaporan: [],
+
+        // Runtime
+        mounted: false
+    };
+
+    function _getState() { return PSK_S; }
+
+    window.pskResetStateGlobal = function() {
+        try {
+            PSK_S = {
+                page: 1, perPage: 20, tab: 'semua',
+                f: { cari: '', kategori: '' },
+                sortBy: 'nama', sortDir: 'asc',
+                pool: [], data: [], kategori: [],
+                ambang: 10,
+                idUser: null, idOwner: null, kodeOwner: 'TK',
+                roleEfektif: null, namaUser: '', namaToko: '',
+                idShift: null, error: null,
+                perm: { inputStok: false, submitLaporan: false, lihatRiwayat: false },
+                itemsInput: {}, draftSavedAt: null,
+                listLaporan: [], mounted: false
+            };
+            return true;
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER UI
+    // ═══════════════════════════════════════════════════════════
+    function _esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s == null) ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function _escA(s) {
+        return String(s == null ? '' : s)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '&quot;');
+    }
+
+    function _trunc(s, n) {
+        s = String(s || '');
+        return s.length <= n ? s : s.substring(0, n - 1) + '…';
+    }
+
+    function _rp(n) {
+        if (typeof window.formatRupiahProdukGlobal === 'function') {
+            return window.formatRupiahProdukGlobal(n);
+        }
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+
+    function _ph(nama) {
+        var ini = _trunc(nama || 'P', 2).toUpperCase();
+        return 'https://placehold.co/80x80/FF8C00/ffffff?text=' + encodeURIComponent(ini);
+    }
+
+    function _toast(msg, t) {
+        try {
+            if (typeof window.ksrToast === 'function') {
+                return window.ksrToast(msg, t || 'info');
+            }
+            if (typeof window.mptToast === 'function') {
+                return window.mptToast(msg, t || 'info');
+            }
+        } catch (e) {}
+        console.log('[PSK]', msg);
+    }
+
+    function _sanitizeId(s) {
+        if (!s) return '_';
+        return String(s).replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 64);
+    }
+
+    function _fmtTgl(iso) {
+        if (window.formatTanggalProdukGlobal) {
+            return window.formatTanggalProdukGlobal(iso, { lengkap: true });
+        }
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+        } catch (e) { return iso; }
+    }
+
+    function _fmtRelatif(iso) {
+        if (window.formatWaktuRelatifProdukGlobal) {
+            return window.formatWaktuRelatifProdukGlobal(iso);
+        }
+        if (!iso) return '-';
+        try {
+            var diff = Date.now() - new Date(iso).getTime();
+            var mnt = Math.floor(diff / 60000);
+            if (mnt < 1) return 'Baru saja';
+            if (mnt < 60) return mnt + ' menit lalu';
+            var jam = Math.floor(mnt / 60);
+            if (jam < 24) return jam + ' jam lalu';
+            var hari = Math.floor(jam / 24);
+            if (hari < 7) return hari + ' hari lalu';
+            return _fmtTgl(iso);
+        } catch (e) { return iso; }
+    }
+
+    function _loadJSON(key, fallback) {
+        try {
+            var s = localStorage.getItem(key);
+            if (!s) return fallback;
+            var parsed = JSON.parse(s);
+            return (parsed === null || parsed === undefined) ? fallback : parsed;
+        } catch (e) { return fallback; }
+    }
+
+    function _saveJSON(key, data) {
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) {
+            if (e.name === 'QuotaExceededError') {
+                return { sukses: false, pesan: 'Storage penuh.' };
+            }
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — RESOLUSI IDENTITAS (kasir → owner)
+    // ═══════════════════════════════════════════════════════════
+    function _resolveIdentity() {
+        var hasil = {
+            idUser: null, idOwner: null, kodeOwner: 'TK',
+            role: null, nama: '', namaToko: '', idShift: null
+        };
+
+        try {
+            var u = (typeof userAktif !== 'undefined' && userAktif) ? userAktif : null;
+            if (!u) {
+                hasil.error = 'User belum login.';
+                return hasil;
+            }
+
+            hasil.idUser = u.idUser || u.id || null;
+            hasil.role = u.kodeRole || u.role || null;
+            hasil.nama = u.nama || u.username || 'User';
+
+            // ── Resolve owner ──
+            if (typeof window.getOwnerIdFromKasirGlobal === 'function') {
+                hasil.idOwner = window.getOwnerIdFromKasirGlobal(hasil.idUser);
+            }
+
+            // Fallback: kalau user sendiri owner
+            if (!hasil.idOwner && (hasil.role === 'Toko' || hasil.role === 'TK')) {
+                hasil.idOwner = hasil.idUser;
+            }
+
+            // Fallback: dari userAktif.ownerId (handle objek)
+            if (!hasil.idOwner && u.ownerId) {
+                if (typeof u.ownerId === 'string') hasil.idOwner = u.ownerId;
+                else if (typeof u.ownerId === 'object') {
+                    hasil.idOwner = u.ownerId.idToko || u.ownerId.idUser ||
+                                    u.ownerId.id || null;
+                }
+            }
+
+            // ── Kode owner ──
+            if (typeof window.getKodeOwnerFromKasirGlobal === 'function') {
+                hasil.kodeOwner = window.getKodeOwnerFromKasirGlobal(hasil.idUser) || 'TK';
+            }
+
+            // ── Nama toko ──
+            if (typeof window.getNamaTokoOwnerGlobal === 'function') {
+                var nt = window.getNamaTokoOwnerGlobal(hasil.idUser);
+                if (nt && nt !== '-') hasil.namaToko = nt;
+            }
+            // Fallback: dari userAktif.nama kalau user sendiri owner
+            if (!hasil.namaToko && (hasil.role === 'Toko' || hasil.role === 'TK')) {
+                hasil.namaToko = hasil.nama;
+            }
+
+            // ── Shift aktif ──
+            if (typeof window.getShiftAktifKasirGlobal === 'function') {
+                var sh = window.getShiftAktifKasirGlobal(hasil.idUser);
+                if (sh && sh.idShift) hasil.idShift = sh.idShift;
+            }
+
+            if (!hasil.idOwner) {
+                hasil.error = 'ID Owner tidak dapat di-resolve. Hubungi admin.';
+            }
+
+        } catch (e) {
+            hasil.error = 'Error resolve identity: ' + e.message;
+        }
+        return hasil;
+    }
+
+    function _initIdentity() {
+        var id = _resolveIdentity();
+        PSK_S.idUser      = id.idUser;
+        PSK_S.idOwner     = id.idOwner;
+        PSK_S.kodeOwner   = id.kodeOwner || 'TK';
+        PSK_S.roleEfektif = id.role || 'Unknown';
+        PSK_S.namaUser    = id.nama || 'User';
+        PSK_S.namaToko    = id.namaToko || '-';
+        PSK_S.idShift     = id.idShift || null;
+        PSK_S.error       = id.error || null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — PERMISSION GATE
+    // ═══════════════════════════════════════════════════════════
+    function _isKasir()   { return PSK_S.roleEfektif === 'Kasir' ||
+                                   PSK_S.roleEfektif === 'KSR_TK'; }
+    function _isOwner()   { return PSK_S.roleEfektif === 'Toko' ||
+                                   PSK_S.roleEfektif === 'TK'; }
+
+    function _can(action) {
+        if (!PSK_S.idOwner) return false;
+
+        // Kasir: operasional opname
+        if (_isKasir()) {
+            if (action === 'inputStok')     return true;
+            if (action === 'submitLaporan') return true;
+            if (action === 'lihatRiwayat')  return true;
+        }
+        // Owner juga bisa pakai menu ini (fallback)
+        if (_isOwner()) {
+            if (action === 'inputStok')     return true;
+            if (action === 'submitLaporan') return true;
+            if (action === 'lihatRiwayat')  return true;
+        }
+        // Kasir TIDAK boleh:
+        if (action === 'approve')    return false;
+        if (action === 'export')     return false;
+        if (action === 'setAmbang')  return false;
+        return false;
+    }
+
+    function _buildPermFlags() {
+        PSK_S.perm.inputStok     = _can('inputStok');
+        PSK_S.perm.submitLaporan = _can('submitLaporan');
+        PSK_S.perm.lihatRiwayat  = _can('lihatRiwayat');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — AUDIT LOG KASIR
+    // ═══════════════════════════════════════════════════════════
+    function _catatAuditKasir(aksi, idLaporan, ringkasan) {
+        try {
+            var key = 'kasirLog_' + _sanitizeId(PSK_S.idOwner);
+            var list = _loadJSON(key, []);
+            if (!Array.isArray(list)) list = [];
+
+            list.unshift({
+                waktu: new Date().toISOString(),
+                idUser: PSK_S.idUser,
+                namaUser: PSK_S.namaUser,
+                role: PSK_S.roleEfektif,
+                aksi: aksi,
+                idLaporan: idLaporan,
+                ringkasan: ringkasan || '-'
+            });
+
+            if (list.length > 1000) list = list.slice(0, 1000);
+            localStorage.setItem(key, JSON.stringify(list));
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — DATA LOADER
+    // ═══════════════════════════════════════════════════════════
+    function _loadProduk() {
+        if (!PSK_S.idOwner) return [];
+        if (typeof window.loadProdukByOwnerGlobal !== 'function') return [];
+
+        var list = window.loadProdukByOwnerGlobal('Toko', PSK_S.idOwner, {
+            forceRefresh: true
+        });
+
+        return list.filter(function(p) {
+            return p && p.status !== 'Dihapus';
+        });
+    }
+
+    function _loadAmbang() {
+        try {
+            var key = 'settingsStok_' + _sanitizeId(PSK_S.idOwner);
+            var raw = localStorage.getItem(key);
+            if (raw) {
+                var s = JSON.parse(raw);
+                if (s && s.ambang) return parseInt(s.ambang, 10) || 10;
+            }
+            return window.MPT_AMBANG_STOK || 10;
+        } catch (e) {
+            return 10;
+        }
+    }
+
+    function _extractKategori(pool) {
+        var m = {};
+        pool.forEach(function(p) {
+            if (p.kategori) m[p.kategori] = (m[p.kategori] || 0) + 1;
+        });
+        return Object.keys(m).sort().map(function(k) {
+            return { nama: k, jumlah: m[k] };
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — FILTER & SORT
+    // ═══════════════════════════════════════════════════════════
+    function _applyFilter(pool) {
+        var f = PSK_S.f;
+        var hasil = pool.slice();
+
+        if (f.cari) {
+            var cari = String(f.cari).toLowerCase().trim();
+            hasil = hasil.filter(function(p) {
+                var hay = [
+                    p.nama || '', p.kode || '', p.kategori || ''
+                ].join(' ').toLowerCase();
+                return hay.indexOf(cari) !== -1;
+            });
+        }
+
+        if (f.kategori) {
+            hasil = hasil.filter(function(p) {
+                return p.kategori === f.kategori;
+            });
+        }
+
+        // Tab filter
+        if (PSK_S.tab === 'rendah') {
+            hasil = hasil.filter(function(p) {
+                var s = parseInt(p.stok, 10) || 0;
+                return s > 0 && s <= PSK_S.ambang;
+            });
+        } else if (PSK_S.tab === 'habis') {
+            hasil = hasil.filter(function(p) {
+                return (parseInt(p.stok, 10) || 0) <= 0;
+            });
+        }
+
+        return hasil;
+    }
+
+    function _applySort(list) {
+        var dir = PSK_S.sortDir === 'asc' ? 1 : -1;
+        var by = PSK_S.sortBy;
+
+        list.sort(function(a, b) {
+            var va, vb;
+            if (by === 'nama') {
+                va = String(a.nama || '').toLowerCase();
+                vb = String(b.nama || '').toLowerCase();
+                return va < vb ? -dir : va > vb ? dir : 0;
+            }
+            if (by === 'stok') {
+                va = parseInt(a.stok, 10) || 0;
+                vb = parseInt(b.stok, 10) || 0;
+            } else if (by === 'harga') {
+                va = parseFloat(a.harga) || 0;
+                vb = parseFloat(b.harga) || 0;
+            } else if (by === 'kategori') {
+                va = String(a.kategori || '').toLowerCase();
+                vb = String(b.kategori || '').toLowerCase();
+                return va < vb ? -dir : va > vb ? dir : 0;
+            } else {
+                va = new Date(a.createdAt || 0).getTime();
+                vb = new Date(b.createdAt || 0).getTime();
+            }
+            return dir * (va - vb);
+        });
+
+        return list;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — DRAFT MANAGEMENT (auto-save)
+    // ═══════════════════════════════════════════════════════════
+    function _draftKey() {
+        return 'draftOpname_' + _sanitizeId(PSK_S.idOwner) + '_' +
+               _sanitizeId(PSK_S.idUser);
+    }
+
+    function _simpanDraft() {
+        try {
+            if (Object.keys(PSK_S.itemsInput).length === 0) return;
+
+            var draft = {
+                waktu: new Date().toISOString(),
+                idUser: PSK_S.idUser,
+                idOwner: PSK_S.idOwner,
+                itemsInput: PSK_S.itemsInput
+            };
+            localStorage.setItem(_draftKey(), JSON.stringify(draft));
+            PSK_S.draftSavedAt = draft.waktu;
+        } catch (e) {}
+    }
+
+    function _loadDraft() {
+        try {
+            var raw = localStorage.getItem(_draftKey());
+            if (!raw) return null;
+            var draft = JSON.parse(raw);
+            if (!draft || !draft.itemsInput) return null;
+
+            // Validasi: draft tidak lebih dari 3 hari
+            var umur = Date.now() - new Date(draft.waktu).getTime();
+            if (umur > 3 * 24 * 60 * 60 * 1000) {
+                localStorage.removeItem(_draftKey());
+                return null;
+            }
+
+            return draft;
+        } catch (e) { return null; }
+    }
+
+    function _hapusDraft() {
+        try {
+            localStorage.removeItem(_draftKey());
+            PSK_S.itemsInput = {};
+            PSK_S.draftSavedAt = null;
+        } catch (e) {}
+    }
+
+    var _draftTimer = null;
+    function _scheduleSaveDraft() {
+        if (_draftTimer) clearTimeout(_draftTimer);
+        _draftTimer = setTimeout(function() {
+            _simpanDraft();
+        }, 800);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — HTML SHELL
+    // ═══════════════════════════════════════════════════════════
+    function _shell() {
+        return '' +
+        '<div class="psk-root">' +
+
+            '<div id="pskErrorBanner" style="display:none;"></div>' +
+
+            // ── Header ──
+            '<div class="psk-header" style="background:linear-gradient(135deg,' +
+                 PSK_CONFIG.warna + ' 0%,' + PSK_CONFIG.warnaGelap + ' 100%);">' +
+                '<div class="psk-header-inner">' +
+                    '<div>' +
+                        '<h1 class="psk-title">' +
+                            '<i class="' + PSK_CONFIG.ikon + ' me-2"></i>' +
+                            PSK_CONFIG.judul + '</h1>' +
+                        '<div class="psk-header-meta">' +
+                            '<span id="pskHdrUser"></span>' +
+                            '<span class="psk-sep">•</span>' +
+                            '<span id="pskHdrToko"></span>' +
+                            '<span id="pskHdrShift"></span>' +
+                            '<span class="psk-badge-role" id="pskHdrRole"></span>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="psk-header-btns">' +
+                        '<button class="psk-icon-btn" onclick="pskRefreshGlobal()" title="Refresh">' +
+                            '<i class="fas fa-sync-alt"></i></button>' +
+                        '<button class="psk-icon-btn" onclick="pskBukaRiwayatGlobal()" title="Riwayat Laporan">' +
+                            '<i class="fas fa-history"></i>' +
+                            '<span class="psk-badge-notif" id="pskRiwayatBadge" style="display:none;">0</span>' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+
+            // ── Info banner ──
+            '<div class="psk-info-banner">' +
+                '<i class="fas fa-info-circle me-2"></i>' +
+                '<strong>Stock Opname:</strong> Input jumlah stok fisik di gudang. ' +
+                'Laporan akan dikirim ke owner untuk direview.' +
+            '</div>' +
+
+            // ── Toolbar ──
+            '<div class="psk-toolbar">' +
+                '<div class="psk-search-wrap">' +
+                    '<i class="fas fa-search psk-search-ic"></i>' +
+                    '<input id="pskCari" class="psk-search" ' +
+                           'placeholder="Cari nama atau kode produk..." ' +
+                           'oninput="pskOnCariGlobal(this.value)">' +
+                    '<button id="pskCariX" class="psk-search-x" ' +
+                            'onclick="pskClearCariGlobal()" style="display:none;">' +
+                        '<i class="fas fa-times"></i>' +
+                    '</button>' +
+                '</div>' +
+                '<select id="pskKategori" class="psk-select" onchange="pskSetKategoriGlobal(this.value)">' +
+                    '<option value="">Semua Kategori</option>' +
+                '</select>' +
+                '<select id="pskSort" class="psk-select" onchange="pskOnSortGlobal(this.value)">' +
+                    '<option value="nama-asc">🔤 Nama A-Z</option>' +
+                    '<option value="nama-desc">🔤 Nama Z-A</option>' +
+                    '<option value="stok-asc">📉 Stok Terkecil</option>' +
+                    '<option value="stok-desc">📈 Stok Terbesar</option>' +
+                    '<option value="kategori-asc">📁 Kategori</option>' +
+                '</select>' +
+                '<select id="pskPerPage" class="psk-select" onchange="pskSetPerPageGlobal(this.value)">' +
+                    '<option value="20">20 / hal</option>' +
+                    '<option value="50">50 / hal</option>' +
+                    '<option value="100">100 / hal</option>' +
+                '</select>' +
+            '</div>' +
+
+            // ── Tab bar ──
+            '<div class="psk-tabs">' +
+                '<button class="psk-tab" data-tab="semua" onclick="pskSetTabGlobal(\'semua\')">' +
+                    '<i class="fas fa-boxes"></i> Semua</button>' +
+                '<button class="psk-tab" data-tab="rendah" onclick="pskSetTabGlobal(\'rendah\')">' +
+                    '<i class="fas fa-exclamation-triangle"></i> Stok Rendah ' +
+                    '<span class="psk-tab-n" id="pskTabRendahN">0</span></button>' +
+                '<button class="psk-tab" data-tab="habis" onclick="pskSetTabGlobal(\'habis\')">' +
+                    '<i class="fas fa-times-circle"></i> Habis ' +
+                    '<span class="psk-tab-n" id="pskTabHabisN">0</span></button>' +
+            '</div>' +
+
+            // ── Info bar ──
+            '<div class="psk-info" id="pskInfo">' +
+                '<i class="fas fa-spinner fa-spin me-2"></i>Memuat data...</div>' +
+
+            // ── Container tabel ──
+            '<div id="pskTableWrap" class="psk-table-wrap"></div>' +
+
+            // ── Pagination ──
+            '<div id="pskPag" class="psk-pag"></div>' +
+
+            // ── Footer sticky (summary + submit) ──
+            '<div class="psk-footer" id="pskFooter">' +
+                '<div class="psk-footer-info">' +
+                    '<div class="psk-fi-item">' +
+                        '<span>Produk diperiksa:</span> ' +
+                        '<strong id="pskFootJml">0</strong>' +
+                    '</div>' +
+                    '<div class="psk-fi-item">' +
+                        '<span>Ada selisih:</span> ' +
+                        '<strong id="pskFootSelisih">0</strong>' +
+                    '</div>' +
+                    '<div class="psk-fi-item">' +
+                        '<span>Total nilai selisih:</span> ' +
+                        '<strong id="pskFootNilai" class="psk-nilai">Rp 0</strong>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="psk-footer-actions">' +
+                    '<button class="psk-btn psk-btn-ghost" onclick="pskResetInputGlobal()" ' +
+                            'title="Kosongkan semua input">' +
+                        '<i class="fas fa-undo me-1"></i>Reset</button>' +
+                    '<button class="psk-btn psk-btn-secondary" onclick="pskIsiSemuaSistemGlobal()" ' +
+                            'title="Isi semua dengan stok sistem">' +
+                        '<i class="fas fa-check-double me-1"></i>Isi = Sistem</button>' +
+                    '<button class="psk-btn psk-btn-primary" onclick="pskBukaSubmitGlobal()" ' +
+                            'id="pskBtnSubmit" disabled>' +
+                        '<i class="fas fa-paper-plane me-1"></i>Submit Laporan</button>' +
+                '</div>' +
+            '</div>' +
+
+        '</div>' +
+
+        // ══ MODAL: Submit Konfirmasi ══
+        '<div class="psk-modal" id="pskModalSubmit" style="display:none;">' +
+            '<div class="psk-backdrop" onclick="pskCloseSubmitGlobal()"></div>' +
+            '<div class="psk-dialog">' +
+                '<div class="psk-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-paper-plane me-2"></i>Konfirmasi Submit</h5>' +
+                    '<button class="psk-modal-x" onclick="pskCloseSubmitGlobal()">' +
+                        '<i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="psk-modal-body" id="pskSubmitBody"></div>' +
+                '<div class="psk-modal-foot">' +
+                    '<button class="psk-btn psk-btn-ghost" onclick="pskCloseSubmitGlobal()">Batal</button>' +
+                    '<button class="psk-btn psk-btn-primary" onclick="pskKonfirmasiSubmitGlobal()">' +
+                        '<i class="fas fa-paper-plane me-1"></i>Kirim Laporan</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        // ══ MODAL: Riwayat Laporan ══
+        '<div class="psk-modal" id="pskModalRiwayat" style="display:none;">' +
+            '<div class="psk-backdrop" onclick="pskCloseRiwayatGlobal()"></div>' +
+            '<div class="psk-dialog psk-dialog-lg">' +
+                '<div class="psk-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-history me-2"></i>Riwayat Laporan Saya</h5>' +
+                    '<button class="psk-modal-x" onclick="pskCloseRiwayatGlobal()">' +
+                        '<i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="psk-modal-body" id="pskRiwayatBody"></div>' +
+            '</div>' +
+        '</div>' +
+
+        // ══ MODAL: Detail Laporan ══
+        '<div class="psk-modal" id="pskModalDetail" style="display:none;">' +
+            '<div class="psk-backdrop" onclick="pskCloseDetailGlobal()"></div>' +
+            '<div class="psk-dialog psk-dialog-lg">' +
+                '<div class="psk-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-file-alt me-2"></i>Detail Laporan</h5>' +
+                    '<button class="psk-modal-x" onclick="pskCloseDetailGlobal()">' +
+                        '<i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="psk-modal-body" id="pskDetailBody"></div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — RENDER
+    // ═══════════════════════════════════════════════════════════
+    function _render() {
+        _renderErrorBanner();
+        _renderHeader();
+        _renderTabBar();
+        _renderKategoriOptions();
+        _renderTable();
+        _renderPagination();
+        _renderFilterState();
+        _renderFooter();
+        _renderRiwayatBadge();
+    }
+
+    function _renderErrorBanner() {
+        var el = document.getElementById('pskErrorBanner');
+        if (!el) return;
+        if (PSK_S.error) {
+            el.style.display = 'block';
+            el.innerHTML =
+                '<div class="psk-alert psk-alert-danger">' +
+                    '<i class="fas fa-exclamation-triangle me-2"></i>' +
+                    '<strong>Perhatian:</strong> ' + _esc(PSK_S.error) +
+                '</div>';
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    function _renderHeader() {
+        var uEl = document.getElementById('pskHdrUser');
+        var tEl = document.getElementById('pskHdrToko');
+        var sEl = document.getElementById('pskHdrShift');
+        var rEl = document.getElementById('pskHdrRole');
+
+        if (uEl) uEl.innerHTML = '<i class="fas fa-user me-1"></i>' + _esc(PSK_S.namaUser);
+        if (tEl) tEl.innerHTML = '<i class="fas fa-store me-1"></i>' + _esc(PSK_S.namaToko);
+
+        if (sEl) {
+            if (PSK_S.idShift) {
+                sEl.innerHTML = '<span class="psk-shift-badge on">' +
+                    '<i class="fas fa-circle me-1" style="font-size:6px;"></i>Shift Aktif</span>';
+            } else {
+                sEl.innerHTML = '<span class="psk-shift-badge off">' +
+                    '<i class="fas fa-circle me-1" style="font-size:6px;"></i>Belum Buka Shift</span>';
+            }
+        }
+
+        if (rEl) {
+            var role = PSK_S.roleEfektif || 'Unknown';
+            rEl.textContent = role === 'Kasir' ? 'Kasir' : role;
+            rEl.className = 'psk-badge-role' +
+                (role === 'Kasir' || role === 'KSR_TK' ? ' psk-role-kasir' :
+                 role === 'Toko' ? ' psk-role-toko' : '');
+        }
+    }
+
+    function _renderTabBar() {
+        document.querySelectorAll('.psk-tab').forEach(function(b) {
+            if (b.getAttribute('data-tab') === PSK_S.tab) b.classList.add('psk-tab-on');
+            else b.classList.remove('psk-tab-on');
+        });
+
+        // Update counter tab
+        var rendah = 0, habis = 0;
+        PSK_S.pool.forEach(function(p) {
+            var s = parseInt(p.stok, 10) || 0;
+            if (s === 0) habis++;
+            else if (s <= PSK_S.ambang) rendah++;
+        });
+
+        var elR = document.getElementById('pskTabRendahN');
+        if (elR) elR.textContent = rendah;
+        var elH = document.getElementById('pskTabHabisN');
+        if (elH) elH.textContent = habis;
+    }
+
+    function _renderKategoriOptions() {
+        var el = document.getElementById('pskKategori');
+        if (!el) return;
+        var cur = PSK_S.f.kategori;
+        var h = '<option value="">Semua Kategori</option>';
+        PSK_S.kategori.forEach(function(k) {
+            h += '<option value="' + _esc(k.nama) + '"' +
+                 (k.nama === cur ? ' selected' : '') + '>' +
+                 _esc(k.nama) + ' (' + k.jumlah + ')</option>';
+        });
+        el.innerHTML = h;
+    }
+
+    function _renderFilterState() {
+        var x = document.getElementById('pskCariX');
+        if (x) x.style.display = PSK_S.f.cari ? 'block' : 'none';
+    }
+
+    function _renderTable() {
+        var el = document.getElementById('pskTableWrap');
+        if (!el) return;
+
+        var total = PSK_S.data.length;
+        var tPages = Math.max(1, Math.ceil(total / PSK_S.perPage));
+        if (PSK_S.page > tPages) PSK_S.page = tPages;
+        var s = (PSK_S.page - 1) * PSK_S.perPage;
+        var e = Math.min(s + PSK_S.perPage, total);
+        var slice = PSK_S.data.slice(s, e);
+
+        // Info bar
+        var infoEl = document.getElementById('pskInfo');
+        if (infoEl) {
+            if (total === 0) {
+                infoEl.innerHTML = '<i class="fas fa-info-circle me-2"></i>' +
+                    (PSK_S.tab === 'rendah' ? 'Tidak ada produk stok rendah.' :
+                     PSK_S.tab === 'habis' ? 'Tidak ada produk habis.' :
+                     'Tidak ada produk cocok filter.');
+            } else {
+                infoEl.innerHTML = '<i class="fas fa-box me-2"></i>Menampilkan ' +
+                    '<strong>' + (s + 1) + '–' + e + '</strong> dari <strong>' +
+                    total + '</strong> produk';
+            }
+        }
+
+        if (slice.length === 0) {
+            el.innerHTML = _emptyState();
+            return;
+        }
+
+        var html = '<div class="psk-table-responsive">';
+        html += '<table class="psk-table"><thead><tr>';
+        html += '<th class="psk-col-foto">Foto</th>';
+        html += '<th>Produk</th>';
+        html += '<th class="text-center">Stok Sistem</th>';
+        html += '<th class="text-center" style="min-width:140px;">Stok Fisik</th>';
+        html += '<th class="text-center">Selisih</th>';
+        html += '<th>Catatan</th>';
+        html += '</tr></thead><tbody>';
+
+        slice.forEach(function(p) { html += _rowProduk(p); });
+        html += '</tbody></table></div>';
+
+        el.innerHTML = html;
+    }
+
+    function _rowProduk(p) {
+        var stokSistem = parseInt(p.stok, 10) || 0;
+        var harga = parseFloat(p.harga) || 0;
+        var foto = p.foto || _ph(p.nama);
+        var idE = _escA(p.id);
+
+        // Cek apakah ada input kasir
+        var input = PSK_S.itemsInput[p.id];
+        var stokFisik = input ? input.stokFisik : null;
+        var catatan = input ? (input.catatan || '') : '';
+
+        var selisih = null;
+        var selisihClass = '';
+        var selisihText = '—';
+
+        if (stokFisik !== null && stokFisik !== '' && !isNaN(stokFisik)) {
+            selisih = stokFisik - stokSistem;
+            if (selisih === 0) {
+                selisihClass = 'psk-selisih-ok';
+                selisihText = '0';
+            } else if (selisih > 0) {
+                selisihClass = 'psk-selisih-plus';
+                selisihText = '+' + selisih;
+            } else {
+                selisihClass = 'psk-selisih-minus';
+                selisihText = String(selisih);
+            }
+        }
+
+        var rowClass = input ? 'psk-row-input' : '';
+
+        return '<tr class="' + rowClass + '">' +
+            '<td class="psk-col-foto">' +
+                '<img src="' + _esc(foto) + '" ' +
+                     'onerror="this.src=\'' + _ph(p.nama) + '\'">' +
+            '</td>' +
+            '<td>' +
+                '<div class="psk-p-nama">' + _esc(_trunc(p.nama || '-', 60)) + '</div>' +
+                '<div class="psk-p-kode"><code>' + _esc(p.kode || '-') + '</code>' +
+                    (p.kategori ? ' <span class="psk-tag">' + _esc(p.kategori) + '</span>' : '') +
+                '</div>' +
+            '</td>' +
+            '<td class="text-center">' +
+                '<div class="psk-stok-sistem">' + stokSistem + '</div>' +
+                '<small class="text-muted">' + _esc(p.satuan || '') + '</small>' +
+            '</td>' +
+            '<td class="text-center">' +
+                '<input type="number" class="psk-input-fisik" ' +
+                       'min="0" ' +
+                       'data-id="' + idE + '" ' +
+                       'value="' + (stokFisik !== null ? stokFisik : '') + '" ' +
+                       'placeholder="—" ' +
+                       'oninput="pskInputFisikGlobal(\'' + idE + '\', this.value)">' +
+            '</td>' +
+            '<td class="text-center ' + selisihClass + '">' +
+                '<strong>' + selisihText + '</strong>' +
+                (selisih !== null && selisih !== 0
+                    ? '<div class="psk-selisih-nilai">' +
+                      _rp(Math.abs(selisih * harga)) + '</div>'
+                    : '') +
+            '</td>' +
+            '<td>' +
+                '<input type="text" class="psk-input-catatan" ' +
+                       'data-id="' + idE + '" ' +
+                       'value="' + _esc(catatan) + '" ' +
+                       'placeholder="Opsional..." ' +
+                       'maxlength="120" ' +
+                       'oninput="pskInputCatatanGlobal(\'' + idE + '\', this.value)">' +
+            '</td>' +
+        '</tr>';
+    }
+
+    function _emptyState() {
+        if (PSK_S.tab === 'rendah') {
+            return '<div class="psk-empty">' +
+                '<div class="psk-empty-ic"><i class="fas fa-check-circle text-success"></i></div>' +
+                '<h4>Semua Stok Aman</h4>' +
+                '<p>Tidak ada produk dengan stok rendah saat ini.</p></div>';
+        }
+        if (PSK_S.tab === 'habis') {
+            return '<div class="psk-empty">' +
+                '<div class="psk-empty-ic"><i class="fas fa-check-circle text-success"></i></div>' +
+                '<h4>Tidak Ada Produk Habis</h4>' +
+                '<p>Semua produk tersedia.</p></div>';
+        }
+        return '<div class="psk-empty">' +
+            '<div class="psk-empty-ic"><i class="fas fa-box-open"></i></div>' +
+            '<h4>Tidak Ada Produk</h4>' +
+            '<p>Belum ada produk atau filter terlalu ketat.</p>' +
+            '<button class="psk-btn psk-btn-ghost" onclick="pskResetFilterGlobal()">' +
+            '<i class="fas fa-undo me-1"></i>Reset Filter</button></div>';
+    }
+
+    function _renderPagination() {
+        var el = document.getElementById('pskPag');
+        if (!el) return;
+        var total = PSK_S.data.length;
+        var tPages = Math.max(1, Math.ceil(total / PSK_S.perPage));
+        if (tPages <= 1) {
+            el.innerHTML = total > 0
+                ? '<div class="psk-pag-info">' + total + ' produk</div>'
+                : '';
+            return;
+        }
+
+        var page = PSK_S.page;
+        var h = '<div class="psk-pag-info">Halaman ' + page + ' / ' + tPages +
+                ' • ' + total + ' produk</div>';
+        h += '<div class="psk-pag-btns">';
+        h += '<button class="psk-pg" ' + (page <= 1 ? 'disabled' : '') +
+             ' onclick="pskGotoPageGlobal(' + (page - 1) + ')">' +
+             '<i class="fas fa-chevron-left"></i></button>';
+
+        var st = Math.max(1, page - 2);
+        var en = Math.min(tPages, page + 2);
+        if (st > 1) {
+            h += '<button class="psk-pg" onclick="pskGotoPageGlobal(1)">1</button>';
+            if (st > 2) h += '<span class="psk-dots">…</span>';
+        }
+        for (var i = st; i <= en; i++) {
+            h += '<button class="psk-pg' + (i === page ? ' psk-pg-on' : '') +
+                 '" onclick="pskGotoPageGlobal(' + i + ')">' + i + '</button>';
+        }
+        if (en < tPages) {
+            if (en < tPages - 1) h += '<span class="psk-dots">…</span>';
+            h += '<button class="psk-pg" onclick="pskGotoPageGlobal(' + tPages + ')">' +
+                 tPages + '</button>';
+        }
+        h += '<button class="psk-pg" ' + (page >= tPages ? 'disabled' : '') +
+             ' onclick="pskGotoPageGlobal(' + (page + 1) + ')">' +
+             '<i class="fas fa-chevron-right"></i></button>';
+        h += '</div>';
+        el.innerHTML = h;
+    }
+
+    function _hitungRingkasan() {
+        var total = 0;
+        var adaSelisih = 0;
+        var totalSelisih = 0;
+        var totalNilai = 0;
+
+        Object.keys(PSK_S.itemsInput).forEach(function(id) {
+            var inp = PSK_S.itemsInput[id];
+            if (!inp || inp.stokFisik === null || inp.stokFisik === '') return;
+
+            var p = null;
+            for (var i = 0; i < PSK_S.pool.length; i++) {
+                if (PSK_S.pool[i] && PSK_S.pool[i].id === id) { p = PSK_S.pool[i]; break; }
+            }
+            if (!p) return;
+
+            var stokSistem = parseInt(p.stok, 10) || 0;
+            var stokFisik = parseInt(inp.stokFisik, 10);
+            if (isNaN(stokFisik)) return;
+
+            var selisih = stokFisik - stokSistem;
+            var harga = parseFloat(p.harga) || 0;
+
+            total++;
+            if (selisih !== 0) {
+                adaSelisih++;
+                totalSelisih += selisih;
+                totalNilai += Math.abs(selisih * harga);
+            }
+        });
+
+        return {
+            total: total,
+            adaSelisih: adaSelisih,
+            totalSelisih: totalSelisih,
+            totalNilai: totalNilai
+        };
+    }
+
+    function _renderFooter() {
+        var ring = _hitungRingkasan();
+
+        var elJml = document.getElementById('pskFootJml');
+        if (elJml) elJml.textContent = ring.total;
+
+        var elSel = document.getElementById('pskFootSelisih');
+        if (elSel) {
+            elSel.textContent = ring.adaSelisih;
+            elSel.className = ring.adaSelisih > 0 ? 'psk-has-selisih' : '';
+        }
+
+        var elNilai = document.getElementById('pskFootNilai');
+        if (elNilai) {
+            elNilai.textContent = _rp(ring.totalNilai);
+            elNilai.className = 'psk-nilai' +
+                (ring.totalNilai > 0 ? ' psk-nilai-warn' : '');
+        }
+
+        var btn = document.getElementById('pskBtnSubmit');
+        if (btn) {
+            btn.disabled = ring.total === 0 || !PSK_S.perm.submitLaporan;
+        }
+    }
+
+    function _renderRiwayatBadge() {
+        var el = document.getElementById('pskRiwayatBadge');
+        if (!el) return;
+        var pending = PSK_S.listLaporan.filter(function(l) {
+            return l && l.status === 'pending';
+        }).length;
+
+        if (pending > 0) {
+            el.style.display = 'flex';
+            el.textContent = pending;
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — PUBLIC API
+    // ═══════════════════════════════════════════════════════════
+    window.pskRefreshGlobal = function() {
+        try {
+            if (PSK_S.error) { _render(); return false; }
+
+            PSK_S.pool = _loadProduk();
+            PSK_S.kategori = _extractKategori(PSK_S.pool);
+            PSK_S.ambang = _loadAmbang();
+            PSK_S.listLaporan = window.getLaporanPemeriksaanGlobal(PSK_S.idOwner, {
+                idKasir: PSK_S.idUser
+            });
+
+            _applyFilterSortAndRender();
+            return true;
+        } catch (e) {
+            console.error('pskRefreshGlobal error:', e);
+            return false;
+        }
+    };
+
+    function _applyFilterSortAndRender() {
+        var filtered = _applyFilter(PSK_S.pool);
+        PSK_S.data = _applySort(filtered);
+        _render();
+    }
+
+    window.pskSetTabGlobal = function(tab) {
+        if (['semua','rendah','habis'].indexOf(tab) === -1) return;
+        PSK_S.tab = tab;
+        PSK_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.pskOnCariGlobal = function(v) {
+        PSK_S.f.cari = String(v || '');
+        _renderFilterState();
+        if (window._pskT) clearTimeout(window._pskT);
+        window._pskT = setTimeout(function() {
+            PSK_S.page = 1;
+            _applyFilterSortAndRender();
+        }, 250);
+    };
+
+    window.pskClearCariGlobal = function() {
+        var el = document.getElementById('pskCari');
+        if (el) el.value = '';
+        PSK_S.f.cari = '';
+        PSK_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.pskSetKategoriGlobal = function(k) {
+        PSK_S.f.kategori = k || '';
+        PSK_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.pskOnSortGlobal = function(v) {
+        var p = String(v || 'nama-asc').split('-');
+        PSK_S.sortBy = p[0];
+        PSK_S.sortDir = p[1] || 'asc';
+        PSK_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.pskSetPerPageGlobal = function(v) {
+        PSK_S.perPage = parseInt(v, 10) || 20;
+        PSK_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.pskResetFilterGlobal = function() {
+        PSK_S.f = { cari: '', kategori: '' };
+        var el = document.getElementById('pskCari');
+        if (el) el.value = '';
+        PSK_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.pskGotoPageGlobal = function(p) {
+        var t = Math.max(1, Math.ceil(PSK_S.data.length / PSK_S.perPage));
+        PSK_S.page = Math.max(1, Math.min(t, parseInt(p, 10) || 1));
+        _render();
+        var el = document.getElementById('pskTableWrap');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — INPUT HANDLERS
+    // ═══════════════════════════════════════════════════════════
+    window.pskInputFisikGlobal = function(id, value) {
+        if (!_can('inputStok')) return;
+
+        if (!PSK_S.itemsInput[id]) {
+            PSK_S.itemsInput[id] = { stokFisik: null, catatan: '' };
+        }
+
+        if (value === '' || value === null || value === undefined) {
+            PSK_S.itemsInput[id].stokFisik = null;
+        } else {
+            var n = parseInt(value, 10);
+            if (isNaN(n) || n < 0) n = 0;
+            PSK_S.itemsInput[id].stokFisik = n;
+        }
+
+        // Cleanup kalau kosong
+        if (PSK_S.itemsInput[id].stokFisik === null &&
+            !PSK_S.itemsInput[id].catatan) {
+            delete PSK_S.itemsInput[id];
+        }
+
+        _scheduleSaveDraft();
+        _updateRowVisual(id);
+        _renderFooter();
+    };
+
+    window.pskInputCatatanGlobal = function(id, value) {
+        if (!_can('inputStok')) return;
+
+        if (!PSK_S.itemsInput[id]) {
+            PSK_S.itemsInput[id] = { stokFisik: null, catatan: '' };
+        }
+        PSK_S.itemsInput[id].catatan = String(value || '').trim();
+
+        if (PSK_S.itemsInput[id].stokFisik === null &&
+            !PSK_S.itemsInput[id].catatan) {
+            delete PSK_S.itemsInput[id];
+        }
+
+        _scheduleSaveDraft();
+    };
+
+    function _updateRowVisual(id) {
+        // Update baris tanpa re-render seluruh tabel
+        var row = document.querySelector('tr:has(.psk-input-fisik[data-id="' + CSS.escape(id) + '"])');
+        if (!row) {
+            // Fallback: re-render (bisa lambat untuk banyak produk)
+            // Untuk sekarang, skip visual update karena tabel kecil
+            return;
+        }
+    }
+
+    window.pskResetInputGlobal = function() {
+        if (!_can('inputStok')) return;
+        if (Object.keys(PSK_S.itemsInput).length === 0) {
+            _toast('Belum ada input untuk direset.', 'info');
+            return;
+        }
+        if (!confirm('Hapus semua input stok fisik?')) return;
+
+        _hapusDraft();
+        _applyFilterSortAndRender();
+        _toast('Input direset.', 'info');
+    };
+
+    window.pskIsiSemuaSistemGlobal = function() {
+        if (!_can('inputStok')) return;
+
+        var jml = 0;
+        PSK_S.data.forEach(function(p) {
+            var stokSistem = parseInt(p.stok, 10) || 0;
+            PSK_S.itemsInput[p.id] = {
+                stokFisik: stokSistem,
+                catatan: ''
+            };
+            jml++;
+        });
+
+        _simpanDraft();
+        _applyFilterSortAndRender();
+        _toast('Diisi ' + jml + ' produk = stok sistem.', 'success');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — SUBMIT LAPORAN
+    // ═══════════════════════════════════════════════════════════
+    window.pskBukaSubmitGlobal = function() {
+        if (!_can('submitLaporan')) {
+            _toast('Anda tidak punya izin submit.', 'warning');
+            return;
+        }
+
+        var ring = _hitungRingkasan();
+        if (ring.total === 0) {
+            _toast('Isi minimal 1 produk terlebih dahulu.', 'warning');
+            return;
+        }
+
+        var body = document.getElementById('pskSubmitBody');
+        if (!body) return;
+
+        body.innerHTML =
+            '<div class="psk-ringkasan">' +
+                '<div class="psk-ringkasan-row">' +
+                    '<span>Total produk diperiksa:</span>' +
+                    '<strong>' + ring.total + '</strong>' +
+                '</div>' +
+                '<div class="psk-ringkasan-row">' +
+                    '<span>Produk ada selisih:</span>' +
+                    '<strong class="' + (ring.adaSelisih > 0 ? 'psk-text-warn' : '') + '">' +
+                        ring.adaSelisih + '</strong>' +
+                '</div>' +
+                '<div class="psk-ringkasan-row">' +
+                    '<span>Total unit selisih:</span>' +
+                    '<strong>' + (ring.totalSelisih > 0 ? '+' : '') + ring.totalSelisih +
+                    '</strong>' +
+                '</div>' +
+                '<div class="psk-ringkasan-row">' +
+                    '<span>Total nilai selisih:</span>' +
+                    '<strong class="' + (ring.totalNilai > 0 ? 'psk-text-warn' : '') + '">' +
+                        _rp(ring.totalNilai) + '</strong>' +
+                '</div>' +
+            '</div>' +
+            '<label class="psk-lbl mt-3">Catatan Keseluruhan (opsional)</label>' +
+            '<textarea id="pskSubmitCatatan" class="psk-input" rows="3" ' +
+                      'maxlength="500" ' +
+                      'placeholder="Contoh: Ada beberapa produk rusak di gudang..."></textarea>' +
+            '<div class="psk-info-box mt-3">' +
+                '<i class="fas fa-info-circle me-2"></i>' +
+                '<strong>Catatan:</strong> Laporan akan dikirim ke owner untuk direview. ' +
+                'Stok sistem <strong>belum berubah</strong> sampai owner approve & apply.' +
+            '</div>';
+
+        var m = document.getElementById('pskModalSubmit');
+        if (m) m.style.display = 'flex';
+    };
+
+    window.pskCloseSubmitGlobal = function() {
+        var m = document.getElementById('pskModalSubmit');
+        if (m) m.style.display = 'none';
+    };
+
+    window.pskKonfirmasiSubmitGlobal = function() {
+        if (!_can('submitLaporan')) return;
+
+        var ring = _hitungRingkasan();
+        if (ring.total === 0) {
+            _toast('Tidak ada produk yang diinput.', 'warning');
+            return;
+        }
+
+        var catEl = document.getElementById('pskSubmitCatatan');
+        var catatanKeseluruhan = catEl ? String(catEl.value || '').trim() : '';
+
+        // Build items
+        var items = [];
+        Object.keys(PSK_S.itemsInput).forEach(function(id) {
+            var inp = PSK_S.itemsInput[id];
+            if (!inp || inp.stokFisik === null) return;
+
+            var p = null;
+            for (var i = 0; i < PSK_S.pool.length; i++) {
+                if (PSK_S.pool[i] && PSK_S.pool[i].id === id) { p = PSK_S.pool[i]; break; }
+            }
+            if (!p) return;
+
+            var stokSistem = parseInt(p.stok, 10) || 0;
+            var stokFisik = parseInt(inp.stokFisik, 10) || 0;
+            var selisih = stokFisik - stokSistem;
+            var harga = parseFloat(p.harga) || 0;
+
+            items.push({
+                idProduk: p.id,
+                kode: p.kode || '-',
+                nama: p.nama || '-',
+                satuan: p.satuan || 'pcs',
+                kategori: p.kategori || '-',
+                stokSistem: stokSistem,
+                stokFisik: stokFisik,
+                selisih: selisih,
+                hargaSatuan: harga,
+                nilaiSelisih: selisih * harga,
+                catatan: inp.catatan || '',
+                adaSelisih: selisih !== 0
+            });
+        });
+
+        if (items.length === 0) {
+            _toast('Tidak ada item valid.', 'warning');
+            return;
+        }
+
+        // Generate ID
+        var idLaporan = 'LAP-' + PSK_S.kodeOwner + '-' + Date.now();
+
+        var laporan = {
+            id: idLaporan,
+            idOwner: PSK_S.idOwner,
+            kodeOwner: PSK_S.kodeOwner,
+
+            idKasir: PSK_S.idUser,
+            namaKasir: PSK_S.namaUser,
+            namaToko: PSK_S.namaToko,
+            idShift: PSK_S.idShift,
+
+            waktuSubmit: new Date().toISOString(),
+            waktuReview: null,
+            waktuApply: null,
+
+            status: 'pending',
+
+            items: items,
+
+            totalProduk: items.length,
+            totalProdukAdaSelisih: items.filter(function(it) {
+                return it.adaSelisih;
+            }).length,
+            totalSelisih: items.reduce(function(a, it) {
+                return a + it.selisih;
+            }, 0),
+            totalNilaiSelisih: items.reduce(function(a, it) {
+                return a + Math.abs(it.nilaiSelisih);
+            }, 0),
+
+            catatanKeseluruhan: catatanKeseluruhan,
+
+            reviewedBy: null,
+            reviewCatatan: null,
+            appliedBy: null,
+            appliedAt: null
+        };
+
+        // Simpan
+        var hasil = window.simpanLaporanPemeriksaanGlobal(laporan);
+        if (!hasil.sukses) {
+            _toast('Gagal simpan: ' + hasil.pesan, 'danger');
+            return;
+        }
+
+        // Audit
+        _catatAuditKasir(
+            'submit_opname',
+            idLaporan,
+            items.length + ' produk, ' + laporan.totalProdukAdaSelisih + ' selisih'
+        );
+
+        // Clear draft
+        _hapusDraft();
+
+        // Close modal
+        window.pskCloseSubmitGlobal();
+
+        // Toast
+        _toast('✅ Laporan ' + idLaporan + ' terkirim ke owner!', 'success');
+
+        // Refresh
+        window.pskRefreshGlobal();
+
+        // Dispatch event
+        try {
+            window.dispatchEvent(new CustomEvent('r2coin:laporan-stok-dikirim', {
+                detail: { idLaporan: idLaporan, idOwner: PSK_S.idOwner }
+            }));
+        } catch (e) {}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — RIWAYAT LAPORAN KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.pskBukaRiwayatGlobal = function() {
+        if (!_can('lihatRiwayat')) {
+            _toast('Anda tidak punya izin.', 'warning');
+            return;
+        }
+
+        var list = window.getLaporanPemeriksaanGlobal(PSK_S.idOwner, {
+            idKasir: PSK_S.idUser
+        });
+
+        PSK_S.listLaporan = list;
+
+        var body = document.getElementById('pskRiwayatBody');
+        if (!body) return;
+
+        if (list.length === 0) {
+            body.innerHTML =
+                '<div class="psk-empty">' +
+                    '<div class="psk-empty-ic"><i class="fas fa-inbox"></i></div>' +
+                    '<h4>Belum Ada Laporan</h4>' +
+                    '<p>Anda belum pernah submit laporan pemeriksaan.</p>' +
+                '</div>';
+        } else {
+            var h = '<div class="psk-riwayat-list">';
+            list.forEach(function(lap) {
+                h += _renderRowLaporan(lap);
+            });
+            h += '</div>';
+            body.innerHTML = h;
+        }
+
+        var m = document.getElementById('pskModalRiwayat');
+        if (m) m.style.display = 'flex';
+    };
+
+    window.pskCloseRiwayatGlobal = function() {
+        var m = document.getElementById('pskModalRiwayat');
+        if (m) m.style.display = 'none';
+    };
+
+    function _renderRowLaporan(lap) {
+        if (!lap) return '';
+        var statusMap = {
+            'pending':  { label: '⏳ Menunggu Review', cls: 'psk-st-pending' },
+            'approved': { label: '✅ Disetujui', cls: 'psk-st-approved' },
+            'rejected': { label: '❌ Ditolak', cls: 'psk-st-rejected' },
+            'applied':  { label: '🟢 Sudah Diterapkan', cls: 'psk-st-applied' }
+        };
+        var st = statusMap[lap.status] || statusMap['pending'];
+
+        return '<div class="psk-rw-item" onclick="pskBukaDetailGlobal(\'' +
+               _escA(lap.id) + '\')">' +
+            '<div class="psk-rw-header">' +
+                '<div>' +
+                    '<div class="psk-rw-id">' + _esc(lap.id) + '</div>' +
+                    '<div class="psk-rw-time">' +
+                        '<i class="fas fa-clock me-1"></i>' +
+                        _fmtTgl(lap.waktuSubmit) +
+                    '</div>' +
+                '</div>' +
+                '<span class="psk-st-badge ' + st.cls + '">' + st.label + '</span>' +
+            '</div>' +
+            '<div class="psk-rw-stats">' +
+                '<div class="psk-rw-stat">' +
+                    '<span class="psk-rw-lbl">Produk</span>' +
+                    '<strong>' + (lap.totalProduk || 0) + '</strong>' +
+                '</div>' +
+                '<div class="psk-rw-stat">' +
+                    '<span class="psk-rw-lbl">Selisih</span>' +
+                    '<strong class="' + (lap.totalProdukAdaSelisih > 0 ? 'psk-text-warn' : '') + '">' +
+                        (lap.totalProdukAdaSelisih || 0) + '</strong>' +
+                '</div>' +
+                '<div class="psk-rw-stat">' +
+                    '<span class="psk-rw-lbl">Nilai</span>' +
+                    '<strong>' + _rp(lap.totalNilaiSelisih || 0) + '</strong>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    window.pskBukaDetailGlobal = function(idLaporan) {
+        var lap = window.getLaporanPemeriksaanByIdGlobal(idLaporan);
+        if (!lap) {
+            _toast('Laporan tidak ditemukan.', 'warning');
+            return;
+        }
+
+        // Pastikan kasir hanya lihat miliknya sendiri
+        if (lap.idKasir !== PSK_S.idUser && !_isOwner()) {
+            _toast('Anda hanya bisa melihat laporan Anda sendiri.', 'warning');
+            return;
+        }
+
+        var body = document.getElementById('pskDetailBody');
+        if (!body) return;
+
+        var statusMap = {
+            'pending':  { label: '⏳ Menunggu Review', cls: 'psk-st-pending' },
+            'approved': { label: '✅ Disetujui', cls: 'psk-st-approved' },
+            'rejected': { label: '❌ Ditolak', cls: 'psk-st-rejected' },
+            'applied':  { label: '🟢 Sudah Diterapkan', cls: 'psk-st-applied' }
+        };
+        var st = statusMap[lap.status] || statusMap['pending'];
+
+        var h = '<div class="psk-detail-head">' +
+            '<div class="psk-dh-left">' +
+                '<div class="psk-dh-id">' + _esc(lap.id) + '</div>' +
+                '<div class="psk-dh-time">' +
+                    '<i class="fas fa-clock me-1"></i>' +
+                    _fmtTgl(lap.waktuSubmit) +
+                '</div>' +
+                '<div class="psk-dh-kasir">' +
+                    '<i class="fas fa-user me-1"></i>' +
+                    _esc(lap.namaKasir || '-') +
+                '</div>' +
+            '</div>' +
+            '<div class="psk-dh-right">' +
+                '<span class="psk-st-badge ' + st.cls + '">' + st.label + '</span>' +
+            '</div>' +
+        '</div>';
+
+        // Review info
+        if (lap.status !== 'pending') {
+            h += '<div class="psk-detail-review">' +
+                '<div><strong>Direview oleh:</strong> ' +
+                    _esc(lap.reviewedBy || '-') + '</div>' +
+                (lap.reviewCatatan
+                    ? '<div><strong>Catatan review:</strong> ' +
+                      _esc(lap.reviewCatatan) + '</div>' : '') +
+                (lap.waktuReview
+                    ? '<div><strong>Waktu review:</strong> ' +
+                      _fmtTgl(lap.waktuReview) + '</div>' : '') +
+                (lap.status === 'applied' && lap.waktuApply
+                    ? '<div><strong>Diterapkan:</strong> ' +
+                      _fmtTgl(lap.waktuApply) + '</div>' : '') +
+            '</div>';
+        }
+
+        // Catatan keseluruhan
+        if (lap.catatanKeseluruhan) {
+            h += '<div class="psk-detail-catatan">' +
+                '<strong>Catatan:</strong> ' +
+                _esc(lap.catatanKeseluruhan) +
+            '</div>';
+        }
+
+        // Ringkasan
+        h += '<div class="psk-detail-ringkasan">' +
+            '<div class="psk-dr-item">' +
+                '<span>Total produk</span>' +
+                '<strong>' + (lap.totalProduk || 0) + '</strong>' +
+            '</div>' +
+            '<div class="psk-dr-item">' +
+                '<span>Ada selisih</span>' +
+                '<strong class="' + (lap.totalProdukAdaSelisih > 0 ? 'psk-text-warn' : '') + '">' +
+                    (lap.totalProdukAdaSelisih || 0) + '</strong>' +
+            '</div>' +
+            '<div class="psk-dr-item">' +
+                '<span>Total unit selisih</span>' +
+                '<strong>' + (lap.totalSelisih > 0 ? '+' : '') +
+                    (lap.totalSelisih || 0) + '</strong>' +
+            '</div>' +
+            '<div class="psk-dr-item">' +
+                '<span>Nilai selisih</span>' +
+                '<strong>' + _rp(lap.totalNilaiSelisih || 0) + '</strong>' +
+            '</div>' +
+        '</div>';
+
+        // Tabel items
+        h += '<div class="psk-detail-tabel-wrap">';
+        h += '<table class="psk-detail-tabel">' +
+            '<thead><tr>' +
+                '<th>Produk</th>' +
+                '<th class="text-center">Sistem</th>' +
+                '<th class="text-center">Fisik</th>' +
+                '<th class="text-center">Selisih</th>' +
+                '<th>Catatan</th>' +
+            '</tr></thead><tbody>';
+
+        (lap.items || []).forEach(function(it) {
+            var cls = it.selisih === 0 ? '' :
+                      it.selisih > 0 ? 'psk-text-green' : 'psk-text-red';
+
+            h += '<tr>' +
+                '<td>' +
+                    '<div class="psk-di-nama">' + _esc(it.nama) + '</div>' +
+                    '<div class="psk-di-kode"><code>' + _esc(it.kode) + '</code></div>' +
+                '</td>' +
+                '<td class="text-center">' + it.stokSistem +
+                    ' <small>' + _esc(it.satuan || '') + '</small></td>' +
+                '<td class="text-center"><strong>' + it.stokFisik + '</strong></td>' +
+                '<td class="text-center ' + cls + '">' +
+                    '<strong>' + (it.selisih > 0 ? '+' : '') + it.selisih + '</strong>' +
+                    (it.adaSelisih
+                        ? '<div class="psk-di-nilai">' + _rp(Math.abs(it.nilaiSelisih)) + '</div>'
+                        : '') +
+                '</td>' +
+                '<td><small>' + _esc(it.catatan || '-') + '</small></td>' +
+            '</tr>';
+        });
+
+        h += '</tbody></table></div>';
+
+        body.innerHTML = h;
+
+        var m = document.getElementById('pskModalDetail');
+        if (m) m.style.display = 'flex';
+    };
+
+    window.pskCloseDetailGlobal = function() {
+        var m = document.getElementById('pskModalDetail');
+        if (m) m.style.display = 'none';
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanPemeriksaanStokKSR_TK = function(opts) {
+        opts = opts || {};
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) {
+                console.warn('#kontenDasbor tidak ditemukan.');
+                return false;
+            }
+
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            // Init identity SEBELUM render
+            _initIdentity();
+            _buildPermFlags();
+
+            if (opts.perPage) PSK_S.perPage = parseInt(opts.perPage, 10) || 20;
+
+            konten.innerHTML = _shell();
+
+            setTimeout(function() {
+                // Set dropdown values
+                var spEl = document.getElementById('pskPerPage');
+                if (spEl) spEl.value = String(PSK_S.perPage);
+                var sEl = document.getElementById('pskSort');
+                if (sEl) sEl.value = PSK_S.sortBy + '-' + PSK_S.sortDir;
+
+                PSK_S.mounted = true;
+
+                if (PSK_S.error) {
+                    _render();
+                    return;
+                }
+
+                // Load draft dulu
+                var draft = _loadDraft();
+                if (draft && Object.keys(draft.itemsInput || {}).length > 0) {
+                    PSK_S.itemsInput = draft.itemsInput;
+                    setTimeout(function() {
+                        if (confirm('📝 Ditemukan draft pemeriksaan yang belum disubmit.\n\n' +
+                                    'Lanjutkan draft tersebut?')) {
+                            _toast('Draft dimuat.', 'info');
+                        } else {
+                            _hapusDraft();
+                            _applyFilterSortAndRender();
+                        }
+                    }, 500);
+                }
+
+                window.pskRefreshGlobal();
+
+                console.log('✅ BLOK R 29.5.4 — Pemeriksaan Stok Kasir Toko rendered');
+                console.log('   idUser:', PSK_S.idUser, '| idOwner:', PSK_S.idOwner);
+                console.log('   namaToko:', PSK_S.namaToko, '| namaKasir:', PSK_S.namaUser);
+                console.log('   Shift:', PSK_S.idShift || '(belum buka)');
+            }, 80);
+
+            return true;
+        } catch (e) {
+            console.error('tampilkanPemeriksaanStokKSR_TK error:', e);
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 17] — REGISTER MENU HANDLER
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+
+    var ALIAS_KEYS = [
+        'tampilkanPemeriksaanStokKSR_TK',
+        'pemeriksaanStokKSR_TK',
+        'bukaPemeriksaanStokKasir',
+        'tampilkanStokKasirToko',
+        'manajemenStokKasir'
+    ];
+
+    ALIAS_KEYS.forEach(function(key) {
+        if (typeof window.menuHandlers[key] !== 'function') {
+            window.menuHandlers[key] = function() {
+                return window.tampilkanPemeriksaanStokKSR_TK();
+            };
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 18] — AUTO-REFRESH & EVENTS
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:produk-berubah', function() {
+        try {
+            if (PSK_S.mounted && !PSK_S.error) window.pskRefreshGlobal();
+        } catch (e) {}
+    });
+
+    window.addEventListener('r2coin:laporan-stok-berubah', function() {
+        try {
+            if (PSK_S.mounted && !PSK_S.error) window.pskRefreshGlobal();
+        } catch (e) {}
+    });
+
+    // ESC tutup modal
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        ['pskModalSubmit','pskModalRiwayat','pskModalDetail'].forEach(function(id) {
+            var m = document.getElementById(id);
+            if (m && m.style.display === 'flex') m.style.display = 'none';
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 19] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugPemeriksaanStokKSRGlobal = function() {
+        try {
+            return {
+                identity: {
+                    idUser: PSK_S.idUser,
+                    idOwner: PSK_S.idOwner,
+                    kodeOwner: PSK_S.kodeOwner,
+                    roleEfektif: PSK_S.roleEfektif,
+                    namaUser: PSK_S.namaUser,
+                    namaToko: PSK_S.namaToko,
+                    idShift: PSK_S.idShift,
+                    error: PSK_S.error
+                },
+                state: {
+                    tab: PSK_S.tab,
+                    page: PSK_S.page,
+                    perPage: PSK_S.perPage,
+                    pool: PSK_S.pool.length,
+                    filtered: PSK_S.data.length,
+                    itemsInput: Object.keys(PSK_S.itemsInput).length,
+                    listLaporan: PSK_S.listLaporan.length
+                },
+                permission: PSK_S.perm,
+                draft: {
+                    ada: !!_loadDraft(),
+                    savedAt: PSK_S.draftSavedAt
+                },
+                handlers: {
+                    entry: typeof window.tampilkanPemeriksaanStokKSR_TK,
+                    refresh: typeof window.pskRefreshGlobal,
+                    submit: typeof window.pskKonfirmasiSubmitGlobal,
+                    riwayat: typeof window.pskBukaRiwayatGlobal
+                }
+            };
+        } catch (e) { return null; }
+    };
+
+    window._blok2954Done = true;
+
+    console.log('✅ BLOK R 29.5.4 — PEMERIKSAAN STOK KASIR TOKO terpasang.');
+    console.log('   📋 Stock Opname Mode');
+    console.log('   🎯 Entry: tampilkanPemeriksaanStokKSR_TK()');
+    console.log('   📦 Alur: Kasir input fisik → Submit → Owner review di 11.10');
+    console.log('   📊 Debug: debugPemeriksaanStokKSRGlobal()');
+
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- JS INTEGRASI 11.10 — GLOBAL API UNTUK OWNER REVIEW             -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_29_5_4_GLOBAL_API_FOR_11_10() {
+    if (window._blok2954ApiDone) return;
+    window._blok2954ApiDone = true;
+
+    function _sanitizeId(s) {
+        if (!s) return '_';
+        return String(s).replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 64);
+    }
+
+    function _loadJSON(key, fallback) {
+        try {
+            var s = localStorage.getItem(key);
+            if (!s) return fallback;
+            var p = JSON.parse(s);
+            return (p === null || p === undefined) ? fallback : p;
+        } catch (e) { return fallback; }
+    }
+
+    function _saveJSON(key, data) {
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    function _storageKey(idOwner) {
+        return 'laporanStok_' + _sanitizeId(idOwner);
+    }
+
+    // ── Load semua laporan ──
+    window.getLaporanPemeriksaanGlobal = function(idOwner, opts) {
+        opts = opts || {};
+        try {
+            if (!idOwner) return [];
+
+            var key = _storageKey(idOwner);
+            var list = _loadJSON(key, []);
+            if (!Array.isArray(list)) return [];
+
+            // Filter
+            if (opts.status) {
+                list = list.filter(function(l) {
+                    return l && l.status === opts.status;
+                });
+            }
+            if (opts.idKasir) {
+                list = list.filter(function(l) {
+                    return l && l.idKasir === opts.idKasir;
+                });
+            }
+            if (opts.dariTanggal) {
+                var t0 = new Date(opts.dariTanggal).getTime();
+                list = list.filter(function(l) {
+                    return l && new Date(l.waktuSubmit).getTime() >= t0;
+                });
+            }
+
+            // Sort desc by waktuSubmit
+            list.sort(function(a, b) {
+                return new Date(b.waktuSubmit || 0) - new Date(a.waktuSubmit || 0);
+            });
+
+            if (opts.limit) list = list.slice(0, opts.limit);
+
+            return list;
+        } catch (e) {
+            console.error('getLaporanPemeriksaanGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ── Ambil detail 1 laporan ──
+    window.getLaporanPemeriksaanByIdGlobal = function(idLaporan) {
+        try {
+            if (!idLaporan) return null;
+
+            // Scan semua owner untuk cari laporan ini
+            for (var i = 0; i < localStorage.length; i++) {
+                var key = localStorage.key(i);
+                if (!key || key.indexOf('laporanStok_') !== 0) continue;
+
+                var list = _loadJSON(key, []);
+                if (!Array.isArray(list)) continue;
+
+                for (var j = 0; j < list.length; j++) {
+                    if (list[j] && list[j].id === idLaporan) {
+                        return list[j];
+                    }
+                }
+            }
+            return null;
+        } catch (e) {
+            console.error('getLaporanPemeriksaanByIdGlobal error:', e);
+            return null;
+        }
+    };
+
+    // ── Simpan laporan (dipakai oleh 29.5.4) ──
+    window.simpanLaporanPemeriksaanGlobal = function(laporan) {
+        try {
+            if (!laporan || !laporan.idOwner) {
+                return { sukses: false, pesan: 'Laporan tidak valid.' };
+            }
+
+            var key = _storageKey(laporan.idOwner);
+            var list = _loadJSON(key, []);
+            if (!Array.isArray(list)) list = [];
+
+            // Cek duplikat
+            var ada = list.some(function(l) {
+                return l && l.id === laporan.id;
+            });
+            if (ada) {
+                return { sukses: false, pesan: 'ID laporan sudah ada.' };
+            }
+
+            list.unshift(laporan);
+
+            // Batasi max 500 laporan per owner
+            if (list.length > 500) list = list.slice(0, 500);
+
+            var save = _saveJSON(key, list);
+            if (!save.sukses) return save;
+
+            // Dispatch event
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:laporan-stok-berubah', {
+                    detail: { aksi: 'tambah', idLaporan: laporan.id, idOwner: laporan.idOwner }
+                }));
+            } catch (e) {}
+
+            return { sukses: true, laporan: laporan };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── Update laporan (internal) ──
+    function _updateLaporan(laporan) {
+        try {
+            if (!laporan || !laporan.idOwner) {
+                return { sukses: false, pesan: 'Laporan tidak valid.' };
+            }
+
+            var key = _storageKey(laporan.idOwner);
+            var list = _loadJSON(key, []);
+            if (!Array.isArray(list)) list = [];
+
+            var idx = -1;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id === laporan.id) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx === -1) {
+                return { sukses: false, pesan: 'Laporan tidak ditemukan.' };
+            }
+
+            list[idx] = laporan;
+            return _saveJSON(key, list);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ── Owner: Approve ──
+    window.approveLaporanPemeriksaanGlobal = function(idLaporan, catatan) {
+        try {
+            var lap = window.getLaporanPemeriksaanByIdGlobal(idLaporan);
+            if (!lap) return { sukses: false, pesan: 'Laporan tidak ditemukan.' };
+
+            if (lap.status !== 'pending') {
+                return { sukses: false, pesan: 'Laporan bukan status pending.' };
+            }
+
+            var user = (typeof userAktif !== 'undefined') ? userAktif : null;
+            var reviewer = user ? (user.nama || user.username || user.idUser) : '-';
+
+            lap.status = 'approved';
+            lap.reviewedBy = reviewer;
+            lap.reviewCatatan = catatan || '';
+            lap.waktuReview = new Date().toISOString();
+
+            var save = _updateLaporan(lap);
+            if (!save.sukses) return save;
+
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:laporan-stok-berubah', {
+                    detail: { aksi: 'approve', idLaporan: idLaporan, idOwner: lap.idOwner }
+                }));
+            } catch (e) {}
+
+            return { sukses: true, laporan: lap };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── Owner: Reject ──
+    window.rejectLaporanPemeriksaanGlobal = function(idLaporan, alasan) {
+        try {
+            var lap = window.getLaporanPemeriksaanByIdGlobal(idLaporan);
+            if (!lap) return { sukses: false, pesan: 'Laporan tidak ditemukan.' };
+
+            if (lap.status !== 'pending' && lap.status !== 'approved') {
+                return { sukses: false, pesan: 'Status tidak bisa di-reject.' };
+            }
+
+            var user = (typeof userAktif !== 'undefined') ? userAktif : null;
+            var reviewer = user ? (user.nama || user.username || user.idUser) : '-';
+
+            lap.status = 'rejected';
+            lap.reviewedBy = reviewer;
+            lap.reviewCatatan = alasan || '';
+            lap.waktuReview = new Date().toISOString();
+
+            var save = _updateLaporan(lap);
+            if (!save.sukses) return save;
+
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:laporan-stok-berubah', {
+                    detail: { aksi: 'reject', idLaporan: idLaporan, idOwner: lap.idOwner }
+                }));
+            } catch (e) {}
+
+            return { sukses: true, laporan: lap };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── Owner: Apply (update stok ke fisik) ──
+    window.applyLaporanPemeriksaanGlobal = function(idLaporan) {
+        try {
+            var lap = window.getLaporanPemeriksaanByIdGlobal(idLaporan);
+            if (!lap) return { sukses: false, pesan: 'Laporan tidak ditemukan.' };
+
+            if (lap.status !== 'approved') {
+                return { sukses: false, pesan: 'Laporan harus status "approved" dulu.' };
+            }
+
+            if (typeof window.loadProdukByOwnerGlobal !== 'function' ||
+                typeof window.saveProdukRawGlobal !== 'function') {
+                return { sukses: false, pesan: 'Fungsi produk global tidak tersedia.' };
+            }
+
+            // Load semua produk owner
+            var arr = window.loadProdukByOwnerGlobal('Toko', lap.idOwner, { forceRefresh: true });
+            if (!Array.isArray(arr)) {
+                return { sukses: false, pesan: 'Gagal load produk.' };
+            }
+
+            // Apply stok fisik → stok sistem
+            var diupdate = 0;
+            var itemsMap = {};
+            (lap.items || []).forEach(function(it) {
+                itemsMap[it.idProduk] = it.stokFisik;
+            });
+
+            arr.forEach(function(p) {
+                if (!p || !itemsMap[p.id]) return;
+                var stokBaru = parseInt(itemsMap[p.id], 10);
+                if (isNaN(stokBaru)) return;
+                var stokLama = parseInt(p.stok, 10) || 0;
+                if (stokBaru !== stokLama) {
+                    p.stok = stokBaru;
+                    p.updatedAt = new Date().toISOString();
+                    diupdate++;
+                }
+            });
+
+            // Simpan
+            var save = window.saveProdukRawGlobal('Toko', lap.idOwner, arr);
+            if (!save || save.sukses === false) {
+                return { sukses: false, pesan: 'Gagal simpan produk: ' + (save ? save.pesan : 'unknown') };
+            }
+
+            // Update status laporan
+            var user = (typeof userAktif !== 'undefined') ? userAktif : null;
+            lap.status = 'applied';
+            lap.appliedBy = user ? (user.nama || user.username || user.idUser) : '-';
+            lap.appliedAt = new Date().toISOString();
+            lap.waktuApply = lap.appliedAt;
+
+            _updateLaporan(lap);
+
+            // Dispatch event produk-berubah
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:produk-berubah', {
+                    detail: { aksi: 'opname-apply', idLaporan: idLaporan, diupdate: diupdate }
+                }));
+                window.dispatchEvent(new CustomEvent('r2coin:laporan-stok-berubah', {
+                    detail: { aksi: 'apply', idLaporan: idLaporan, idOwner: lap.idOwner }
+                }));
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                laporan: lap,
+                produkDiupdate: diupdate
+            };
+        } catch (e) {
+            console.error('applyLaporanPemeriksaanGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── Owner: Hapus laporan ──
+    window.hapusLaporanPemeriksaanGlobal = function(idLaporan) {
+        try {
+            var lap = window.getLaporanPemeriksaanByIdGlobal(idLaporan);
+            if (!lap) return { sukses: false, pesan: 'Laporan tidak ditemukan.' };
+
+            var key = _storageKey(lap.idOwner);
+            var list = _loadJSON(key, []);
+            if (!Array.isArray(list)) list = [];
+
+            list = list.filter(function(l) {
+                return l && l.id !== idLaporan;
+            });
+
+            var save = _saveJSON(key, list);
+            if (!save.sukses) return save;
+
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:laporan-stok-berubah', {
+                    detail: { aksi: 'hapus', idLaporan: idLaporan }
+                }));
+            } catch (e) {}
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── Statistik untuk KPI di 11.10 ──
+    window.getStatistikLaporanGlobal = function(idOwner) {
+        try {
+            if (!idOwner) return {
+                totalPending: 0, totalApproved: 0, totalRejected: 0,
+                totalApplied: 0, terakhirDari: null
+            };
+
+            var list = window.getLaporanPemeriksaanGlobal(idOwner, {});
+            var stat = {
+                totalPending: 0, totalApproved: 0, totalRejected: 0,
+                totalApplied: 0, totalSemua: list.length, terakhirDari: null
+            };
+
+            list.forEach(function(l) {
+                if (!l) return;
+                if (l.status === 'pending') stat.totalPending++;
+                else if (l.status === 'approved') stat.totalApproved++;
+                else if (l.status === 'rejected') stat.totalRejected++;
+                else if (l.status === 'applied') stat.totalApplied++;
+            });
+
+            if (list.length > 0) {
+                var last = list[0];
+                stat.terakhirDari = {
+                    namaKasir: last.namaKasir || '-',
+                    waktuSubmit: last.waktuSubmit,
+                    status: last.status,
+                    totalProduk: last.totalProduk || 0,
+                    totalProdukAdaSelisih: last.totalProdukAdaSelisih || 0
+                };
+            }
+
+            return stat;
+        } catch (e) {
+            return {
+                totalPending: 0, totalApproved: 0, totalRejected: 0,
+                totalApplied: 0, totalSemua: 0, terakhirDari: null
+            };
+        }
+    };
+
+    // ── Render tab laporan untuk 11.10 ──
+    window.renderTabLaporanPemeriksaanGlobal = function(idOwner) {
+        try {
+            if (!idOwner) return '';
+
+            var list = window.getLaporanPemeriksaanGlobal(idOwner, {});
+            var stat = window.getStatistikLaporanGlobal(idOwner);
+
+            var warna = '#FF8C00';
+            var h = '';
+
+            // KPI Cards
+            h += '<div class="row g-2 g-md-3 mb-3">' +
+                _kpiCard('⏳', 'Pending', stat.totalPending, '#FFC107', '#FFF3CD', '#856404') +
+                _kpiCard('✅', 'Approved', stat.totalApproved, '#28A745', '#D4EDDA', '#155724') +
+                _kpiCard('🟢', 'Applied', stat.totalApplied, '#17A2B8', '#D1ECF1', '#0C5460') +
+                _kpiCard('❌', 'Rejected', stat.totalRejected, '#DC3545', '#F8D7DA', '#721C24') +
+            '</div>';
+
+            // Filter status
+            h += '<div class="d-flex gap-2 mb-3 flex-wrap">' +
+                '<button class="btn btn-sm btn-outline-warning" onclick="filterLaporanGlobal(\'pending\')">' +
+                    '⏳ Pending (' + stat.totalPending + ')</button>' +
+                '<button class="btn btn-sm btn-outline-success" onclick="filterLaporanGlobal(\'approved\')">' +
+                    '✅ Approved (' + stat.totalApproved + ')</button>' +
+                '<button class="btn btn-sm btn-outline-info" onclick="filterLaporanGlobal(\'applied\')">' +
+                    '🟢 Applied (' + stat.totalApplied + ')</button>' +
+                '<button class="btn btn-sm btn-outline-danger" onclick="filterLaporanGlobal(\'rejected\')">' +
+                    '❌ Rejected (' + stat.totalRejected + ')</button>' +
+                '<button class="btn btn-sm btn-outline-secondary" onclick="filterLaporanGlobal(\'\')">' +
+                    '🔄 Semua (' + stat.totalSemua + ')</button>' +
+            '</div>';
+
+            // List laporan
+            if (list.length === 0) {
+                h += '<div class="text-center py-5 text-muted">' +
+                    '<i class="fas fa-inbox fa-3x opacity-25 d-block mb-2"></i>' +
+                    '<p>Belum ada laporan pemeriksaan dari kasir.</p>' +
+                '</div>';
+            } else {
+                h += '<div class="list-group" id="listLaporanGlobal">';
+                list.forEach(function(lap) {
+                    h += _renderKartuLaporanOwner(lap);
+                });
+                h += '</div>';
+            }
+
+            return h;
+        } catch (e) {
+            console.error('renderTabLaporanPemeriksaanGlobal error:', e);
+            return '<p class="text-danger">Gagal render laporan: ' + e.message + '</p>';
+        }
+    };
+
+    function _kpiCard(ikon, label, nilai, warna, bg, tc) {
+        return '<div class="col-6 col-md-3">' +
+            '<div class="card border-0 shadow-sm" style="background:' + bg + ';">' +
+                '<div class="card-body p-2 p-md-3 text-center">' +
+                    '<div style="font-size:22px;">' + ikon + '</div>' +
+                    '<div style="font-size:20px;font-weight:900;color:' + tc + ';">' + nilai + '</div>' +
+                    '<div style="font-size:11px;color:' + tc + ';text-transform:uppercase;' +
+                         'font-weight:700;opacity:0.75;">' + label + '</div>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function _renderKartuLaporanOwner(lap) {
+        if (!lap) return '';
+
+        var statusMap = {
+            'pending':  { label: '⏳ Pending',  bg: '#FFF3CD', tc: '#856404' },
+            'approved': { label: '✅ Approved', bg: '#D4EDDA', tc: '#155724' },
+            'rejected': { label: '❌ Rejected', bg: '#F8D7DA', tc: '#721C24' },
+            'applied':  { label: '🟢 Applied',  bg: '#D1ECF1', tc: '#0C5460' }
+        };
+        var st = statusMap[lap.status] || statusMap['pending'];
+
+        var btnAksi = '';
+        if (lap.status === 'pending') {
+            btnAksi = '<button class="btn btn-sm btn-success" ' +
+                    'onclick="event.stopPropagation();ownerApproveLaporanGlobal(\'' +
+                    _escA(lap.id) + '\')">' +
+                    '<i class="fas fa-check me-1"></i>Approve</button>' +
+                '<button class="btn btn-sm btn-danger" ' +
+                    'onclick="event.stopPropagation();ownerRejectLaporanGlobal(\'' +
+                    _escA(lap.id) + '\')">' +
+                    '<i class="fas fa-times me-1"></i>Reject</button>';
+        } else if (lap.status === 'approved') {
+            btnAksi = '<button class="btn btn-sm btn-primary" ' +
+                    'onclick="event.stopPropagation();ownerApplyLaporanGlobal(\'' +
+                    _escA(lap.id) + '\')">' +
+                    '<i class="fas fa-check-double me-1"></i>Apply ke Stok</button>' +
+                '<button class="btn btn-sm btn-danger" ' +
+                    'onclick="event.stopPropagation();ownerRejectLaporanGlobal(\'' +
+                    _escA(lap.id) + '\')">' +
+                    '<i class="fas fa-times me-1"></i>Reject</button>';
+        } else if (lap.status === 'rejected' || lap.status === 'applied') {
+            btnAksi = '<button class="btn btn-sm btn-outline-secondary" ' +
+                    'onclick="event.stopPropagation();ownerHapusLaporanGlobal(\'' +
+                    _escA(lap.id) + '\')">' +
+                    '<i class="fas fa-trash me-1"></i>Hapus</button>';
+        }
+
+        return '<div class="list-group-item list-group-item-action p-3" ' +
+                    'style="cursor:pointer;border-left:4px solid ' + st.tc + ';" ' +
+                    'onclick="ownerDetailLaporanGlobal(\'' + _escA(lap.id) + '\')">' +
+            '<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">' +
+                '<div style="flex:1;min-width:200px;">' +
+                    '<div class="d-flex align-items-center gap-2 mb-1 flex-wrap">' +
+                        '<strong>' + _esc(lap.id) + '</strong>' +
+                        '<span class="badge" style="background:' + st.bg + ';color:' + st.tc + ';">' +
+                            st.label + '</span>' +
+                    '</div>' +
+                    '<div class="text-muted small">' +
+                        '<i class="fas fa-user me-1"></i>' + _esc(lap.namaKasir || '-') +
+                        ' • <i class="fas fa-clock me-1"></i>' +
+                        new Date(lap.waktuSubmit).toLocaleString('id-ID', {
+                            day: '2-digit', month: 'short', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit'
+                        }) +
+                    '</div>' +
+                    '<div class="small mt-1">' +
+                        '<span class="me-2">📦 <strong>' + (lap.totalProduk || 0) + '</strong> produk</span>' +
+                        (lap.totalProdukAdaSelisih > 0
+                            ? '<span class="text-warning me-2">⚠️ <strong>' +
+                              lap.totalProdukAdaSelisih + '</strong> selisih</span>'
+                            : '<span class="text-success me-2">✅ tanpa selisih</span>') +
+                        (lap.totalNilaiSelisih > 0
+                            ? '<span class="text-danger">💰 Rp ' +
+                              (lap.totalNilaiSelisih || 0).toLocaleString('id-ID') + '</span>'
+                            : '') +
+                    '</div>' +
+                '</div>' +
+                '<div class="d-flex gap-1 flex-wrap">' + btnAksi + '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    // ── Aksi Owner dari 11.10 ──
+    window.ownerApproveLaporanGlobal = function(idLaporan) {
+        if (!confirm('Approve laporan ini?')) return;
+        var catatan = prompt('Catatan review (opsional):', '') || '';
+        var hasil = window.approveLaporanPemeriksaanGlobal(idLaporan, catatan);
+        if (hasil.sukses) {
+            if (typeof window.mptToast === 'function') window.mptToast('Laporan disetujui.', 'success');
+            else alert('Laporan disetujui.');
+            window.refreshLaporanPemeriksaanGlobal && window.refreshLaporanPemeriksaanGlobal();
+        } else {
+            alert('Gagal: ' + hasil.pesan);
+        }
+    };
+
+    window.ownerRejectLaporanGlobal = function(idLaporan) {
+        var alasan = prompt('Alasan reject:');
+        if (!alasan) return;
+        var hasil = window.rejectLaporanPemeriksaanGlobal(idLaporan, alasan);
+        if (hasil.sukses) {
+            if (typeof window.mptToast === 'function') window.mptToast('Laporan ditolak.', 'info');
+            else alert('Laporan ditolak.');
+            window.refreshLaporanPemeriksaanGlobal && window.refreshLaporanPemeriksaanGlobal();
+        } else {
+            alert('Gagal: ' + hasil.pesan);
+        }
+    };
+
+    window.ownerApplyLaporanGlobal = function(idLaporan) {
+        if (!confirm('Apply laporan ini?\n\nStok sistem akan berubah ke nilai fisik.\n' +
+                     'Tindakan ini tidak bisa di-undo.')) return;
+
+        var hasil = window.applyLaporanPemeriksaanGlobal(idLaporan);
+        if (hasil.sukses) {
+            if (typeof window.mptToast === 'function') {
+                window.mptToast('✅ Diterapkan! ' + hasil.produkDiupdate + ' produk diupdate.', 'success');
+            } else {
+                alert('Diterapkan! ' + hasil.produkDiupdate + ' produk diupdate.');
+            }
+            window.refreshLaporanPemeriksaanGlobal && window.refreshLaporanPemeriksaanGlobal();
+        } else {
+            alert('Gagal: ' + hasil.pesan);
+        }
+    };
+
+    window.ownerHapusLaporanGlobal = function(idLaporan) {
+        if (!confirm('Hapus laporan ini permanen?')) return;
+        var hasil = window.hapusLaporanPemeriksaanGlobal(idLaporan);
+        if (hasil.sukses) {
+            if (typeof window.mptToast === 'function') window.mptToast('Laporan dihapus.', 'info');
+            window.refreshLaporanPemeriksaanGlobal && window.refreshLaporanPemeriksaanGlobal();
+        } else {
+            alert('Gagal: ' + hasil.pesan);
+        }
+    };
+
+    window.ownerDetailLaporanGlobal = function(idLaporan) {
+        var lap = window.getLaporanPemeriksaanByIdGlobal(idLaporan);
+        if (!lap) return alert('Laporan tidak ditemukan.');
+
+        var teks = '📋 DETAIL LAPORAN\n\n' +
+            'ID: ' + lap.id + '\n' +
+            'Kasir: ' + (lap.namaKasir || '-') + '\n' +
+            'Waktu: ' + new Date(lap.waktuSubmit).toLocaleString('id-ID') + '\n' +
+            'Status: ' + lap.status.toUpperCase() + '\n\n' +
+            'Total produk: ' + (lap.totalProduk || 0) + '\n' +
+            'Ada selisih: ' + (lap.totalProdukAdaSelisih || 0) + '\n' +
+            'Total unit selisih: ' + (lap.totalSelisih || 0) + '\n' +
+            'Nilai selisih: Rp ' + (lap.totalNilaiSelisih || 0).toLocaleString('id-ID') + '\n\n' +
+            (lap.catatanKeseluruhan ? 'Catatan: ' + lap.catatanKeseluruhan + '\n\n' : '') +
+            '━━━━━━━━━━━━━━━━━━\n' +
+            'Item (' + lap.items.length + '):\n';
+
+        lap.items.slice(0, 20).forEach(function(it, i) {
+            teks += (i + 1) + '. ' + it.nama + '\n' +
+                '   Sistem: ' + it.stokSistem + ' → Fisik: ' + it.stokFisik +
+                ' (selisih ' + (it.selisih > 0 ? '+' : '') + it.selisih + ')\n' +
+                (it.catatan ? '   Catatan: ' + it.catatan + '\n' : '');
+        });
+
+        if (lap.items.length > 20) teks += '\n... dan ' + (lap.items.length - 20) + ' item lainnya';
+
+        alert(teks);
+    };
+
+    window.filterLaporanGlobal = function(status) {
+        // Helper filter — bisa diimplementasikan sesuai UI 11.10
+        console.log('Filter laporan:', status);
+        var container = document.getElementById('listLaporanGlobal');
+        if (!container) return;
+
+        var items = container.querySelectorAll('.list-group-item');
+        items.forEach(function(item) {
+            if (!status) { item.style.display = ''; return; }
+            var badge = item.querySelector('.badge');
+            if (!badge) { item.style.display = 'none'; return; }
+            var teks = badge.textContent.toLowerCase();
+            item.style.display = teks.indexOf(status) !== -1 ? '' : 'none';
+        });
+    };
+
+    console.log('✅ BLOK R 29.5.4 GLOBAL API — Integrasi 11.10 terpasang.');
+    console.log('   📥 Fungsi: getLaporanPemeriksaanGlobal, approve, reject, apply, dll.');
+    console.log('   📊 Statistik: getStatistikLaporanGlobal');
+    console.log('   🎨 Renderer: renderTabLaporanPemeriksaanGlobal');
+
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- CSS PEMERIKSAAN STOK KASIR TOKO                                -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<style>
+.psk-root { padding-bottom: 120px; background: #f5f7fa; min-height: 100vh; }
+
+/* ALERT */
+.psk-alert { max-width: 1200px; margin: 16px auto 0; padding: 14px 20px;
+    border-radius: 10px; font-size: 14px; }
+.psk-alert-danger { background: #F8D7DA; color: #721C24; border: 1px solid #f5c6cb; }
+
+/* HEADER */
+.psk-header { padding: 22px 24px; color: #fff; }
+.psk-header-inner { max-width: 1200px; margin: 0 auto;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 16px; }
+.psk-title { font-size: 24px; font-weight: 800; margin: 0 0 6px 0; letter-spacing: -0.5px; }
+.psk-header-meta { display: flex; gap: 10px; align-items: center;
+    flex-wrap: wrap; font-size: 13px; opacity: 0.95; }
+.psk-sep { opacity: 0.5; }
+.psk-badge-role { font-size: 11px; font-weight: 800; padding: 3px 10px;
+    border-radius: 20px; background: rgba(255,255,255,0.25);
+    border: 1px solid rgba(255,255,255,0.4); }
+.psk-role-kasir { background: #FFC107; color: #333; border-color: #e0a800; }
+.psk-role-toko  { background: #28A745; border-color: #1e7e34; }
+.psk-shift-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px;
+    font-weight: 700; }
+.psk-shift-badge.on  { background: rgba(40,167,69,0.3); color: #fff;
+    border: 1px solid rgba(40,167,69,0.6); }
+.psk-shift-badge.off { background: rgba(108,117,125,0.3); color: #fff;
+    border: 1px solid rgba(108,117,125,0.5); }
+.psk-header-btns { display: flex; gap: 8px; }
+.psk-icon-btn { width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.3);
+    color: #fff; cursor: pointer; transition: all 0.2s; position: relative;
+    display: flex; align-items: center; justify-content: center; }
+.psk-icon-btn:hover { background: rgba(255,255,255,0.38); transform: translateY(-2px); }
+.psk-badge-notif { position: absolute; top: -4px; right: -4px;
+    background: #DC3545; color: #fff; font-size: 10px; font-weight: 700;
+    min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid #fff; }
+
+/* INFO BANNER */
+.psk-info-banner { max-width: 1200px; margin: 12px auto 0; padding: 12px 20px;
+    background: linear-gradient(135deg, #FFF8E1, #FFECB3);
+    border-left: 4px solid #FFC107; border-radius: 10px;
+    font-size: 13px; color: #7a5a00; }
+
+/* TOOLBAR */
+.psk-toolbar { max-width: 1200px; margin: 16px auto 8px; padding: 0 24px;
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.psk-search-wrap { flex: 1; min-width: 220px; position: relative; }
+.psk-search-ic { position: absolute; left: 14px; top: 50%;
+    transform: translateY(-50%); color: #888; pointer-events: none; }
+.psk-search { width: 100%; padding: 10px 40px; border: 2px solid #e0e4e9;
+    border-radius: 10px; font-size: 14px; background: #fff; transition: all 0.2s; }
+.psk-search:focus { outline: none; border-color: #FF8C00;
+    box-shadow: 0 0 0 4px rgba(255,140,0,0.1); }
+.psk-search-x { position: absolute; right: 8px; top: 50%;
+    transform: translateY(-50%); background: none; border: none;
+    color: #888; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+.psk-search-x:hover { background: #f0f0f0; color: #333; }
+.psk-select { padding: 10px 14px; border: 2px solid #e0e4e9;
+    border-radius: 10px; font-size: 13px; background: #fff;
+    cursor: pointer; font-weight: 600; }
+.psk-select:focus { outline: none; border-color: #FF8C00; }
+
+/* TABS */
+.psk-tabs { max-width: 1200px; margin: 8px auto 0; padding: 0 24px;
+    display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 2px solid #e0e4e9; }
+.psk-tab { padding: 10px 18px; background: transparent; border: none;
+    border-bottom: 3px solid transparent; font-size: 14px; font-weight: 700;
+    color: #666; cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px; margin-bottom: -2px; }
+.psk-tab:hover { color: #FF8C00; }
+.psk-tab-on { color: #FF8C00; border-bottom-color: #FF8C00; }
+.psk-tab-n { background: #e0e4e9; color: #555; font-size: 11px;
+    padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+.psk-tab-on .psk-tab-n { background: #FF8C00; color: #fff; }
+
+/* INFO */
+.psk-info { max-width: 1200px; margin: 12px auto 8px; padding: 0 24px;
+    font-size: 14px; color: #555; }
+
+/* TABLE */
+.psk-table-wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.psk-table-responsive { background: #fff; border-radius: 14px;
+    overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+.psk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.psk-table thead { background: #f8f9fa; }
+.psk-table th { padding: 12px 10px; font-size: 11px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.5px; color: #666;
+    text-align: left; border-bottom: 2px solid #e0e4e9; }
+.psk-table td { padding: 10px 10px; border-bottom: 1px solid #f0f0f0;
+    vertical-align: middle; }
+.psk-table tr:hover td { background: #FFF8F0; }
+.psk-table tr:last-child td { border-bottom: none; }
+.psk-table tr.psk-row-input td { background: #FFF8F0; }
+
+.psk-col-foto { width: 70px; }
+.psk-col-foto img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; }
+.psk-p-nama { font-weight: 700; color: #222; font-size: 13px; margin-bottom: 2px; }
+.psk-p-kode { font-size: 11px; color: #888; }
+.psk-p-kode code { background: #f0f0f0; padding: 1px 6px; border-radius: 4px; }
+.psk-tag { background: #E3F2FD; color: #0D47A1; font-size: 10px;
+    font-weight: 700; padding: 2px 8px; border-radius: 20px;
+    display: inline-block; margin-left: 4px; }
+.psk-stok-sistem { font-weight: 800; font-size: 15px; color: #222; }
+.psk-input-fisik { width: 100px; padding: 8px 10px; border: 2px solid #FFC107;
+    border-radius: 8px; font-size: 15px; font-weight: 700; text-align: center;
+    background: #FFFEF5; transition: all 0.2s; }
+.psk-input-fisik:focus { outline: none; border-color: #FF8C00;
+    box-shadow: 0 0 0 3px rgba(255,140,0,0.15); }
+.psk-input-catatan { width: 100%; padding: 6px 10px; border: 1px solid #e0e4e9;
+    border-radius: 6px; font-size: 12px; }
+.psk-input-catatan:focus { outline: none; border-color: #FF8C00; }
+
+/* SELISIH */
+.psk-selisih-ok    { color: #28A745; }
+.psk-selisih-plus  { color: #17A2B8; }
+.psk-selisih-minus { color: #DC3545; }
+.psk-selisih-nilai { font-size: 10px; opacity: 0.75; font-weight: 600; }
+
+/* EMPTY */
+.psk-empty { max-width: 480px; margin: 60px auto; padding: 32px; text-align: center; }
+.psk-empty-ic { font-size: 56px; color: #ddd; margin-bottom: 16px; }
+.psk-empty h4 { font-size: 20px; font-weight: 800; color: #333; margin: 0 0 8px 0; }
+.psk-empty p { color: #888; font-size: 14px; margin-bottom: 16px; }
+
+/* PAGINATION */
+.psk-pag { max-width: 1200px; margin: 24px auto 0; padding: 0 24px; text-align: center; }
+.psk-pag-info { font-size: 13px; color: #666; margin-bottom: 12px; }
+.psk-pag-btns { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+.psk-pg { min-width: 38px; height: 38px; padding: 0 12px;
+    border: 2px solid #e0e4e9; background: #fff; border-radius: 10px;
+    font-size: 13px; font-weight: 700; color: #555; cursor: pointer;
+    transition: all 0.2s; }
+.psk-pg:hover:not(:disabled) { border-color: #FF8C00; color: #FF8C00;
+    transform: translateY(-2px); }
+.psk-pg-on { background: #FF8C00; border-color: #FF8C00; color: #fff; }
+.psk-pg:disabled { opacity: 0.4; cursor: not-allowed; }
+.psk-dots { padding: 0 6px; align-self: center; color: #999; }
+
+/* FOOTER STICKY */
+.psk-footer { position: fixed; bottom: 0; left: 0; right: 0;
+    background: linear-gradient(135deg, #FF8C00, #E67E00);
+    color: #fff; padding: 12px 24px; z-index: 100;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 12px;
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.15); }
+.psk-footer-info { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; }
+.psk-fi-item { font-size: 13px; }
+.psk-fi-item span { opacity: 0.9; }
+.psk-fi-item strong { font-size: 18px; font-weight: 900; margin-left: 4px; }
+.psk-has-selisih { color: #FFE082; }
+.psk-nilai { font-size: 16px !important; font-weight: 900 !important; }
+.psk-nilai-warn { color: #FFE082; }
+.psk-footer-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* BUTTON */
+.psk-btn { padding: 10px 18px; border: none; border-radius: 10px;
+    font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; justify-content: center; }
+.psk-btn-primary { background: #fff; color: #FF8C00; }
+.psk-btn-primary:hover:not(:disabled) { background: #FFF8F0; transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.15); }
+.psk-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.psk-btn-secondary { background: rgba(255,255,255,0.25); color: #fff;
+    border: 1px solid rgba(255,255,255,0.4); }
+.psk-btn-secondary:hover { background: rgba(255,255,255,0.4); }
+.psk-btn-ghost { background: transparent; color: #fff;
+    border: 1px solid rgba(255,255,255,0.5); }
+.psk-btn-ghost:hover { background: rgba(255,255,255,0.15); }
+
+/* MODAL */
+.psk-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 9999; display: flex; align-items: center; justify-content: center;
+    padding: 20px; }
+.psk-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); }
+.psk-dialog { position: relative; background: #fff; border-radius: 16px;
+    width: 100%; max-width: 520px; max-height: 92vh; overflow-y: auto;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.3); }
+.psk-dialog-lg { max-width: 820px; }
+.psk-modal-head { padding: 18px 24px; border-bottom: 1px solid #f0f0f0;
+    display: flex; justify-content: space-between; align-items: center; }
+.psk-modal-head h5 { font-weight: 800; color: #222; }
+.psk-modal-x { width: 34px; height: 34px; border-radius: 50%;
+    background: #f0f0f0; border: none; color: #333; cursor: pointer;
+    transition: all 0.2s; }
+.psk-modal-x:hover { background: #e0e0e0; }
+.psk-modal-body { padding: 20px 24px; }
+.psk-modal-foot { padding: 14px 24px; border-top: 1px solid #f0f0f0;
+    display: flex; gap: 10px; justify-content: flex-end; }
+.psk-modal-foot .psk-btn-primary { background: #FF8C00; color: #fff; }
+.psk-modal-foot .psk-btn-primary:hover { background: #E67E00; }
+.psk-modal-foot .psk-btn-ghost { background: #f0f0f0; color: #333;
+    border: none; }
+.psk-modal-foot .psk-btn-ghost:hover { background: #e0e0e0; }
+
+/* RINGKASAN SUBMIT */
+.psk-ringkasan { background: #FFF8E1; border: 1px solid #FFECB3;
+    border-radius: 10px; padding: 14px; }
+.psk-ringkasan-row { display: flex; justify-content: space-between;
+    padding: 6px 0; font-size: 13px; }
+.psk-ringkasan-row:not(:last-child) { border-bottom: 1px dashed #FFE082; }
+.psk-ringkasan-row strong { font-weight: 800; color: #333; }
+.psk-lbl { display: block; font-size: 12px; font-weight: 700;
+    color: #555; margin-bottom: 6px; text-transform: uppercase;
+    letter-spacing: 0.5px; }
+.psk-input { width: 100%; padding: 10px 14px; border: 2px solid #e0e4e9;
+    border-radius: 10px; font-size: 14px; font-family: inherit; }
+.psk-input:focus { outline: none; border-color: #FF8C00;
+    box-shadow: 0 0 0 4px rgba(255,140,0,0.1); }
+.psk-info-box { background: #D1ECF1; color: #0C5460;
+    padding: 10px 14px; border-radius: 8px; font-size: 12px; }
+.psk-text-warn { color: #DC3545 !important; }
+.psk-text-green { color: #28A745 !important; }
+.psk-text-red { color: #DC3545 !important; }
+
+/* RIWAYAT LIST */
+.psk-riwayat-list { display: flex; flex-direction: column; gap: 10px; }
+.psk-rw-item { background: #fff; border: 1px solid #e0e4e9;
+    border-radius: 12px; padding: 14px; cursor: pointer;
+    transition: all 0.2s; }
+.psk-rw-item:hover { border-color: #FF8C00; transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(255,140,0,0.15); }
+.psk-rw-header { display: flex; justify-content: space-between;
+    align-items: flex-start; gap: 12px; margin-bottom: 10px;
+    flex-wrap: wrap; }
+.psk-rw-id { font-weight: 800; font-size: 14px; color: #222;
+    font-family: monospace; margin-bottom: 4px; }
+.psk-rw-time { font-size: 11px; color: #888; }
+.psk-st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px;
+    border-radius: 20px; display: inline-block; }
+.psk-st-pending  { background: #FFF3CD; color: #856404; }
+.psk-st-approved { background: #D4EDDA; color: #155724; }
+.psk-st-rejected { background: #F8D7DA; color: #721C24; }
+.psk-st-applied  { background: #D1ECF1; color: #0C5460; }
+.psk-rw-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+.psk-rw-stat { display: flex; flex-direction: column; }
+.psk-rw-lbl { font-size: 10px; color: #888; text-transform: uppercase;
+    font-weight: 700; }
+.psk-rw-stat strong { font-size: 14px; color: #333; }
+
+/* DETAIL LAPORAN */
+.psk-detail-head { display: flex; justify-content: space-between;
+    align-items: flex-start; gap: 12px; padding-bottom: 14px;
+    border-bottom: 1px solid #f0f0f0; margin-bottom: 14px;
+    flex-wrap: wrap; }
+.psk-dh-id { font-family: monospace; font-weight: 800; font-size: 16px;
+    color: #222; margin-bottom: 4px; }
+.psk-dh-time, .psk-dh-kasir { font-size: 12px; color: #888; margin-top: 2px; }
+.psk-detail-review { background: #F0F9FB; padding: 12px 14px;
+    border-radius: 8px; margin-bottom: 14px; font-size: 12px;
+    display: flex; flex-direction: column; gap: 6px; }
+.psk-detail-catatan { background: #FFF8E1; padding: 12px 14px;
+    border-radius: 8px; margin-bottom: 14px; font-size: 13px;
+    border-left: 3px solid #FFC107; }
+.psk-detail-ringkasan { display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px; margin-bottom: 16px; }
+.psk-dr-item { background: #f8f9fa; border-radius: 8px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 4px; }
+.psk-dr-item span { font-size: 11px; color: #888;
+    text-transform: uppercase; font-weight: 700; }
+.psk-dr-item strong { font-size: 16px; color: #222; font-weight: 900; }
+.psk-detail-tabel-wrap { background: #fff; border-radius: 10px;
+    overflow-x: auto; border: 1px solid #e0e4e9; }
+.psk-detail-tabel { width: 100%; border-collapse: collapse; font-size: 12px; }
+.psk-detail-tabel th { background: #f8f9fa; padding: 10px 8px;
+    font-size: 10px; text-transform: uppercase; color: #666;
+    font-weight: 800; border-bottom: 2px solid #e0e4e9; text-align: left; }
+.psk-detail-tabel td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
+.psk-detail-tabel tr:last-child td { border-bottom: none; }
+.psk-di-nama { font-weight: 700; color: #222; margin-bottom: 2px; }
+.psk-di-kode { font-size: 10px; color: #888; }
+.psk-di-kode code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+.psk-di-nilai { font-size: 10px; color: #DC3545; font-weight: 600; }
+
+/* RESPONSIVE */
+@media (max-width: 720px) {
+    .psk-header { padding: 16px; }
+    .psk-title { font-size: 20px; }
+    .psk-toolbar, .psk-tabs, .psk-info, .psk-table-wrap, .psk-pag {
+        padding-left: 16px; padding-right: 16px;
+    }
+    .psk-footer { padding: 10px 16px; flex-direction: column; align-items: stretch; }
+    .psk-footer-info { justify-content: space-around; }
+    .psk-fi-item { font-size: 11px; }
+    .psk-fi-item strong { font-size: 16px; }
+    .psk-footer-actions { justify-content: stretch; }
+    .psk-btn { flex: 1; padding: 10px 12px; font-size: 12px; }
+    .psk-input-fisik { width: 80px; font-size: 14px; padding: 6px; }
+    .psk-table th, .psk-table td { padding: 8px 6px; font-size: 12px; }
+}
+</style>
+<!-- ═══ AKHIR BLOK R 29.5.4 ═════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- INTEGRASI OTOMATIS: TAB "LAPORAN OPNAME" KE BLOK R 11.10      -->
+<!-- Auto-inject tab tanpa edit 11.10 langsung                     -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function AUTO_INTEGRASI_TAB_LAPORAN_KE_1110() {
+    if (window._autoTabLaporan1110Done) return;
+    window._autoTabLaporan1110Done = true;
+
+    console.log('🔗 Auto-integrasi tab "Laporan Opname" ke 11.10...');
+
+    // ═══════════════════════════════════════════════════════════
+    // [1] HOOK: Bungkus psSetTabGlobal
+    // ═══════════════════════════════════════════════════════════
+    var _origSetTab = window.psSetTabGlobal;
+    if (typeof _origSetTab === 'function' && !_origSetTab._autoHooked) {
+        window.psSetTabGlobal = function(tab) {
+            // Handle tab 'laporan' (baru)
+            if (tab === 'laporan') {
+                try {
+                    _renderTabLaporan();
+                    // Update active class semua tab
+                    document.querySelectorAll('.ps-tab').forEach(function(b) {
+                        if (b.getAttribute('data-tab') === 'laporan') b.classList.add('ps-tab-on');
+                        else b.classList.remove('ps-tab-on');
+                    });
+                    return;
+                } catch (e) {
+                    console.error('Render tab laporan error:', e);
+                }
+            }
+            // Delegasi ke original
+            return _origSetTab.apply(this, arguments);
+        };
+        window.psSetTabGlobal._autoHooked = true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [2] Render tab laporan
+    // ═══════════════════════════════════════════════════════════
+    function _renderTabLaporan() {
+        // Sembunyikan tab lain
+        var tw = document.getElementById('psTableWrap');
+        var rw = document.getElementById('psRiwayatWrap');
+        if (tw) tw.style.display = 'none';
+        if (rw) rw.style.display = 'none';
+
+        // Pagination hide
+        var pag = document.getElementById('psPag');
+        if (pag) pag.innerHTML = '';
+
+        // Info bar
+        var info = document.getElementById('psInfo');
+        if (info) info.innerHTML = '<i class="fas fa-clipboard-check me-2"></i>' +
+            'Laporan pemeriksaan stok dari kasir';
+
+        // Container laporan
+        var wrap = document.getElementById('psLaporanWrap');
+        if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.id = 'psLaporanWrap';
+            wrap.className = 'ps-laporan-wrap';
+            // Sisipkan setelah info bar
+            if (info && info.parentNode) {
+                info.parentNode.insertBefore(wrap, info.nextSibling);
+            } else {
+                var root = document.querySelector('.ps-root');
+                if (root) root.appendChild(wrap);
+            }
+        }
+        wrap.style.display = 'block';
+
+        // Ambil idOwner dari state
+        var idOwner = (typeof PS_S !== 'undefined' && PS_S.idOwner)
+            ? PS_S.idOwner
+            : (typeof userAktif !== 'undefined' && userAktif
+                ? (userAktif.idUser || userAktif.id) : null);
+
+        if (!idOwner) {
+            wrap.innerHTML = '<div class="alert alert-warning">' +
+                'ID Owner tidak ditemukan. Coba refresh.</div>';
+            return;
+        }
+
+        // Render isi
+        if (typeof window.renderTabLaporanPemeriksaanGlobal === 'function') {
+            wrap.innerHTML = window.renderTabLaporanPemeriksaanGlobal(idOwner);
+        } else {
+            wrap.innerHTML = '<div class="alert alert-danger">' +
+                'Fungsi renderTabLaporanPemeriksaanGlobal belum tersedia. ' +
+                'Pastikan BLOK R 29.5.4 sudah terpasang.</div>';
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [3] Refresh khusus tab laporan (dipanggil setelah approve/reject)
+    // ═══════════════════════════════════════════════════════════
+    window.refreshLaporanPemeriksaanGlobal = function() {
+        var wrap = document.getElementById('psLaporanWrap');
+        if (wrap && wrap.style.display !== 'none') {
+            _renderTabLaporan();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [4] AUTO-INJECT: Tambah tombol tab ke toolbar
+    // ═══════════════════════════════════════════════════════════
+    function _injectTombolTab() {
+        var tabsBar = document.querySelector('.ps-tabs');
+        if (!tabsBar) return false;
+
+        // Cek sudah ada?
+        if (tabsBar.querySelector('[data-tab="laporan"]')) return true;
+
+        // Buat tombol baru
+        var btn = document.createElement('button');
+        btn.className = 'ps-tab';
+        btn.setAttribute('data-tab', 'laporan');
+        btn.setAttribute('onclick', 'psSetTabGlobal(\'laporan\')');
+        btn.innerHTML = '<i class="fas fa-clipboard-check"></i> Laporan Opname ' +
+            '<span class="ps-tab-n" id="psTabLaporanN">0</span>';
+
+        tabsBar.appendChild(btn);
+        console.log('✅ Tombol tab "Laporan Opname" ter-inject ke 11.10');
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [5] Update badge jumlah pending
+    // ═══════════════════════════════════════════════════════════
+    function _updateBadgeLaporan() {
+        try {
+            var idOwner = (typeof PS_S !== 'undefined' && PS_S.idOwner)
+                ? PS_S.idOwner
+                : (typeof userAktif !== 'undefined' && userAktif
+                    ? (userAktif.idUser || userAktif.id) : null);
+            if (!idOwner) return;
+
+            if (typeof window.getStatistikLaporanGlobal !== 'function') return;
+            var stat = window.getStatistikLaporanGlobal(idOwner);
+            var el = document.getElementById('psTabLaporanN');
+            if (el) {
+                el.textContent = stat.totalPending || 0;
+                el.style.background = (stat.totalPending > 0) ? '#DC3545' : '';
+                el.style.color = (stat.totalPending > 0) ? '#fff' : '';
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [6] OBSERVER: Deteksi kapan 11.10 di-render
+    // ═══════════════════════════════════════════════════════════
+    if (typeof MutationObserver !== 'undefined') {
+        var observer = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                var m = mutations[i];
+                if (m.type === 'childList') {
+                    // Cek apakah ada .ps-tabs baru
+                    if (document.querySelector('.ps-tabs')) {
+                        if (_injectTombolTab()) {
+                            setTimeout(_updateBadgeLaporan, 500);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Observe kontenDasbor
+        var target = document.getElementById('kontenDasbor');
+        if (target) {
+            observer.observe(target, { childList: true, subtree: true });
+            console.log('✅ Observer aktif — monitoring render 11.10');
+        } else {
+            // Retry
+            setTimeout(function() {
+                var t = document.getElementById('kontenDasbor');
+                if (t) {
+                    observer.observe(t, { childList: true, subtree: true });
+                }
+            }, 2000);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [7] EVENT: Refresh saat ada laporan baru
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:laporan-stok-berubah', function() {
+        setTimeout(_updateBadgeLaporan, 300);
+        // Kalau tab laporan sedang aktif, re-render
+        var wrap = document.getElementById('psLaporanWrap');
+        if (wrap && wrap.style.display !== 'none') {
+            setTimeout(_renderTabLaporan, 500);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [8] MANUAL TRIGGER (untuk dipanggil kapan saja)
+    // ═══════════════════════════════════════════════════════════
+    window.injectTabLaporanGlobal = function() {
+        return _injectTombolTab();
+    };
+
+    window.debugAutoTabLaporan = function() {
+        var tabsBar = document.querySelector('.ps-tabs');
+        var btn = tabsBar ? tabsBar.querySelector('[data-tab="laporan"]') : null;
+        console.log('🔍 Status Auto-Tab-Laporan:');
+        console.log('  - .ps-tabs ada?', !!tabsBar);
+        console.log('  - Tombol laporan ada?', !!btn);
+        console.log('  - psSetTabGlobal di-hook?', window.psSetTabGlobal._autoHooked === true);
+        console.log('  - Container psLaporanWrap ada?', !!document.getElementById('psLaporanWrap'));
+    };
+
+    console.log('✅ Auto-integrasi tab "Laporan Opname" siap.');
+    console.log('   🎯 Tab akan muncul otomatis saat 11.10 dibuka.');
+    console.log('   📊 Debug: debugAutoTabLaporan()');
+
+})();
+</script>
+<!-- ═══ AKHIR AUTO-INTEGRASI TAB LAPORAN ═══════════════════════ -->
+
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 29.2(2) — PROFIL KASIR PASAR (HTML)                  -->
 <!-- Depends: FG KASIR R 0.10.90 REVISI v2                       -->
@@ -207172,6 +210122,9 @@ window.tampilkanProdukUniversalGlobal = function(role, opts) {
                     '<span class="ps-tab-n" id="psTabHabisN">0</span></button>' +
                 '<button class="ps-tab" data-tab="riwayat" onclick="psSetTabGlobal(\'riwayat\')">' +
                     '<i class="fas fa-history"></i> Riwayat</button>' +
+				'<button class="ps-tab" data-tab="laporan" onclick="psSetTabGlobal(\'laporan\')">' +
+					'<i class="fas fa-clipboard-check"></i> Laporan Opname ' +
+					'<span class="ps-tab-n" id="psTabLaporanN">0</span></button>' +
             '</div>' +
 
             // ── Bulk bar (muncul kalau ada selected) ──
@@ -207287,6 +210240,45 @@ window.tampilkanProdukUniversalGlobal = function(role, opts) {
             if (pagEl) pagEl.innerHTML = '';
             return;
         }
+		
+		// ═══ FIX: Tab Laporan Opname ═══
+if (PS_S.tab === 'laporan') {
+    var twL = document.getElementById('psTableWrap');
+    var rwL = document.getElementById('psRiwayatWrap');
+    var lwL = document.getElementById('psLaporanWrap');
+    if (twL) twL.style.display = 'none';
+    if (rwL) rwL.style.display = 'none';
+    if (!lwL) {
+        // Buat container baru kalau belum ada
+        var cont = document.querySelector('.ps-root');
+        if (cont) {
+            var div = document.createElement('div');
+            div.id = 'psLaporanWrap';
+            div.className = 'ps-laporan-wrap';
+            // Sisipkan setelah info
+            var infoEl = document.getElementById('psInfo');
+            if (infoEl && infoEl.parentNode) {
+                infoEl.parentNode.insertBefore(div, infoEl.nextSibling);
+            } else {
+                cont.appendChild(div);
+            }
+        }
+    }
+    var lapEl = document.getElementById('psLaporanWrap');
+    if (lapEl) {
+        lapEl.style.display = 'block';
+        lapEl.innerHTML = (typeof window.renderTabLaporanPemeriksaanGlobal === 'function')
+            ? window.renderTabLaporanPemeriksaanGlobal(PS_S.idOwner)
+            : '<p>Fungsi laporan belum tersedia.</p>';
+    }
+    var pagL = document.getElementById('psPag');
+    if (pagL) pagL.innerHTML = '';
+    return;
+}	
+
+// Sembunyikan container laporan kalau pindah tab
+var lwHide = document.getElementById('psLaporanWrap');
+if (lwHide) lwHide.style.display = 'none';
 
         var tw2 = document.getElementById('psTableWrap');
         var rw2 = document.getElementById('psRiwayatWrap');
@@ -207352,8 +210344,14 @@ window.tampilkanProdukUniversalGlobal = function(role, opts) {
         } catch (e) { el.innerHTML = ''; }
     }
 
-    function _renderTabBar() {
-        document.querySelectorAll('.ps-tab').forEach(function(b) {
+    // ═══ Update badge laporan pending ═══
+		try {
+			if (typeof window.getStatistikLaporanGlobal === 'function') {
+				var stat = window.getStatistikLaporanGlobal(PS_S.idOwner);
+				var elL = document.getElementById('psTabLaporanN');
+				if (elL) elL.textContent = stat.totalPending || 0;
+			}
+		} catch (e) {}
             if (b.getAttribute('data-tab') === PS_S.tab) b.classList.add('ps-tab-on');
             else b.classList.remove('ps-tab-on');
         });
@@ -207648,7 +210646,7 @@ window.tampilkanProdukUniversalGlobal = function(role, opts) {
     }
 
     window.psSetTabGlobal = function(tab) {
-        if (['semua','rendah','habis','riwayat'].indexOf(tab) === -1) return;
+    if (['semua','rendah','habis','riwayat','laporan'].indexOf(tab) === -1) return;
         PS_S.tab = tab;
         PS_S.page = 1;
         PS_S.selected = {};
