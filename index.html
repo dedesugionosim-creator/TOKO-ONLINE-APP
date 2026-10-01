@@ -196921,6 +196921,2227 @@ window.tampilkanProdukUniversalGlobal = function(role, opts) {
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL TAMPILKAN PRODUK ═══════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 11.5.1 — TAMPILKAN PRODUK TOKO (KHUSUS TK) ═════════ -->
+<!-- ═══ Fitur: Grid/List, Filter, Sort, Pagination, CRUD ════════ -->
+<!-- ═══ Dependency: BLOK FUNGSI GLOBAL MANAJEMEN PRODUK (1-10) ══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<div id="produkDisplayRoot" style="display:none;"></div>
+
+<script>
+(function BLOK_R_11_5_1_TAMPILKAN_PRODUK_TOKO() {
+    if (window._blok1151Done) {
+        console.log('ℹ️ BLOK R 11.5.1 sudah terpasang — skip.');
+        return;
+    }
+
+    try {
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 1] — CONFIG (HANYA TOKO)
+        // ═══════════════════════════════════════════════════════
+        var PD_CONFIG = {
+            kodeRole:    'TK',
+            containerId: 'produkDisplay_TK',
+            judul:       'Daftar Produk Toko',
+            ikon:        'fas fa-store',
+            warna:       '#FF8C00',
+            actionMenu:  'tampilkanDaftarProdukToko'
+        };
+
+        window.PD_CONFIG = PD_CONFIG;
+
+        window.getPDConfigGlobal = function() {
+            return PD_CONFIG;
+        };
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 2] — STATE MANAGER
+        // ═══════════════════════════════════════════════════════
+        var PD_STATE = {
+            page: 1,
+            perPage: 12,
+            filter: { cari: '', kategori: '', status: 'Aktif' },
+            sortBy: 'createdAt',
+            sortDir: 'desc',
+            view: 'grid',
+            data: [],
+            mounted: false,
+            totalData: 0
+        };
+
+        function _getState() { return PD_STATE; }
+
+        window.pdResetStateGlobal = function() {
+            try {
+                PD_STATE = {
+                    page: 1, perPage: 12,
+                    filter: { cari: '', kategori: '', status: 'Aktif' },
+                    sortBy: 'createdAt', sortDir: 'desc',
+                    view: 'grid', data: [], mounted: false, totalData: 0
+                };
+                return true;
+            } catch (e) { return false; }
+        };
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 3] — UTILITY
+        // ═══════════════════════════════════════════════════════
+        function _esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null) ? '' : String(s);
+            return d.innerHTML;
+        }
+
+        function _escAttr(s) {
+            return String(s == null ? '' : s)
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '&quot;');
+        }
+
+        function _rp(n) {
+            if (typeof window.formatRupiahProdukGlobal === 'function') {
+                return window.formatRupiahProdukGlobal(n);
+            }
+            return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+        }
+
+        function _coin(harga, diskon) {
+            if (typeof window.hitungCoinDariHargaGlobal === 'function') {
+                return window.hitungCoinDariHargaGlobal(harga, diskon);
+            }
+            return 0;
+        }
+
+        function _truncate(s, n) {
+            s = String(s || '');
+            return s.length <= n ? s : s.substring(0, n - 1) + '…';
+        }
+
+        function _placeholder(nama, warna) {
+            var initial = _truncate(nama || 'P', 2).toUpperCase();
+            var bg = (warna || '#FF8C00').replace('#', '');
+            return 'https://placehold.co/300x300/' + bg +
+                   '/ffffff?text=' + encodeURIComponent(initial);
+        }
+
+        function _getAmbangStok() {
+            return window.MPT_AMBANG_STOK || 10;
+        }
+
+        function _getRoleSafe() {
+            // Hard-coded: hanya Toko
+            return 'Toko';
+        }
+
+        function _getIdOwnerSafe() {
+            try {
+                if (typeof window.mptIdUser === 'function') {
+                    var id = window.mptIdUser();
+                    if (id) return id;
+                }
+                if (typeof userAktif !== 'undefined' && userAktif) {
+                    return userAktif.idUser || userAktif.id || null;
+                }
+            } catch (e) {}
+            return null;
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 4] — DATA LOADER
+        // ═══════════════════════════════════════════════════════
+        function _loadData(idOwner) {
+            try {
+                if (typeof window.loadProdukByOwnerGlobal === 'function') {
+                    var list = window.loadProdukByOwnerGlobal('Toko', idOwner);
+                    return { items: list, total: list.length };
+                }
+                if (typeof window.queryProdukLengkapGlobal === 'function') {
+                    return window.queryProdukLengkapGlobal({
+                        role: 'Toko', idOwner: idOwner,
+                        filter: {}, sortBy: 'createdAt', sortDir: 'desc',
+                        page: 1, perPage: 10000
+                    });
+                }
+            } catch (e) {
+                console.error('_loadData error:', e);
+            }
+            return { items: [], total: 0 };
+        }
+
+        function _applyLocalFilterSort(list, st) {
+            var hasil = list.slice();
+            var cari = (st.filter.cari || '').toLowerCase().trim();
+            var fkat = st.filter.kategori || '';
+            var fstat = st.filter.status || '';
+
+            hasil = hasil.filter(function(p) {
+                if (!p) return false;
+                if (fstat && p.status !== fstat) return false;
+                if (fkat && p.kategori !== fkat) return false;
+                if (cari) {
+                    var hay = [
+                        p.nama || '', p.kode || '', p.deskripsi || '',
+                        p.kategori || '', (p.tags || []).join(' ')
+                    ].join(' ').toLowerCase();
+                    if (hay.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+
+            var by = st.sortBy || 'createdAt';
+            var dir = st.sortDir === 'asc' ? 1 : -1;
+
+            hasil.sort(function(a, b) {
+                var va, vb;
+                if (by === 'nama') {
+                    va = String(a.nama || '').toLowerCase();
+                    vb = String(b.nama || '').toLowerCase();
+                    return va < vb ? -dir : va > vb ? dir : 0;
+                }
+                if (by === 'harga') {
+                    va = parseFloat(a.harga) || 0;
+                    vb = parseFloat(b.harga) || 0;
+                } else if (by === 'stok') {
+                    va = parseInt(a.stok, 10) || 0;
+                    vb = parseInt(b.stok, 10) || 0;
+                } else if (by === 'terjual') {
+                    va = parseInt(a.terjual, 10) || 0;
+                    vb = parseInt(b.terjual, 10) || 0;
+                } else {
+                    va = new Date(a.createdAt || 0).getTime();
+                    vb = new Date(b.createdAt || 0).getTime();
+                }
+                return dir * (va - vb);
+            });
+
+            return hasil;
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 5] — HTML BUILDER
+        // ═══════════════════════════════════════════════════════
+        function _buildContainerHTML(cfg, kategoriList) {
+            var warna = cfg.warna;
+            var optKat = '<option value="">Semua Kategori</option>';
+            kategoriList.forEach(function(k) {
+                optKat += '<option value="' + _esc(k) + '">' + _esc(k) + '</option>';
+            });
+
+            return '' +
+            '<div class="container-fluid px-4 py-4">' +
+
+                '<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">' +
+                    '<h4 class="fw-bold text-white mb-0">' +
+                        '<i class="' + cfg.ikon + ' me-2"></i>' + _esc(cfg.judul) +
+                    '</h4>' +
+                    '<div class="d-flex gap-2">' +
+                        '<button class="btn btn-outline-light btn-sm" onclick="pdRefreshGlobal()" title="Refresh">' +
+                            '<i class="fas fa-sync-alt"></i>' +
+                        '</button>' +
+                        '<button class="btn btn-sm text-white fw-bold" style="background:' + warna + ';" onclick="pdTambahGlobal()">' +
+                            '<i class="fas fa-plus-circle me-1"></i> Tambah' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+
+                '<div class="card border-0 shadow-sm mb-3">' +
+                    '<div class="card-body py-2">' +
+                        '<div class="row g-2 align-items-center">' +
+                            '<div class="col-md-4 col-12">' +
+                                '<input id="pdCari" type="text" class="form-control form-control-sm" ' +
+                                       'placeholder="🔍 Cari nama, kode, tags..." oninput="pdApplyFilterGlobal()">' +
+                            '</div>' +
+                            '<div class="col-md-2 col-6">' +
+                                '<select id="pdKategori" class="form-select form-select-sm" onchange="pdApplyFilterGlobal()">' +
+                                    optKat +
+                                '</select>' +
+                            '</div>' +
+                            '<div class="col-md-2 col-6">' +
+                                '<select id="pdStatus" class="form-select form-select-sm" onchange="pdApplyFilterGlobal()">' +
+                                    '<option value="Aktif">Aktif</option>' +
+                                    '<option value="">Semua Status</option>' +
+                                    '<option value="Nonaktif">Nonaktif</option>' +
+                                    '<option value="Dihapus">Dihapus</option>' +
+                                '</select>' +
+                            '</div>' +
+                            '<div class="col-md-2 col-6">' +
+                                '<select id="pdSort" class="form-select form-select-sm" onchange="pdApplyFilterGlobal()">' +
+                                    '<option value="createdAt-desc">Terbaru</option>' +
+                                    '<option value="nama-asc">Nama A-Z</option>' +
+                                    '<option value="harga-desc">Harga Tertinggi</option>' +
+                                    '<option value="harga-asc">Harga Terendah</option>' +
+                                    '<option value="stok-asc">Stok Terkecil</option>' +
+                                    '<option value="terjual-desc">Terlaris</option>' +
+                                '</select>' +
+                            '</div>' +
+                            '<div class="col-md-2 col-6">' +
+                                '<select id="pdPerPage" class="form-select form-select-sm" onchange="pdApplyFilterGlobal()">' +
+                                    '<option value="12">12 / hal</option>' +
+                                    '<option value="24">24 / hal</option>' +
+                                    '<option value="48">48 / hal</option>' +
+                                '</select>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+
+                '<div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">' +
+                    '<small class="text-white-50" id="pdInfo">' +
+                        '<i class="fas fa-info-circle me-1"></i>Memuat...' +
+                    '</small>' +
+                    '<div class="btn-group btn-group-sm" role="group">' +
+                        '<input type="radio" class="btn-check" name="pdView" id="pdViewGrid" checked onchange="pdSwitchViewGlobal(\'grid\')">' +
+                        '<label class="btn btn-outline-light btn-sm" for="pdViewGrid"><i class="fas fa-th"></i></label>' +
+                        '<input type="radio" class="btn-check" name="pdView" id="pdViewList" onchange="pdSwitchViewGlobal(\'list\')">' +
+                        '<label class="btn btn-outline-light btn-sm" for="pdViewList"><i class="fas fa-list"></i></label>' +
+                    '</div>' +
+                '</div>' +
+
+                '<div id="pdGridWrap" class="row g-3"></div>' +
+
+                '<div id="pdListWrap" style="display:none;">' +
+                    '<div class="card border-0 shadow-sm"><div class="card-body p-0"><div class="table-responsive">' +
+                        '<table class="table table-sm table-hover align-middle mb-0">' +
+                            '<thead class="table-light"><tr>' +
+                                '<th style="width:60px;">Foto</th>' +
+                                '<th>Produk</th>' +
+                                '<th>Kategori</th>' +
+                                '<th class="text-end">Harga</th>' +
+                                '<th class="text-center">Stok</th>' +
+                                '<th class="text-center">Status</th>' +
+                                '<th style="width:160px;" class="text-center">Aksi</th>' +
+                            '</tr></thead>' +
+                            '<tbody id="pdListBody"></tbody>' +
+                        '</table>' +
+                    '</div></div></div>' +
+                '</div>' +
+
+                '<div id="pdPagination" class="mt-3 d-flex justify-content-center flex-wrap gap-2"></div>' +
+
+            '</div>';
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 6] — CARD RENDERER
+        // ═══════════════════════════════════════════════════════
+        function _renderCard(p, cfg) {
+            if (!p) return '';
+            var ambang = _getAmbangStok();
+            var stok = parseInt(p.stok, 10) || 0;
+            var harga = parseFloat(p.harga) || 0;
+            var diskon = parseFloat(p.diskonCoin) || 0;
+            var coin = _coin(harga, diskon);
+            var foto = p.foto || _placeholder(p.nama, cfg.warna);
+            var idEsc = _escAttr(p.id);
+
+            var badgeStok = stok === 0
+                ? '<span class="badge bg-danger">Habis</span>'
+                : stok <= ambang
+                    ? '<span class="badge bg-warning text-dark">Sisa ' + stok + '</span>'
+                    : '<span class="badge bg-success">Stok ' + stok + '</span>';
+
+            var badgeStatus = '';
+            if (p.status === 'Nonaktif') badgeStatus = '<span class="badge bg-warning text-dark" style="font-size:9px;">NONAKTIF</span>';
+            else if (p.status === 'Dihapus') badgeStatus = '<span class="badge bg-dark" style="font-size:9px;">DIHAPUS</span>';
+
+            var badgePin = p.pin ? ' <span class="badge bg-warning text-dark" style="font-size:9px;">⭐</span>' : '';
+            var badgeDiskon = diskon > 0
+                ? '<span class="position-absolute badge bg-danger" style="top:8px;right:8px;font-size:10px;">-' + diskon + '%</span>'
+                : '';
+
+            return '' +
+            '<div class="col-lg-3 col-md-4 col-6">' +
+                '<div class="card border-0 shadow-sm h-100 pd-card" style="transition:transform 0.2s;cursor:pointer;" ' +
+                     'onmouseover="this.style.transform=\'translateY(-4px)\'" ' +
+                     'onmouseout="this.style.transform=\'translateY(0)\'">' +
+                    '<div class="position-relative">' +
+                        '<img src="' + _esc(foto) + '" ' +
+                             'style="width:100%;height:170px;object-fit:cover;border-top-left-radius:.375rem;border-top-right-radius:.375rem;" ' +
+                             'onclick="pdViewGlobal(\'' + idEsc + '\')" ' +
+                             'onerror="this.src=\'' + _placeholder(p.nama, cfg.warna) + '\'">' +
+                        badgeDiskon +
+                    '</div>' +
+                    '<div class="card-body p-2 d-flex flex-column">' +
+                        '<div class="fw-bold small mb-1" style="line-height:1.2;min-height:2.4em;overflow:hidden;">' +
+                            _esc(_truncate(p.nama || '-', 40)) + badgePin +
+                        '</div>' +
+                        '<div class="d-flex justify-content-between align-items-center mb-1">' +
+                            '<span class="badge bg-light text-dark" style="font-size:9px;">' + _esc(p.kategori || '-') + '</span>' +
+                            badgeStatus +
+                        '</div>' +
+                        '<div class="mb-2">' +
+                            '<div class="text-success fw-bold">' + _rp(harga) + '</div>' +
+                            (coin > 0 ? '<small class="text-warning d-block">🪙 ' + coin.toLocaleString('id-ID') + '</small>' : '') +
+                        '</div>' +
+                        '<div class="d-flex justify-content-between align-items-center mb-2">' +
+                            badgeStok +
+                            '<small class="text-muted">Terjual: ' + (parseInt(p.terjual, 10) || 0) + '</small>' +
+                        '</div>' +
+                        '<div class="d-flex gap-1 mt-auto">' +
+                            '<button class="btn btn-sm btn-outline-primary flex-fill" onclick="event.stopPropagation();pdViewGlobal(\'' + idEsc + '\')" title="Detail"><i class="fas fa-eye"></i></button>' +
+                            '<button class="btn btn-sm btn-outline-warning flex-fill" onclick="event.stopPropagation();pdEditGlobal(\'' + idEsc + '\')" title="Edit"><i class="fas fa-edit"></i></button>' +
+                            '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="event.stopPropagation();pdHapusGlobal(\'' + idEsc + '\')" title="Hapus"><i class="fas fa-trash"></i></button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 7] — LIST ROW
+        // ═══════════════════════════════════════════════════════
+        function _renderListRow(p, cfg) {
+            if (!p) return '';
+            var ambang = _getAmbangStok();
+            var stok = parseInt(p.stok, 10) || 0;
+            var harga = parseFloat(p.harga) || 0;
+            var foto = p.foto || _placeholder(p.nama, cfg.warna);
+            var idEsc = _escAttr(p.id);
+
+            var badgeStok = stok === 0
+                ? '<span class="badge bg-danger">Habis</span>'
+                : stok <= ambang
+                    ? '<span class="badge bg-warning text-dark">' + stok + '</span>'
+                    : '<span class="badge bg-success">' + stok + '</span>';
+
+            var badgeStatus;
+            if (p.status === 'Aktif') badgeStatus = '<span class="badge bg-success">Aktif</span>';
+            else if (p.status === 'Nonaktif') badgeStatus = '<span class="badge bg-warning text-dark">Nonaktif</span>';
+            else badgeStatus = '<span class="badge bg-secondary">' + _esc(p.status || '-') + '</span>';
+
+            return '<tr>' +
+                '<td><img src="' + _esc(foto) + '" style="width:40px;height:40px;object-fit:cover;border-radius:6px;" ' +
+                    'onerror="this.src=\'' + _placeholder(p.nama, cfg.warna) + '\'"></td>' +
+                '<td><div class="fw-bold small">' + _esc(_truncate(p.nama, 40)) + '</div>' +
+                    '<small class="text-muted"><code>' + _esc(p.kode || '-') + '</code></small></td>' +
+                '<td><span class="badge bg-light text-dark">' + _esc(p.kategori || '-') + '</span></td>' +
+                '<td class="text-end fw-bold text-success">' + _rp(harga) + '</td>' +
+                '<td class="text-center">' + badgeStok + '</td>' +
+                '<td class="text-center">' + badgeStatus + '</td>' +
+                '<td class="text-center">' +
+                    '<button class="btn btn-sm btn-outline-primary me-1" onclick="pdViewGlobal(\'' + idEsc + '\')"><i class="fas fa-eye"></i></button>' +
+                    '<button class="btn btn-sm btn-outline-warning me-1" onclick="pdEditGlobal(\'' + idEsc + '\')"><i class="fas fa-edit"></i></button>' +
+                    '<button class="btn btn-sm btn-outline-danger" onclick="pdHapusGlobal(\'' + idEsc + '\')"><i class="fas fa-trash"></i></button>' +
+                '</td>' +
+            '</tr>';
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 8] — PAGINATION
+        // ═══════════════════════════════════════════════════════
+        function _renderPagination(page, totalPages, total) {
+            if (totalPages <= 1) {
+                return '<small class="text-white-50">Menampilkan semua ' + total + ' produk</small>';
+            }
+            var html = '<nav><ul class="pagination pagination-sm mb-0">';
+            html += '<li class="page-item ' + (page <= 1 ? 'disabled' : '') + '">' +
+                '<a class="page-link" href="#" onclick="event.preventDefault();pdGotoPageGlobal(' + (page - 1) + ')"><i class="fas fa-chevron-left"></i></a></li>';
+
+            var start = Math.max(1, page - 3);
+            var end = Math.min(totalPages, page + 3);
+
+            for (var i = start; i <= end; i++) {
+                html += '<li class="page-item ' + (i === page ? 'active' : '') + '">' +
+                    '<a class="page-link" href="#" onclick="event.preventDefault();pdGotoPageGlobal(' + i + ')">' + i + '</a></li>';
+            }
+
+            html += '<li class="page-item ' + (page >= totalPages ? 'disabled' : '') + '">' +
+                '<a class="page-link" href="#" onclick="event.preventDefault();pdGotoPageGlobal(' + (page + 1) + ')"><i class="fas fa-chevron-right"></i></a></li>';
+            html += '</ul></nav>';
+            return html;
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 9] — MAIN RENDER
+        // ═══════════════════════════════════════════════════════
+        function _render() {
+            try {
+                var cfg = PD_CONFIG;
+                var st = _getState();
+                var total = st.data.length;
+                var totalPages = Math.max(1, Math.ceil(total / st.perPage));
+                if (st.page > totalPages) st.page = totalPages;
+
+                var startIdx = (st.page - 1) * st.perPage;
+                var endIdx = Math.min(startIdx + st.perPage, total);
+                var slice = st.data.slice(startIdx, endIdx);
+
+                var infoEl = document.getElementById('pdInfo');
+                if (infoEl) {
+                    infoEl.innerHTML = total === 0
+                        ? '<i class="fas fa-info-circle me-1"></i>Tidak ada produk cocok filter.'
+                        : '<i class="fas fa-info-circle me-1"></i>Menampilkan ' + (startIdx + 1) + '–' + endIdx + ' dari <strong>' + total + '</strong> produk';
+                }
+
+                var gridWrap = document.getElementById('pdGridWrap');
+                if (gridWrap) {
+                    if (slice.length === 0) {
+                        gridWrap.innerHTML =
+                            '<div class="col-12 text-center text-white-50 py-5">' +
+                                '<i class="fas fa-box-open fa-4x mb-3 opacity-25"></i>' +
+                                '<h5>Belum ada produk</h5>' +
+                                '<p class="small">Klik tombol <strong>Tambah</strong> untuk memulai.</p>' +
+                                '<button class="btn text-white fw-bold mt-2" style="background:' + cfg.warna + ';" onclick="pdTambahGlobal()">' +
+                                    '<i class="fas fa-plus-circle me-1"></i> Tambah Produk Pertama' +
+                                '</button>' +
+                            '</div>';
+                    } else {
+                        var htmlGrid = '';
+                        slice.forEach(function(p) { htmlGrid += _renderCard(p, cfg); });
+                        gridWrap.innerHTML = htmlGrid;
+                    }
+                }
+
+                var listBody = document.getElementById('pdListBody');
+                if (listBody) {
+                    if (slice.length === 0) {
+                        listBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Tidak ada produk.</td></tr>';
+                    } else {
+                        var htmlList = '';
+                        slice.forEach(function(p) { htmlList += _renderListRow(p, cfg); });
+                        listBody.innerHTML = htmlList;
+                    }
+                }
+
+                var pagEl = document.getElementById('pdPagination');
+                if (pagEl) pagEl.innerHTML = _renderPagination(st.page, totalPages, total);
+
+                _applyViewMode(st.view);
+            } catch (e) {
+                console.error('_render error:', e);
+            }
+        }
+
+        function _applyViewMode(view) {
+            var g = document.getElementById('pdGridWrap');
+            var l = document.getElementById('pdListWrap');
+            if (!g || !l) return;
+            if (view === 'list') {
+                g.style.display = 'none';
+                l.style.display = 'block';
+            } else {
+                g.style.display = 'flex';
+                l.style.display = 'none';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 10] — PUBLIC API
+        // ═══════════════════════════════════════════════════════
+        window.pdRefreshGlobal = function() {
+            try {
+                var idOwner = _getIdOwnerSafe();
+                if (!idOwner) {
+                    console.warn('pdRefresh: idOwner kosong.');
+                    return false;
+                }
+                var st = _getState();
+                var hasil = _loadData(idOwner);
+                st.data = _applyLocalFilterSort(hasil.items || [], st);
+                _render();
+                return true;
+            } catch (e) {
+                console.error('pdRefreshGlobal error:', e);
+                return false;
+            }
+        };
+
+        window.pdApplyFilterGlobal = function() {
+            try {
+                var idOwner = _getIdOwnerSafe();
+                var st = _getState();
+
+                var cariEl = document.getElementById('pdCari');
+                var katEl = document.getElementById('pdKategori');
+                var statusEl = document.getElementById('pdStatus');
+                var sortEl = document.getElementById('pdSort');
+                var perPageEl = document.getElementById('pdPerPage');
+
+                if (cariEl) st.filter.cari = cariEl.value;
+                if (katEl) st.filter.kategori = katEl.value;
+                if (statusEl) st.filter.status = statusEl.value;
+                if (sortEl) {
+                    var parts = sortEl.value.split('-');
+                    st.sortBy = parts[0];
+                    st.sortDir = parts[1];
+                }
+                if (perPageEl) st.perPage = parseInt(perPageEl.value, 10) || 12;
+
+                st.page = 1;
+                var hasil = _loadData(idOwner);
+                st.data = _applyLocalFilterSort(hasil.items || [], st);
+                _render();
+                return true;
+            } catch (e) {
+                console.error('pdApplyFilterGlobal error:', e);
+                return false;
+            }
+        };
+
+        window.pdGotoPageGlobal = function(page) {
+            try {
+                var st = _getState();
+                var totalPages = Math.max(1, Math.ceil(st.data.length / st.perPage));
+                st.page = Math.max(1, Math.min(totalPages, parseInt(page, 10) || 1));
+                _render();
+                var root = document.getElementById('kontenDasbor');
+                if (root) root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                return true;
+            } catch (e) { return false; }
+        };
+
+        window.pdSwitchViewGlobal = function(view) {
+            try {
+                var st = _getState();
+                st.view = (view === 'list') ? 'list' : 'grid';
+                _applyViewMode(st.view);
+                return true;
+            } catch (e) { return false; }
+        };
+
+        // ── Actions ──
+        window.pdTambahGlobal = function() {
+            try {
+                if (typeof window.ptBukaTambah === 'function') {
+                    return window.ptBukaTambah();
+                }
+                if (typeof window.tampilkanManajemenProdukToko === 'function') {
+                    window.tampilkanManajemenProdukToko();
+                    setTimeout(function() {
+                        if (typeof window.ptBukaTambah === 'function') window.ptBukaTambah();
+                    }, 300);
+                    return;
+                }
+                alert('⚠️ Fungsi tambah belum tersedia. Pastikan BLOK R 11.5 terpasang.');
+            } catch (e) { console.error(e); }
+        };
+
+        window.pdViewGlobal = function(id) {
+            if (!id) return;
+            if (typeof window.ptBukaDetail === 'function') {
+                return window.ptBukaDetail(id);
+            }
+            var p = (typeof window.produkById === 'function') ? window.produkById(id) : null;
+            if (!p) { alert('Produk tidak ditemukan.'); return; }
+            alert('📦 ' + (p.nama || '-') + '\nKode: ' + (p.kode || '-') +
+                  '\nKategori: ' + (p.kategori || '-') +
+                  '\nHarga: ' + _rp(p.harga) +
+                  '\nStok: ' + (parseInt(p.stok, 10) || 0));
+        };
+
+        window.pdEditGlobal = function(id) {
+            if (!id) return;
+            if (typeof window.ptBukaEdit === 'function') {
+                return window.ptBukaEdit(id);
+            }
+            if (typeof window.tampilkanManajemenProdukToko === 'function') {
+                window.tampilkanManajemenProdukToko();
+                setTimeout(function() {
+                    if (typeof window.ptBukaEdit === 'function') window.ptBukaEdit(id);
+                }, 300);
+                return;
+            }
+            alert('⚠️ Fungsi edit belum tersedia.');
+        };
+
+        window.pdHapusGlobal = function(id) {
+            if (!id) return;
+            if (!confirm('Hapus produk ini?')) return;
+            if (typeof window.ptHapus === 'function') {
+                window.ptHapus(id);
+                setTimeout(window.pdRefreshGlobal, 500);
+                return;
+            }
+            if (typeof window.hapusProdukGlobal === 'function') {
+                var hasil = window.hapusProdukGlobal('Toko', id);
+                if (hasil && hasil.sukses) window.pdRefreshGlobal();
+                else alert('❌ ' + ((hasil && hasil.pesan) || 'Gagal hapus'));
+                return;
+            }
+            alert('⚠️ Fungsi hapus belum tersedia.');
+        };
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 11] — ENTRY POINT (KHUSUS TOKO)
+        // ═══════════════════════════════════════════════════════
+        window.tampilkanProdukTokoGlobal = function(opts) {
+            opts = opts || {};
+            try {
+                var cfg = PD_CONFIG;
+
+                // Dependency check
+                if (!window._blokMPT1Done) {
+                    alert('Engine produk belum siap. Hubungi administrator.');
+                    return false;
+                }
+
+                var konten = document.getElementById('kontenDasbor');
+                if (!konten) {
+                    console.warn('#kontenDasbor tidak ditemukan.');
+                    return false;
+                }
+
+                if (typeof window.kontenAsliDasbor === 'undefined' || !window.kontenAsliDasbor) {
+                    try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+                }
+
+                var katList = ['Lainnya'];
+                try {
+                    if (typeof window.getKategoriLengkapGlobal === 'function') {
+                        katList = window.getKategoriLengkapGlobal('Toko', _getIdOwnerSafe());
+                    } else if (typeof window.getKategoriProdukDefaultGlobal === 'function') {
+                        katList = window.getKategoriProdukDefaultGlobal('Toko');
+                    }
+                } catch (e) {}
+
+                konten.innerHTML = _buildContainerHTML(cfg, katList);
+
+                var st = _getState();
+                st.page = 1;
+                st.perPage = opts.perPage || 12;
+                st.view = opts.view || 'grid';
+                st.mounted = true;
+                if (opts.filter) {
+                    Object.keys(opts.filter).forEach(function(k) {
+                        st.filter[k] = opts.filter[k];
+                    });
+                }
+
+                setTimeout(function() {
+                    var katEl = document.getElementById('pdKategori');
+                    var statusEl = document.getElementById('pdStatus');
+                    var sortEl = document.getElementById('pdSort');
+                    var perPageEl = document.getElementById('pdPerPage');
+
+                    if (katEl) katEl.value = st.filter.kategori || '';
+                    if (statusEl) statusEl.value = st.filter.status || 'Aktif';
+                    if (sortEl) sortEl.value = st.sortBy + '-' + st.sortDir;
+                    if (perPageEl) perPageEl.value = String(st.perPage);
+
+                    window.pdRefreshGlobal();
+
+                    console.log('✅ R 11.5.1 — Tampilkan Produk Toko rendered');
+                }, 80);
+
+                return true;
+            } catch (e) {
+                console.error('tampilkanProdukTokoGlobal error:', e);
+                return false;
+            }
+        };
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 12] — REGISTER KE menuHandlers
+        // ═══════════════════════════════════════════════════════
+        window.menuHandlers = window.menuHandlers || {};
+
+        var ALIAS_KEYS = [
+            'tampilkanDaftarProdukToko',
+            'tampilkanProdukTokoGlobal'
+        ];
+
+        var totalRegistered = 0;
+        ALIAS_KEYS.forEach(function(key) {
+            if (typeof window.menuHandlers[key] !== 'function') {
+                window.menuHandlers[key] = function() {
+                    return window.tampilkanProdukTokoGlobal();
+                };
+                totalRegistered++;
+            }
+        });
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 13] — AUTO-REFRESH
+        // ═══════════════════════════════════════════════════════
+        window.addEventListener('r2coin:produk-berubah', function() {
+            try {
+                if (PD_STATE && PD_STATE.mounted) window.pdRefreshGlobal();
+            } catch (e) {}
+        });
+
+        window.addEventListener('r2coin:order-baru', function() {
+            try {
+                if (PD_STATE && PD_STATE.mounted) window.pdRefreshGlobal();
+            } catch (e) {}
+        });
+
+        // ═══════════════════════════════════════════════════════
+        // [MODUL 14] — DEBUG
+        // ═══════════════════════════════════════════════════════
+        window.debugTampilkanProdukGlobal = function() {
+            try {
+                var st = _getState();
+                return {
+                    role: 'Toko',
+                    config: PD_CONFIG,
+                    state: {
+                        page: st.page, perPage: st.perPage,
+                        totalData: st.data.length, view: st.view,
+                        filter: st.filter, sort: st.sortBy + ' ' + st.sortDir
+                    },
+                    handlers: {
+                        entry: typeof window.tampilkanProdukTokoGlobal,
+                        menuAksi: typeof window.menuHandlers['tampilkanDaftarProdukToko'],
+                        refresh: typeof window.pdRefreshGlobal
+                    }
+                };
+            } catch (e) { return null; }
+        };
+
+        // ═══════════════════════════════════════════════════════
+        // SET FLAG & LOG
+        // ═══════════════════════════════════════════════════════
+        window._blok1151Done = true;
+
+        console.log('✅ BLOK R 11.5.1 — TAMPILKAN PRODUK TOKO terpasang.');
+        console.log('   📋 Alias registered: ' + totalRegistered + ' handler');
+        console.log('   🎯 Entry: tampilkanProdukTokoGlobal()');
+        console.log('   🔗 Menu aksi "tampilkanDaftarProdukToko" → terhubung ✅');
+        console.log('   📊 Debug: debugTampilkanProdukGlobal()');
+
+    } catch (e) {
+        console.error('❌ BLOK R 11.5.1 GAGAL:', e);
+        console.error('   Stack:', e.stack || '-');
+    }
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 11.5.1 — TAMPILKAN PRODUK TOKO ═════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 11.14 — KATALOG PRODUK TOKO (Customer View) ═══════ -->
+<!-- ═══ Hanya UI. Semua logic pakai fungsi global BLOK MP (1-10) ═ -->
+<!-- ═══ Dependency: window._blokMPT1Done === true ═══════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<script>
+(function BLOK_R_11_14_KATALOG_TOKO() {
+    if (window._blok1114Done) return;
+
+    if (!window._blokMPT1Done) {
+        console.warn('⚠️ BLOK MP (1) belum terpasang. BLOK 11.14 ditunda.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONFIGURASI KATALOG
+    // Hanya untuk UI. Tidak ada logic bisnis.
+    // ═══════════════════════════════════════════════════════════
+    var KP = {
+        role:   'Toko',
+        warna:  '#FF8C00',
+        warna2: '#E67E00',
+        judul:  'Katalog Produk',
+        sub:    'Temukan produk pilihan dari toko kami'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — STATE (UI ONLY)
+    // ═══════════════════════════════════════════════════════════
+    var KP_S = {
+        page: 1,
+        perPage: 12,
+        f: { cari: '', kategori: '', hMin: '', hMax: '', tersedia: false, promo: false },
+        sortBy: 'createdAt',
+        sortDir: 'desc',
+        view: 'grid',
+        data: [],       // hasil filter+sort+pagination
+        pool: [],       // semua produk publik
+        kategori: [],
+        mounted: false,
+        idOwner: null
+    };
+
+    var KP_CART = [];
+    var KP_WISH = [];
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER UI (bukan logic bisnis)
+    // ═══════════════════════════════════════════════════════════
+    function _esc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+    function _escA(s) {
+        return String(s == null ? '' : s)
+            .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+    function _trunc(s, n) {
+        s = String(s || '');
+        return s.length <= n ? s : s.substring(0, n - 1) + '…';
+    }
+    function _owner() {
+        if (KP_S.idOwner) return KP_S.idOwner;
+        try { return window.mptIdUser(); } catch (e) { return null; }
+    }
+    function _toast(msg, t) {
+        try { if (window.mptToast) return window.mptToast(msg, t || 'info'); } catch (e) {}
+        console.log('[KP]', msg);
+    }
+    function _ph(nama) {
+        var ini = _trunc(nama || 'P', 2).toUpperCase();
+        return 'https://placehold.co/300x300/FF8C00/ffffff?text=' + encodeURIComponent(ini);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — DATA ADAPTER
+    // Memakai: loadProdukByOwnerGlobal (BLOK 4)
+    // Hanya filter field publik/tayang — bukan business logic
+    // ═══════════════════════════════════════════════════════════
+    function _loadPool() {
+        var id = _owner();
+        if (!id) return [];
+        if (typeof window.loadProdukByOwnerGlobal !== 'function') return [];
+
+        var raw = window.loadProdukByOwnerGlobal(KP.role, id, { forceRefresh: true });
+        var now = Date.now();
+
+        return raw.filter(function(p) {
+            if (!p || p.status !== 'Aktif') return false;
+            if (p.statusPublik === 'draft' || p.statusPublik === 'arsip') return false;
+            if (p.visibilitas === 'privat') return false;
+            if (p.jadwalMulai) {
+                var t = new Date(p.jadwalMulai).getTime();
+                if (!isNaN(t) && now < t) return false;
+            }
+            if (p.jadwalSelesai) {
+                var t2 = new Date(p.jadwalSelesai).getTime();
+                if (!isNaN(t2) && now > t2) return false;
+            }
+            return true;
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — FILTER & SORT (pakai fungsi global)
+    // Memakai: filterProdukGlobal, sortProdukGlobal (BLOK 7)
+    // ═══════════════════════════════════════════════════════════
+    function _filterSort(pool) {
+        var f = KP_S.f;
+
+        // Bangun filter object untuk filterProdukGlobal
+        var fObj = {};
+        if (f.cari)      fObj.cari = f.cari;
+        if (f.kategori)  fObj.kategori = f.kategori;
+        if (f.hMin)      fObj.hargaMin = f.hMin;
+        if (f.hMax)      fObj.hargaMax = f.hMax;
+        if (f.tersedia)  fObj.stokMin = 1;
+        if (f.promo)     fObj.tags = fObj.tags || [];
+
+        var hasil = pool.slice();
+        if (typeof window.filterProdukGlobal === 'function') {
+            hasil = window.filterProdukGlobal(hasil, fObj);
+        } else {
+            // Fallback minimal (kalau blok 7 belum ada)
+            hasil = hasil.filter(function(p) {
+                if (f.kategori && p.kategori !== f.kategori) return false;
+                if (f.cari && (p.nama || '').toLowerCase().indexOf(f.cari.toLowerCase()) === -1) return false;
+                if (f.hMin && (parseFloat(p.harga) || 0) < parseFloat(f.hMin)) return false;
+                if (f.hMax && (parseFloat(p.harga) || 0) > parseFloat(f.hMax)) return false;
+                if (f.tersedia && (parseInt(p.stok, 10) || 0) <= 0) return false;
+                return true;
+            });
+        }
+
+        // Filter promo (di luar filterProdukGlobal standar)
+        if (f.promo) {
+            hasil = hasil.filter(function(p) {
+                return (parseFloat(p.diskonCoin) || 0) > 0;
+            });
+        }
+
+        // Sort — pakai sortProdukGlobal
+        if (typeof window.sortProdukGlobal === 'function') {
+            hasil = window.sortProdukGlobal(hasil, KP_S.sortBy, KP_S.sortDir);
+        }
+
+        // Pin selalu di atas
+        hasil.sort(function(a, b) {
+            var pa = a.pin ? 1 : 0;
+            var pb = b.pin ? 1 : 0;
+            return pb - pa;
+        });
+
+        return hasil;
+    }
+
+    function _extractKategori(pool) {
+        var m = {};
+        pool.forEach(function(p) {
+            if (p.kategori) m[p.kategori] = (m[p.kategori] || 0) + 1;
+        });
+        return Object.keys(m).sort().map(function(k) {
+            return { nama: k, jumlah: m[k] };
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — HTML SHELL
+    // ═══════════════════════════════════════════════════════════
+    function _shell() {
+        return '' +
+        '<div class="kp-root">' +
+
+            '<div class="kp-hero" style="background:linear-gradient(135deg,' + KP.warna + ' 0%,' + KP.warna2 + ' 100%);">' +
+                '<div class="kp-hero-inner">' +
+                    '<div>' +
+                        '<h1 class="kp-hero-title"><i class="fas fa-shopping-bag me-2"></i>' + KP.judul + '</h1>' +
+                        '<p class="kp-hero-sub">' + KP.sub + '</p>' +
+                    '</div>' +
+                    '<div class="kp-hero-btns">' +
+                        '<button class="kp-icon-btn" onclick="kpRefreshGlobal()" title="Refresh"><i class="fas fa-sync-alt"></i></button>' +
+                        '<button class="kp-icon-btn kp-cart-btn" onclick="kpBukaCartGlobal()" title="Keranjang">' +
+                            '<i class="fas fa-shopping-cart"></i>' +
+                            '<span class="kp-cart-dot" id="kpCartDot" style="display:none;">0</span>' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+
+            '<div class="kp-toolbar">' +
+                '<div class="kp-search-wrap">' +
+                    '<i class="fas fa-search kp-search-ic"></i>' +
+                    '<input id="kpCari" class="kp-search" placeholder="Cari produk, kode, atau tag..." ' +
+                           'oninput="kpOnCariGlobal(this.value)">' +
+                    '<button id="kpCariX" class="kp-search-x" onclick="kpClearCariGlobal()" style="display:none;">' +
+                        '<i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<select id="kpSort" class="kp-select" onchange="kpOnSortGlobal(this.value)">' +
+                    '<option value="createdAt-desc">✨ Terbaru</option>' +
+                    '<option value="terjual-desc">🔥 Terlaris</option>' +
+                    '<option value="dilihat-desc">👁️ Paling Dilihat</option>' +
+                    '<option value="harga-asc">💰 Harga Terendah</option>' +
+                    '<option value="harga-desc">💎 Harga Tertinggi</option>' +
+                    '<option value="nama-asc">🔤 Nama A-Z</option>' +
+                '</select>' +
+                '<div class="kp-view-toggle">' +
+                    '<button id="kpVGrid" class="kp-view-btn kp-view-on" onclick="kpSetViewGlobal(\'grid\')">' +
+                        '<i class="fas fa-th"></i></button>' +
+                    '<button id="kpVList" class="kp-view-btn" onclick="kpSetViewGlobal(\'list\')">' +
+                        '<i class="fas fa-list"></i></button>' +
+                '</div>' +
+            '</div>' +
+
+            '<div class="kp-chips">' +
+                '<span class="kp-chips-lbl">Kategori:</span>' +
+                '<div id="kpKatChips" class="kp-chips-list"></div>' +
+            '</div>' +
+
+            '<div class="kp-chips kp-chips-2">' +
+                '<span class="kp-chips-lbl">Filter:</span>' +
+                '<div class="kp-chips-list">' +
+                    '<button id="kpFTersedia" class="kp-chip-f" onclick="kpToggleFGlobal(\'tersedia\')">' +
+                        '<i class="fas fa-check-circle"></i> Tersedia</button>' +
+                    '<button id="kpFPromo" class="kp-chip-f" onclick="kpToggleFGlobal(\'promo\')">' +
+                        '<i class="fas fa-fire"></i> Promo</button>' +
+                    '<button id="kpFHarga" class="kp-chip-f" onclick="kpBukaHargaGlobal()">' +
+                        '<i class="fas fa-tag"></i> Rentang Harga</button>' +
+                    '<button class="kp-chip-f kp-chip-reset" onclick="kpResetFGlobal()">' +
+                        '<i class="fas fa-undo"></i> Reset</button>' +
+                '</div>' +
+            '</div>' +
+
+            '<div class="kp-info" id="kpInfo"><i class="fas fa-spinner fa-spin me-2"></i>Memuat...</div>' +
+
+            '<div class="kp-grid" id="kpGrid"></div>' +
+
+            '<div class="kp-list" id="kpList" style="display:none;">' +
+                '<div id="kpListBody"></div>' +
+            '</div>' +
+
+            '<div id="kpEmpty" class="kp-empty" style="display:none;"></div>' +
+            '<div id="kpPag" class="kp-pag"></div>' +
+        '</div>' +
+
+        // Modal Detail
+        '<div class="kp-modal" id="kpModalDetail" style="display:none;">' +
+            '<div class="kp-backdrop" onclick="kpCloseDetailGlobal()"></div>' +
+            '<div class="kp-dialog kp-dialog-lg">' +
+                '<button class="kp-modal-x" onclick="kpCloseDetailGlobal()"><i class="fas fa-times"></i></button>' +
+                '<div id="kpDetailBody"></div>' +
+            '</div>' +
+        '</div>' +
+
+        // Modal Cart
+        '<div class="kp-modal" id="kpModalCart" style="display:none;">' +
+            '<div class="kp-backdrop" onclick="kpCloseCartGlobal()"></div>' +
+            '<div class="kp-dialog">' +
+                '<div class="kp-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-shopping-cart me-2"></i>Keranjang</h5>' +
+                    '<button class="kp-modal-x2" onclick="kpCloseCartGlobal()"><i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="kp-modal-body" id="kpCartBody"></div>' +
+                '<div class="kp-modal-foot" id="kpCartFoot"></div>' +
+            '</div>' +
+        '</div>' +
+
+        // Modal Harga
+        '<div class="kp-modal" id="kpModalHarga" style="display:none;">' +
+            '<div class="kp-backdrop" onclick="kpCloseHargaGlobal()"></div>' +
+            '<div class="kp-dialog kp-dialog-sm">' +
+                '<div class="kp-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-tag me-2"></i>Rentang Harga</h5>' +
+                    '<button class="kp-modal-x2" onclick="kpCloseHargaGlobal()"><i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="kp-modal-body">' +
+                    '<label class="kp-lbl">Harga Min (Rp)</label>' +
+                    '<input type="number" id="kpHMin" class="kp-input" placeholder="0" min="0" step="1000">' +
+                    '<label class="kp-lbl mt-2">Harga Max (Rp)</label>' +
+                    '<input type="number" id="kpHMax" class="kp-input" placeholder="Tanpa batas" min="0" step="1000">' +
+                    '<div class="kp-preset">' +
+                        '<button onclick="kpSetPresetGlobal(0,50000)">&lt; 50rb</button>' +
+                        '<button onclick="kpSetPresetGlobal(50000,100000)">50rb–100rb</button>' +
+                        '<button onclick="kpSetPresetGlobal(100000,500000)">100rb–500rb</button>' +
+                        '<button onclick="kpSetPresetGlobal(500000,0)">&gt; 500rb</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="kp-modal-foot">' +
+                    '<button class="kp-btn kp-btn-2" onclick="kpCloseHargaGlobal()">Batal</button>' +
+                    '<button class="kp-btn kp-btn-1" onclick="kpApplyHargaGlobal()">Terapkan</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — RENDER KARTU & BARIS
+    // Memakai: formatRupiahProdukGlobal, hitungCoinDariHargaGlobal (BLOK 3)
+    // ═══════════════════════════════════════════════════════════
+    function _rp(n) {
+        if (window.formatRupiahProdukGlobal) return window.formatRupiahProdukGlobal(n);
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+    function _coin(h, d) {
+        if (window.hitungCoinDariHargaGlobal) return window.hitungCoinDariHargaGlobal(h, d);
+        return 0;
+    }
+
+    function _card(p) {
+        if (!p) return '';
+        var stok = parseInt(p.stok, 10) || 0;
+        var harga = parseFloat(p.harga) || 0;
+        var diskon = parseFloat(p.diskonCoin) || 0;
+        var coin = _coin(harga, diskon);
+        var ambang = window.MPT_AMBANG_STOK || 10;
+        var foto = p.foto || _ph(p.nama);
+        var idE = _escA(p.id);
+
+        var stokBadge = stok === 0
+            ? '<span class="kp-b kp-b-r">Habis</span>'
+            : stok <= ambang
+                ? '<span class="kp-b kp-b-y">Sisa ' + stok + '</span>'
+                : '<span class="kp-b kp-b-g">Tersedia</span>';
+
+        var inWish = KP_WISH.indexOf(p.id) !== -1;
+
+        return '' +
+        '<div class="kp-card' + (stok <= 0 ? ' kp-card-off' : '') + '" onclick="kpOpenDetailGlobal(\'' + idE + '\')">' +
+            '<div class="kp-card-img-wrap">' +
+                (p.pin ? '<span class="kp-pin">⭐ Unggulan</span>' : '') +
+                (diskon > 0 ? '<span class="kp-disc">-' + diskon + '%</span>' : '') +
+                '<img src="' + _esc(foto) + '" class="kp-card-img" ' +
+                     'onerror="this.src=\'' + _ph(p.nama) + '\'">' +
+                '<button class="kp-wish' + (inWish ? ' on' : '') + '" ' +
+                        'onclick="event.stopPropagation();kpToggleWishGlobal(\'' + idE + '\')">' +
+                    '<i class="fas fa-heart"></i>' +
+                '</button>' +
+            '</div>' +
+            '<div class="kp-card-body">' +
+                '<div class="kp-card-kat">' + _esc(p.kategori || 'Lainnya') + '</div>' +
+                '<div class="kp-card-nama">' + _esc(_trunc(p.nama || '-', 55)) + '</div>' +
+                '<div class="kp-card-harga">' + _rp(harga) + '</div>' +
+                (coin > 0 ? '<div class="kp-card-coin">🪙 ' + coin.toLocaleString('id-ID') + '</div>' : '') +
+                '<div class="kp-card-meta">' +
+                    stokBadge +
+                    '<span class="kp-card-terjual"><i class="fas fa-fire"></i> ' +
+                        (parseInt(p.terjual, 10) || 0) + '</span>' +
+                '</div>' +
+                (stok > 0
+                    ? '<button class="kp-btn-cart" onclick="event.stopPropagation();kpAddCartGlobal(\'' + idE + '\')">' +
+                        '<i class="fas fa-cart-plus me-1"></i>Keranjang</button>'
+                    : '<button class="kp-btn-cart off" disabled>' +
+                        '<i class="fas fa-times-circle me-1"></i>Habis</button>') +
+            '</div>' +
+        '</div>';
+    }
+
+    function _listRow(p) {
+        if (!p) return '';
+        var stok = parseInt(p.stok, 10) || 0;
+        var harga = parseFloat(p.harga) || 0;
+        var diskon = parseFloat(p.diskonCoin) || 0;
+        var coin = _coin(harga, diskon);
+        var ambang = window.MPT_AMBANG_STOK || 10;
+        var foto = p.foto || _ph(p.nama);
+        var idE = _escA(p.id);
+
+        var stokBadge = stok === 0
+            ? '<span class="kp-b kp-b-r">Habis</span>'
+            : stok <= ambang
+                ? '<span class="kp-b kp-b-y">Sisa ' + stok + '</span>'
+                : '<span class="kp-b kp-b-g">Stok ' + stok + '</span>';
+
+        return '' +
+        '<div class="kp-row" onclick="kpOpenDetailGlobal(\'' + idE + '\')">' +
+            '<img src="' + _esc(foto) + '" class="kp-row-img" ' +
+                 'onerror="this.src=\'' + _ph(p.nama) + '\'">' +
+            '<div class="kp-row-info">' +
+                '<div class="kp-row-nama">' + _esc(_trunc(p.nama || '-', 60)) + '</div>' +
+                '<div class="kp-row-meta"><span class="kp-row-kat">' + _esc(p.kategori || '-') +
+                    '</span> • <code>' + _esc(p.kode || '-') + '</code></div>' +
+            '</div>' +
+            '<div class="kp-row-harga">' +
+                '<div class="kp-row-h">' + _rp(harga) + '</div>' +
+                (coin > 0 ? '<div class="kp-row-c">🪙 ' + coin.toLocaleString('id-ID') + '</div>' : '') +
+            '</div>' +
+            '<div class="kp-row-stok">' + stokBadge + '</div>' +
+            '<div class="kp-row-aksi">' +
+                '<button class="kp-ib" onclick="event.stopPropagation();kpOpenDetailGlobal(\'' + idE + '\')">' +
+                    '<i class="fas fa-eye"></i></button>' +
+                (stok > 0
+                    ? '<button class="kp-ib kp-ib-1" onclick="event.stopPropagation();kpAddCartGlobal(\'' + idE + '\')">' +
+                        '<i class="fas fa-cart-plus"></i></button>'
+                    : '') +
+            '</div>' +
+        '</div>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — RENDER UTAMA
+    // ═══════════════════════════════════════════════════════════
+    function _render() {
+        var total = KP_S.data.length;
+        var tPages = Math.max(1, Math.ceil(total / KP_S.perPage));
+        if (KP_S.page > tPages) KP_S.page = tPages;
+
+        var s = (KP_S.page - 1) * KP_S.perPage;
+        var e = Math.min(s + KP_S.perPage, total);
+        var slice = KP_S.data.slice(s, e);
+
+        // Info bar
+        var infoEl = document.getElementById('kpInfo');
+        if (infoEl) {
+            if (total === 0) {
+                infoEl.innerHTML = '<i class="fas fa-info-circle me-2"></i>Tidak ada produk cocok filter.';
+            } else {
+                infoEl.innerHTML = '<i class="fas fa-box me-2"></i>Menampilkan <strong>' +
+                    (s + 1) + '–' + e + '</strong> dari <strong>' + total + '</strong> produk';
+            }
+        }
+
+        // Grid
+        var gridEl = document.getElementById('kpGrid');
+        if (gridEl) {
+            if (slice.length === 0) gridEl.innerHTML = '';
+            else {
+                var h = '';
+                slice.forEach(function(p) { h += _card(p); });
+                gridEl.innerHTML = h;
+            }
+        }
+
+        // List
+        var listEl = document.getElementById('kpListBody');
+        if (listEl) {
+            if (slice.length === 0) listEl.innerHTML = '';
+            else {
+                var h2 = '';
+                slice.forEach(function(p) { h2 += _listRow(p); });
+                listEl.innerHTML = h2;
+            }
+        }
+
+        // Empty state
+        var emptyEl = document.getElementById('kpEmpty');
+        if (emptyEl) {
+            if (total === 0 && KP_S.pool.length > 0) {
+                emptyEl.style.display = 'block';
+                emptyEl.innerHTML =
+                    '<div class="kp-empty-ic"><i class="fas fa-search"></i></div>' +
+                    '<h4>Tidak Ada Hasil</h4>' +
+                    '<p>Coba ubah kata kunci atau reset filter.</p>' +
+                    '<button class="kp-btn kp-btn-1" onclick="kpResetFGlobal()">Reset Filter</button>';
+            } else if (total === 0 && KP_S.pool.length === 0) {
+                emptyEl.style.display = 'block';
+                emptyEl.innerHTML =
+                    '<div class="kp-empty-ic"><i class="fas fa-box-open"></i></div>' +
+                    '<h4>Katalog Masih Kosong</h4>' +
+                    '<p>Belum ada produk yang dipublikasikan.</p>';
+            } else {
+                emptyEl.style.display = 'none';
+            }
+        }
+
+        // Pagination
+        var pagEl = document.getElementById('kpPag');
+        if (pagEl) pagEl.innerHTML = total > 0 ? _pagination(KP_S.page, tPages, total) : '';
+
+        // Chips kategori
+        _chipsKat();
+        _chipsState();
+        _cartDot();
+        _applyView();
+    }
+
+    function _pagination(page, tPages, total) {
+        if (tPages <= 1) {
+            return '<div class="kp-pag-info">Menampilkan ' + total + ' produk</div>';
+        }
+        var h = '<div class="kp-pag-info">Halaman ' + page + ' / ' + tPages +
+                ' • ' + total + ' produk</div>';
+        h += '<div class="kp-pag-btns">';
+        h += '<button class="kp-pg" ' + (page <= 1 ? 'disabled' : '') +
+             ' onclick="kpGotoGlobal(' + (page - 1) + ')"><i class="fas fa-chevron-left"></i></button>';
+
+        var st = Math.max(1, page - 2);
+        var en = Math.min(tPages, page + 2);
+        if (st > 1) {
+            h += '<button class="kp-pg" onclick="kpGotoGlobal(1)">1</button>';
+            if (st > 2) h += '<span class="kp-dots">…</span>';
+        }
+        for (var i = st; i <= en; i++) {
+            h += '<button class="kp-pg' + (i === page ? ' on' : '') +
+                 '" onclick="kpGotoGlobal(' + i + ')">' + i + '</button>';
+        }
+        if (en < tPages) {
+            if (en < tPages - 1) h += '<span class="kp-dots">…</span>';
+            h += '<button class="kp-pg" onclick="kpGotoGlobal(' + tPages + ')">' + tPages + '</button>';
+        }
+        h += '<button class="kp-pg" ' + (page >= tPages ? 'disabled' : '') +
+             ' onclick="kpGotoGlobal(' + (page + 1) + ')"><i class="fas fa-chevron-right"></i></button>';
+        h += '</div>';
+        return h;
+    }
+
+    function _chipsKat() {
+        var el = document.getElementById('kpKatChips');
+        if (!el) return;
+        var h = '<button class="kp-chip' + (!KP_S.f.kategori ? ' on' : '') +
+                '" onclick="kpSetKatGlobal(\'\')">Semua</button>';
+        KP_S.kategori.forEach(function(k) {
+            h += '<button class="kp-chip' + (KP_S.f.kategori === k.nama ? ' on' : '') +
+                 '" onclick="kpSetKatGlobal(\'' + _escA(k.nama) + '\')">' +
+                 _esc(k.nama) + ' <span class="kp-chip-n">' + k.jumlah + '</span></button>';
+        });
+        el.innerHTML = h;
+    }
+
+    function _chipsState() {
+        var t = document.getElementById('kpFTersedia');
+        if (t) t.classList.toggle('on', KP_S.f.tersedia);
+        var p = document.getElementById('kpFPromo');
+        if (p) p.classList.toggle('on', KP_S.f.promo);
+        var h = document.getElementById('kpFHarga');
+        if (h) h.classList.toggle('on', !!(KP_S.f.hMin || KP_S.f.hMax));
+        var x = document.getElementById('kpCariX');
+        if (x) x.style.display = KP_S.f.cari ? 'block' : 'none';
+    }
+
+    function _cartDot() {
+        var el = document.getElementById('kpCartDot');
+        if (!el) return;
+        if (KP_CART.length > 0) {
+            el.style.display = 'flex';
+            el.textContent = KP_CART.length;
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    function _applyView() {
+        var g = document.getElementById('kpGrid');
+        var l = document.getElementById('kpList');
+        var bg = document.getElementById('kpVGrid');
+        var bl = document.getElementById('kpVList');
+        if (KP_S.view === 'list') {
+            if (g) g.style.display = 'none';
+            if (l) l.style.display = 'block';
+            if (bl) bl.classList.add('kp-view-on');
+            if (bg) bg.classList.remove('kp-view-on');
+        } else {
+            if (g) g.style.display = 'grid';
+            if (l) l.style.display = 'none';
+            if (bg) bg.classList.add('kp-view-on');
+            if (bl) bl.classList.remove('kp-view-on');
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — HANDLER PUBLIK (UI ONLY)
+    // ═══════════════════════════════════════════════════════════
+    window.kpRefreshGlobal = function() {
+        KP_S.pool = _loadPool();
+        KP_S.kategori = _extractKategori(KP_S.pool);
+        KP_S.data = _filterSort(KP_S.pool);
+        _render();
+        return true;
+    };
+
+    window.kpApplyGlobal = function() {
+        KP_S.data = _filterSort(KP_S.pool);
+        KP_S.page = 1;
+        _render();
+    };
+
+    window.kpOnCariGlobal = function(v) {
+        KP_S.f.cari = String(v || '');
+        _chipsState();
+        if (window._kpT) clearTimeout(window._kpT);
+        window._kpT = setTimeout(window.kpApplyGlobal, 250);
+    };
+
+    window.kpClearCariGlobal = function() {
+        var el = document.getElementById('kpCari');
+        if (el) el.value = '';
+        KP_S.f.cari = '';
+        _chipsState();
+        window.kpApplyGlobal();
+    };
+
+    window.kpOnSortGlobal = function(v) {
+        var p = String(v || 'createdAt-desc').split('-');
+        KP_S.sortBy = p[0];
+        KP_S.sortDir = p[1] || 'desc';
+        KP_S.data = _filterSort(KP_S.pool);
+        KP_S.page = 1;
+        _render();
+    };
+
+    window.kpSetKatGlobal = function(k) {
+        KP_S.f.kategori = k || '';
+        window.kpApplyGlobal();
+    };
+
+    window.kpToggleFGlobal = function(k) {
+        if (k === 'tersedia') KP_S.f.tersedia = !KP_S.f.tersedia;
+        else if (k === 'promo') KP_S.f.promo = !KP_S.f.promo;
+        window.kpApplyGlobal();
+    };
+
+    window.kpResetFGlobal = function() {
+        KP_S.f = { cari: '', kategori: '', hMin: '', hMax: '', tersedia: false, promo: false };
+        var el = document.getElementById('kpCari');
+        if (el) el.value = '';
+        window.kpApplyGlobal();
+        _toast('Filter direset', 'info');
+    };
+
+    window.kpSetViewGlobal = function(v) {
+        KP_S.view = v === 'list' ? 'list' : 'grid';
+        _applyView();
+    };
+
+    window.kpGotoGlobal = function(p) {
+        var t = Math.max(1, Math.ceil(KP_S.data.length / KP_S.perPage));
+        KP_S.page = Math.max(1, Math.min(t, parseInt(p, 10) || 1));
+        _render();
+        var el = document.getElementById('kpGrid');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    // ── Modal Harga ──
+    window.kpBukaHargaGlobal = function() {
+        var mn = document.getElementById('kpHMin');
+        var mx = document.getElementById('kpHMax');
+        if (mn) mn.value = KP_S.f.hMin || '';
+        if (mx) mx.value = KP_S.f.hMax || '';
+        var m = document.getElementById('kpModalHarga');
+        if (m) m.style.display = 'flex';
+    };
+    window.kpCloseHargaGlobal = function() {
+        var m = document.getElementById('kpModalHarga');
+        if (m) m.style.display = 'none';
+    };
+    window.kpSetPresetGlobal = function(mn, mx) {
+        var a = document.getElementById('kpHMin');
+        var b = document.getElementById('kpHMax');
+        if (a) a.value = mn || '';
+        if (b) b.value = mx || '';
+    };
+    window.kpApplyHargaGlobal = function() {
+        var a = document.getElementById('kpHMin');
+        var b = document.getElementById('kpHMax');
+        KP_S.f.hMin = a ? a.value : '';
+        KP_S.f.hMax = b ? b.value : '';
+        window.kpCloseHargaGlobal();
+        window.kpApplyGlobal();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — DETAIL PRODUK
+    // ═══════════════════════════════════════════════════════════
+    function _byId(id) {
+        for (var i = 0; i < KP_S.pool.length; i++) {
+            if (KP_S.pool[i] && KP_S.pool[i].id === id) return KP_S.pool[i];
+        }
+        return null;
+    }
+
+    window.kpOpenDetailGlobal = function(id) {
+        var p = _byId(id);
+        if (!p) { _toast('Produk tidak ditemukan.', 'warning'); return; }
+
+        // Increment view counter — pakai saveProdukRawGlobal (BLOK 4)
+        try {
+            p.dilihat = (parseInt(p.dilihat, 10) || 0) + 1;
+            if (typeof window.loadProdukByOwnerGlobal === 'function' &&
+                typeof window.saveProdukRawGlobal === 'function') {
+                var idO = _owner();
+                var arr = window.loadProdukByOwnerGlobal(KP.role, idO, { forceRefresh: true });
+                for (var i = 0; i < arr.length; i++) {
+                    if (arr[i] && arr[i].id === id) {
+                        arr[i].dilihat = p.dilihat;
+                        break;
+                    }
+                }
+                window.saveProdukRawGlobal(KP.role, idO, arr);
+            }
+        } catch (e) {}
+
+        var body = document.getElementById('kpDetailBody');
+        if (body) body.innerHTML = _detail(p);
+        var m = document.getElementById('kpModalDetail');
+        if (m) m.style.display = 'flex';
+    };
+
+    window.kpCloseDetailGlobal = function() {
+        var m = document.getElementById('kpModalDetail');
+        if (m) m.style.display = 'none';
+    };
+
+    function _detail(p) {
+        var stok = parseInt(p.stok, 10) || 0;
+        var harga = parseFloat(p.harga) || 0;
+        var hGrosir = parseFloat(p.hargaGrosir) || 0;
+        var diskon = parseFloat(p.diskonCoin) || 0;
+        var coin = _coin(harga, diskon);
+        var foto = p.foto || _ph(p.nama);
+        var idE = _escA(p.id);
+        var ambang = window.MPT_AMBANG_STOK || 10;
+
+        var stokBadge = stok === 0
+            ? '<span class="kp-b kp-b-r">Habis</span>'
+            : stok <= ambang
+                ? '<span class="kp-b kp-b-y">Sisa ' + stok + ' ' + _esc(p.satuan || '') + '</span>'
+                : '<span class="kp-b kp-b-g">Stok ' + stok + ' ' + _esc(p.satuan || '') + '</span>';
+
+        var isWish = KP_WISH.indexOf(p.id) !== -1;
+
+        var h = '<div class="kp-detail">';
+        h += '<div class="kp-detail-gal">';
+        h += '<div class="kp-detail-main">' +
+                '<img src="' + _esc(foto) + '" id="kpDFoto" ' +
+                     'onerror="this.src=\'' + _ph(p.nama) + '\'">' +
+                (diskon > 0 ? '<span class="kp-disc kp-disc-lg">-' + diskon + '%</span>' : '') +
+             '</div>';
+        var fl = Array.isArray(p.fotoList) ? p.fotoList : [];
+        if (fl.length > 0) {
+            h += '<div class="kp-thumbs">' +
+                 '<div class="kp-thumb on" onclick="kpSwitchFotoGlobal(this,\'' + _escA(foto) + '\')">' +
+                 '<img src="' + _esc(foto) + '"></div>';
+            fl.forEach(function(f) {
+                h += '<div class="kp-thumb" onclick="kpSwitchFotoGlobal(this,\'' + _escA(f) + '\')">' +
+                     '<img src="' + _esc(f) + '"></div>';
+            });
+            h += '</div>';
+        }
+        h += '</div>';
+
+        h += '<div class="kp-detail-info">';
+        h += '<div class="kp-detail-chips">' +
+             '<span class="kp-tag">' + _esc(p.kategori || 'Lainnya') + '</span>' +
+             (p.pin ? '<span class="kp-tag-pin">⭐ Unggulan</span>' : '') +
+             '</div>';
+        h += '<h2 class="kp-detail-nama">' + _esc(p.nama || '-') + '</h2>';
+
+        h += '<div class="kp-detail-meta">' +
+             '<code>' + _esc(p.kode || '-') + '</code>';
+        if (p.rating > 0) {
+            h += '<span class="kp-detail-r"><i class="fas fa-star"></i> ' +
+                 parseFloat(p.rating).toFixed(1) + ' (' + (parseInt(p.totalReview, 10) || 0) + ')</span>';
+        }
+        h += '<span class="kp-detail-t"><i class="fas fa-fire"></i> ' +
+             (parseInt(p.terjual, 10) || 0) + ' terjual</span>' +
+             '<span class="kp-detail-v"><i class="fas fa-eye"></i> ' +
+             (parseInt(p.dilihat, 10) || 0) + '</span>' +
+             '</div>';
+
+        h += '<div class="kp-detail-price">';
+        if (hGrosir > 0 && hGrosir < harga) {
+            h += '<div class="kp-price-strike">' + _rp(harga) + '</div>' +
+                 '<div class="kp-price-main">' + _rp(hGrosir) + '</div>' +
+                 '<div class="kp-price-lbl">Harga Grosir</div>';
+        } else {
+            h += '<div class="kp-price-main">' + _rp(harga) + '</div>';
+        }
+        if (coin > 0) {
+            h += '<div class="kp-price-coin">🪙 ' + coin.toLocaleString('id-ID') + ' Coin</div>';
+        }
+        h += '</div>';
+
+        h += '<div class="kp-detail-stok">' + stokBadge + '</div>';
+
+        if (p.deskripsi) {
+            h += '<div class="kp-detail-desc"><h4>Deskripsi</h4><p>' +
+                 _esc(p.deskripsi) + '</p></div>';
+        }
+
+        if (Array.isArray(p.tags) && p.tags.length > 0) {
+            h += '<div class="kp-detail-tags">';
+            p.tags.forEach(function(t) {
+                h += '<span class="kp-detail-tag">#' + _esc(t) + '</span>';
+            });
+            h += '</div>';
+        }
+
+        var specs = [];
+        if (p.satuan) specs.push(['Satuan', p.satuan]);
+        if (p.berat > 0) specs.push(['Berat', parseFloat(p.berat) + ' kg']);
+        if (p.garansi > 0) specs.push(['Garansi', parseInt(p.garansi, 10) + ' hari']);
+        if (p.minOrder > 1) specs.push(['Min. Order', parseInt(p.minOrder, 10)]);
+        if (specs.length > 0) {
+            h += '<div class="kp-detail-specs">';
+            specs.forEach(function(s) {
+                h += '<div><span>' + _esc(s[0]) + '</span><strong>' + _esc(s[1]) + '</strong></div>';
+            });
+            h += '</div>';
+        }
+
+        var kirim = [];
+        if (p.kirimOjek !== false) kirim.push('🛵 Ojek');
+        if (p.kirimCOD) kirim.push('🚚 COD');
+        if (p.kirimPickup) kirim.push('🏪 Pickup');
+        if (p.kirimKurir) kirim.push('📮 Kurir');
+        if (kirim.length > 0) {
+            h += '<div class="kp-detail-kirim"><strong>Pengiriman:</strong> ' +
+                 kirim.join(' • ') + '</div>';
+        }
+
+        h += '<div class="kp-detail-aksi">';
+        if (stok > 0) {
+            h += '<button class="kp-btn kp-btn-1 kp-btn-lg" ' +
+                 'onclick="kpAddCartGlobal(\'' + idE + '\');kpCloseDetailGlobal();">' +
+                 '<i class="fas fa-cart-plus me-2"></i>Tambah ke Keranjang</button>';
+        } else {
+            h += '<button class="kp-btn kp-btn-off kp-btn-lg" disabled>' +
+                 '<i class="fas fa-times-circle me-2"></i>Stok Habis</button>';
+        }
+        h += '<button class="kp-btn kp-btn-2 kp-btn-lg' + (isWish ? ' on' : '') + '" ' +
+             'onclick="kpToggleWishGlobal(\'' + idE + '\')"><i class="fas fa-heart"></i></button>';
+        h += '</div>';
+
+        h += '</div></div>';
+        return h;
+    }
+
+    window.kpSwitchFotoGlobal = function(el, src) {
+        var main = document.getElementById('kpDFoto');
+        if (main) main.src = src;
+        var thumbs = document.querySelectorAll('.kp-thumb');
+        thumbs.forEach(function(t) { t.classList.remove('on'); });
+        if (el) el.classList.add('on');
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — KERANJANG (UI STORE ONLY)
+    // Cart disimpan di memori — checkout diserahkan ke event listener
+    // ═══════════════════════════════════════════════════════════
+    window.kpAddCartGlobal = function(id) {
+        var p = _byId(id);
+        if (!p) { _toast('Produk tidak ditemukan.', 'warning'); return; }
+        var stok = parseInt(p.stok, 10) || 0;
+        if (stok <= 0) { _toast('Produk habis.', 'warning'); return; }
+
+        var minO = parseInt(p.minOrder, 10) || 1;
+        var ada = null;
+        for (var i = 0; i < KP_CART.length; i++) {
+            if (KP_CART[i].id === id) { ada = KP_CART[i]; break; }
+        }
+        if (ada) {
+            if (ada.qty + minO > stok) { _toast('Stok tidak cukup.', 'warning'); return; }
+            ada.qty += minO;
+        } else {
+            KP_CART.push({
+                id: p.id, kode: p.kode, nama: p.nama,
+                harga: parseFloat(p.harga) || 0,
+                satuan: p.satuan || 'pcs',
+                foto: p.foto || '',
+                qty: minO, minOrder: minO, maxQty: stok
+            });
+        }
+        _cartDot();
+        _toast('Ditambahkan ke keranjang', 'success');
+        try {
+            window.dispatchEvent(new CustomEvent('r2coin:keranjang-berubah', {
+                detail: { total: KP_CART.length, id: id }
+            }));
+        } catch (e) {}
+    };
+
+    window.kpBukaCartGlobal = function() {
+        _renderCart();
+        var m = document.getElementById('kpModalCart');
+        if (m) m.style.display = 'flex';
+    };
+    window.kpCloseCartGlobal = function() {
+        var m = document.getElementById('kpModalCart');
+        if (m) m.style.display = 'none';
+    };
+    window.kpDelCartGlobal = function(id) {
+        for (var i = 0; i < KP_CART.length; i++) {
+            if (KP_CART[i].id === id) { KP_CART.splice(i, 1); break; }
+        }
+        _cartDot();
+        _renderCart();
+    };
+    window.kpQtyCartGlobal = function(id, d) {
+        for (var i = 0; i < KP_CART.length; i++) {
+            if (KP_CART[i].id === id) {
+                var it = KP_CART[i];
+                var n = it.qty + d;
+                if (n < it.minOrder) n = it.minOrder;
+                if (n > it.maxQty) { _toast('Stok maks ' + it.maxQty, 'warning'); return; }
+                it.qty = n;
+                break;
+            }
+        }
+        _cartDot();
+        _renderCart();
+    };
+
+    function _renderCart() {
+        var b = document.getElementById('kpCartBody');
+        var f = document.getElementById('kpCartFoot');
+        if (!b || !f) return;
+
+        if (KP_CART.length === 0) {
+            b.innerHTML = '<div class="kp-empty kp-empty-sm">' +
+                '<div class="kp-empty-ic"><i class="fas fa-shopping-cart"></i></div>' +
+                '<h4>Keranjang Kosong</h4></div>';
+            f.innerHTML = '';
+            return;
+        }
+        var h = '';
+        var total = 0;
+        KP_CART.forEach(function(it) {
+            var sub = it.harga * it.qty;
+            total += sub;
+            h += '<div class="kp-cart-item">' +
+                '<img src="' + _esc(it.foto || _ph(it.nama)) + '" class="kp-cart-img">' +
+                '<div class="kp-cart-info">' +
+                    '<div class="kp-cart-nama">' + _esc(_trunc(it.nama, 50)) + '</div>' +
+                    '<div class="kp-cart-h">' + _rp(it.harga) + ' / ' + _esc(it.satuan) + '</div>' +
+                    '<div class="kp-cart-qty">' +
+                        '<button onclick="kpQtyCartGlobal(\'' + _escA(it.id) + '\',-1)">−</button>' +
+                        '<span>' + it.qty + '</span>' +
+                        '<button onclick="kpQtyCartGlobal(\'' + _escA(it.id) + '\',1)">+</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="kp-cart-sub">' +
+                    '<div class="kp-cart-sub-v">' + _rp(sub) + '</div>' +
+                    '<button class="kp-cart-del" onclick="kpDelCartGlobal(\'' + _escA(it.id) + '\')">' +
+                        '<i class="fas fa-trash"></i></button>' +
+                '</div>' +
+            '</div>';
+        });
+        b.innerHTML = h;
+
+        f.innerHTML =
+            '<div class="kp-cart-total"><span>Total</span><strong>' + _rp(total) + '</strong></div>' +
+            '<button class="kp-btn kp-btn-1 kp-btn-block" onclick="kpCheckoutGlobal()">' +
+                '<i class="fas fa-credit-card me-2"></i>Checkout</button>';
+    }
+
+    window.kpCheckoutGlobal = function() {
+        if (KP_CART.length === 0) { _toast('Keranjang kosong.', 'warning'); return; }
+        try {
+            window.dispatchEvent(new CustomEvent('r2coin:checkout-dimulai', {
+                detail: {
+                    items: KP_CART.slice(),
+                    total: KP_CART.reduce(function(a, x) { return a + x.harga * x.qty; }, 0),
+                    role: KP.role,
+                    idOwner: _owner()
+                }
+            }));
+        } catch (e) {}
+        if (typeof window.bukaCheckoutGlobal === 'function') {
+            window.bukaCheckoutGlobal(KP_CART.slice());
+            window.kpCloseCartGlobal();
+        } else {
+            _toast('Fitur checkout belum tersedia.', 'info');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — WISHLIST (UI STORE ONLY)
+    // ═══════════════════════════════════════════════════════════
+    window.kpToggleWishGlobal = function(id) {
+        var i = KP_WISH.indexOf(id);
+        if (i === -1) { KP_WISH.push(id); _toast('Ditambahkan ke favorit', 'success'); }
+        else { KP_WISH.splice(i, 1); _toast('Dihapus dari favorit', 'info'); }
+        _render();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — ENTRY POINT & MENU
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanKatalogProdukToko = function(opts) {
+        opts = opts || {};
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            KP_S.idOwner = opts.idOwner || KP_S.idOwner || _owner();
+            KP_S.perPage = opts.perPage || 12;
+            KP_S.view = opts.view || 'grid';
+            KP_S.sortBy = opts.sortBy || 'createdAt';
+            KP_S.sortDir = opts.sortDir || 'desc';
+            KP_S.page = 1;
+            KP_S.mounted = true;
+
+            konten.innerHTML = _shell();
+
+            setTimeout(function() {
+                var se = document.getElementById('kpSort');
+                if (se) se.value = KP_S.sortBy + '-' + KP_S.sortDir;
+                window.kpRefreshGlobal();
+                console.log('✅ BLOK R 11.14 — Katalog Produk Toko rendered');
+            }, 60);
+
+            return true;
+        } catch (e) {
+            console.error('tampilkanKatalogProdukToko error:', e);
+            return false;
+        }
+    };
+
+    // Register menu handler (dipakai sistem navigasi)
+    window.menuHandlers = window.menuHandlers || {};
+    ['tampilkanKatalogProdukToko', 'katalogProdukToko', 'bukaKatalogProdukGlobal']
+        .forEach(function(k) {
+            if (typeof window.menuHandlers[k] !== 'function') {
+                window.menuHandlers[k] = function() {
+                    return window.tampilkanKatalogProdukToko();
+                };
+            }
+        });
+
+    // Auto-refresh saat produk berubah
+    window.addEventListener('r2coin:produk-berubah', function() {
+        if (KP_S.mounted) window.kpRefreshGlobal();
+    });
+
+    // ESC tutup modal
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        ['kpModalDetail', 'kpModalCart', 'kpModalHarga'].forEach(function(id) {
+            var m = document.getElementById(id);
+            if (m && m.style.display === 'flex') m.style.display = 'none';
+        });
+    });
+
+    // ── Debug ──
+    window.debugKatalogProdukGlobal = function() {
+        return {
+            state: {
+                page: KP_S.page, perPage: KP_S.perPage,
+                pool: KP_S.pool.length, filtered: KP_S.data.length,
+                view: KP_S.view, filter: KP_S.f,
+                sort: KP_S.sortBy + ' ' + KP_S.sortDir,
+                idOwner: KP_S.idOwner
+            },
+            cart: KP_CART.slice(),
+            wishlist: KP_WISH.slice(),
+            helpers: {
+                entry: typeof window.tampilkanKatalogProdukToko,
+                refresh: typeof window.kpRefreshGlobal,
+                detail: typeof window.kpOpenDetailGlobal,
+                addCart: typeof window.kpAddCartGlobal
+            }
+        };
+    };
+
+    window._blok1114Done = true;
+    console.log('✅ BLOK R 11.14 — KATALOG PRODUK TOKO terpasang.');
+    console.log('   🎯 Entry: tampilkanKatalogProdukToko()');
+    console.log('   📦 Reuse global: loadProdukByOwnerGlobal, saveProdukRawGlobal,');
+    console.log('                    filterProdukGlobal, sortProdukGlobal,');
+    console.log('                    formatRupiahProdukGlobal, hitungCoinDariHargaGlobal');
+    console.log('   📊 Debug: debugKatalogProdukGlobal()');
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- CSS KATALOG PRODUK TOKO                                        -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<style>
+.kp-root { padding-bottom: 32px; background: #f5f7fa; min-height: 100vh; }
+
+/* HERO */
+.kp-hero { padding: 28px 24px; color: #fff; }
+.kp-hero-inner { max-width: 1200px; margin: 0 auto;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 16px; }
+.kp-hero-title { font-size: 26px; font-weight: 800; margin: 0 0 4px 0; letter-spacing: -0.5px; }
+.kp-hero-sub { font-size: 14px; margin: 0; opacity: 0.92; }
+.kp-hero-btns { display: flex; gap: 8px; }
+.kp-icon-btn { width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.3);
+    color: #fff; cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; position: relative; }
+.kp-icon-btn:hover { background: rgba(255,255,255,0.38); transform: translateY(-2px); }
+.kp-cart-dot { position: absolute; top: -4px; right: -4px;
+    background: #DC3545; color: #fff; font-size: 10px; font-weight: 700;
+    min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid #fff; }
+
+/* TOOLBAR */
+.kp-toolbar { max-width: 1200px; margin: 16px auto 8px; padding: 0 24px;
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.kp-search-wrap { flex: 1; min-width: 240px; position: relative; }
+.kp-search-ic { position: absolute; left: 16px; top: 50%;
+    transform: translateY(-50%); color: #888; pointer-events: none; }
+.kp-search { width: 100%; padding: 12px 44px; border: 2px solid #e0e4e9;
+    border-radius: 12px; font-size: 14px; background: #fff; transition: all 0.2s; }
+.kp-search:focus { outline: none; border-color: #FF8C00;
+    box-shadow: 0 0 0 4px rgba(255,140,0,0.1); }
+.kp-search-x { position: absolute; right: 10px; top: 50%;
+    transform: translateY(-50%); background: none; border: none;
+    color: #888; cursor: pointer; padding: 6px; border-radius: 6px; }
+.kp-search-x:hover { background: #f0f0f0; color: #333; }
+.kp-select { padding: 10px 14px; border: 2px solid #e0e4e9; border-radius: 10px;
+    font-size: 13px; background: #fff; cursor: pointer; font-weight: 600; }
+.kp-select:focus { outline: none; border-color: #FF8C00; }
+.kp-view-toggle { display: flex; gap: 2px; background: #fff;
+    border: 2px solid #e0e4e9; border-radius: 10px; padding: 2px; }
+.kp-view-btn { width: 36px; height: 36px; border: none; background: none;
+    border-radius: 7px; cursor: pointer; color: #666; transition: all 0.2s; }
+.kp-view-btn:hover { color: #333; }
+.kp-view-on { background: #FF8C00; color: #fff; }
+.kp-view-on:hover { color: #fff; }
+
+/* CHIPS */
+.kp-chips { max-width: 1200px; margin: 0 auto; padding: 6px 24px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kp-chips-2 { padding-top: 0; }
+.kp-chips-lbl { font-size: 12px; font-weight: 700; color: #666;
+    text-transform: uppercase; letter-spacing: 0.5px; }
+.kp-chips-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.kp-chip { padding: 6px 14px; background: #fff; border: 2px solid #e0e4e9;
+    border-radius: 20px; font-size: 13px; font-weight: 600; color: #555;
+    cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px; }
+.kp-chip:hover { border-color: #FF8C00; color: #FF8C00; transform: translateY(-1px); }
+.kp-chip.on { background: #FF8C00; border-color: #FF8C00; color: #fff; }
+.kp-chip-n { background: rgba(0,0,0,0.08); padding: 1px 6px;
+    border-radius: 10px; font-size: 11px; }
+.kp-chip.on .kp-chip-n { background: rgba(255,255,255,0.28); }
+.kp-chip-f { padding: 6px 14px; background: #fff; border: 2px solid #e0e4e9;
+    border-radius: 20px; font-size: 13px; font-weight: 600; color: #555;
+    cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px; }
+.kp-chip-f:hover { border-color: #FF8C00; color: #FF8C00; }
+.kp-chip-f.on { background: #FF8C00; border-color: #FF8C00; color: #fff; }
+.kp-chip-reset { color: #DC3545; border-color: #f5c6cb; }
+.kp-chip-reset:hover { background: #DC3545; color: #fff; border-color: #DC3545; }
+
+/* INFO */
+.kp-info { max-width: 1200px; margin: 12px auto 16px; padding: 0 24px;
+    font-size: 14px; color: #555; }
+
+/* GRID */
+.kp-grid { max-width: 1200px; margin: 0 auto; padding: 0 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px; }
+
+/* CARD */
+.kp-card { background: #fff; border-radius: 14px; overflow: hidden;
+    cursor: pointer; transition: all 0.28s cubic-bezier(0.4,0,0.2,1);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid #f0f0f0;
+    display: flex; flex-direction: column; }
+.kp-card:hover { transform: translateY(-4px);
+    box-shadow: 0 12px 28px rgba(0,0,0,0.12); border-color: #FF8C00; }
+.kp-card-off { opacity: 0.72; }
+.kp-card-img-wrap { position: relative; aspect-ratio: 1; overflow: hidden;
+    background: #f5f5f5; }
+.kp-card-img { width: 100%; height: 100%; object-fit: cover;
+    transition: transform 0.4s; }
+.kp-card:hover .kp-card-img { transform: scale(1.06); }
+.kp-pin { position: absolute; top: 10px; left: 10px;
+    background: linear-gradient(135deg,#FFC107,#FF9800); color: #fff;
+    font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px;
+    z-index: 2; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+.kp-disc { position: absolute; top: 10px; right: 10px;
+    background: linear-gradient(135deg,#DC3545,#C82333); color: #fff;
+    font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 20px;
+    z-index: 2; box-shadow: 0 2px 8px rgba(220,53,69,0.3); }
+.kp-disc-lg { font-size: 14px; padding: 6px 14px; }
+.kp-wish { position: absolute; bottom: 10px; right: 10px;
+    width: 36px; height: 36px; border-radius: 50%;
+    background: rgba(255,255,255,0.95); border: none; color: #ccc;
+    cursor: pointer; transition: all 0.2s; z-index: 2;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    display: flex; align-items: center; justify-content: center; }
+.kp-wish:hover { transform: scale(1.1); color: #DC3545; }
+.kp-wish.on { color: #DC3545; }
+.kp-card-body { padding: 12px; display: flex; flex-direction: column;
+    gap: 6px; flex: 1; }
+.kp-card-kat { font-size: 10px; font-weight: 700; color: #FF8C00;
+    text-transform: uppercase; letter-spacing: 0.5px; }
+.kp-card-nama { font-size: 14px; font-weight: 700; color: #222;
+    margin: 0; line-height: 1.3; min-height: 2.6em;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; }
+.kp-card-harga { font-size: 16px; font-weight: 800; color: #28A745; }
+.kp-card-coin { font-size: 11px; color: #FF9800; font-weight: 600; }
+.kp-card-meta { display: flex; justify-content: space-between;
+    align-items: center; gap: 6px; }
+.kp-card-terjual { font-size: 11px; color: #888; }
+.kp-btn-cart { width: 100%; padding: 8px 12px;
+    background: linear-gradient(135deg,#FF8C00,#E67E00); color: #fff;
+    border: none; border-radius: 8px; font-size: 12px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s; margin-top: auto; }
+.kp-btn-cart:hover { transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(255,140,0,0.3); }
+.kp-btn-cart.off { background: #ccc; cursor: not-allowed; }
+.kp-btn-cart.off:hover { transform: none; box-shadow: none; }
+
+/* BADGE */
+.kp-b { font-size: 10px; font-weight: 700; padding: 3px 8px;
+    border-radius: 20px; display: inline-block; }
+.kp-b-g { background: #D4EDDA; color: #155724; }
+.kp-b-y { background: #FFF3CD; color: #856404; }
+.kp-b-r { background: #F8D7DA; color: #721C24; }
+
+/* LIST */
+.kp-list { max-width: 1200px; margin: 0 auto; padding: 0 24px;
+    background: #fff; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.kp-row { display: grid;
+    grid-template-columns: 72px 1fr 140px 100px 100px;
+    gap: 12px; padding: 14px 16px; align-items: center;
+    border-bottom: 1px solid #f0f0f0; cursor: pointer;
+    transition: background 0.15s; }
+.kp-row:last-child { border-bottom: none; }
+.kp-row:hover { background: #FFF8F0; }
+.kp-row-img { width: 64px; height: 64px; object-fit: cover;
+    border-radius: 8px; }
+.kp-row-nama { font-size: 14px; font-weight: 700; color: #222;
+    margin-bottom: 2px; }
+.kp-row-meta { font-size: 11px; color: #888; }
+.kp-row-kat { color: #FF8C00; font-weight: 600; }
+.kp-row-h { font-size: 15px; font-weight: 800; color: #28A745; }
+.kp-row-c { font-size: 11px; color: #FF9800; }
+.kp-row-aksi { display: flex; gap: 6px; }
+.kp-ib { width: 34px; height: 34px; border: 2px solid #e0e4e9;
+    background: #fff; border-radius: 8px; cursor: pointer; color: #666;
+    transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; }
+.kp-ib:hover { border-color: #FF8C00; color: #FF8C00; }
+.kp-ib-1 { background: linear-gradient(135deg,#FF8C00,#E67E00);
+    border-color: #FF8C00; color: #fff; }
+.kp-ib-1:hover { color: #fff; transform: scale(1.05); }
+
+/* EMPTY */
+.kp-empty { max-width: 480px; margin: 60px auto; padding: 32px;
+    text-align: center; }
+.kp-empty-sm { margin: 20px auto; padding: 20px; }
+.kp-empty-ic { font-size: 56px; color: #ddd; margin-bottom: 16px; }
+.kp-empty h4 { font-size: 20px; font-weight: 800; color: #333;
+    margin: 0 0 8px 0; }
+.kp-empty p { color: #888; font-size: 14px; margin-bottom: 20px; }
+
+/* PAGINATION */
+.kp-pag { max-width: 1200px; margin: 32px auto 0; padding: 0 24px;
+    text-align: center; }
+.kp-pag-info { font-size: 13px; color: #666; margin-bottom: 12px; }
+.kp-pag-btns { display: flex; gap: 6px; justify-content: center;
+    flex-wrap: wrap; }
+.kp-pg { min-width: 40px; height: 40px; padding: 0 12px;
+    border: 2px solid #e0e4e9; background: #fff; border-radius: 10px;
+    font-size: 14px; font-weight: 700; color: #555; cursor: pointer;
+    transition: all 0.2s; }
+.kp-pg:hover:not(:disabled) { border-color: #FF8C00; color: #FF8C00;
+    transform: translateY(-2px); }
+.kp-pg.on { background: #FF8C00; border-color: #FF8C00; color: #fff; }
+.kp-pg:disabled { opacity: 0.4; cursor: not-allowed; }
+.kp-dots { padding: 0 6px; align-self: center; color: #999; }
+
+/* MODAL */
+.kp-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 9999; display: flex; align-items: center; justify-content: center;
+    padding: 20px; }
+.kp-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); }
+.kp-dialog { position: relative; background: #fff; border-radius: 18px;
+    max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.3); }
+.kp-dialog-lg { max-width: 900px; }
+.kp-dialog-sm { max-width: 400px; }
+.kp-modal-x { position: absolute; top: 16px; right: 16px;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(255,255,255,0.9); border: none; color: #333;
+    cursor: pointer; z-index: 10; font-size: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: all 0.2s; }
+.kp-modal-x:hover { background: #fff; transform: rotate(90deg); }
+.kp-modal-head { padding: 20px 24px; border-bottom: 1px solid #f0f0f0;
+    display: flex; justify-content: space-between; align-items: center; }
+.kp-modal-head h5 { font-weight: 800; color: #222; }
+.kp-modal-x2 { width: 36px; height: 36px; border-radius: 50%;
+    background: #f0f0f0; border: none; color: #333; cursor: pointer;
+    transition: all 0.2s; }
+.kp-modal-x2:hover { background: #e0e0e0; }
+.kp-modal-body { padding: 20px 24px; }
+.kp-modal-foot { padding: 16px 24px; border-top: 1px solid #f0f0f0;
+    display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* DETAIL */
+.kp-detail { display: grid; grid-template-columns: 1fr 1fr;
+    gap: 24px; padding: 24px; }
+@media (max-width: 720px) { .kp-detail { grid-template-columns: 1fr; } }
+.kp-detail-main { position: relative; aspect-ratio: 1;
+    border-radius: 14px; overflow: hidden; background: #f5f5f5; }
+.kp-detail-main img { width: 100%; height: 100%; object-fit: cover; }
+.kp-thumbs { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.kp-thumb { width: 60px; height: 60px; border-radius: 8px; overflow: hidden;
+    cursor: pointer; border: 2px solid transparent; transition: all 0.2s; }
+.kp-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.kp-thumb.on, .kp-thumb:hover { border-color: #FF8C00; }
+.kp-detail-chips { display: flex; gap: 6px; flex-wrap: wrap;
+    margin-bottom: 8px; }
+.kp-tag, .kp-tag-pin { font-size: 11px; font-weight: 700;
+    padding: 4px 10px; border-radius: 20px; }
+.kp-tag { background: #FFF3E0; color: #E65100; }
+.kp-tag-pin { background: linear-gradient(135deg,#FFC107,#FF9800); color: #fff; }
+.kp-detail-nama { font-size: 22px; font-weight: 800; color: #222;
+    margin: 0 0 8px 0; line-height: 1.25; }
+.kp-detail-meta { display: flex; gap: 12px; align-items: center;
+    flex-wrap: wrap; font-size: 12px; color: #666; margin-bottom: 14px; }
+.kp-detail-meta code { background: #f0f0f0; padding: 2px 8px;
+    border-radius: 4px; font-size: 11px; }
+.kp-detail-r { color: #FFC107; font-weight: 700; }
+.kp-detail-t { color: #FF6B35; font-weight: 600; }
+.kp-detail-v { color: #999; }
+.kp-detail-price { padding: 16px; border-radius: 12px; margin-bottom: 14px;
+    background: linear-gradient(135deg,#F0FDF4,#ECFDF5);
+    border: 1px solid #D1FAE5; }
+.kp-price-strike { text-decoration: line-through; color: #999;
+    font-size: 14px; margin-bottom: 2px; }
+.kp-price-main { font-size: 28px; font-weight: 900; color: #28A745;
+    line-height: 1; }
+.kp-price-lbl { font-size: 11px; color: #666; margin-top: 4px; }
+.kp-price-coin { color: #FF9800; font-size: 13px; font-weight: 700;
+    margin-top: 8px; }
+.kp-detail-stok { margin-bottom: 16px; }
+.kp-detail-desc { margin-bottom: 16px; }
+.kp-detail-desc h4 { font-size: 13px; font-weight: 800; color: #222;
+    margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.kp-detail-desc p { font-size: 13px; color: #555; line-height: 1.6;
+    margin: 0; white-space: pre-wrap; }
+.kp-detail-tags { display: flex; gap: 6px; flex-wrap: wrap;
+    margin-bottom: 16px; }
+.kp-detail-tag { font-size: 11px; color: #666; background: #f0f0f0;
+    padding: 3px 8px; border-radius: 20px; }
+.kp-detail-specs { display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px 16px; padding: 12px; background: #f8f9fa;
+    border-radius: 10px; margin-bottom: 14px; }
+.kp-detail-specs > div { display: flex; justify-content: space-between;
+    font-size: 12px; }
+.kp-detail-specs span { color: #888; }
+.kp-detail-specs strong { color: #333; }
+.kp-detail-kirim { font-size: 12px; color: #555; padding: 10px;
+    background: #f0f7ff; border-radius: 8px; margin-bottom: 14px; }
+.kp-detail-aksi { display: flex; gap: 8px; }
+
+/* BUTTON */
+.kp-btn { padding: 12px 20px; border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; justify-content: center; }
+.kp-btn-1 { background: linear-gradient(135deg,#FF8C00,#E67E00); color: #fff; }
+.kp-btn-1:hover { transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(255,140,0,0.35); }
+.kp-btn-2 { background: #f0f0f0; color: #333; }
+.kp-btn-2:hover { background: #e0e0e0; }
+.kp-btn-2.on { background: #DC3545; color: #fff; }
+.kp-btn-off { background: #ccc; color: #fff; cursor: not-allowed; }
+.kp-btn-lg { padding: 14px 24px; font-size: 15px; flex: 1; }
+.kp-btn-block { width: 100%; }
+
+/* FORM */
+.kp-lbl { display: block; font-size: 12px; font-weight: 700;
+    color: #555; margin-bottom: 6px; text-transform: uppercase;
+    letter-spacing: 0.5px; }
+.kp-input { width: 100%; padding: 10px 14px; border: 2px solid #e0e4e9;
+    border-radius: 10px; font-size: 14px; }
+.kp-input:focus { outline: none; border-color: #FF8C00;
+    box-shadow: 0 0 0 4px rgba(255,140,0,0.1); }
+.kp-preset { display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+    margin-top: 12px; }
+.kp-preset button { padding: 8px 12px; background: #f8f9fa;
+    border: 1px solid #e0e4e9; border-radius: 8px; font-size: 12px;
+    font-weight: 600; color: #555; cursor: pointer; transition: all 0.2s; }
+.kp-preset button:hover { background: #FF8C00; color: #fff;
+    border-color: #FF8C00; }
+
+/* CART */
+.kp-cart-item { display: grid; grid-template-columns: 60px 1fr auto;
+    gap: 12px; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+.kp-cart-item:last-child { border-bottom: none; }
+.kp-cart-img { width: 60px; height: 60px; object-fit: cover;
+    border-radius: 8px; }
+.kp-cart-nama { font-size: 13px; font-weight: 700; color: #222;
+    margin-bottom: 2px; }
+.kp-cart-h { font-size: 11px; color: #28A745; font-weight: 600;
+    margin-bottom: 6px; }
+.kp-cart-qty { display: flex; gap: 4px; align-items: center; }
+.kp-cart-qty button { width: 26px; height: 26px; border: 1px solid #e0e4e9;
+    background: #fff; border-radius: 6px; cursor: pointer; font-weight: 700;
+    color: #555; }
+.kp-cart-qty button:hover { border-color: #FF8C00; color: #FF8C00; }
+.kp-cart-qty span { min-width: 32px; text-align: center;
+    font-weight: 700; font-size: 13px; }
+.kp-cart-sub { display: flex; flex-direction: column; align-items: flex-end;
+    gap: 6px; }
+.kp-cart-sub-v { font-size: 14px; font-weight: 800; color: #28A745; }
+.kp-cart-del { width: 28px; height: 28px; border: none;
+    background: #F8D7DA; color: #721C24; border-radius: 6px;
+    cursor: pointer; transition: all 0.2s; }
+.kp-cart-del:hover { background: #DC3545; color: #fff; }
+.kp-cart-total { display: flex; justify-content: space-between;
+    align-items: center; padding: 12px 0; font-size: 15px;
+    border-bottom: 1px solid #f0f0f0; margin-bottom: 12px; }
+.kp-cart-total strong { font-size: 18px; color: #28A745; }
+
+/* RESPONSIVE */
+@media (max-width: 640px) {
+    .kp-hero { padding: 20px 16px; }
+    .kp-hero-title { font-size: 22px; }
+    .kp-toolbar, .kp-chips, .kp-info, .kp-grid,
+    .kp-list, .kp-pag { padding-left: 16px; padding-right: 16px; }
+    .kp-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .kp-card-nama { font-size: 13px; }
+    .kp-card-harga { font-size: 14px; }
+    .kp-btn-cart { padding: 6px 8px; font-size: 11px; }
+    .kp-row { grid-template-columns: 60px 1fr; gap: 10px; }
+    .kp-row-harga, .kp-row-stok, .kp-row-aksi {
+        grid-column: span 2; margin-top: 6px;
+    }
+    .kp-detail { padding: 16px; gap: 16px; }
+    .kp-detail-nama { font-size: 18px; }
+    .kp-price-main { font-size: 22px; }
+    .kp-detail-aksi { flex-direction: column; }
+}
+</style>
+<!-- ═══ AKHIR BLOK R 11.14 — KATALOG PRODUK TOKO ═══════════════ -->
+
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- BLOK R 11.11(1) — BUAT AKUN KASIR TOKO (HTML)               -->
 <!-- Menggunakan fungsi global buatAkunKasirTKGlobal()            -->
