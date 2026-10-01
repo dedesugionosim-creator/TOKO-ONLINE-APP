@@ -108042,11 +108042,12 @@
         return window.isKasirMilikOwnerGlobal(idAkun, idOwner);
     };
 
-    // ═══ Statistik kasir per owner ═══
-    window.getStatistikKasirOwnerGlobal = function(idOwner) {
-	    // FIX T6: Daftar field yang WAJIB ada di objek statistik
+        // ═══ Statistik kasir per owner ═══
+
+    // Field wajib di objek statistik (di LUAR fungsi)
     var FIELD_WAJIB_STATISTIK = [
         'total', 'aktif', 'nonaktif', 'diblokir', 'dihapus',
+        'pending', 'ditolak',
         'online', 'offline', 'adaShift',
         'lengkap', 'setengah', 'kurang',
         'totalKelengkapan', 'jumlahDihitung', 'rataKelengkapan',
@@ -108055,7 +108056,7 @@
         'perRole', 'perVerifikasi', 'listOnline'
     ];
 
-    // FIX T6: Pastikan objek statistik selalu punya semua field wajib
+    // Helper: pastikan semua field wajib ada (defensive)
     function _pastikanStatistikLengkap(stat) {
         if (!stat || typeof stat !== 'object') stat = {};
         FIELD_WAJIB_STATISTIK.forEach(function(f) {
@@ -108064,29 +108065,142 @@
                 else if (f === 'listOnline') stat[f] = [];
                 else if (f === 'penuhKapasitas') stat[f] = false;
                 else if (f === 'maxKasir' || f === 'sisaSlot') {
-                    stat[f] = window.KSR_MAX_KASIR_PER_OWNER || 50;
+                    stat[f] = (window.KSR_MAX_KASIR_PER_OWNER || 50);
                 } else stat[f] = 0;
             }
         });
         return stat;
     }
-        var list = window.getDaftarKasirByOwnerGlobal(idOwner);
-        var stat = {
-            total: list.length,
-            aktif: 0, pending: 0, nonaktif: 0, ditolak: 0,
-            perKodeRole: {}
-        };
-        list.forEach(function(k) {
-            var s = k.statusVerifikasi || k.status || 'Aktif';
-            if (s === 'Aktif') stat.aktif++;
-            else if (s === 'Pending') stat.pending++;
-            else if (s === 'Ditolak') stat.ditolak++;
-            else stat.nonaktif++;
 
-            var kode = k.kodeRole || '-';
-            stat.perKodeRole[kode] = (stat.perKodeRole[kode] || 0) + 1;
-        });
-        return stat;
+    // Helper: statistik default (kosong)
+    function _emptyStatistik() {
+        return {
+            total: 0, aktif: 0, nonaktif: 0, diblokir: 0, dihapus: 0,
+            pending: 0, ditolak: 0,
+            online: 0, offline: 0, adaShift: 0,
+            lengkap: 0, setengah: 0, kurang: 0,
+            totalKelengkapan: 0, jumlahDihitung: 0, rataKelengkapan: 0,
+            persenAktif: 0, persenOnline: 0, persenShift: 0,
+            maxKasir: (window.KSR_MAX_KASIR_PER_OWNER || 50),
+            persenKapasitas: 0,
+            sisaSlot: (window.KSR_MAX_KASIR_PER_OWNER || 50),
+            penuhKapasitas: false,
+            perRole: {},
+            perVerifikasi: {},
+            listOnline: []
+        };
+    }
+
+    window.getStatistikKasirOwnerGlobal = function(idOwner) {
+        try {
+            if (!idOwner) return _emptyStatistik();
+
+            // ── Ambil daftar kasir ──
+            // Prioritas 1: loadKasirByOwnerGlobal (Blok 2 FG Kasir)
+            // Fallback: getDaftarKasirByOwnerGlobal (legacy app)
+            var list = [];
+            if (typeof window.loadKasirByOwnerGlobal === 'function') {
+                try { list = window.loadKasirByOwnerGlobal(idOwner) || []; } catch (e) {}
+            }
+            if ((!list || list.length === 0) &&
+                typeof window.getDaftarKasirByOwnerGlobal === 'function') {
+                try { list = window.getDaftarKasirByOwnerGlobal(idOwner) || []; } catch (e) {}
+            }
+            if (!Array.isArray(list)) list = [];
+
+            var stat = _emptyStatistik();
+
+            // ── Loop setiap kasir ──
+            list.forEach(function(k) {
+                if (!k) return;
+                stat.total++;
+
+                // Status
+                var st = k.status || 'Aktif';
+                if      (st === 'Aktif')    stat.aktif++;
+                else if (st === 'Nonaktif') stat.nonaktif++;
+                else if (st === 'Diblokir') stat.diblokir++;
+                else if (st === 'Dihapus')  stat.dihapus++;
+                else if (st === 'Pending')  stat.pending++;
+                else if (st === 'Ditolak')  stat.ditolak++;
+
+                // Online / Offline
+                var id = k.id || k.idUser;
+                var online = false;
+                try {
+                    if (typeof window.ksrCekOnline === 'function') {
+                        online = !!window.ksrCekOnline(id);
+                    }
+                } catch (e) {}
+
+                if (online) {
+                    stat.online++;
+                    stat.listOnline.push({
+                        id: id,
+                        nama: k.nama || k.username || '-',
+                        username: k.username || '-',
+                        fotoUrl: k.fotoUrl || ''
+                    });
+                } else {
+                    stat.offline++;
+                }
+
+                // Shift aktif?
+                var adaShift = false;
+                try {
+                    if (typeof window.getShiftAktifKasirGlobal === 'function') {
+                        adaShift = !!window.getShiftAktifKasirGlobal(id);
+                    }
+                } catch (e) {}
+                if (adaShift) stat.adaShift++;
+
+                // Per role
+                var kode = k.kodeOwner || 'UNKNOWN';
+                stat.perRole[kode] = (stat.perRole[kode] || 0) + 1;
+
+                // Per status verifikasi
+                var sv = k.statusVerifikasi || 'Aktif';
+                stat.perVerifikasi[sv] = (stat.perVerifikasi[sv] || 0) + 1;
+
+                // Kelengkapan profil
+                try {
+                    if (typeof window.hitungKelengkapanProfilRoleGlobal === 'function') {
+                        var kodeRole = k.kodeRole ||
+                            (typeof window.getKodeRoleKasirGlobal === 'function'
+                                ? window.getKodeRoleKasirGlobal(k.kodeOwner)
+                                : 'KSR_TK');
+                        var persen = window.hitungKelengkapanProfilRoleGlobal(kodeRole, id) || 0;
+                        stat.totalKelengkapan += persen;
+                        stat.jumlahDihitung++;
+                        if (persen >= 80)      stat.lengkap++;
+                        else if (persen >= 50) stat.setengah++;
+                        else                   stat.kurang++;
+                    }
+                } catch (e) {}
+            });
+
+            // ── Rata-rata kelengkapan ──
+            stat.rataKelengkapan = stat.jumlahDihitung > 0
+                ? Math.round(stat.totalKelengkapan / stat.jumlahDihitung)
+                : 0;
+
+            // ── Persentase ──
+            stat.persenAktif  = stat.total > 0 ? Math.round((stat.aktif   / stat.total) * 100) : 0;
+            stat.persenOnline = stat.total > 0 ? Math.round((stat.online  / stat.total) * 100) : 0;
+            stat.persenShift  = stat.total > 0 ? Math.round((stat.adaShift / stat.total) * 100) : 0;
+
+            // ── Kapasitas ──
+            stat.maxKasir = (window.KSR_MAX_KASIR_PER_OWNER || 50);
+            stat.persenKapasitas = Math.round((stat.total / stat.maxKasir) * 100);
+            stat.sisaSlot = Math.max(0, stat.maxKasir - stat.total);
+            stat.penuhKapasitas = stat.total >= stat.maxKasir;
+
+            // ── Verifikasi final ──
+            return _pastikanStatistikLengkap(stat);
+        } catch (e) {
+            console.error('getStatistikKasirOwnerGlobal error:', e);
+            return _pastikanStatistikLengkap(_emptyStatistik());
+        }
     };
 
     // ═══════════════════════════════════════════════════════════
