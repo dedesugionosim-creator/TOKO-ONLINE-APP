@@ -197710,6 +197710,1845 @@ window.tampilkanProdukUniversalGlobal = function(role, opts) {
 <!-- ═══ AKHIR BLOK R 11.5.1 — TAMPILKAN PRODUK TOKO ═════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 11.10 — PEMERIKSAAN STOK TOKO ══════════════════════ -->
+<!-- ═══ UI-only. Reuse fungsi global MP 1-10 ═════════════════════ -->
+<!-- ═══ Support: Toko (pemilik) + Kasir (sub-akun) ═══════════════ -->
+<!-- ═══ Anti-tertukar: idOwner di-resolve dari userAktif ═════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<script>
+(function BLOK_R_11_10_PEMERIKSAAN_STOK() {
+    if (window._blok1110Done) return;
+    if (!window._blokMPT1Done) {
+        console.warn('⚠️ BLOK 11.10: MP-1 belum ada, skip.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONFIGURASI
+    // ═══════════════════════════════════════════════════════════
+    var PS = {
+        role:   'Toko',          // role bisnis (bukan role user)
+        warna:  '#17A2B8',
+        warna2: '#138496'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — STATE
+    // ═══════════════════════════════════════════════════════════
+    var PS_S = {
+        page: 1, perPage: 20,
+        f: { cari: '', kategori: '', hanyaRendah: false, hanyaHabis: false },
+        sortBy: 'stok', sortDir: 'asc',
+        tab: 'semua',                       // semua | rendah | habis | riwayat
+        pool: [], data: [], kategori: [],
+        ambang: 10,
+        mounted: false,
+        // Identity
+        idOwner: null, idUser: null,
+        roleEfektif: null, namaUser: '',
+        error: null,
+        // Bulk
+        selected: {},
+        // Riwayat filter
+        riwayatLimit: 100
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER UI (bukan logic bisnis)
+    // ═══════════════════════════════════════════════════════════
+    function _esc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+    function _escA(s) {
+        return String(s == null ? '' : s)
+            .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+    function _trunc(s, n) {
+        s = String(s || '');
+        return s.length <= n ? s : s.substring(0, n - 1) + '…';
+    }
+    function _rp(n) {
+        if (window.formatRupiahProdukGlobal) return window.formatRupiahProdukGlobal(n);
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+    function _ph(nama) {
+        var ini = _trunc(nama || 'P', 2).toUpperCase();
+        return 'https://placehold.co/80x80/17A2B8/ffffff?text=' + encodeURIComponent(ini);
+    }
+    function _toast(msg, t) {
+        try { if (window.mptToast) return window.mptToast(msg, t || 'info'); } catch (e) {}
+        console.log('[PS]', msg);
+    }
+    function _sanitizeId(s) {
+        return String(s || '').replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 64);
+    }
+    function _fmtTgl(iso) {
+        if (window.formatTanggalProdukGlobal) return window.formatTanggalProdukGlobal(iso, { lengkap: true });
+        return iso || '-';
+    }
+    function _fmtRelatif(iso) {
+        if (window.formatWaktuRelatifProdukGlobal) return window.formatWaktuRelatifProdukGlobal(iso);
+        return iso || '-';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — RESOLUSI IDENTITAS (fondasi anti-tertukar)
+    // Prioritas: userAktif.idOwner → idToko → getDataIdOwner → fallback
+    // ═══════════════════════════════════════════════════════════
+    function _resolveIdentity() {
+        var hasil = { idUser: null, idOwner: null, role: null, nama: '' };
+        try {
+            var u = (typeof userAktif !== 'undefined' && userAktif) ? userAktif : null;
+
+            // ── Role ──
+            if (u && u.role) hasil.role = u.role;
+            else if (typeof mptRoleUser === 'function') hasil.role = mptRoleUser();
+
+            // ── ID User ──
+            if (u) hasil.idUser = u.idUser || u.id || null;
+            if (!hasil.idUser && typeof mptIdUser === 'function') hasil.idUser = mptIdUser();
+            if (!hasil.idUser && typeof getDataIdUser === 'function') hasil.idUser = getDataIdUser();
+            if (!hasil.idUser && typeof getIdUserAktif === 'function') hasil.idUser = getIdUserAktif();
+
+            // ── Nama ──
+            if (u) hasil.nama = u.nama || u.namaLengkap || u.username || '';
+            if (!hasil.nama && typeof mptNamaUser === 'function') hasil.nama = mptNamaUser();
+
+            // ── ID Owner (KUNCI) ──
+            if (u) {
+                hasil.idOwner =
+                    u.idOwner || u.idToko || u.idPemilik ||
+                    u.ownerId || u.indukId || u.tokoId || null;
+            }
+            if (!hasil.idOwner && typeof getDataIdOwner === 'function') {
+                hasil.idOwner = getDataIdOwner();
+            }
+            if (!hasil.idOwner && typeof getDataIdToko === 'function') {
+                hasil.idOwner = getDataIdToko();
+            }
+
+            // ── Fallback: Pemilik = dirinya sendiri ──
+            if (!hasil.idOwner && hasil.role === 'Toko' && hasil.idUser) {
+                hasil.idOwner = hasil.idUser;
+            }
+        } catch (e) {
+            console.warn('_resolveIdentity error:', e);
+        }
+        return hasil;
+    }
+
+    function _initIdentity() {
+        var id = _resolveIdentity();
+        PS_S.idUser      = id.idUser;
+        PS_S.idOwner     = id.idOwner;
+        PS_S.roleEfektif = id.role || 'Unknown';
+        PS_S.namaUser    = id.nama || 'User';
+
+        if (!id.idOwner) {
+            PS_S.error = 'ID Owner tidak dapat di-resolve. Silakan login ulang sebagai Toko atau Kasir yang sah.';
+            console.warn('⚠️ BLOK 11.10:', PS_S.error, id);
+        } else {
+            PS_S.error = null;
+        }
+
+        // Baca setting ambang custom
+        try {
+            var key = 'settingsStok_' + _sanitizeId(PS_S.idOwner);
+            var raw = localStorage.getItem(key);
+            if (raw) {
+                var s = JSON.parse(raw);
+                if (s && s.ambang) PS_S.ambang = parseInt(s.ambang, 10) || 10;
+            }
+            if (!PS_S.ambang) PS_S.ambang = window.MPT_AMBANG_STOK || 10;
+        } catch (e) {
+            PS_S.ambang = window.MPT_AMBANG_STOK || 10;
+        }
+    }
+
+    function _isPemilik() { return PS_S.roleEfektif === 'Toko'; }
+    function _isKasir()   { return PS_S.roleEfektif === 'Kasir'; }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — PERMISSION GATE
+    // ═══════════════════════════════════════════════════════════
+    function _can(action) {
+        if (!PS_S.idOwner) return false;
+        if (_isPemilik()) return true;      // Toko = full access
+        if (_isKasir()) {
+            // Kasir: operasional saja
+            if (action === 'updateStok')   return true;
+            if (action === 'bulkSelected') return true;
+            if (action === 'lihatRiwayat') return true;
+            if (action === 'restockCepat') return true;
+            // Kasir TIDAK boleh:
+            if (action === 'bulkFilter')   return false;
+            if (action === 'export')       return false;
+            if (action === 'setAmbang')    return false;
+        }
+        return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — AUDIT LOG KASIR
+    // Catat setiap aksi kasir ke key terpisah (tidak mengganggu global)
+    // ═══════════════════════════════════════════════════════════
+    function _catatAuditKasir(aksi, idProduk, namaProduk, stokLama, stokBaru, ket) {
+        if (!_isKasir()) return;
+        try {
+            var key = 'kasirLog_' + _sanitizeId(PS_S.idOwner);
+            var list = JSON.parse(localStorage.getItem(key) || '[]');
+            if (!Array.isArray(list)) list = [];
+            list.unshift({
+                waktu: new Date().toISOString(),
+                idUser: PS_S.idUser,
+                namaUser: PS_S.namaUser,
+                role: PS_S.roleEfektif,
+                aksi: aksi,
+                idProduk: idProduk,
+                namaProduk: namaProduk || '-',
+                stokLama: stokLama,
+                stokBaru: stokBaru,
+                keterangan: ket || '-'
+            });
+            if (list.length > 1000) list = list.slice(0, 1000);
+            localStorage.setItem(key, JSON.stringify(list));
+        } catch (e) {}
+    }
+
+    function _getKasirLog(idProduk, limit) {
+        try {
+            var key = 'kasirLog_' + _sanitizeId(PS_S.idOwner);
+            var list = JSON.parse(localStorage.getItem(key) || '[]');
+            if (!Array.isArray(list)) return [];
+            if (idProduk) list = list.filter(function(x) { return x.idProduk === idProduk; });
+            return list.slice(0, limit || 100);
+        } catch (e) { return []; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — DATA LOADER (pakai global MP)
+    // ═══════════════════════════════════════════════════════════
+    function _loadPool() {
+        if (!PS_S.idOwner) return [];
+        if (typeof window.loadProdukByOwnerGlobal !== 'function') return [];
+        return window.loadProdukByOwnerGlobal(PS.role, PS_S.idOwner, { forceRefresh: true })
+            .filter(function(p) { return p && p.status !== 'Dihapus'; });
+    }
+
+    function _applyFilter(pool) {
+        var f = PS_S.f;
+        var fObj = {};
+        if (f.cari)     fObj.cari = f.cari;
+        if (f.kategori) fObj.kategori = f.kategori;
+
+        var hasil = pool.slice();
+        if (typeof window.filterProdukGlobal === 'function') {
+            hasil = window.filterProdukGlobal(hasil, fObj);
+        } else {
+            hasil = hasil.filter(function(p) {
+                if (f.kategori && p.kategori !== f.kategori) return false;
+                if (f.cari) {
+                    var hay = ((p.nama || '') + ' ' + (p.kode || '')).toLowerCase();
+                    if (hay.indexOf(f.cari.toLowerCase()) === -1) return false;
+                }
+                return true;
+            });
+        }
+
+        // Filter tab (rendah / habis) — pakai global MP-7
+        if (PS_S.tab === 'rendah') {
+            if (typeof window.getProdukStokRendahGlobal === 'function') {
+                var idSet = {};
+                window.getProdukStokRendahGlobal(PS.role, PS_S.idOwner, PS_S.ambang)
+                    .forEach(function(p) { if (p) idSet[p.id] = true; });
+                hasil = hasil.filter(function(p) { return idSet[p.id]; });
+            } else {
+                hasil = hasil.filter(function(p) {
+                    var s = parseInt(p.stok, 10) || 0;
+                    return s > 0 && s <= PS_S.ambang;
+                });
+            }
+        } else if (PS_S.tab === 'habis') {
+            if (typeof window.getProdukHabisGlobal === 'function') {
+                var idSet2 = {};
+                window.getProdukHabisGlobal(PS.role, PS_S.idOwner)
+                    .forEach(function(p) { if (p) idSet2[p.id] = true; });
+                hasil = hasil.filter(function(p) { return idSet2[p.id]; });
+            } else {
+                hasil = hasil.filter(function(p) { return (parseInt(p.stok, 10) || 0) <= 0; });
+            }
+        }
+
+        return hasil;
+    }
+
+    function _applySort(list) {
+        if (typeof window.sortProdukGlobal === 'function') {
+            return window.sortProdukGlobal(list, PS_S.sortBy, PS_S.sortDir);
+        }
+        var dir = PS_S.sortDir === 'asc' ? 1 : -1;
+        var by = PS_S.sortBy;
+        list.sort(function(a, b) {
+            var va = (by === 'nama') ? String(a.nama || '').toLowerCase() : (parseFloat(a[by]) || 0);
+            var vb = (by === 'nama') ? String(b.nama || '').toLowerCase() : (parseFloat(b[by]) || 0);
+            if (typeof va === 'string') return va < vb ? -dir : va > vb ? dir : 0;
+            return (va - vb) * dir;
+        });
+        return list;
+    }
+
+    function _extractKategori(pool) {
+        var m = {};
+        pool.forEach(function(p) { if (p.kategori) m[p.kategori] = (m[p.kategori] || 0) + 1; });
+        return Object.keys(m).sort().map(function(k) {
+            return { nama: k, jumlah: m[k] };
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — HTML SHELL
+    // ═══════════════════════════════════════════════════════════
+    function _shell() {
+        return '' +
+        '<div class="ps-root">' +
+
+            // ── Banner error identity ──
+            '<div id="psErrorBanner" style="display:none;"></div>' +
+
+            // ── Header ──
+            '<div class="ps-header" style="background:linear-gradient(135deg,' + PS.warna + ' 0%,' + PS.warna2 + ' 100%);">' +
+                '<div class="ps-header-inner">' +
+                    '<div>' +
+                        '<h1 class="ps-title"><i class="fas fa-clipboard-check me-2"></i>Pemeriksaan Stok</h1>' +
+                        '<div class="ps-header-meta">' +
+                            '<span id="psHdrToko"></span>' +
+                            '<span class="ps-badge-role" id="psHdrRole"></span>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="ps-header-btns">' +
+                        '<button class="ps-icon-btn" onclick="psRefreshGlobal()" title="Refresh"><i class="fas fa-sync-alt"></i></button>' +
+                        '<button class="ps-icon-btn" id="psBtnExport" onclick="psExportGlobal()" title="Export CSV"><i class="fas fa-file-csv"></i></button>' +
+                        '<button class="ps-icon-btn" id="psBtnAmbang" onclick="psBukaAmbangGlobal()" title="Setting Ambang"><i class="fas fa-cog"></i></button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+
+            // ── KPI (render dari global MP-8) ──
+            '<div id="psKPIWrap" class="ps-kpi-wrap"></div>' +
+
+            // ── Kesehatan stok (render dari global MP-8) ──
+            '<div id="psHealthWrap" class="ps-health-wrap"></div>' +
+
+            // ── Toolbar filter ──
+            '<div class="ps-toolbar">' +
+                '<div class="ps-search-wrap">' +
+                    '<i class="fas fa-search ps-search-ic"></i>' +
+                    '<input id="psCari" class="ps-search" placeholder="Cari nama atau kode produk..." ' +
+                           'oninput="psOnCariGlobal(this.value)">' +
+                    '<button id="psCariX" class="ps-search-x" onclick="psClearCariGlobal()" style="display:none;">' +
+                        '<i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<select id="psKategori" class="ps-select" onchange="psSetKategoriGlobal(this.value)">' +
+                    '<option value="">Semua Kategori</option>' +
+                '</select>' +
+                '<select id="psSort" class="ps-select" onchange="psOnSortGlobal(this.value)">' +
+                    '<option value="stok-asc">📉 Stok Terkecil</option>' +
+                    '<option value="stok-desc">📈 Stok Terbesar</option>' +
+                    '<option value="nilai-desc">💰 Nilai Terbesar</option>' +
+                    '<option value="nilai-asc">💸 Nilai Terkecil</option>' +
+                    '<option value="nama-asc">🔤 Nama A-Z</option>' +
+                    '<option value="terjual-desc">🔥 Terlaris</option>' +
+                '</select>' +
+                '<select id="psPerPage" class="ps-select" onchange="psSetPerPageGlobal(this.value)">' +
+                    '<option value="20">20 / hal</option>' +
+                    '<option value="50">50 / hal</option>' +
+                    '<option value="100">100 / hal</option>' +
+                '</select>' +
+            '</div>' +
+
+            // ── Tab bar ──
+            '<div class="ps-tabs">' +
+                '<button class="ps-tab" data-tab="semua" onclick="psSetTabGlobal(\'semua\')">' +
+                    '<i class="fas fa-boxes"></i> Semua</button>' +
+                '<button class="ps-tab" data-tab="rendah" onclick="psSetTabGlobal(\'rendah\')">' +
+                    '<i class="fas fa-exclamation-triangle"></i> Stok Rendah ' +
+                    '<span class="ps-tab-n" id="psTabRendahN">0</span></button>' +
+                '<button class="ps-tab" data-tab="habis" onclick="psSetTabGlobal(\'habis\')">' +
+                    '<i class="fas fa-times-circle"></i> Habis ' +
+                    '<span class="ps-tab-n" id="psTabHabisN">0</span></button>' +
+                '<button class="ps-tab" data-tab="riwayat" onclick="psSetTabGlobal(\'riwayat\')">' +
+                    '<i class="fas fa-history"></i> Riwayat</button>' +
+            '</div>' +
+
+            // ── Bulk bar (muncul kalau ada selected) ──
+            '<div id="psBulkBar" class="ps-bulk-bar" style="display:none;">' +
+                '<div class="ps-bulk-info">' +
+                    '<i class="fas fa-check-square"></i> ' +
+                    '<strong id="psBulkCount">0</strong> produk dipilih' +
+                '</div>' +
+                '<div class="ps-bulk-actions">' +
+                    '<button class="ps-btn ps-btn-1" onclick="psBukaBulkGlobal()">' +
+                        '<i class="fas fa-layer-group me-1"></i>Bulk Restock</button>' +
+                    '<button class="ps-btn ps-btn-ghost" onclick="psClearSelectedGlobal()">' +
+                        '<i class="fas fa-times me-1"></i>Batal</button>' +
+                '</div>' +
+            '</div>' +
+
+            // ── Info bar ──
+            '<div class="ps-info" id="psInfo">' +
+                '<i class="fas fa-spinner fa-spin me-2"></i>Memuat data...</div>' +
+
+            // ── Container tabel / riwayat ──
+            '<div id="psTableWrap" class="ps-table-wrap"></div>' +
+            '<div id="psRiwayatWrap" class="ps-riwayat-wrap" style="display:none;"></div>' +
+
+            // ── Pagination ──
+            '<div id="psPag" class="ps-pag"></div>' +
+        '</div>' +
+
+        // ── Modal Update Stok ──
+        '<div class="ps-modal" id="psModalUpdate" style="display:none;">' +
+            '<div class="ps-backdrop" onclick="psCloseUpdateGlobal()"></div>' +
+            '<div class="ps-dialog ps-dialog-sm">' +
+                '<div class="ps-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-edit me-2"></i>Update Stok</h5>' +
+                    '<button class="ps-modal-x" onclick="psCloseUpdateGlobal()"><i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="ps-modal-body" id="psUpdateBody"></div>' +
+                '<div class="ps-modal-foot">' +
+                    '<button class="ps-btn ps-btn-2" onclick="psCloseUpdateGlobal()">Batal</button>' +
+                    '<button class="ps-btn ps-btn-1" onclick="psSimpanUpdateGlobal()">Simpan</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        // ── Modal Bulk ──
+        '<div class="ps-modal" id="psModalBulk" style="display:none;">' +
+            '<div class="ps-backdrop" onclick="psCloseBulkGlobal()"></div>' +
+            '<div class="ps-dialog">' +
+                '<div class="ps-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-layer-group me-2"></i>Bulk Restock</h5>' +
+                    '<button class="ps-modal-x" onclick="psCloseBulkGlobal()"><i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="ps-modal-body" id="psBulkBody"></div>' +
+                '<div class="ps-modal-foot">' +
+                    '<button class="ps-btn ps-btn-2" onclick="psCloseBulkGlobal()">Batal</button>' +
+                    '<button class="ps-btn ps-btn-1" onclick="psSimpanBulkGlobal()">Proses</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        // ── Modal Riwayat ──
+        '<div class="ps-modal" id="psModalRiwayat" style="display:none;">' +
+            '<div class="ps-backdrop" onclick="psCloseRiwayatGlobal()"></div>' +
+            '<div class="ps-dialog ps-dialog-lg">' +
+                '<div class="ps-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-history me-2"></i>Riwayat Stok</h5>' +
+                    '<button class="ps-modal-x" onclick="psCloseRiwayatGlobal()"><i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="ps-modal-body" id="psRiwayatBody"></div>' +
+            '</div>' +
+        '</div>' +
+
+        // ── Modal Setting Ambang ──
+        '<div class="ps-modal" id="psModalAmbang" style="display:none;">' +
+            '<div class="ps-backdrop" onclick="psCloseAmbangGlobal()"></div>' +
+            '<div class="ps-dialog ps-dialog-sm">' +
+                '<div class="ps-modal-head">' +
+                    '<h5 class="mb-0"><i class="fas fa-cog me-2"></i>Setting Ambang Stok</h5>' +
+                    '<button class="ps-modal-x" onclick="psCloseAmbangGlobal()"><i class="fas fa-times"></i></button>' +
+                '</div>' +
+                '<div class="ps-modal-body">' +
+                    '<label class="ps-lbl">Ambang Stok Rendah</label>' +
+                    '<input type="number" id="psAmbangInput" class="ps-input" min="1" max="1000">' +
+                    '<p class="ps-help">Produk dengan stok ≤ nilai ini dianggap "rendah".</p>' +
+                '</div>' +
+                '<div class="ps-modal-foot">' +
+                    '<button class="ps-btn ps-btn-2" onclick="psCloseAmbangGlobal()">Batal</button>' +
+                    '<button class="ps-btn ps-btn-1" onclick="psSimpanAmbangGlobal()">Simpan</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — RENDER
+    // ═══════════════════════════════════════════════════════════
+    function _render() {
+        _renderErrorBanner();
+        _renderHeader();
+        _renderKPI();
+        _renderHealth();
+        _renderTabBar();
+        _renderKategoriOptions();
+        _renderBulkBar();
+
+        if (PS_S.tab === 'riwayat') {
+            var tw = document.getElementById('psTableWrap');
+            var rw = document.getElementById('psRiwayatWrap');
+            if (tw) tw.style.display = 'none';
+            if (rw) rw.style.display = 'block';
+            _renderRiwayatTab();
+            var pagEl = document.getElementById('psPag');
+            if (pagEl) pagEl.innerHTML = '';
+            return;
+        }
+
+        var tw2 = document.getElementById('psTableWrap');
+        var rw2 = document.getElementById('psRiwayatWrap');
+        if (tw2) tw2.style.display = 'block';
+        if (rw2) rw2.style.display = 'none';
+
+        _renderTable();
+        _renderPagination();
+        _renderFilterChipsState();
+        _renderTombolPermission();
+    }
+
+    function _renderErrorBanner() {
+        var el = document.getElementById('psErrorBanner');
+        if (!el) return;
+        if (PS_S.error) {
+            el.style.display = 'block';
+            el.innerHTML =
+                '<div class="ps-alert ps-alert-danger">' +
+                    '<i class="fas fa-exclamation-triangle me-2"></i>' +
+                    '<strong>Perhatian:</strong> ' + _esc(PS_S.error) +
+                '</div>';
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    function _renderHeader() {
+        var nama = PS_S.namaUser || 'User';
+        var role = PS_S.roleEfektif || 'Unknown';
+        var tEl = document.getElementById('psHdrToko');
+        var rEl = document.getElementById('psHdrRole');
+        if (tEl) tEl.textContent = 'Login sebagai: ' + nama;
+        if (rEl) {
+            rEl.textContent = role;
+            rEl.className = 'ps-badge-role' +
+                (role === 'Toko' ? ' ps-role-toko' :
+                 role === 'Kasir' ? ' ps-role-kasir' : '');
+        }
+    }
+
+    function _renderKPI() {
+        var el = document.getElementById('psKPIWrap');
+        if (!el) return;
+        if (!PS_S.idOwner) { el.innerHTML = ''; return; }
+        try {
+            var html = (typeof window.renderKPICardsProdukGlobal === 'function')
+                ? window.renderKPICardsProdukGlobal(PS.role, PS_S.idOwner)
+                : '';
+            el.innerHTML = html || '';
+        } catch (e) { el.innerHTML = ''; }
+    }
+
+    function _renderHealth() {
+        var el = document.getElementById('psHealthWrap');
+        if (!el) return;
+        if (!PS_S.idOwner) { el.innerHTML = ''; return; }
+        try {
+            var html = (typeof window.renderKesehatanStokProdukGlobal === 'function')
+                ? window.renderKesehatanStokProdukGlobal(PS.role, PS_S.idOwner)
+                : '';
+            el.innerHTML = html || '';
+        } catch (e) { el.innerHTML = ''; }
+    }
+
+    function _renderTabBar() {
+        document.querySelectorAll('.ps-tab').forEach(function(b) {
+            if (b.getAttribute('data-tab') === PS_S.tab) b.classList.add('ps-tab-on');
+            else b.classList.remove('ps-tab-on');
+        });
+
+        // Update counter tab rendah & habis
+        try {
+            var rendah = (typeof window.getProdukStokRendahGlobal === 'function')
+                ? window.getProdukStokRendahGlobal(PS.role, PS_S.idOwner, PS_S.ambang).length : 0;
+            var habis = (typeof window.getProdukHabisGlobal === 'function')
+                ? window.getProdukHabisGlobal(PS.role, PS_S.idOwner).length : 0;
+            var elR = document.getElementById('psTabRendahN'); if (elR) elR.textContent = rendah;
+            var elH = document.getElementById('psTabHabisN');  if (elH) elH.textContent = habis;
+        } catch (e) {}
+    }
+
+    function _renderKategoriOptions() {
+        var el = document.getElementById('psKategori');
+        if (!el) return;
+        var cur = PS_S.f.kategori;
+        var h = '<option value="">Semua Kategori</option>';
+        PS_S.kategori.forEach(function(k) {
+            h += '<option value="' + _esc(k.nama) + '"' +
+                 (k.nama === cur ? ' selected' : '') + '>' +
+                 _esc(k.nama) + ' (' + k.jumlah + ')</option>';
+        });
+        el.innerHTML = h;
+    }
+
+    function _renderBulkBar() {
+        var el = document.getElementById('psBulkBar');
+        if (!el) return;
+        var n = Object.keys(PS_S.selected).length;
+        if (n > 0 && PS_S.tab !== 'riwayat') {
+            el.style.display = 'flex';
+            var cEl = document.getElementById('psBulkCount');
+            if (cEl) cEl.textContent = n;
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    function _renderFilterChipsState() {
+        var x = document.getElementById('psCariX');
+        if (x) x.style.display = PS_S.f.cari ? 'block' : 'none';
+    }
+
+    function _renderTombolPermission() {
+        var bExp = document.getElementById('psBtnExport');
+        if (bExp) bExp.style.display = _can('export') ? 'flex' : 'none';
+
+        var bAmb = document.getElementById('psBtnAmbang');
+        if (bAmb) bAmb.style.display = _can('setAmbang') ? 'flex' : 'none';
+    }
+
+    // ── TABEL PRODUK ──
+    function _renderTable() {
+        var el = document.getElementById('psTableWrap');
+        if (!el) return;
+
+        var total = PS_S.data.length;
+        var tPages = Math.max(1, Math.ceil(total / PS_S.perPage));
+        if (PS_S.page > tPages) PS_S.page = tPages;
+        var s = (PS_S.page - 1) * PS_S.perPage;
+        var e = Math.min(s + PS_S.perPage, total);
+        var slice = PS_S.data.slice(s, e);
+
+        // Info bar
+        var infoEl = document.getElementById('psInfo');
+        if (infoEl) {
+            if (total === 0) {
+                infoEl.innerHTML = '<i class="fas fa-info-circle me-2"></i>' +
+                    (PS_S.tab === 'rendah' ? 'Tidak ada produk stok rendah.' :
+                     PS_S.tab === 'habis'  ? 'Tidak ada produk habis.' :
+                     'Tidak ada produk cocok filter.');
+            } else {
+                infoEl.innerHTML = '<i class="fas fa-box me-2"></i>Menampilkan <strong>' +
+                    (s + 1) + '–' + e + '</strong> dari <strong>' + total + '</strong> produk';
+            }
+        }
+
+        if (slice.length === 0) {
+            el.innerHTML = _emptyState();
+            return;
+        }
+
+        var html = '<div class="ps-table-responsive">';
+        html += '<table class="ps-table"><thead><tr>';
+        html += '<th class="ps-col-check"><input type="checkbox" id="psCheckAll" ' +
+                'onchange="psTogglePilihSemuaGlobal(this.checked)"></th>';
+        html += '<th class="ps-col-foto">Foto</th>';
+        html += '<th>Produk</th>';
+        html += '<th>Kategori</th>';
+        html += '<th class="text-end">Harga</th>';
+        html += '<th class="text-center">Stok</th>';
+        html += '<th class="text-end">Nilai Stok</th>';
+        html += '<th class="text-center">Aksi</th>';
+        html += '</tr></thead><tbody>';
+
+        slice.forEach(function(p) { html += _rowProduk(p); });
+        html += '</tbody></table></div>';
+
+        el.innerHTML = html;
+    }
+
+    function _rowProduk(p) {
+        var stok = parseInt(p.stok, 10) || 0;
+        var harga = parseFloat(p.harga) || 0;
+        var nilai = harga * stok;
+        var foto = p.foto || _ph(p.nama);
+        var idE = _escA(p.id);
+
+        var badgeClass = stok === 0 ? 'ps-b-r'
+            : stok <= PS_S.ambang ? 'ps-b-y' : 'ps-b-g';
+        var badgeTxt = stok === 0 ? 'Habis'
+            : stok <= PS_S.ambang ? 'Rendah' : 'OK';
+
+        var selected = PS_S.selected[p.id] ? ' checked' : '';
+
+        return '<tr>' +
+            '<td class="ps-col-check">' +
+                '<input type="checkbox" onchange="psTogglePilihGlobal(\'' + idE + '\',this.checked)"' + selected + '>' +
+            '</td>' +
+            '<td class="ps-col-foto">' +
+                '<img src="' + _esc(foto) + '" ' +
+                     'onerror="this.src=\'' + _ph(p.nama) + '\'">' +
+            '</td>' +
+            '<td>' +
+                '<div class="ps-p-nama">' + _esc(_trunc(p.nama || '-', 60)) + '</div>' +
+                '<div class="ps-p-kode"><code>' + _esc(p.kode || '-') + '</code></div>' +
+            '</td>' +
+            '<td><span class="ps-tag">' + _esc(p.kategori || '-') + '</span></td>' +
+            '<td class="text-end ps-p-harga">' + _rp(harga) + '</td>' +
+            '<td class="text-center">' +
+                '<div class="ps-stok-val">' + stok + ' <small>' + _esc(p.satuan || '') + '</small></div>' +
+                '<span class="ps-badge ' + badgeClass + '">' + badgeTxt + '</span>' +
+            '</td>' +
+            '<td class="text-end ps-p-nilai">' + _rp(nilai) + '</td>' +
+            '<td class="text-center">' +
+                '<div class="ps-aksi-group">' +
+                    '<button class="ps-ib ps-ib-g" onclick="psBukaUpdateGlobal(\'' + idE + '\',\'tambah\')" title="Tambah stok">' +
+                        '<i class="fas fa-plus"></i></button>' +
+                    '<button class="ps-ib ps-ib-r" onclick="psBukaUpdateGlobal(\'' + idE + '\',\'kurang\')" title="Kurangi stok">' +
+                        '<i class="fas fa-minus"></i></button>' +
+                    '<button class="ps-ib ps-ib-s" onclick="psBukaUpdateGlobal(\'' + idE + '\',\'set\')" title="Set stok">' +
+                        '<i class="fas fa-cog"></i></button>' +
+                    '<button class="ps-ib ps-ib-i" onclick="psBukaRiwayatProdukGlobal(\'' + idE + '\')" title="Riwayat produk">' +
+                        '<i class="fas fa-history"></i></button>' +
+                '</div>' +
+            '</td>' +
+        '</tr>';
+    }
+
+    function _emptyState() {
+        if (PS_S.tab === 'rendah') {
+            return '<div class="ps-empty">' +
+                '<div class="ps-empty-ic"><i class="fas fa-check-circle text-success"></i></div>' +
+                '<h4>Semua Stok Aman</h4>' +
+                '<p>Tidak ada produk dengan stok rendah saat ini.</p></div>';
+        }
+        if (PS_S.tab === 'habis') {
+            return '<div class="ps-empty">' +
+                '<div class="ps-empty-ic"><i class="fas fa-check-circle text-success"></i></div>' +
+                '<h4>Tidak Ada Produk Habis</h4>' +
+                '<p>Semua produk tersedia.</p></div>';
+        }
+        return '<div class="ps-empty">' +
+            '<div class="ps-empty-ic"><i class="fas fa-box-open"></i></div>' +
+            '<h4>Tidak Ada Produk</h4>' +
+            '<p>Belum ada produk atau filter terlalu ketat.</p>' +
+            '<button class="ps-btn ps-btn-2" onclick="psResetFilterGlobal()">' +
+            '<i class="fas fa-undo me-1"></i>Reset Filter</button></div>';
+    }
+
+    function _renderPagination() {
+        var el = document.getElementById('psPag');
+        if (!el) return;
+        var total = PS_S.data.length;
+        var tPages = Math.max(1, Math.ceil(total / PS_S.perPage));
+        if (tPages <= 1) {
+            el.innerHTML = total > 0
+                ? '<div class="ps-pag-info">' + total + ' produk</div>'
+                : '';
+            return;
+        }
+        var page = PS_S.page;
+        var h = '<div class="ps-pag-info">Halaman ' + page + ' / ' + tPages +
+                ' • ' + total + ' produk</div>';
+        h += '<div class="ps-pag-btns">';
+        h += '<button class="ps-pg" ' + (page <= 1 ? 'disabled' : '') +
+             ' onclick="psGotoPageGlobal(' + (page - 1) + ')"><i class="fas fa-chevron-left"></i></button>';
+        var st = Math.max(1, page - 2);
+        var en = Math.min(tPages, page + 2);
+        if (st > 1) {
+            h += '<button class="ps-pg" onclick="psGotoPageGlobal(1)">1</button>';
+            if (st > 2) h += '<span class="ps-dots">…</span>';
+        }
+        for (var i = st; i <= en; i++) {
+            h += '<button class="ps-pg' + (i === page ? ' ps-pg-on' : '') +
+                 '" onclick="psGotoPageGlobal(' + i + ')">' + i + '</button>';
+        }
+        if (en < tPages) {
+            if (en < tPages - 1) h += '<span class="ps-dots">…</span>';
+            h += '<button class="ps-pg" onclick="psGotoPageGlobal(' + tPages + ')">' + tPages + '</button>';
+        }
+        h += '<button class="ps-pg" ' + (page >= tPages ? 'disabled' : '') +
+             ' onclick="psGotoPageGlobal(' + (page + 1) + ')"><i class="fas fa-chevron-right"></i></button>';
+        h += '</div>';
+        el.innerHTML = h;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — TAB RIWAYAT
+    // ═══════════════════════════════════════════════════════════
+    function _renderRiwayatTab() {
+        var el = document.getElementById('psRiwayatWrap');
+        if (!el) return;
+
+        var list = [];
+        try {
+            if (typeof window.getStokHistoryGlobal === 'function') {
+                list = window.getStokHistoryGlobal(PS.role, PS_S.idOwner, null, PS_S.riwayatLimit);
+            }
+        } catch (e) {}
+
+        if (!Array.isArray(list) || list.length === 0) {
+            el.innerHTML = '<div class="ps-empty">' +
+                '<div class="ps-empty-ic"><i class="fas fa-history"></i></div>' +
+                '<h4>Belum Ada Riwayat</h4>' +
+                '<p>Setiap perubahan stok akan tampil di sini.</p></div>';
+            return;
+        }
+
+        var h = '<div class="ps-riwayat-list">';
+        list.forEach(function(r) {
+            var aksi = r.aksi || '-';
+            var cls = aksi === 'tambah' ? 'ps-rw-g' : aksi === 'kurang' ? 'ps-rw-r' : 'ps-rw-s';
+            var ikon = aksi === 'tambah' ? 'fa-plus-circle'
+                : aksi === 'kurang' ? 'fa-minus-circle' : 'fa-edit';
+            var delta = (r.stokBaru != null && r.stokLama != null)
+                ? (r.stokBaru - r.stokLama) : null;
+            var deltaTxt = delta != null
+                ? (delta > 0 ? '+' : '') + delta
+                : '';
+
+            h += '<div class="ps-rw-row">' +
+                '<div class="ps-rw-ic ' + cls + '">' +
+                    '<i class="fas ' + ikon + '"></i></div>' +
+                '<div class="ps-rw-body">' +
+                    '<div class="ps-rw-top">' +
+                        '<strong>' + _esc(r.namaProduk || 'Produk') + '</strong>' +
+                        '<span class="ps-rw-delta ' + cls + '">' + deltaTxt + '</span>' +
+                    '</div>' +
+                    '<div class="ps-rw-meta">' +
+                        '<span>' + _esc(r.stokLama != null ? r.stokLama : '?') +
+                        ' → ' + _esc(r.stokBaru != null ? r.stokBaru : '?') + '</span>' +
+                        '<span>•</span>' +
+                        '<span><i class="fas fa-user"></i> ' + _esc(r.idUser || '-') + '</span>' +
+                        '<span>•</span>' +
+                        '<span title="' + _esc(r.waktu || '') + '">' + _fmtRelatif(r.waktu) + '</span>' +
+                        (r.keterangan && r.keterangan !== '-'
+                            ? '<span>•</span><span><em>' + _esc(r.keterangan) + '</em></span>'
+                            : '') +
+                    '</div>' +
+                '</div>' +
+                '<div class="ps-rw-time">' + _fmtTgl(r.waktu) + '</div>' +
+            '</div>';
+        });
+        h += '</div>';
+        el.innerHTML = h;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — PUBLIC API
+    // ═══════════════════════════════════════════════════════════
+    window.psRefreshGlobal = function() {
+        try {
+            if (PS_S.error) { _render(); return false; }
+            PS_S.pool = _loadPool();
+            PS_S.kategori = _extractKategori(PS_S.pool);
+            _applyFilterSortAndRender();
+            return true;
+        } catch (e) {
+            console.error('psRefreshGlobal error:', e);
+            return false;
+        }
+    };
+
+    function _applyFilterSortAndRender() {
+        var filtered = _applyFilter(PS_S.pool);
+        PS_S.data = _applySort(filtered);
+        _render();
+    }
+
+    window.psSetTabGlobal = function(tab) {
+        if (['semua','rendah','habis','riwayat'].indexOf(tab) === -1) return;
+        PS_S.tab = tab;
+        PS_S.page = 1;
+        PS_S.selected = {};
+        _applyFilterSortAndRender();
+    };
+
+    window.psOnCariGlobal = function(v) {
+        PS_S.f.cari = String(v || '');
+        _renderFilterChipsState();
+        if (window._psT) clearTimeout(window._psT);
+        window._psT = setTimeout(function() {
+            PS_S.page = 1;
+            _applyFilterSortAndRender();
+        }, 250);
+    };
+
+    window.psClearCariGlobal = function() {
+        var el = document.getElementById('psCari');
+        if (el) el.value = '';
+        PS_S.f.cari = '';
+        PS_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.psSetKategoriGlobal = function(k) {
+        PS_S.f.kategori = k || '';
+        PS_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.psOnSortGlobal = function(v) {
+        var p = String(v || 'stok-asc').split('-');
+        PS_S.sortBy = p[0];
+        PS_S.sortDir = p[1] || 'asc';
+        PS_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.psSetPerPageGlobal = function(v) {
+        PS_S.perPage = parseInt(v, 10) || 20;
+        PS_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.psResetFilterGlobal = function() {
+        PS_S.f = { cari: '', kategori: '', hanyaRendah: false, hanyaHabis: false };
+        var el = document.getElementById('psCari');
+        if (el) el.value = '';
+        PS_S.page = 1;
+        _applyFilterSortAndRender();
+    };
+
+    window.psGotoPageGlobal = function(p) {
+        var t = Math.max(1, Math.ceil(PS_S.data.length / PS_S.perPage));
+        PS_S.page = Math.max(1, Math.min(t, parseInt(p, 10) || 1));
+        _render();
+        var el = document.getElementById('psTableWrap');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    // ── Pilih (bulk) ──
+    window.psTogglePilihGlobal = function(id, checked) {
+        if (checked) PS_S.selected[id] = true;
+        else delete PS_S.selected[id];
+        _renderBulkBar();
+    };
+
+    window.psTogglePilihSemuaGlobal = function(checked) {
+        var tPages = Math.max(1, Math.ceil(PS_S.data.length / PS_S.perPage));
+        var s = (PS_S.page - 1) * PS_S.perPage;
+        var e = Math.min(s + PS_S.perPage, PS_S.data.length);
+        var slice = PS_S.data.slice(s, e);
+        slice.forEach(function(p) {
+            if (checked) PS_S.selected[p.id] = true;
+            else delete PS_S.selected[p.id];
+        });
+        _render();
+    };
+
+    window.psClearSelectedGlobal = function() {
+        PS_S.selected = {};
+        _render();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — UPDATE STOK (single)
+    // ═══════════════════════════════════════════════════════════
+    var _updateCtx = null;
+
+    window.psBukaUpdateGlobal = function(id, aksi) {
+        if (!_can('updateStok')) {
+            _toast('Anda tidak memiliki izin untuk update stok.', 'warning');
+            return;
+        }
+        var p = null;
+        for (var i = 0; i < PS_S.pool.length; i++) {
+            if (PS_S.pool[i] && PS_S.pool[i].id === id) { p = PS_S.pool[i]; break; }
+        }
+        if (!p) { _toast('Produk tidak ditemukan.', 'warning'); return; }
+
+        _updateCtx = { produk: p, aksi: aksi || 'tambah' };
+
+        var body = document.getElementById('psUpdateBody');
+        if (!body) return;
+        var stok = parseInt(p.stok, 10) || 0;
+        var judul = aksi === 'tambah' ? 'Tambah Stok'
+            : aksi === 'kurang' ? 'Kurangi Stok' : 'Set Stok';
+
+        body.innerHTML =
+            '<div class="ps-update-head">' +
+                '<img src="' + _esc(p.foto || _ph(p.nama)) + '" class="ps-update-img" ' +
+                     'onerror="this.src=\'' + _ph(p.nama) + '\'">' +
+                '<div>' +
+                    '<div class="ps-update-nama">' + _esc(p.nama || '-') + '</div>' +
+                    '<div class="ps-update-kode"><code>' + _esc(p.kode || '-') + '</code></div>' +
+                    '<div class="ps-update-stok">Stok saat ini: <strong>' + stok + '</strong> ' +
+                        _esc(p.satuan || '') + '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="ps-update-tabs">' +
+                '<button class="ps-up-tab' + (aksi === 'tambah' ? ' on' : '') + '" ' +
+                        'onclick="psGantiAksiGlobal(\'tambah\')">+ Tambah</button>' +
+                '<button class="ps-up-tab' + (aksi === 'kurang' ? ' on' : '') + '" ' +
+                        'onclick="psGantiAksiGlobal(\'kurang\')">− Kurang</button>' +
+                '<button class="ps-up-tab' + (aksi === 'set' ? ' on' : '') + '" ' +
+                        'onclick="psGantiAksiGlobal(\'set\')">⚙ Set</button>' +
+            '</div>' +
+            '<label class="ps-lbl">Jumlah</label>' +
+            '<input type="number" id="psUpdateJml" class="ps-input" min="' +
+                (aksi === 'set' ? 0 : 1) + '" value="1">' +
+            '<label class="ps-lbl mt-2">Keterangan (opsional)</label>' +
+            '<input type="text" id="psUpdateKet" class="ps-input" maxlength="100" ' +
+                   'placeholder="Contoh: restock dari supplier">' +
+            '<div class="ps-preview" id="psUpdatePreview"></div>';
+
+        var m = document.getElementById('psModalUpdate');
+        if (m) m.style.display = 'flex';
+
+        var inp = document.getElementById('psUpdateJml');
+        if (inp) {
+            inp.focus();
+            inp.addEventListener('input', _updatePreview);
+            inp.addEventListener('change', _updatePreview);
+        }
+        _updatePreview();
+    };
+
+    window.psGantiAksiGlobal = function(aksi) {
+        if (!_updateCtx) return;
+        _updateCtx.aksi = aksi;
+        window.psBukaUpdateGlobal(_updateCtx.produk.id, aksi);
+    };
+
+    function _updatePreview() {
+        var el = document.getElementById('psUpdatePreview');
+        if (!el || !_updateCtx) return;
+        var p = _updateCtx.produk;
+        var stok = parseInt(p.stok, 10) || 0;
+        var jmlEl = document.getElementById('psUpdateJml');
+        var jml = parseInt(jmlEl ? jmlEl.value : 0, 10) || 0;
+
+        var stokBaru = _updateCtx.aksi === 'tambah' ? stok + jml
+                    : _updateCtx.aksi === 'kurang' ? stok - jml
+                    : jml;
+        var cls = stokBaru < 0 ? 'ps-pv-r' : 'ps-pv-g';
+
+        el.innerHTML =
+            '<div class="ps-pv-row">' +
+                '<span>Stok lama:</span><strong>' + stok + '</strong>' +
+            '</div>' +
+            '<div class="ps-pv-row">' +
+                '<span>Stok baru:</span><strong class="' + cls + '">' +
+                stokBaru + '</strong>' +
+            '</div>' +
+            (stokBaru < 0
+                ? '<div class="ps-pv-warn"><i class="fas fa-exclamation-triangle me-1"></i>' +
+                  'Stok akan menjadi negatif</div>'
+                : '');
+    }
+
+    window.psCloseUpdateGlobal = function() {
+        var m = document.getElementById('psModalUpdate');
+        if (m) m.style.display = 'none';
+        _updateCtx = null;
+    };
+
+    window.psSimpanUpdateGlobal = function() {
+        if (!_updateCtx || !_can('updateStok')) return;
+        var p = _updateCtx.produk;
+        var aksi = _updateCtx.aksi;
+        var jmlEl = document.getElementById('psUpdateJml');
+        var jml = parseInt(jmlEl ? jmlEl.value : 0, 10) || 0;
+        var ketEl = document.getElementById('psUpdateKet');
+        var ket = ketEl ? String(ketEl.value || '').trim() : '';
+
+        if (aksi !== 'set' && jml <= 0) {
+            _toast('Jumlah harus > 0.', 'warning'); return;
+        }
+        if (aksi === 'set' && jml < 0) {
+            _toast('Jumlah tidak boleh negatif.', 'warning'); return;
+        }
+
+        // Validasi lewat global MP-6
+        var v = null;
+        if (typeof window.validasiUpdateStokGlobal === 'function') {
+            v = window.validasiUpdateStokGlobal(p.id, aksi, jml);
+            if (v && !v.valid) { _toast(v.pesan, 'warning'); return; }
+        }
+
+        var stokLama = parseInt(p.stok, 10) || 0;
+
+        // Eksekusi lewat global MP-6
+        var hasil = null;
+        if (typeof window.updateStokProdukGlobal === 'function') {
+            hasil = window.updateStokProdukGlobal(PS.role, p.id, aksi, jml, {
+                idOwner: PS_S.idOwner,
+                keterangan: ket || (aksi + ' stok'),
+                catatHistory: true
+            });
+        }
+
+        if (!hasil || !hasil.sukses) {
+            _toast((hasil && hasil.pesan) || 'Gagal update stok.', 'danger');
+            return;
+        }
+
+        var stokBaru = (hasil.produk && hasil.produk.stok != null)
+            ? parseInt(hasil.produk.stok, 10) : (aksi === 'tambah' ? stokLama + jml
+            : aksi === 'kurang' ? stokLama - jml : jml);
+
+        // Audit kasir (layer UI)
+        _catatAuditKasir(aksi, p.id, p.nama, stokLama, stokBaru, ket);
+
+        _toast('Stok berhasil diperbarui.', 'success');
+        window.psCloseUpdateGlobal();
+        window.psRefreshGlobal();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — BULK RESTOCK
+    // ═══════════════════════════════════════════════════════════
+    window.psBukaBulkGlobal = function() {
+        var ids = Object.keys(PS_S.selected);
+        if (ids.length === 0) {
+            _toast('Pilih minimal 1 produk.', 'warning'); return;
+        }
+        if (!_can('bulkSelected')) {
+            _toast('Anda tidak memiliki izin untuk bulk.', 'warning'); return;
+        }
+
+        var body = document.getElementById('psBulkBody');
+        if (!body) return;
+
+        body.innerHTML =
+            '<div class="ps-bulk-info-head">' +
+                '<i class="fas fa-layer-group"></i> ' +
+                '<strong>' + ids.length + '</strong> produk akan diproses' +
+            '</div>' +
+            '<div class="ps-update-tabs">' +
+                '<button class="ps-up-tab on" id="psBulkT1" onclick="psBulkModeGlobal(\'tambah\')">+ Tambah</button>' +
+                '<button class="ps-up-tab" id="psBulkT2" onclick="psBulkModeGlobal(\'kurang\')">− Kurang</button>' +
+                '<button class="ps-up-tab" id="psBulkT3" onclick="psBulkModeGlobal(\'set\')">⚙ Set</button>' +
+            '</div>' +
+            '<label class="ps-lbl">Jumlah</label>' +
+            '<input type="number" id="psBulkJml" class="ps-input" min="1" value="10">' +
+            '<label class="ps-lbl mt-2">Keterangan (opsional)</label>' +
+            '<input type="text" id="psBulkKet" class="ps-input" maxlength="100" ' +
+                   'placeholder="Contoh: restock massal">' +
+            '<div class="ps-pv" id="psBulkPreview"></div>';
+
+        var m = document.getElementById('psModalBulk');
+        if (m) m.style.display = 'flex';
+
+        _bulkMode = 'tambah';
+        var inp = document.getElementById('psBulkJml');
+        if (inp) inp.addEventListener('input', _previewBulk);
+        _previewBulk();
+    };
+
+    var _bulkMode = 'tambah';
+
+    window.psBulkModeGlobal = function(mode) {
+        _bulkMode = mode;
+        document.querySelectorAll('#psModalBulk .ps-up-tab').forEach(function(b) {
+            b.classList.remove('on');
+        });
+        var map = { tambah: 'psBulkT1', kurang: 'psBulkT2', set: 'psBulkT3' };
+        var el = document.getElementById(map[mode]);
+        if (el) el.classList.add('on');
+        _previewBulk();
+    };
+
+    function _previewBulk() {
+        var el = document.getElementById('psBulkPreview');
+        if (!el) return;
+        var ids = Object.keys(PS_S.selected);
+        var jmlEl = document.getElementById('psBulkJml');
+        var jml = parseInt(jmlEl ? jmlEl.value : 0, 10) || 0;
+
+        // Pakai previewBulkGlobal kalau ada
+        var pv = null;
+        if (typeof window.previewBulkGlobal === 'function') {
+            var aksiKey = _bulkMode === 'tambah' ? 'aktifkan'
+                        : _bulkMode === 'kurang' ? 'hapus' : 'aktifkan';
+            // previewBulkGlobal tidak ada aksi stok spesifik → hitung manual
+        }
+
+        // Hitung manual
+        var akan = 0, skip = 0, err = 0;
+        ids.forEach(function(id) {
+            var p = null;
+            for (var i = 0; i < PS_S.pool.length; i++) {
+                if (PS_S.pool[i] && PS_S.pool[i].id === id) { p = PS_S.pool[i]; break; }
+            }
+            if (!p) { err++; return; }
+            var stok = parseInt(p.stok, 10) || 0;
+            if (_bulkMode === 'kurang' && stok < jml) { skip++; return; }
+            akan++;
+        });
+
+        el.innerHTML =
+            '<div class="ps-pv-row"><span>Mode:</span><strong>' +
+                _esc(_bulkMode.toUpperCase()) + '</strong></div>' +
+            '<div class="ps-pv-row"><span>Jumlah:</span><strong>' + jml + '</strong></div>' +
+            '<div class="ps-pv-row"><span>Akan diproses:</span><strong class="ps-pv-g">' +
+                akan + '</strong></div>' +
+            (skip > 0 ? '<div class="ps-pv-row"><span>Skip (stok kurang):</span>' +
+                '<strong class="ps-pv-y">' + skip + '</strong></div>' : '') +
+            (err > 0 ? '<div class="ps-pv-row"><span>Tidak ditemukan:</span>' +
+                '<strong class="ps-pv-r">' + err + '</strong></div>' : '');
+    }
+
+    window.psCloseBulkGlobal = function() {
+        var m = document.getElementById('psModalBulk');
+        if (m) m.style.display = 'none';
+    };
+
+    window.psSimpanBulkGlobal = function() {
+        var ids = Object.keys(PS_S.selected);
+        if (ids.length === 0) return;
+        if (!_can('bulkSelected')) { _toast('Tidak diizinkan.', 'warning'); return; }
+
+        var jmlEl = document.getElementById('psBulkJml');
+        var jml = parseInt(jmlEl ? jmlEl.value : 0, 10) || 0;
+        var ketEl = document.getElementById('psBulkKet');
+        var ket = ketEl ? String(ketEl.value || '').trim() : '';
+
+        if (_bulkMode !== 'set' && jml <= 0) {
+            _toast('Jumlah harus > 0.', 'warning'); return;
+        }
+
+        // Snapshot stok lama untuk audit
+        var snapshot = {};
+        ids.forEach(function(id) {
+            for (var i = 0; i < PS_S.pool.length; i++) {
+                if (PS_S.pool[i] && PS_S.pool[i].id === id) {
+                    snapshot[id] = {
+                        nama: PS_S.pool[i].nama,
+                        stokLama: parseInt(PS_S.pool[i].stok, 10) || 0
+                    };
+                    break;
+                }
+            }
+        });
+
+        // Eksekusi lewat global MP-10
+        var hasil = null;
+        if (typeof window.bulkUpdateStokGlobal === 'function') {
+            hasil = window.bulkUpdateStokGlobal(
+                PS.role, ids, _bulkMode, jml,
+                { idOwner: PS_S.idOwner, keterangan: ket || '[BULK] ' + _bulkMode }
+            );
+        }
+
+        if (!hasil || !hasil.sukses) {
+            _toast((hasil && hasil.pesan) || 'Gagal bulk update.', 'danger');
+            return;
+        }
+
+        // Audit kasir
+        if (Array.isArray(hasil.produkBerubah)) {
+            hasil.produkBerubah.forEach(function(item) {
+                var snap = snapshot[item.id] || {};
+                _catatAuditKasir(_bulkMode, item.id, snap.nama,
+                    item.lama != null ? item.lama : snap.stokLama,
+                    item.baru != null ? item.baru : null, ket || '[BULK]');
+            });
+        }
+
+        _toast(hasil.berhasil + ' produk berhasil diupdate.', 'success');
+        PS_S.selected = {};
+        window.psCloseBulkGlobal();
+        window.psRefreshGlobal();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — RIWAYAT PRODUK (per produk)
+    // ═══════════════════════════════════════════════════════════
+    window.psBukaRiwayatProdukGlobal = function(id) {
+        if (!_can('lihatRiwayat')) return;
+        var p = null;
+        for (var i = 0; i < PS_S.pool.length; i++) {
+            if (PS_S.pool[i] && PS_S.pool[i].id === id) { p = PS_S.pool[i]; break; }
+        }
+        if (!p) return;
+
+        var list = [];
+        try {
+            if (typeof window.getStokHistoryGlobal === 'function') {
+                list = window.getStokHistoryGlobal(PS.role, PS_S.idOwner, id, 100);
+            }
+        } catch (e) {}
+
+        // Gabung audit kasir (layer UI)
+        var kasirLog = _getKasirLog(id, 100);
+        // Gabung & sort by waktu desc
+        var merged = list.concat(kasirLog.map(function(x) {
+            return {
+                waktu: x.waktu,
+                aksi: x.aksi,
+                jumlah: null,
+                stokLama: x.stokLama,
+                stokBaru: x.stokBaru,
+                keterangan: x.keterangan + ' — oleh kasir: ' + x.namaUser
+            };
+        }));
+        merged.sort(function(a, b) {
+            return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+        });
+
+        var body = document.getElementById('psRiwayatBody');
+        if (!body) return;
+
+        var h = '<div class="ps-rw-head">' +
+            '<div><strong>' + _esc(p.nama || '-') + '</strong>' +
+            '<br><code>' + _esc(p.kode || '-') + '</code></div>' +
+            '<div class="ps-rw-stok">Stok saat ini: <strong>' +
+                (parseInt(p.stok, 10) || 0) + '</strong> ' + _esc(p.satuan || '') +
+            '</div></div>';
+
+        if (merged.length === 0) {
+            h += '<div class="ps-empty ps-empty-sm">' +
+                '<div class="ps-empty-ic"><i class="fas fa-history"></i></div>' +
+                '<h4>Belum Ada Riwayat</h4></div>';
+        } else {
+            h += '<div class="ps-riwayat-list">';
+            merged.forEach(function(r) {
+                var aksi = r.aksi || '-';
+                var cls = aksi === 'tambah' ? 'ps-rw-g'
+                        : aksi === 'kurang' ? 'ps-rw-r' : 'ps-rw-s';
+                var delta = (r.stokBaru != null && r.stokLama != null)
+                    ? (r.stokBaru - r.stokLama) : null;
+                h += '<div class="ps-rw-row">' +
+                    '<div class="ps-rw-body">' +
+                        '<div class="ps-rw-top">' +
+                            '<strong>' + _esc(aksi.toUpperCase()) + '</strong>' +
+                            (delta != null
+                                ? '<span class="ps-rw-delta ' + cls + '">' +
+                                  (delta > 0 ? '+' : '') + delta + '</span>'
+                                : '') +
+                        '</div>' +
+                        '<div class="ps-rw-meta">' +
+                            '<span>' + _esc(r.stokLama != null ? r.stokLama : '?') +
+                            ' → ' + _esc(r.stokBaru != null ? r.stokBaru : '?') + '</span>' +
+                            (r.keterangan
+                                ? '<span>•</span><span><em>' + _esc(r.keterangan) + '</em></span>'
+                                : '') +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="ps-rw-time">' + _fmtTgl(r.waktu) + '</div>' +
+                '</div>';
+            });
+            h += '</div>';
+        }
+
+        body.innerHTML = h;
+
+        var m = document.getElementById('psModalRiwayat');
+        if (m) m.style.display = 'flex';
+    };
+
+    window.psCloseRiwayatGlobal = function() {
+        var m = document.getElementById('psModalRiwayat');
+        if (m) m.style.display = 'none';
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — EXPORT & SETTING AMBANG
+    // ═══════════════════════════════════════════════════════════
+    window.psExportGlobal = function() {
+        if (!_can('export')) {
+            _toast('Hanya pemilik toko yang bisa export.', 'warning');
+            return;
+        }
+        if (typeof window.exportProdukCSVGlobal !== 'function') {
+            _toast('Fungsi export tidak tersedia.', 'warning'); return;
+        }
+        var filter = {};
+        if (PS_S.tab === 'rendah') {
+            filter.stokMin = 1;
+            filter.stokMax = PS_S.ambang;
+        }
+        if (PS_S.tab === 'habis') {
+            filter.stokMax = 0;
+        }
+        if (PS_S.f.kategori) filter.kategori = PS_S.f.kategori;
+        if (PS_S.f.cari)     filter.cari = PS_S.f.cari;
+
+        var hasil = window.exportProdukCSVGlobal(PS.role, PS_S.idOwner, {
+            filter: Object.keys(filter).length > 0 ? filter : undefined,
+            excludeDihapus: true
+        });
+        if (hasil && hasil.sukses) {
+            _toast('Export: ' + hasil.total + ' produk → ' + hasil.namaFile, 'success');
+        } else {
+            _toast((hasil && hasil.pesan) || 'Gagal export.', 'danger');
+        }
+    };
+
+    window.psBukaAmbangGlobal = function() {
+        if (!_can('setAmbang')) {
+            _toast('Hanya pemilik toko yang bisa ubah ambang.', 'warning');
+            return;
+        }
+        var inp = document.getElementById('psAmbangInput');
+        if (inp) inp.value = PS_S.ambang;
+        var m = document.getElementById('psModalAmbang');
+        if (m) m.style.display = 'flex';
+    };
+
+    window.psCloseAmbangGlobal = function() {
+        var m = document.getElementById('psModalAmbang');
+        if (m) m.style.display = 'none';
+    };
+
+    window.psSimpanAmbangGlobal = function() {
+        var inp = document.getElementById('psAmbangInput');
+        var v = parseInt(inp ? inp.value : 0, 10) || 10;
+        if (v < 1) v = 1;
+        if (v > 1000) v = 1000;
+        PS_S.ambang = v;
+        try {
+            var key = 'settingsStok_' + _sanitizeId(PS_S.idOwner);
+            localStorage.setItem(key, JSON.stringify({ ambang: v }));
+        } catch (e) {}
+        _toast('Ambang stok: ' + v + ' unit.', 'success');
+        window.psCloseAmbangGlobal();
+        window.psRefreshGlobal();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanPemeriksaanStokToko = function(opts) {
+        opts = opts || {};
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) { console.warn('#kontenDasbor tidak ditemukan.'); return false; }
+
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            // Init identity SEBELUM render
+            _initIdentity();
+
+            if (opts.perPage) PS_S.perPage = parseInt(opts.perPage, 10) || 20;
+
+            konten.innerHTML = _shell();
+
+            setTimeout(function() {
+                // Set dropdown values
+                var spEl = document.getElementById('psPerPage');
+                if (spEl) spEl.value = String(PS_S.perPage);
+                var sEl = document.getElementById('psSort');
+                if (sEl) sEl.value = PS_S.sortBy + '-' + PS_S.sortDir;
+
+                // Set ambang di setting
+                var abEl = document.getElementById('psAmbangInput');
+                if (abEl) abEl.value = PS_S.ambang;
+
+                PS_S.mounted = true;
+
+                if (PS_S.error) {
+                    _render();
+                    return;
+                }
+                window.psRefreshGlobal();
+                console.log('✅ BLOK R 11.10 — Pemeriksaan Stok Toko rendered');
+                console.log('   Role efektif:', PS_S.roleEfektif, '| idOwner:', PS_S.idOwner);
+            }, 60);
+
+            return true;
+        } catch (e) {
+            console.error('tampilkanPemeriksaanStokToko error:', e);
+            return false;
+        }
+    };
+
+    // ── Register menu handlers ──
+    window.menuHandlers = window.menuHandlers || {};
+    ['tampilkanPemeriksaanStokToko', 'pemeriksaanStokToko', 'bukaPemeriksaanStok',
+     'tampilkanStokToko', 'manajemenStokToko']
+        .forEach(function(k) {
+            if (typeof window.menuHandlers[k] !== 'function') {
+                window.menuHandlers[k] = function() {
+                    return window.tampilkanPemeriksaanStokToko();
+                };
+            }
+        });
+
+    // ── Auto-refresh ──
+    window.addEventListener('r2coin:produk-berubah', function() {
+        if (PS_S.mounted && !PS_S.error) window.psRefreshGlobal();
+    });
+
+    // ── ESC tutup modal ──
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        ['psModalUpdate','psModalBulk','psModalRiwayat','psModalAmbang']
+            .forEach(function(id) {
+                var m = document.getElementById(id);
+                if (m && m.style.display === 'flex') m.style.display = 'none';
+            });
+    });
+
+    // ── Debug ──
+    window.debugPemeriksaanStokGlobal = function() {
+        return {
+            identity: {
+                idUser: PS_S.idUser,
+                idOwner: PS_S.idOwner,
+                roleEfektif: PS_S.roleEfektif,
+                namaUser: PS_S.namaUser,
+                error: PS_S.error
+            },
+            state: {
+                tab: PS_S.tab,
+                page: PS_S.page,
+                perPage: PS_S.perPage,
+                ambang: PS_S.ambang,
+                pool: PS_S.pool.length,
+                filtered: PS_S.data.length,
+                selected: Object.keys(PS_S.selected).length,
+                filter: PS_S.f,
+                sort: PS_S.sortBy + ' ' + PS_S.sortDir
+            },
+            permissions: {
+                updateStok:   _can('updateStok'),
+                bulkSelected: _can('bulkSelected'),
+                bulkFilter:   _can('bulkFilter'),
+                export:       _can('export'),
+                setAmbang:    _can('setAmbang'),
+                lihatRiwayat: _can('lihatRiwayat')
+            },
+            kasirLog: _getKasirLog(null, 5),
+            handlers: {
+                entry:      typeof window.tampilkanPemeriksaanStokToko,
+                refresh:    typeof window.psRefreshGlobal,
+                updateStok: typeof window.psBukaUpdateGlobal,
+                bulk:       typeof window.psBukaBulkGlobal,
+                riwayat:    typeof window.psBukaRiwayatProdukGlobal
+            }
+        };
+    };
+
+    window._blok1110Done = true;
+    console.log('✅ BLOK R 11.10 — PEMERIKSAAN STOK TOKO terpasang.');
+    console.log('   🎯 Entry: tampilkanPemeriksaanStokToko()');
+    console.log('   👥 Support: Toko (pemilik) + Kasir (sub-akun)');
+    console.log('   🔒 Anti-tertukar: idOwner di-resolve dari userAktif');
+    console.log('   📦 Reuse: loadProdukByOwnerGlobal, filterProdukGlobal,');
+    console.log('            getProdukStokRendahGlobal, getProdukHabisGlobal,');
+    console.log('            updateStokProdukGlobal, bulkUpdateStokGlobal,');
+    console.log('            getStokHistoryGlobal, renderKPICardsProdukGlobal,');
+    console.log('            renderKesehatanStokProdukGlobal, exportProdukCSVGlobal');
+    console.log('   📊 Debug: debugPemeriksaanStokGlobal()');
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- CSS PEMERIKSAAN STOK TOKO                                      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<style>
+.ps-root { padding-bottom: 40px; background: #f5f7fa; min-height: 100vh; }
+
+/* ERROR BANNER */
+.ps-alert { max-width: 1200px; margin: 16px auto 0; padding: 14px 20px;
+    border-radius: 10px; font-size: 14px; }
+.ps-alert-danger { background: #F8D7DA; color: #721C24;
+    border: 1px solid #f5c6cb; }
+
+/* HEADER */
+.ps-header { padding: 24px; color: #fff; }
+.ps-header-inner { max-width: 1200px; margin: 0 auto;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 16px; }
+.ps-title { font-size: 24px; font-weight: 800; margin: 0 0 6px 0;
+    letter-spacing: -0.5px; }
+.ps-header-meta { display: flex; gap: 10px; align-items: center;
+    flex-wrap: wrap; font-size: 13px; opacity: 0.95; }
+.ps-badge-role { font-size: 11px; font-weight: 800; padding: 3px 10px;
+    border-radius: 20px; background: rgba(255,255,255,0.25);
+    border: 1px solid rgba(255,255,255,0.4); }
+.ps-role-toko  { background: #28A745; border-color: #1e7e34; }
+.ps-role-kasir { background: #FFC107; color: #333; border-color: #e0a800; }
+.ps-header-btns { display: flex; gap: 8px; }
+.ps-icon-btn { width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.3);
+    color: #fff; cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; }
+.ps-icon-btn:hover { background: rgba(255,255,255,0.38);
+    transform: translateY(-2px); }
+
+/* KPI & HEALTH (dari render global) */
+.ps-kpi-wrap, .ps-health-wrap { max-width: 1200px; margin: 16px auto 0;
+    padding: 0 24px; }
+.ps-kpi-wrap .card, .ps-health-wrap .card {
+    background: #fff; border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+
+/* TOOLBAR */
+.ps-toolbar { max-width: 1200px; margin: 16px auto 8px; padding: 0 24px;
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ps-search-wrap { flex: 1; min-width: 220px; position: relative; }
+.ps-search-ic { position: absolute; left: 14px; top: 50%;
+    transform: translateY(-50%); color: #888; pointer-events: none; }
+.ps-search { width: 100%; padding: 10px 40px 10px 40px;
+    border: 2px solid #e0e4e9; border-radius: 10px; font-size: 14px;
+    background: #fff; transition: all 0.2s; }
+.ps-search:focus { outline: none; border-color: #17A2B8;
+    box-shadow: 0 0 0 4px rgba(23,162,184,0.1); }
+.ps-search-x { position: absolute; right: 8px; top: 50%;
+    transform: translateY(-50%); background: none; border: none;
+    color: #888; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+.ps-search-x:hover { background: #f0f0f0; color: #333; }
+.ps-select { padding: 10px 14px; border: 2px solid #e0e4e9;
+    border-radius: 10px; font-size: 13px; background: #fff;
+    cursor: pointer; font-weight: 600; }
+.ps-select:focus { outline: none; border-color: #17A2B8; }
+
+/* TAB BAR */
+.ps-tabs { max-width: 1200px; margin: 8px auto 0; padding: 0 24px;
+    display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 2px solid #e0e4e9; }
+.ps-tab { padding: 10px 18px; background: transparent; border: none;
+    border-bottom: 3px solid transparent; font-size: 14px; font-weight: 700;
+    color: #666; cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-bottom: -2px; }
+.ps-tab:hover { color: #17A2B8; }
+.ps-tab-on { color: #17A2B8; border-bottom-color: #17A2B8; }
+.ps-tab-n { background: #e0e4e9; color: #555; font-size: 11px;
+    padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+.ps-tab-on .ps-tab-n { background: #17A2B8; color: #fff; }
+
+/* BULK BAR */
+.ps-bulk-bar { max-width: 1200px; margin: 12px auto 0; padding: 12px 20px;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; flex-wrap: wrap;
+    background: linear-gradient(135deg, #FFF8E1, #FFECB3);
+    border: 2px solid #FFC107; border-radius: 12px; }
+.ps-bulk-info { font-size: 14px; color: #7a5a00; }
+.ps-bulk-info strong { font-size: 16px; }
+.ps-bulk-actions { display: flex; gap: 8px; }
+
+/* INFO BAR */
+.ps-info { max-width: 1200px; margin: 12px auto 8px; padding: 0 24px;
+    font-size: 14px; color: #555; }
+
+/* TABLE */
+.ps-table-wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.ps-table-responsive { background: #fff; border-radius: 14px;
+    overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+.ps-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ps-table thead { background: #f8f9fa; }
+.ps-table th { padding: 12px 10px; font-size: 11px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.5px; color: #666;
+    text-align: left; border-bottom: 2px solid #e0e4e9; }
+.ps-table td { padding: 12px 10px; border-bottom: 1px solid #f0f0f0;
+    vertical-align: middle; }
+.ps-table tr:hover td { background: #F0F8FA; }
+.ps-table tr:last-child td { border-bottom: none; }
+
+.ps-col-check { width: 40px; text-align: center; }
+.ps-col-foto { width: 70px; }
+.ps-col-foto img { width: 56px; height: 56px; object-fit: cover;
+    border-radius: 8px; }
+.ps-p-nama { font-weight: 700; color: #222; font-size: 13px;
+    margin-bottom: 2px; }
+.ps-p-kode { font-size: 11px; color: #888; }
+.ps-p-kode code { background: #f0f0f0; padding: 1px 6px;
+    border-radius: 4px; }
+.ps-p-harga { font-weight: 700; color: #28A745; font-size: 14px; }
+.ps-p-nilai { font-weight: 800; color: #FF8C00; font-size: 14px; }
+.ps-tag { background: #E3F2FD; color: #0D47A1; font-size: 11px;
+    font-weight: 700; padding: 3px 10px; border-radius: 20px;
+    display: inline-block; }
+.ps-stok-val { font-weight: 800; font-size: 15px; color: #222; }
+.ps-stok-val small { font-weight: 500; color: #888; font-size: 11px; }
+
+/* BADGE */
+.ps-badge { font-size: 10px; font-weight: 700; padding: 2px 8px;
+    border-radius: 20px; display: inline-block; margin-top: 2px; }
+.ps-b-g { background: #D4EDDA; color: #155724; }
+.ps-b-y { background: #FFF3CD; color: #856404; }
+.ps-b-r { background: #F8D7DA; color: #721C24; }
+
+/* AKSI BUTTONS */
+.ps-aksi-group { display: inline-flex; gap: 4px; }
+.ps-ib { width: 32px; height: 32px; border: 2px solid #e0e4e9;
+    background: #fff; border-radius: 8px; cursor: pointer;
+    transition: all 0.2s; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; color: #666; }
+.ps-ib:hover { transform: translateY(-2px); }
+.ps-ib-g:hover { border-color: #28A745; color: #28A745;
+    background: #F0FDF4; }
+.ps-ib-r:hover { border-color: #DC3545; color: #DC3545;
+    background: #FEF2F2; }
+.ps-ib-s:hover { border-color: #17A2B8; color: #17A2B8;
+    background: #F0F9FB; }
+.ps-ib-i:hover { border-color: #6F42C1; color: #6F42C1;
+    background: #F5F0FF; }
+
+/* EMPTY */
+.ps-empty { max-width: 480px; margin: 60px auto; padding: 32px;
+    text-align: center; }
+.ps-empty-sm { margin: 20px auto; padding: 16px; }
+.ps-empty-ic { font-size: 56px; color: #ddd; margin-bottom: 16px; }
+.ps-empty h4 { font-size: 20px; font-weight: 800; color: #333;
+    margin: 0 0 8px 0; }
+.ps-empty p { color: #888; font-size: 14px; margin-bottom: 16px; }
+
+/* PAGINATION */
+.ps-pag { max-width: 1200px; margin: 24px auto 0; padding: 0 24px;
+    text-align: center; }
+.ps-pag-info { font-size: 13px; color: #666; margin-bottom: 12px; }
+.ps-pag-btns { display: flex; gap: 6px; justify-content: center;
+    flex-wrap: wrap; }
+.ps-pg { min-width: 38px; height: 38px; padding: 0 12px;
+    border: 2px solid #e0e4e9; background: #fff; border-radius: 10px;
+    font-size: 13px; font-weight: 700; color: #555; cursor: pointer;
+    transition: all 0.2s; }
+.ps-pg:hover:not(:disabled) { border-color: #17A2B8; color: #17A2B8;
+    transform: translateY(-2px); }
+.ps-pg-on { background: #17A2B8; border-color: #17A2B8; color: #fff; }
+.ps-pg:disabled { opacity: 0.4; cursor: not-allowed; }
+.ps-dots { padding: 0 6px; align-self: center; color: #999; }
+
+/* RIWAYAT */
+.ps-riwayat-wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.ps-riwayat-list { background: #fff; border-radius: 14px;
+    overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+.ps-rw-head { padding: 16px 20px; background: #f8f9fa;
+    border-radius: 12px 12px 0 0; margin-bottom: 12px;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 12px; }
+.ps-rw-head code { background: #e0e4e9; padding: 2px 8px;
+    border-radius: 4px; font-size: 12px; }
+.ps-rw-stok { font-size: 14px; color: #555; }
+.ps-rw-stok strong { color: #28A745; font-size: 16px; }
+.ps-rw-row { display: flex; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid #f0f0f0; align-items: flex-start; }
+.ps-rw-row:last-child { border-bottom: none; }
+.ps-rw-row:hover { background: #F8F9FA; }
+.ps-rw-ic { width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 16px; }
+.ps-rw-g { background: #D4EDDA; color: #155724; }
+.ps-rw-r { background: #F8D7DA; color: #721C24; }
+.ps-rw-s { background: #D1ECF1; color: #0C5460; }
+.ps-rw-body { flex: 1; min-width: 0; }
+.ps-rw-top { display: flex; gap: 10px; align-items: center;
+    margin-bottom: 4px; }
+.ps-rw-top strong { font-size: 13px; color: #222; }
+.ps-rw-delta { font-size: 12px; font-weight: 800; padding: 1px 8px;
+    border-radius: 10px; }
+.ps-rw-delta.ps-rw-g { background: #D4EDDA; color: #155724; }
+.ps-rw-delta.ps-rw-r { background: #F8D7DA; color: #721C24; }
+.ps-rw-delta.ps-rw-s { background: #D1ECF1; color: #0C5460; }
+.ps-rw-meta { display: flex; gap: 8px; font-size: 11px; color: #888;
+    flex-wrap: wrap; }
+.ps-rw-meta em { color: #555; }
+.ps-rw-time { font-size: 11px; color: #999; white-space: nowrap; }
+
+/* MODAL */
+.ps-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 9999; display: flex; align-items: center;
+    justify-content: center; padding: 20px; }
+.ps-backdrop { position: absolute; top: 0; left: 0; width: 100%;
+    height: 100%; background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(4px); }
+.ps-dialog { position: relative; background: #fff; border-radius: 16px;
+    width: 100%; max-width: 480px; max-height: 92vh; overflow-y: auto;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.3); }
+.ps-dialog-sm { max-width: 420px; }
+.ps-dialog-lg { max-width: 720px; }
+.ps-modal-head { padding: 18px 24px; border-bottom: 1px solid #f0f0f0;
+    display: flex; justify-content: space-between; align-items: center; }
+.ps-modal-head h5 { font-weight: 800; color: #222; }
+.ps-modal-x { width: 34px; height: 34px; border-radius: 50%;
+    background: #f0f0f0; border: none; color: #333; cursor: pointer;
+    transition: all 0.2s; }
+.ps-modal-x:hover { background: #e0e0e0; }
+.ps-modal-body { padding: 20px 24px; }
+.ps-modal-foot { padding: 14px 24px; border-top: 1px solid #f0f0f0;
+    display: flex; gap: 10px; justify-content: flex-end; }
+
+/* UPDATE MODAL */
+.ps-update-head { display: flex; gap: 12px; padding: 12px;
+    background: #f8f9fa; border-radius: 10px; margin-bottom: 16px; }
+.ps-update-img { width: 60px; height: 60px; object-fit: cover;
+    border-radius: 8px; }
+.ps-update-nama { font-weight: 800; color: #222; font-size: 14px;
+    margin-bottom: 2px; }
+.ps-update-kode { font-size: 11px; color: #888; margin-bottom: 4px; }
+.ps-update-kode code { background: #e0e4e9; padding: 1px 6px;
+    border-radius: 4px; }
+.ps-update-stok { font-size: 12px; color: #555; }
+.ps-update-stok strong { color: #28A745; font-size: 14px; }
+.ps-update-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.ps-up-tab { flex: 1; padding: 10px 12px; background: #f0f2f5;
+    border: 2px solid transparent; border-radius: 8px; cursor: pointer;
+    font-size: 13px; font-weight: 700; color: #666;
+    transition: all 0.2s; }
+.ps-up-tab:hover { background: #e0e4e9; }
+.ps-up-tab.on { background: #17A2B8; color: #fff;
+    border-color: #17A2B8; }
+.ps-lbl { display: block; font-size: 12px; font-weight: 700;
+    color: #555; margin-bottom: 6px; text-transform: uppercase;
+    letter-spacing: 0.5px; }
+.ps-input { width: 100%; padding: 10px 14px; border: 2px solid #e0e4e9;
+    border-radius: 10px; font-size: 14px; }
+.ps-input:focus { outline: none; border-color: #17A2B8;
+    box-shadow: 0 0 0 4px rgba(23,162,184,0.1); }
+.ps-preview { margin-top: 14px; padding: 12px; background: #F0F9FB;
+    border: 1px solid #B8E0E6; border-radius: 10px; font-size: 13px; }
+.ps-pv-row { display: flex; justify-content: space-between;
+    padding: 4px 0; }
+.ps-pv-row span { color: #666; }
+.ps-pv-row strong { font-weight: 800; color: #222; }
+.ps-pv-g { color: #28A745 !important; }
+.ps-pv-y { color: #856404 !important; }
+.ps-pv-r { color: #DC3545 !important; }
+.ps-pv-warn { margin-top: 8px; padding: 8px 10px;
+    background: #F8D7DA; color: #721C24; border-radius: 6px;
+    font-size: 12px; }
+
+/* BULK MODAL */
+.ps-bulk-info-head { padding: 12px; background: #FFF8E1;
+    border-left: 4px solid #FFC107; border-radius: 6px;
+    margin-bottom: 14px; font-size: 13px; color: #7a5a00; }
+.ps-bulk-info-head strong { font-size: 16px; }
+
+/* BUTTON */
+.ps-btn { padding: 10px 18px; border: none; border-radius: 10px;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+    transition: all 0.2s; display: inline-flex; align-items: center;
+    justify-content: center; }
+.ps-btn-1 { background: linear-gradient(135deg, #17A2B8, #138496);
+    color: #fff; }
+.ps-btn-1:hover { transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(23,162,184,0.35); }
+.ps-btn-2 { background: #f0f0f0; color: #333; }
+.ps-btn-2:hover { background: #e0e0e0; }
+.ps-btn-ghost { background: #fff; border: 2px solid #e0e4e9;
+    color: #666; }
+.ps-btn-ghost:hover { border-color: #DC3545; color: #DC3545; }
+.ps-help { font-size: 12px; color: #888; margin: 8px 0 0 0;
+    font-style: italic; }
+
+/* RESPONSIVE */
+@media (max-width: 720px) {
+    .ps-header { padding: 18px 16px; }
+    .ps-title { font-size: 20px; }
+    .ps-toolbar, .ps-tabs, .ps-info, .ps-table-wrap,
+    .ps-pag, .ps-riwayat-wrap, .ps-kpi-wrap, .ps-health-wrap {
+        padding-left: 16px; padding-right: 16px;
+    }
+    .ps-table th:nth-child(4),
+    .ps-table td:nth-child(4),
+    .ps-table th:nth-child(5),
+    .ps-table td:nth-child(5) { display: none; }
+    .ps-aksi-group { flex-direction: column; gap: 2px; }
+    .ps-ib { width: 28px; height: 28px; font-size: 11px; }
+    .ps-update-tabs { flex-direction: column; }
+    .ps-rw-time { display: none; }
+}
+</style>
+<!-- ═══ AKHIR BLOK R 11.10 — PEMERIKSAAN STOK TOKO ═════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 11.14 — KATALOG PRODUK TOKO (Customer View) ═══════ -->
 <!-- ═══ Hanya UI. Semua logic pakai fungsi global BLOK MP (1-10) ═ -->
 <!-- ═══ Dependency: window._blokMPT1Done === true ═══════════════ -->
