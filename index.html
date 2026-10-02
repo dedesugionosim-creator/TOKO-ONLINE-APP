@@ -17482,13 +17482,434 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) ═════════════ -->
+<!-- ═══ Dependency: BLOK FUNGSI GLOBAL MEDIA (MD) ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_ORPHAN_MANAGEMENT() {
+    if (window._blokOMDone) return;
+
+    if (!window._blokMDDone || !window._blokMDB2Done) {
+        console.warn('⚠️ BLOK FUNGSI GLOBAL MEDIA (MD) belum terpasang. OM ditunda.');
+        return;
+    }
+    window._blokOMDone = true;
+
+    window.OM_KONSTANTA = window.OM_KONSTANTA || {
+        GRACE_KANDIDAT: 7,
+        GRACE_ORPHAN: 30,
+        KATEGORI_PROTECTED: ['profil', 'avatar_hf', 'verifikasi', 'struk', 'dokumentasi'],
+        AUTO_CLEAN: false,
+        AUTO_CLEAN_INTERVAL_HARI: 7,
+        MAX_PREVIEW: 100,
+        MAX_LOG: 50,
+        KEY_LOG_CLEAN: 'r2coin_om_log_clean',
+        KEY_LAST_CLEAN: 'r2coin_om_last_clean',
+        TINGKAT: { PROTECTED: 0, SEJATI: 1, SEMU: 2, KANDIDAT: 3, VALID: 4 }
+    };
+
+    // [MODUL 2] — CEK PROTEKSI
+    window.omCekProtected = function(media) {
+        try {
+            if (!media) return { protected: false, alasan: null };
+            if (media.protected === true) {
+                return { protected: true, alasan: media.protectedReason || 'Flag protected' };
+            }
+            if (media.kategori &&
+                window.OM_KONSTANTA.KATEGORI_PROTECTED.indexOf(media.kategori) !== -1) {
+                return { protected: true, alasan: 'Kategori terproteksi: ' + media.kategori };
+            }
+            return { protected: false, alasan: null };
+        } catch (e) { return { protected: false, alasan: null }; }
+    };
+
+    window.omTandaiProtected = function(idMedia, alasan) {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false, pesan: 'Media tidak ditemukan' };
+            item.protected = true;
+            item.protectedReason = alasan || 'Manual protect';
+            item.protectedAt = window.mppNow();
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omBatalProtected = function(idMedia) {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false };
+            item.protected = false;
+            item.protectedReason = null;
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omSyncAutoProtected = function() {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false, jumlah: 0 };
+            var jumlah = 0;
+            var katProtected = window.OM_KONSTANTA.KATEGORI_PROTECTED;
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                if (!item || item.protected === true) return;
+                if (item.kategori && katProtected.indexOf(item.kategori) !== -1) {
+                    item.protected = true;
+                    item.protectedReason = 'Auto-protect kategori: ' + item.kategori;
+                    item.protectedAt = window.mppNow();
+                    jumlah++;
+                }
+            });
+            if (jumlah > 0) window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+            return { sukses: true, jumlah: jumlah };
+        } catch (e) { return { sukses: false, jumlah: 0 }; }
+    };
+
+    // [MODUL 3] — KLASIFIKASI
+    window.omKlasifikasi = function(media) {
+        try {
+            if (!media) return { tingkat: 0, nama: 'invalid', alasan: 'Kosong', umurHari: 0 };
+            var T = window.OM_KONSTANTA.TINGKAT;
+            var cek = window.omCekProtected(media);
+            if (cek.protected) return { tingkat: T.PROTECTED, nama: 'protected', alasan: cek.alasan, umurHari: 0 };
+            
+            var umurHari = 0;
+            if (media.dibuatAt) {
+                var t = new Date(media.dibuatAt).getTime();
+                if (!isNaN(t)) umurHari = Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
+            }
+            
+            if (!media.idOwner) return { tingkat: T.SEJATI, nama: 'orphan-sejati', alasan: 'Tanpa owner', umurHari: umurHari };
+            
+            if (media.storageKey) {
+                var data = window.mppLoadJSON(media.storageKey, null);
+                if (!data) return { tingkat: T.SEJATI, nama: 'orphan-sejati', alasan: 'Data hilang', umurHari: umurHari };
+            }
+            
+            var adaRef = Array.isArray(media.referensi) && media.referensi.length > 0;
+            if (adaRef) return { tingkat: T.VALID, nama: 'valid', alasan: 'Punya referensi', umurHari: umurHari };
+            if (umurHari < window.OM_KONSTANTA.GRACE_KANDIDAT) return { tingkat: T.VALID, nama: 'valid', alasan: 'Baru dibuat', umurHari: umurHari };
+            if (umurHari < window.OM_KONSTANTA.GRACE_ORPHAN) return { tingkat: T.KANDIDAT, nama: 'kandidat', alasan: 'Tanpa ref ' + umurHari + ' hari', umurHari: umurHari };
+            return { tingkat: T.SEMU, nama: 'orphan-semu', alasan: 'Tanpa ref > 30 hari', umurHari: umurHari };
+        } catch (e) { return { tingkat: 0, nama: 'error', alasan: e.message, umurHari: 0 }; }
+    };
+
+    window.omScanSemua = function() {
+        try {
+            window.omSyncAutoProtected();
+            var list = window.mdAmbilSemuaMedia({ sortBy: 'dibuatAt', sortDir: 'asc' });
+            var hasil = { protected: [], sejati: [], semu: [], kandidat: [], valid: [], total: list.length };
+            var T = window.OM_KONSTANTA.TINGKAT;
+            list.forEach(function(m) {
+                var k = window.omKlasifikasi(m);
+                var item = Object.assign({}, m, { _tingkat: k.tingkat, _namaTingkat: k.nama, _alasan: k.alasan, _umurHari: k.umurHari });
+                switch (k.tingkat) {
+                    case T.PROTECTED: hasil.protected.push(item); break;
+                    case T.SEJATI: hasil.sejati.push(item); break;
+                    case T.SEMU: hasil.semu.push(item); break;
+                    case T.KANDIDAT: hasil.kandidat.push(item); break;
+                    default: hasil.valid.push(item);
+                }
+            });
+            return hasil;
+        } catch (e) { return { protected: [], sejati: [], semu: [], kandidat: [], valid: [], total: 0 }; }
+    };
+
+    window.omScanTingkat = function(tingkat) {
+        var semua = window.omScanSemua();
+        switch (parseInt(tingkat, 10)) {
+            case 0: return semua.protected;
+            case 1: return semua.sejati;
+            case 2: return semua.semu;
+            case 3: return semua.kandidat;
+            case 4: return semua.valid;
+            default: return [];
+        }
+    };
+
+    // [MODUL 5] — ANALISIS
+    function _hitungTotalSize(list) {
+        var total = 0;
+        (list || []).forEach(function(x) { total += parseInt(x.size, 10) || 0; });
+        return total;
+    }
+
+    window.omStatistikOrphan = function() {
+        try {
+            var scan = window.omScanSemua();
+            function _stat(list) {
+                var size = _hitungTotalSize(list);
+                return { jumlah: list.length, size: size, sizeTeks: window.mdFormatSize(size) };
+            }
+            return {
+                protected: _stat(scan.protected),
+                sejati: _stat(scan.sejati),
+                semu: _stat(scan.semu),
+                kandidat: _stat(scan.kandidat),
+                valid: _stat(scan.valid),
+                total: scan.total
+            };
+        } catch (e) {
+            return { protected: {jumlah:0,sizeTeks:'0 B'}, sejati: {jumlah:0,sizeTeks:'0 B'}, semu: {jumlah:0,sizeTeks:'0 B'}, kandidat: {jumlah:0,sizeTeks:'0 B'}, valid: {jumlah:0,sizeTeks:'0 B'}, total: 0 };
+        }
+    };
+
+    window.omEstimasiHemat = function(opts) {
+        opts = opts || {};
+        try {
+            var stat = window.omStatistikOrphan();
+            var total = 0;
+            var detail = {};
+            if (opts.sejati !== false) { total += stat.sejati.size; detail.sejati = stat.sejati.sizeTeks; }
+            if (opts.semu === true) { total += stat.semu.size; detail.semu = stat.semu.sizeTeks; }
+            if (opts.kandidat === true) { total += stat.kandidat.size; detail.kandidat = stat.kandidat.sizeTeks; }
+            return { total: total, totalTeks: window.mdFormatSize(total), detail: detail };
+        } catch (e) { return { total: 0, totalTeks: '0 B' }; }
+    };
+
+    window.omPreviewHapus = function(tingkatList, limit) {
+        limit = parseInt(limit, 10) || window.OM_KONSTANTA.MAX_PREVIEW;
+        try {
+            if (!Array.isArray(tingkatList)) tingkatList = [1, 2];
+            var scan = window.omScanSemua();
+            var list = [];
+            if (tingkatList.indexOf(1) !== -1) list = list.concat(scan.sejati);
+            if (tingkatList.indexOf(2) !== -1) list = list.concat(scan.semu);
+            if (tingkatList.indexOf(3) !== -1) list = list.concat(scan.kandidat);
+            var total = list.length;
+            var totalSize = _hitungTotalSize(list);
+            return { total: total, size: totalSize, sizeTeks: window.mdFormatSize(totalSize), items: list.slice(0, limit), truncated: total > limit };
+        } catch (e) { return { total: 0, size: 0, sizeTeks: '0 B', items: [] }; }
+    };
+
+    // [MODUL 6] — AKSI
+    function _catatLogAksi(aksi, detail) {
+        try {
+            var key = window.OM_KONSTANTA.KEY_LOG_CLEAN;
+            var data = window.mppLoadJSON(key, { items: [] });
+            if (!Array.isArray(data.items)) data.items = [];
+            data.items.unshift({
+                id: 'OMLOG-' + Date.now(),
+                aksi: aksi, detail: detail || {},
+                oleh: window.gidIdUser() || 'system',
+                waktu: window.mppNow()
+            });
+            if (data.items.length > window.OM_KONSTANTA.MAX_LOG) data.items = data.items.slice(0, window.OM_KONSTANTA.MAX_LOG);
+            window.mppSaveJSON(key, data);
+            window.mppSaveJSON(window.OM_KONSTANTA.KEY_LAST_CLEAN, { waktu: window.mppNow(), aksi: aksi });
+        } catch (e) {}
+    }
+
+    window.omHapusTingkat1 = function(opts) {
+        opts = opts || {};
+        try {
+            var list = window.omScanTingkat(1).filter(function(x) {
+                return !window.omCekProtected(x).protected;
+            });
+            if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
+            var ids = list.map(function(x) { return x.id; });
+            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
+            var hasil = window.mdHapusBatch(ids, { bypass: true });
+            _catatLogAksi('hapus-tingkat-1', { jumlah: hasil.berhasil });
+            try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 1, jumlah: hasil.berhasil }); } catch (e) {}
+            return Object.assign({ sukses: true, tingkat: 1 }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omHapusTingkat2 = function(opts) {
+        opts = opts || {};
+        try {
+            var list = window.omScanTingkat(2).filter(function(x) {
+                return !window.omCekProtected(x).protected;
+            });
+            if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
+            var ids = list.map(function(x) { return x.id; });
+            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
+            var hasil = window.mdHapusBatch(ids, { bypass: true });
+            _catatLogAksi('hapus-tingkat-2', { jumlah: hasil.berhasil });
+            try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 2, jumlah: hasil.berhasil }); } catch (e) {}
+            return Object.assign({ sukses: true, tingkat: 2 }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omHapusSelektif = function(arrayId, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(arrayId) || arrayId.length === 0) return { sukses: false, pesan: 'Array ID kosong' };
+            if (opts.bypassProtected !== true) {
+                arrayId = arrayId.filter(function(id) {
+                    var m = window.mdAmbilMetadata(id);
+                    return m && !window.omCekProtected(m).protected;
+                });
+            }
+            if (arrayId.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
+            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: arrayId.length, ids: arrayId };
+            var hasil = window.mdHapusBatch(arrayId, { bypass: true });
+            _catatLogAksi('hapus-selektif', { jumlah: hasil.berhasil });
+            return Object.assign({ sukses: true }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omHapusAman = function(opts) {
+        opts = opts || {};
+        var r1 = window.omHapusTingkat1(opts);
+        var r2 = window.omHapusTingkat2(opts);
+        return {
+            sukses: true,
+            tingkat1: r1.berhasil || 0, tingkat2: r2.berhasil || 0,
+            berhasil: (r1.berhasil || 0) + (r2.berhasil || 0),
+            gagal: (r1.gagal || 0) + (r2.gagal || 0)
+        };
+    };
+
+    window.omTandaiKandidat = function(arrayId, catatan) {
+        try {
+            if (!Array.isArray(arrayId)) arrayId = [];
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var jumlah = 0;
+            arrayId.forEach(function(id) {
+                var item = index.items[id];
+                if (!item) return;
+                item.kandidatCatatan = catatan || 'Sudah dicek';
+                item.kandidatCekAt = window.mppNow();
+                jumlah++;
+            });
+            if (jumlah > 0) window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+            return { sukses: true, jumlah: jumlah };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omRecheckKandidat = function() { return window.omScanSemua(); };
+
+    // [MODUL 7] — PENCEGAHAN
+    window.omSaranPerbaikan = function() {
+        try {
+            var stat = window.omStatistikOrphan();
+            var saran = [];
+            if (stat.sejati.jumlah > 0) saran.push({ prioritas: 'tinggi', pesan: stat.sejati.jumlah + ' media tanpa owner/hilang. Hapus via Bersihkan Orphan.' });
+            if (stat.semu.jumlah > 0) saran.push({ prioritas: 'sedang', pesan: stat.semu.jumlah + ' media tanpa referensi > 30 hari.' });
+            if (stat.kandidat.jumlah > 0) saran.push({ prioritas: 'rendah', pesan: stat.kandidat.jumlah + ' media kandidat (7-30 hari).' });
+            saran.push({ prioritas: 'info', pesan: 'Tips: pastikan upload mencatat referensi.' });
+            return saran;
+        } catch (e) { return []; }
+    };
+
+    window.omAutoCatatRef = function(idMedia, referensi) {
+        return window.mdTambahReferensi(idMedia, referensi);
+    };
+
+    window.omHookHapusProduk = function(idProduk) {
+        try {
+            var list = window.mdCariByReferensi({ idProduk: idProduk });
+            list.forEach(function(m) {
+                if (Array.isArray(m.referensi)) {
+                    m.referensi = m.referensi.filter(function(r) { return r.idProduk !== idProduk; });
+                }
+            });
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (index && index.items) {
+                list.forEach(function(m) { index.items[m.id] = m; });
+                window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+            }
+            return { sukses: true, jumlah: list.length };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omRefreshLastUsed = function(idMedia) {
+        try {
+            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!index || !index.items) return { sukses: false };
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false };
+            item.lastUsedAt = window.mppNow();
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
+        } catch (e) { return { sukses: false }; }
+    };
+
+    // [MODUL 8] — MONITORING
+    var _watchTimer = null;
+
+    window.omWatchOtomatis = function(aktif) {
+        try {
+            if (_watchTimer) { clearInterval(_watchTimer); _watchTimer = null; }
+            if (aktif === false) return { sukses: true, aktif: false };
+            if (window.OM_KONSTANTA.AUTO_CLEAN !== true) return { sukses: true, aktif: false };
+            var intervalMs = window.OM_KONSTANTA.AUTO_CLEAN_INTERVAL_HARI * 24 * 60 * 60 * 1000;
+            _watchTimer = setInterval(function() {
+                try { window.omHapusTingkat1(); } catch (e) {}
+            }, intervalMs);
+            return { sukses: true, aktif: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omGetRiwayatClean = function(limit) {
+        limit = parseInt(limit, 10) || 20;
+        try {
+            var data = window.mppLoadJSON(window.OM_KONSTANTA.KEY_LOG_CLEAN, { items: [] });
+            if (!Array.isArray(data.items)) return [];
+            return data.items.slice(0, limit);
+        } catch (e) { return []; }
+    };
+
+    window.omBersihkanRiwayat = function() {
+        try {
+            window.mppSaveJSON(window.OM_KONSTANTA.KEY_LOG_CLEAN, { items: [] });
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.omGetLastClean = function() {
+        try {
+            return window.mppLoadJSON(window.OM_KONSTANTA.KEY_LAST_CLEAN, null);
+        } catch (e) { return null; }
+    };
+
+    // [MODUL 9] — DEBUG
+    window.debugOM = function() {
+        try {
+            var stat = window.omStatistikOrphan();
+            var info = {
+                versi: '1.0',
+                konfigurasi: {
+                    graceKandidat: window.OM_KONSTANTA.GRACE_KANDIDAT,
+                    graceOrphan: window.OM_KONSTANTA.GRACE_ORPHAN,
+                    autoClean: window.OM_KONSTANTA.AUTO_CLEAN,
+                    kategoriProtected: window.OM_KONSTANTA.KATEGORI_PROTECTED
+                },
+                statistik: stat,
+                saran: window.omSaranPerbaikan(),
+                lastClean: window.omGetLastClean()
+            };
+            console.log('🔍 debugOM:', info);
+            return info;
+        } catch (e) { console.error('debugOM error:', e); return null; }
+    };
+
+    setTimeout(function() {
+        try {
+            var sync = window.omSyncAutoProtected();
+            if (sync.jumlah > 0) console.log('🛡️ OM: Auto-protect ' + sync.jumlah + ' media');
+        } catch (e) {}
+    }, 500);
+
+    console.log('✅ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) terpasang (26 fungsi).');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL SYSTEM ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL SYSTEM UI HTML DAN JS ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
-
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL PENYIMPANAN MEDIA (PSM) ════════════ -->
 <!-- ═══ Dependency: MD + OM + GID ═════════════════════════════ -->
@@ -18083,1684 +18504,6 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL SYSTEM UI HTML DAN JS ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) ═════════════ -->
-<!-- ═══ Dependency: BLOK FUNGSI GLOBAL MEDIA (MD) ═════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_FUNGSI_GLOBAL_ORPHAN_MANAGEMENT() {
-    if (window._blokOMDone) return;
-
-    if (!window._blokMDDone || !window._blokMDB2Done) {
-        console.warn('⚠️ BLOK FUNGSI GLOBAL MEDIA (MD) belum terpasang. OM ditunda.');
-        return;
-    }
-    window._blokOMDone = true;
-
-    window.OM_KONSTANTA = window.OM_KONSTANTA || {
-        GRACE_KANDIDAT: 7,
-        GRACE_ORPHAN: 30,
-        KATEGORI_PROTECTED: ['profil', 'avatar_hf', 'verifikasi', 'struk', 'dokumentasi'],
-        AUTO_CLEAN: false,
-        AUTO_CLEAN_INTERVAL_HARI: 7,
-        MAX_PREVIEW: 100,
-        MAX_LOG: 50,
-        KEY_LOG_CLEAN: 'r2coin_om_log_clean',
-        KEY_LAST_CLEAN: 'r2coin_om_last_clean',
-        TINGKAT: { PROTECTED: 0, SEJATI: 1, SEMU: 2, KANDIDAT: 3, VALID: 4 }
-    };
-
-    // [MODUL 2] — CEK PROTEKSI
-    window.omCekProtected = function(media) {
-        try {
-            if (!media) return { protected: false, alasan: null };
-            if (media.protected === true) {
-                return { protected: true, alasan: media.protectedReason || 'Flag protected' };
-            }
-            if (media.kategori &&
-                window.OM_KONSTANTA.KATEGORI_PROTECTED.indexOf(media.kategori) !== -1) {
-                return { protected: true, alasan: 'Kategori terproteksi: ' + media.kategori };
-            }
-            return { protected: false, alasan: null };
-        } catch (e) { return { protected: false, alasan: null }; }
-    };
-
-    window.omTandaiProtected = function(idMedia, alasan) {
-        try {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false };
-            var item = index.items[idMedia];
-            if (!item) return { sukses: false, pesan: 'Media tidak ditemukan' };
-            item.protected = true;
-            item.protectedReason = alasan || 'Manual protect';
-            item.protectedAt = window.mppNow();
-            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omBatalProtected = function(idMedia) {
-        try {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false };
-            var item = index.items[idMedia];
-            if (!item) return { sukses: false };
-            item.protected = false;
-            item.protectedReason = null;
-            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omSyncAutoProtected = function() {
-        try {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false, jumlah: 0 };
-            var jumlah = 0;
-            var katProtected = window.OM_KONSTANTA.KATEGORI_PROTECTED;
-            Object.keys(index.items).forEach(function(k) {
-                var item = index.items[k];
-                if (!item || item.protected === true) return;
-                if (item.kategori && katProtected.indexOf(item.kategori) !== -1) {
-                    item.protected = true;
-                    item.protectedReason = 'Auto-protect kategori: ' + item.kategori;
-                    item.protectedAt = window.mppNow();
-                    jumlah++;
-                }
-            });
-            if (jumlah > 0) window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-            return { sukses: true, jumlah: jumlah };
-        } catch (e) { return { sukses: false, jumlah: 0 }; }
-    };
-
-    // [MODUL 3] — KLASIFIKASI
-    window.omKlasifikasi = function(media) {
-        try {
-            if (!media) return { tingkat: 0, nama: 'invalid', alasan: 'Kosong', umurHari: 0 };
-            var T = window.OM_KONSTANTA.TINGKAT;
-            var cek = window.omCekProtected(media);
-            if (cek.protected) return { tingkat: T.PROTECTED, nama: 'protected', alasan: cek.alasan, umurHari: 0 };
-            
-            var umurHari = 0;
-            if (media.dibuatAt) {
-                var t = new Date(media.dibuatAt).getTime();
-                if (!isNaN(t)) umurHari = Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
-            }
-            
-            if (!media.idOwner) return { tingkat: T.SEJATI, nama: 'orphan-sejati', alasan: 'Tanpa owner', umurHari: umurHari };
-            
-            if (media.storageKey) {
-                var data = window.mppLoadJSON(media.storageKey, null);
-                if (!data) return { tingkat: T.SEJATI, nama: 'orphan-sejati', alasan: 'Data hilang', umurHari: umurHari };
-            }
-            
-            var adaRef = Array.isArray(media.referensi) && media.referensi.length > 0;
-            if (adaRef) return { tingkat: T.VALID, nama: 'valid', alasan: 'Punya referensi', umurHari: umurHari };
-            if (umurHari < window.OM_KONSTANTA.GRACE_KANDIDAT) return { tingkat: T.VALID, nama: 'valid', alasan: 'Baru dibuat', umurHari: umurHari };
-            if (umurHari < window.OM_KONSTANTA.GRACE_ORPHAN) return { tingkat: T.KANDIDAT, nama: 'kandidat', alasan: 'Tanpa ref ' + umurHari + ' hari', umurHari: umurHari };
-            return { tingkat: T.SEMU, nama: 'orphan-semu', alasan: 'Tanpa ref > 30 hari', umurHari: umurHari };
-        } catch (e) { return { tingkat: 0, nama: 'error', alasan: e.message, umurHari: 0 }; }
-    };
-
-    window.omScanSemua = function() {
-        try {
-            window.omSyncAutoProtected();
-            var list = window.mdAmbilSemuaMedia({ sortBy: 'dibuatAt', sortDir: 'asc' });
-            var hasil = { protected: [], sejati: [], semu: [], kandidat: [], valid: [], total: list.length };
-            var T = window.OM_KONSTANTA.TINGKAT;
-            list.forEach(function(m) {
-                var k = window.omKlasifikasi(m);
-                var item = Object.assign({}, m, { _tingkat: k.tingkat, _namaTingkat: k.nama, _alasan: k.alasan, _umurHari: k.umurHari });
-                switch (k.tingkat) {
-                    case T.PROTECTED: hasil.protected.push(item); break;
-                    case T.SEJATI: hasil.sejati.push(item); break;
-                    case T.SEMU: hasil.semu.push(item); break;
-                    case T.KANDIDAT: hasil.kandidat.push(item); break;
-                    default: hasil.valid.push(item);
-                }
-            });
-            return hasil;
-        } catch (e) { return { protected: [], sejati: [], semu: [], kandidat: [], valid: [], total: 0 }; }
-    };
-
-    window.omScanTingkat = function(tingkat) {
-        var semua = window.omScanSemua();
-        switch (parseInt(tingkat, 10)) {
-            case 0: return semua.protected;
-            case 1: return semua.sejati;
-            case 2: return semua.semu;
-            case 3: return semua.kandidat;
-            case 4: return semua.valid;
-            default: return [];
-        }
-    };
-
-    // [MODUL 5] — ANALISIS
-    function _hitungTotalSize(list) {
-        var total = 0;
-        (list || []).forEach(function(x) { total += parseInt(x.size, 10) || 0; });
-        return total;
-    }
-
-    window.omStatistikOrphan = function() {
-        try {
-            var scan = window.omScanSemua();
-            function _stat(list) {
-                var size = _hitungTotalSize(list);
-                return { jumlah: list.length, size: size, sizeTeks: window.mdFormatSize(size) };
-            }
-            return {
-                protected: _stat(scan.protected),
-                sejati: _stat(scan.sejati),
-                semu: _stat(scan.semu),
-                kandidat: _stat(scan.kandidat),
-                valid: _stat(scan.valid),
-                total: scan.total
-            };
-        } catch (e) {
-            return { protected: {jumlah:0,sizeTeks:'0 B'}, sejati: {jumlah:0,sizeTeks:'0 B'}, semu: {jumlah:0,sizeTeks:'0 B'}, kandidat: {jumlah:0,sizeTeks:'0 B'}, valid: {jumlah:0,sizeTeks:'0 B'}, total: 0 };
-        }
-    };
-
-    window.omEstimasiHemat = function(opts) {
-        opts = opts || {};
-        try {
-            var stat = window.omStatistikOrphan();
-            var total = 0;
-            var detail = {};
-            if (opts.sejati !== false) { total += stat.sejati.size; detail.sejati = stat.sejati.sizeTeks; }
-            if (opts.semu === true) { total += stat.semu.size; detail.semu = stat.semu.sizeTeks; }
-            if (opts.kandidat === true) { total += stat.kandidat.size; detail.kandidat = stat.kandidat.sizeTeks; }
-            return { total: total, totalTeks: window.mdFormatSize(total), detail: detail };
-        } catch (e) { return { total: 0, totalTeks: '0 B' }; }
-    };
-
-    window.omPreviewHapus = function(tingkatList, limit) {
-        limit = parseInt(limit, 10) || window.OM_KONSTANTA.MAX_PREVIEW;
-        try {
-            if (!Array.isArray(tingkatList)) tingkatList = [1, 2];
-            var scan = window.omScanSemua();
-            var list = [];
-            if (tingkatList.indexOf(1) !== -1) list = list.concat(scan.sejati);
-            if (tingkatList.indexOf(2) !== -1) list = list.concat(scan.semu);
-            if (tingkatList.indexOf(3) !== -1) list = list.concat(scan.kandidat);
-            var total = list.length;
-            var totalSize = _hitungTotalSize(list);
-            return { total: total, size: totalSize, sizeTeks: window.mdFormatSize(totalSize), items: list.slice(0, limit), truncated: total > limit };
-        } catch (e) { return { total: 0, size: 0, sizeTeks: '0 B', items: [] }; }
-    };
-
-    // [MODUL 6] — AKSI
-    function _catatLogAksi(aksi, detail) {
-        try {
-            var key = window.OM_KONSTANTA.KEY_LOG_CLEAN;
-            var data = window.mppLoadJSON(key, { items: [] });
-            if (!Array.isArray(data.items)) data.items = [];
-            data.items.unshift({
-                id: 'OMLOG-' + Date.now(),
-                aksi: aksi, detail: detail || {},
-                oleh: window.gidIdUser() || 'system',
-                waktu: window.mppNow()
-            });
-            if (data.items.length > window.OM_KONSTANTA.MAX_LOG) data.items = data.items.slice(0, window.OM_KONSTANTA.MAX_LOG);
-            window.mppSaveJSON(key, data);
-            window.mppSaveJSON(window.OM_KONSTANTA.KEY_LAST_CLEAN, { waktu: window.mppNow(), aksi: aksi });
-        } catch (e) {}
-    }
-
-    window.omHapusTingkat1 = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.omScanTingkat(1).filter(function(x) {
-                return !window.omCekProtected(x).protected;
-            });
-            if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
-            var ids = list.map(function(x) { return x.id; });
-            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
-            var hasil = window.mdHapusBatch(ids, { bypass: true });
-            _catatLogAksi('hapus-tingkat-1', { jumlah: hasil.berhasil });
-            try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 1, jumlah: hasil.berhasil }); } catch (e) {}
-            return Object.assign({ sukses: true, tingkat: 1 }, hasil);
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omHapusTingkat2 = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.omScanTingkat(2).filter(function(x) {
-                return !window.omCekProtected(x).protected;
-            });
-            if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
-            var ids = list.map(function(x) { return x.id; });
-            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
-            var hasil = window.mdHapusBatch(ids, { bypass: true });
-            _catatLogAksi('hapus-tingkat-2', { jumlah: hasil.berhasil });
-            try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 2, jumlah: hasil.berhasil }); } catch (e) {}
-            return Object.assign({ sukses: true, tingkat: 2 }, hasil);
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omHapusSelektif = function(arrayId, opts) {
-        opts = opts || {};
-        try {
-            if (!Array.isArray(arrayId) || arrayId.length === 0) return { sukses: false, pesan: 'Array ID kosong' };
-            if (opts.bypassProtected !== true) {
-                arrayId = arrayId.filter(function(id) {
-                    var m = window.mdAmbilMetadata(id);
-                    return m && !window.omCekProtected(m).protected;
-                });
-            }
-            if (arrayId.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
-            if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: arrayId.length, ids: arrayId };
-            var hasil = window.mdHapusBatch(arrayId, { bypass: true });
-            _catatLogAksi('hapus-selektif', { jumlah: hasil.berhasil });
-            return Object.assign({ sukses: true }, hasil);
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omHapusAman = function(opts) {
-        opts = opts || {};
-        var r1 = window.omHapusTingkat1(opts);
-        var r2 = window.omHapusTingkat2(opts);
-        return {
-            sukses: true,
-            tingkat1: r1.berhasil || 0, tingkat2: r2.berhasil || 0,
-            berhasil: (r1.berhasil || 0) + (r2.berhasil || 0),
-            gagal: (r1.gagal || 0) + (r2.gagal || 0)
-        };
-    };
-
-    window.omTandaiKandidat = function(arrayId, catatan) {
-        try {
-            if (!Array.isArray(arrayId)) arrayId = [];
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false };
-            var jumlah = 0;
-            arrayId.forEach(function(id) {
-                var item = index.items[id];
-                if (!item) return;
-                item.kandidatCatatan = catatan || 'Sudah dicek';
-                item.kandidatCekAt = window.mppNow();
-                jumlah++;
-            });
-            if (jumlah > 0) window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-            return { sukses: true, jumlah: jumlah };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omRecheckKandidat = function() { return window.omScanSemua(); };
-
-    // [MODUL 7] — PENCEGAHAN
-    window.omSaranPerbaikan = function() {
-        try {
-            var stat = window.omStatistikOrphan();
-            var saran = [];
-            if (stat.sejati.jumlah > 0) saran.push({ prioritas: 'tinggi', pesan: stat.sejati.jumlah + ' media tanpa owner/hilang. Hapus via Bersihkan Orphan.' });
-            if (stat.semu.jumlah > 0) saran.push({ prioritas: 'sedang', pesan: stat.semu.jumlah + ' media tanpa referensi > 30 hari.' });
-            if (stat.kandidat.jumlah > 0) saran.push({ prioritas: 'rendah', pesan: stat.kandidat.jumlah + ' media kandidat (7-30 hari).' });
-            saran.push({ prioritas: 'info', pesan: 'Tips: pastikan upload mencatat referensi.' });
-            return saran;
-        } catch (e) { return []; }
-    };
-
-    window.omAutoCatatRef = function(idMedia, referensi) {
-        return window.mdTambahReferensi(idMedia, referensi);
-    };
-
-    window.omHookHapusProduk = function(idProduk) {
-        try {
-            var list = window.mdCariByReferensi({ idProduk: idProduk });
-            list.forEach(function(m) {
-                if (Array.isArray(m.referensi)) {
-                    m.referensi = m.referensi.filter(function(r) { return r.idProduk !== idProduk; });
-                }
-            });
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (index && index.items) {
-                list.forEach(function(m) { index.items[m.id] = m; });
-                window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-            }
-            return { sukses: true, jumlah: list.length };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omRefreshLastUsed = function(idMedia) {
-        try {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false };
-            var item = index.items[idMedia];
-            if (!item) return { sukses: false };
-            item.lastUsedAt = window.mppNow();
-            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-        } catch (e) { return { sukses: false }; }
-    };
-
-    // [MODUL 8] — MONITORING
-    var _watchTimer = null;
-
-    window.omWatchOtomatis = function(aktif) {
-        try {
-            if (_watchTimer) { clearInterval(_watchTimer); _watchTimer = null; }
-            if (aktif === false) return { sukses: true, aktif: false };
-            if (window.OM_KONSTANTA.AUTO_CLEAN !== true) return { sukses: true, aktif: false };
-            var intervalMs = window.OM_KONSTANTA.AUTO_CLEAN_INTERVAL_HARI * 24 * 60 * 60 * 1000;
-            _watchTimer = setInterval(function() {
-                try { window.omHapusTingkat1(); } catch (e) {}
-            }, intervalMs);
-            return { sukses: true, aktif: true };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omGetRiwayatClean = function(limit) {
-        limit = parseInt(limit, 10) || 20;
-        try {
-            var data = window.mppLoadJSON(window.OM_KONSTANTA.KEY_LOG_CLEAN, { items: [] });
-            if (!Array.isArray(data.items)) return [];
-            return data.items.slice(0, limit);
-        } catch (e) { return []; }
-    };
-
-    window.omBersihkanRiwayat = function() {
-        try {
-            window.mppSaveJSON(window.OM_KONSTANTA.KEY_LOG_CLEAN, { items: [] });
-            return { sukses: true };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.omGetLastClean = function() {
-        try {
-            return window.mppLoadJSON(window.OM_KONSTANTA.KEY_LAST_CLEAN, null);
-        } catch (e) { return null; }
-    };
-
-    // [MODUL 9] — DEBUG
-    window.debugOM = function() {
-        try {
-            var stat = window.omStatistikOrphan();
-            var info = {
-                versi: '1.0',
-                konfigurasi: {
-                    graceKandidat: window.OM_KONSTANTA.GRACE_KANDIDAT,
-                    graceOrphan: window.OM_KONSTANTA.GRACE_ORPHAN,
-                    autoClean: window.OM_KONSTANTA.AUTO_CLEAN,
-                    kategoriProtected: window.OM_KONSTANTA.KATEGORI_PROTECTED
-                },
-                statistik: stat,
-                saran: window.omSaranPerbaikan(),
-                lastClean: window.omGetLastClean()
-            };
-            console.log('🔍 debugOM:', info);
-            return info;
-        } catch (e) { console.error('debugOM error:', e); return null; }
-    };
-
-    setTimeout(function() {
-        try {
-            var sync = window.omSyncAutoProtected();
-            if (sync.jumlah > 0) console.log('🛡️ OM: Auto-protect ' + sync.jumlah + ' media');
-        } catch (e) {}
-    }, 500);
-
-    console.log('✅ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) terpasang (26 fungsi).');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) ═══════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK OM2 (1) — ORPHAN MANAGEMENT EXTENDED — FOUNDATION -->
-<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
-<!-- ═══ Dependency: Core System (1)-(8) + OM ══════════════════ -->
-<!-- ═══ Isi: Konstanta tingkat, threshold, helper internal ═══ -->
-<!-- ═══ Posisi: Setelah BLOK FUNGSI GLOBAL OM ═════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_OM2_1_FOUNDATION() {
-    if (window._om2_1Done) {
-        console.log('ℹ️ OM2 (1) — Foundation sudah terpasang.');
-        return;
-    }
-    if (!window._blokOMDone) {
-        console.warn('⚠️ BLOK OM belum terpasang. OM2 (1) ditunda.');
-        return;
-    }
-    window._om2_1Done = true;
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — KONSTANTA OM2
-    // ═══════════════════════════════════════════════════════════
-    window.OM2_KONSTANTA = window.OM2_KONSTANTA || {
-        VERSI: '1.0',
-        // Threshold hari
-        GRACE_KANDIDAT:  30,     // < 30 hari = VALID / KANDIDAT
-        GRACE_SEMU:      90,     // > 90 hari tanpa referensi = SEMU
-        // Limit
-        MAX_ARSIP:       5000,   // Maksimum item di arsip
-        RETENSI_ARSIP:   90,     // Hari sebelum arsip auto-hapus
-        // Storage key
-        KEY_ARSIP:       'r2coin_arsip_orphan_om2',
-        // Tingkat
-        TINGKAT: {
-            PROTECTED: 0,
-            SEJATI:    1,
-            SEMU:      2,
-            KANDIDAT:  3,
-            VALID:     4
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — KONFIGURASI ENTITAS
-    // ═══════════════════════════════════════════════════════════
-    // Daftar entitas yang discan + pola storage key
-    // ═══════════════════════════════════════════════════════════
-    window.OM2_ENTITAS = window.OM2_ENTITAS || {
-        produk: {
-            label: 'Produk',
-            ikon:  'fas fa-box',
-            warna: '#FF8C00',
-            prefixKey: [
-                'dataProdukToko_',
-                'dataProdukPP_',
-                'dataProdukPM_',
-                'dataProdukCOD_',
-                'dataProdukGrosir_',
-                'dataProdukDistributor_',
-                'dataProdukJasa_',
-                'dataProdukDP_',
-                'dataProdukDLR_',
-                'dataProdukFIN_'
-            ],
-            // Field kepemilikan
-            fieldOwner:   'idOwner',
-            fieldParent:  'kategori',    // parent = kategori
-            fieldTanggal: 'createdAt'
-        },
-        transaksi: {
-            label: 'Transaksi',
-            ikon:  'fas fa-exchange-alt',
-            warna: '#17A2B8',
-            prefixKey: ['dataTransaksi_'],
-            fieldOwner:   'idOwner',
-            fieldParent:  'idProduk',
-            fieldTanggal: 'createdAt'
-        },
-        order: {
-            label: 'Order',
-            ikon:  'fas fa-shopping-cart',
-            warna: '#28A745',
-            prefixKey: ['dataOrder_', 'dataPesanan_'],
-            fieldOwner:   'idSeller',
-            fieldParent:  'idPembeli',
-            fieldTanggal: 'createdAt'
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — HELPER INTERNAL (delegate Core System)
-    // ═══════════════════════════════════════════════════════════
-    function _loadJSON(key, fallback) {
-        if (typeof window.csLoadJSON === 'function') {
-            return window.csLoadJSON(key, fallback);
-        }
-        try {
-            var s = localStorage.getItem(key);
-            var p = s ? JSON.parse(s) : fallback;
-            return p === null || p === undefined ? fallback : p;
-        } catch (e) { return fallback; }
-    }
-
-    function _saveJSON(key, data) {
-        if (typeof window.csSaveJSON === 'function') {
-            return window.csSaveJSON(key, data, { backup: false });
-        }
-        try {
-            localStorage.setItem(key, JSON.stringify(data));
-            return { sukses: true };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    }
-
-    function _now() {
-        if (typeof window.csNow === 'function') return window.csNow();
-        return new Date().toISOString();
-    }
-
-    function _umurHari(iso) {
-        if (!iso) return 0;
-        try {
-            var t = new Date(iso).getTime();
-            if (isNaN(t)) return 0;
-            return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
-        } catch (e) { return 0; }
-    }
-
-    // ── Export helper ke window agar bisa dipakai OM2 (2), (3), (4) ──
-    window.om2Helper = window.om2Helper || {
-        loadJSON: _loadJSON,
-        saveJSON: _saveJSON,
-        now:      _now,
-        umurHari: _umurHari
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — HELPER: DAFTAR OWNER VALID
-    // ═══════════════════════════════════════════════════════════
-    window.om2AmbilOwnerValid = function() {
-        try {
-            var valid = {};
-            var lu = _loadJSON('dataLoginUser', []);
-            (lu || []).forEach(function(u) {
-                if (u && u.idUser) valid[u.idUser] = true;
-            });
-            return valid;
-        } catch (e) { return {}; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — HELPER: DAFTAR KATEGORI VALID
-    // ═══════════════════════════════════════════════════════════
-    window.om2AmbilKategoriValid = function() {
-        try {
-            var valid = {};
-            // Dari manajemen kategori (kalau ada)
-            var kat = _loadJSON('dataKategoriProduk', []);
-            (kat || []).forEach(function(k) {
-                if (k && k.nama) valid[k.nama] = true;
-            });
-            return valid;
-        } catch (e) { return {}; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK OM2 (1) — Foundation terpasang.',
-        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
-    console.log('   📊 Entitas: ' + Object.keys(window.OM2_ENTITAS).length +
-                ' (' + Object.keys(window.OM2_ENTITAS).join(', ') + ')');
-    console.log('   ⏱️ Grace: kandidat ' + window.OM2_KONSTANTA.GRACE_KANDIDAT +
-                ' hr, semu ' + window.OM2_KONSTANTA.GRACE_SEMU + ' hr');
-    console.log('   🔗 Helper: om2Helper, om2AmbilOwnerValid, om2AmbilKategoriValid');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK OM2 (1) — FOUNDATION ════════════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK OM2 (2) — ORPHAN MANAGEMENT EXTENDED — SCANNER ═══ -->
-<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
-<!-- ═══ Dependency: OM2 (1) Foundation ════════════════════════ -->
-<!-- ═══ Isi: om2ScanProduk, om2ScanTransaksi, om2ScanOrder ════ -->
-<!-- ═══ Posisi: Setelah OM2 (1) ════════════════════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_OM2_2_SCANNER() {
-    if (window._om2_2Done) {
-        console.log('ℹ️ OM2 (2) — Scanner sudah terpasang.');
-        return;
-    }
-    if (!window._om2_1Done) {
-        console.warn('⚠️ OM2 (1) belum terpasang. OM2 (2) ditunda.');
-        return;
-    }
-    window._om2_2Done = true;
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — SCAN KEY STORAGE (INTERNAL)
-    // ═══════════════════════════════════════════════════════════
-    // Cari semua key di localStorage yang cocok dengan prefix
-    // ═══════════════════════════════════════════════════════════
-    function _scanKeysByPrefix(prefixList) {
-        var hasil = [];
-        try {
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k) continue;
-                for (var j = 0; j < prefixList.length; j++) {
-                    if (k.indexOf(prefixList[j]) === 0) {
-                        hasil.push({
-                            key: k,
-                            prefix: prefixList[j],
-                            idOwner: k.substring(prefixList[j].length)
-                        });
-                        break;
-                    }
-                }
-            }
-        } catch (e) {}
-        return hasil;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — LOAD ITEM DARI KEY
-    // ═══════════════════════════════════════════════════════════
-    function _loadItems(key) {
-        var data = window.om2Helper.loadJSON(key, []);
-        return Array.isArray(data) ? data : [];
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — SCAN PRODUK
-    // ═══════════════════════════════════════════════════════════
-    window.om2ScanProduk = function() {
-        try {
-            var cfg = window.OM2_ENTITAS.produk;
-            var keys = _scanKeysByPrefix(cfg.prefixKey);
-            var ownerValid = window.om2AmbilOwnerValid();
-            var kategoriValid = window.om2AmbilKategoriValid();
-            var adaKategori = Object.keys(kategoriValid).length > 0;
-
-            var hasil = [];
-            var stat = { total: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 };
-
-            keys.forEach(function(entry) {
-                var items = _loadItems(entry.key);
-                items.forEach(function(item) {
-                    if (!item) return;
-                    stat.total++;
-
-                    var entitas = {
-                        kategori:  'produk',
-                        keyStorage: entry.key,
-                        idItem:    item.id || item.kode || '-',
-                        nama:      item.nama || '-',
-                        idOwner:   item.idOwner || entry.idOwner,
-                        idParent:  item.kategori || '-',
-                        tanggal:   item.createdAt || null,
-                        item:      item
-                    };
-
-                    // Klasifikasi
-                    if (!ownerValid[entitas.idOwner]) {
-                        entitas.tingkat = 1; // SEJATI
-                        entitas.alasan = 'Owner tidak ada';
-                        stat.sejati++;
-                    } else if (adaKategori && !kategoriValid[entitas.idParent]) {
-                        entitas.tingkat = 2; // SEMU (kategori hilang)
-                        entitas.alasan = 'Kategori tidak ada';
-                        stat.semu++;
-                    } else {
-                        var umur = window.om2Helper.umurHari(entitas.tanggal);
-                        if (umur > 30) {
-                            entitas.tingkat = 3; // KANDIDAT
-                            entitas.alasan = 'Tanpa update ' + umur + ' hari';
-                            stat.kandidat++;
-                        } else {
-                            entitas.tingkat = 4; // VALID
-                            entitas.alasan = 'OK';
-                            stat.valid++;
-                        }
-                    }
-
-                    hasil.push(entitas);
-                });
-            });
-
-            return {
-                entitas: 'produk',
-                keys:    keys.length,
-                items:   hasil,
-                stat:    stat
-            };
-        } catch (e) {
-            console.error('om2ScanProduk error:', e);
-            return { entitas: 'produk', keys: 0, items: [], stat: { total: 0 } };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — SCAN TRANSAKSI
-    // ═══════════════════════════════════════════════════════════
-    window.om2ScanTransaksi = function() {
-        try {
-            var cfg = window.OM2_ENTITAS.transaksi;
-            var keys = _scanKeysByPrefix(cfg.prefixKey);
-            var ownerValid = window.om2AmbilOwnerValid();
-
-            var hasil = [];
-            var stat = { total: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 };
-
-            keys.forEach(function(entry) {
-                var items = _loadItems(entry.key);
-                items.forEach(function(item) {
-                    if (!item) return;
-                    stat.total++;
-
-                    var entitas = {
-                        kategori:  'transaksi',
-                        keyStorage: entry.key,
-                        idItem:    item.id || item.kode || '-',
-                        nama:      item.nama || item.keterangan || 'Transaksi',
-                        idOwner:   item.idOwner || entry.idOwner,
-                        idParent:  item.idProduk || '-',
-                        tanggal:   item.createdAt || item.tanggal || null,
-                        item:      item
-                    };
-
-                    if (!ownerValid[entitas.idOwner]) {
-                        entitas.tingkat = 1;
-                        entitas.alasan = 'Owner tidak ada';
-                        stat.sejati++;
-                    } else {
-                        var umur = window.om2Helper.umurHari(entitas.tanggal);
-                        if (umur > 90) {
-                            entitas.tingkat = 3;
-                            entitas.alasan = 'Transaksi > 90 hari';
-                            stat.kandidat++;
-                        } else {
-                            entitas.tingkat = 4;
-                            entitas.alasan = 'OK';
-                            stat.valid++;
-                        }
-                    }
-
-                    hasil.push(entitas);
-                });
-            });
-
-            return {
-                entitas: 'transaksi',
-                keys:    keys.length,
-                items:   hasil,
-                stat:    stat
-            };
-        } catch (e) {
-            console.error('om2ScanTransaksi error:', e);
-            return { entitas: 'transaksi', keys: 0, items: [], stat: { total: 0 } };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — SCAN ORDER
-    // ═══════════════════════════════════════════════════════════
-    window.om2ScanOrder = function() {
-        try {
-            var cfg = window.OM2_ENTITAS.order;
-            var keys = _scanKeysByPrefix(cfg.prefixKey);
-            var ownerValid = window.om2AmbilOwnerValid();
-
-            var hasil = [];
-            var stat = { total: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 };
-
-            keys.forEach(function(entry) {
-                var items = _loadItems(entry.key);
-                items.forEach(function(item) {
-                    if (!item) return;
-                    stat.total++;
-
-                    var idSeller = item.idSeller || item.idOwner || entry.idOwner;
-                    var idPembeli = item.idPembeli || item.idCustomer || null;
-
-                    var entitas = {
-                        kategori:  'order',
-                        keyStorage: entry.key,
-                        idItem:    item.id || item.kode || '-',
-                        nama:      item.nama || 'Order',
-                        idOwner:   idSeller,
-                        idParent:  idPembeli || '-',
-                        tanggal:   item.createdAt || item.tanggal || null,
-                        item:      item
-                    };
-
-                    if (!ownerValid[entitas.idOwner]) {
-                        entitas.tingkat = 1;
-                        entitas.alasan = 'Seller tidak ada';
-                        stat.sejati++;
-                    } else if (idPembeli && !ownerValid[idPembeli]) {
-                        entitas.tingkat = 2;
-                        entitas.alasan = 'Pembeli tidak ada';
-                        stat.semu++;
-                    } else {
-                        var umur = window.om2Helper.umurHari(entitas.tanggal);
-                        if (umur > 90) {
-                            entitas.tingkat = 3;
-                            entitas.alasan = 'Order > 90 hari';
-                            stat.kandidat++;
-                        } else {
-                            entitas.tingkat = 4;
-                            entitas.alasan = 'OK';
-                            stat.valid++;
-                        }
-                    }
-
-                    hasil.push(entitas);
-                });
-            });
-
-            return {
-                entitas: 'order',
-                keys:    keys.length,
-                items:   hasil,
-                stat:    stat
-            };
-        } catch (e) {
-            console.error('om2ScanOrder error:', e);
-            return { entitas: 'order', keys: 0, items: [], stat: { total: 0 } };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — SCAN SEMUA (GABUNGAN)
-    // ═══════════════════════════════════════════════════════════
-    window.om2ScanSemua = function() {
-        try {
-            var produk    = window.om2ScanProduk();
-            var transaksi = window.om2ScanTransaksi();
-            var order     = window.om2ScanOrder();
-
-            var totalOrphan = 0;
-            var totalItems = 0;
-
-            [produk, transaksi, order].forEach(function(r) {
-                if (!r || !r.stat) return;
-                totalItems  += r.stat.total || 0;
-                totalOrphan += (r.stat.sejati || 0) + (r.stat.semu || 0) + (r.stat.kandidat || 0);
-            });
-
-            return {
-                produk:       produk,
-                transaksi:    transaksi,
-                order:        order,
-                totalItems:   totalItems,
-                totalOrphan:  totalOrphan,
-                timestamp:    window.om2Helper.now()
-            };
-        } catch (e) {
-            console.error('om2ScanSemua error:', e);
-            return { produk: null, transaksi: null, order: null, totalItems: 0, totalOrphan: 0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — SCAN PER TINGKAT
-    // ═══════════════════════════════════════════════════════════
-    window.om2ScanTingkat = function(tingkat, kategori) {
-        try {
-            var hasil = window.om2ScanSemua();
-            var list = [];
-
-            var sumber = {
-                produk:    hasil.produk,
-                transaksi: hasil.transaksi,
-                order:     hasil.order
-            };
-
-            // Kalau kategori ditentukan, ambil dari kategori itu
-            if (kategori && sumber[kategori]) {
-                (sumber[kategori].items || []).forEach(function(it) {
-                    if (it.tingkat === tingkat) list.push(it);
-                });
-                return list;
-            }
-
-            // Kalau tidak, gabung dari semua kategori
-            Object.keys(sumber).forEach(function(k) {
-                if (!sumber[k]) return;
-                (sumber[k].items || []).forEach(function(it) {
-                    if (it.tingkat === tingkat) list.push(it);
-                });
-            });
-
-            return list;
-        } catch (e) {
-            console.error('om2ScanTingkat error:', e);
-            return [];
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK OM2 (2) — Scanner terpasang.',
-        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
-    console.log('   🔍 Fungsi: om2ScanProduk, om2ScanTransaksi, om2ScanOrder');
-    console.log('   🔍 Gabungan: om2ScanSemua, om2ScanTingkat(tingkat, kategori)');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK OM2 (2) — SCANNER ══════════════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK OM2 (3) — ORPHAN MANAGEMENT EXTENDED — STATISTIK -->
-<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
-<!-- ═══ Dependency: OM2 (1) + OM2 (2) ═════════════════════════ -->
-<!-- ═══ Isi: om2Klasifikasi, om2Statistik, om2Estimasi, dll ═══ -->
-<!-- ═══ Posisi: Setelah OM2 (2) ════════════════════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_OM2_3_STATISTIK() {
-    if (window._om2_3Done) {
-        console.log('ℹ️ OM2 (3) — Statistik sudah terpasang.');
-        return;
-    }
-    if (!window._om2_2Done) {
-        console.warn('⚠️ OM2 (2) belum terpasang. OM2 (3) ditunda.');
-        return;
-    }
-    window._om2_3Done = true;
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — KLASIFIKASI 1 ENTITAS
-    // ═══════════════════════════════════════════════════════════
-    // Return: { tingkat, nama, alasan, umurHari }
-    // Tingkat: 0=PROTECTED, 1=SEJATI, 2=SEMU, 3=KANDIDAT, 4=VALID
-    // ═══════════════════════════════════════════════════════════
-    window.om2Klasifikasi = function(entitas) {
-        try {
-            if (!entitas) return { tingkat: 0, nama: 'invalid', alasan: 'Kosong', umurHari: 0 };
-
-            // Cek protected
-            if (entitas.item && entitas.item.protected === true) {
-                return {
-                    tingkat: 0, nama: 'protected',
-                    alasan: entitas.item.protectedReason || 'Flag protected',
-                    umurHari: 0
-                };
-            }
-
-            var T = window.OM2_KONSTANTA.TINGKAT;
-            var umur = window.om2Helper.umurHari(entitas.tanggal);
-
-            switch (entitas.tingkat) {
-                case T.SEJATI:
-                    return { tingkat: 1, nama: 'orphan-sejati', alasan: entitas.alasan || 'Orphan sejati', umurHari: umur };
-                case T.SEMU:
-                    return { tingkat: 2, nama: 'orphan-semu', alasan: entitas.alasan || 'Orphan semu', umurHari: umur };
-                case T.KANDIDAT:
-                    return { tingkat: 3, nama: 'kandidat', alasan: entitas.alasan || 'Kandidat', umurHari: umur };
-                case T.VALID:
-                    return { tingkat: 4, nama: 'valid', alasan: 'OK', umurHari: umur };
-                default:
-                    return { tingkat: 4, nama: 'valid', alasan: 'Tidak terklasifikasi', umurHari: umur };
-            }
-        } catch (e) {
-            return { tingkat: 0, nama: 'error', alasan: e.message, umurHari: 0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — LABEL TINGKAT (untuk UI)
-    // ═══════════════════════════════════════════════════════════
-    window.om2LabelTingkat = function(tingkat) {
-        var map = {
-            0: { label: 'Protected', warna: 'success', ikon: 'fas fa-shield-alt' },
-            1: { label: 'Orphan Sejati', warna: 'danger', ikon: 'fas fa-exclamation-triangle' },
-            2: { label: 'Orphan Semu', warna: 'warning', ikon: 'fas fa-clock' },
-            3: { label: 'Kandidat', warna: 'info', ikon: 'fas fa-question-circle' },
-            4: { label: 'Valid', warna: 'secondary', ikon: 'fas fa-check-circle' }
-        };
-        return map[tingkat] || map[4];
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — STATISTIK ORPHAN PER KATEGORI & TINGKAT
-    // ═══════════════════════════════════════════════════════════
-    window.om2StatistikOrphan = function() {
-        try {
-            var hasil = window.om2ScanSemua();
-
-            var stat = {
-                produk:    { total: 0, protected: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 },
-                transaksi: { total: 0, protected: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 },
-                order:     { total: 0, protected: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 },
-                total:     { total: 0, protected: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 }
-            };
-
-            ['produk', 'transaksi', 'order'].forEach(function(kat) {
-                var r = hasil[kat];
-                if (!r || !r.items) return;
-
-                r.items.forEach(function(it) {
-                    var klas = window.om2Klasifikasi(it);
-                    var key = ['protected', 'sejati', 'semu', 'kandidat', 'valid'][klas.tingkat] || 'valid';
-
-                    stat[kat].total++;
-                    stat[kat][key]++;
-                    stat.total.total++;
-                    stat.total[key]++;
-                });
-            });
-
-            return stat;
-        } catch (e) {
-            console.error('om2StatistikOrphan error:', e);
-            return { produk: {}, transaksi: {}, order: {}, total: {} };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — ESTIMASI HEMAT (BYTES)
-    // ═══════════════════════════════════════════════════════════
-    window.om2EstimasiHemat = function(opts) {
-        opts = opts || {};
-        try {
-            var stat = window.om2StatistikOrphan();
-            var hasil = window.om2ScanSemua();
-
-            // Hitung size per tingkat
-            var size = { protected: 0, sejati: 0, semu: 0, kandidat: 0, valid: 0 };
-
-            ['produk', 'transaksi', 'order'].forEach(function(kat) {
-                var r = hasil[kat];
-                if (!r || !r.items) return;
-                r.items.forEach(function(it) {
-                    var klas = window.om2Klasifikasi(it);
-                    var key = ['protected', 'sejati', 'semu', 'kandidat', 'valid'][klas.tingkat] || 'valid';
-                    try {
-                        var json = JSON.stringify(it.item);
-                        size[key] += json.length * 2;
-                    } catch (e) {}
-                });
-            });
-
-            // Total yang bisa dihemat
-            var bisaHemat = 0;
-            var detail = {};
-
-            if (opts.sejati !== false) { bisaHemat += size.sejati; detail.sejati = size.sejati; }
-            if (opts.semu === true)    { bisaHemat += size.semu; detail.semu = size.semu; }
-            if (opts.kandidat === true) { bisaHemat += size.kandidat; detail.kandidat = size.kandidat; }
-
-            function _fmt(b) {
-                if (typeof window.mdFormatSize === 'function') return window.mdFormatSize(b);
-                if (b < 1024) return b + ' B';
-                if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
-                return (b / 1024 / 1024).toFixed(2) + ' MB';
-            }
-
-            return {
-                total: bisaHemat,
-                totalTeks: _fmt(bisaHemat),
-                detail: detail,
-                sizeAll: {
-                    protected: _fmt(size.protected),
-                    sejati:    _fmt(size.sejati),
-                    semu:      _fmt(size.semu),
-                    kandidat:  _fmt(size.kandidat),
-                    valid:     _fmt(size.valid)
-                },
-                countPerTingkat: {
-                    protected: stat.total.protected,
-                    sejati:    stat.total.sejati,
-                    semu:      stat.total.semu,
-                    kandidat:  stat.total.kandidat,
-                    valid:     stat.total.valid
-                }
-            };
-        } catch (e) {
-            console.error('om2EstimasiHemat error:', e);
-            return { total: 0, totalTeks: '0 B', detail: {} };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — GROUP BY TINGKAT (untuk UI)
-    // ═══════════════════════════════════════════════════════════
-    window.om2GroupByTingkat = function() {
-        try {
-            var hasil = window.om2ScanSemua();
-            var grup = { 0: [], 1: [], 2: [], 3: [], 4: [] };
-
-            ['produk', 'transaksi', 'order'].forEach(function(kat) {
-                var r = hasil[kat];
-                if (!r || !r.items) return;
-                r.items.forEach(function(it) {
-                    var klas = window.om2Klasifikasi(it);
-                    if (grup[klas.tingkat]) grup[klas.tingkat].push(it);
-                });
-            });
-
-            return grup;
-        } catch (e) {
-            console.error('om2GroupByTingkat error:', e);
-            return { 0: [], 1: [], 2: [], 3: [], 4: [] };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — GROUP BY KATEGORI (produk/transaksi/order)
-    // ═══════════════════════════════════════════════════════════
-    window.om2GroupByKategori = function() {
-        try {
-            var hasil = window.om2ScanSemua();
-            var grup = { produk: [], transaksi: [], order: [] };
-
-            ['produk', 'transaksi', 'order'].forEach(function(kat) {
-                var r = hasil[kat];
-                if (!r || !r.items) return;
-                r.items.forEach(function(it) {
-                    var klas = window.om2Klasifikasi(it);
-                    if (klas.tingkat >= 1 && klas.tingkat <= 3) {
-                        grup[kat].push(Object.assign({}, it, {
-                            _namaTingkat: klas.nama,
-                            _umurHari:    klas.umurHari
-                        }));
-                    }
-                });
-            });
-
-            return grup;
-        } catch (e) {
-            return { produk: [], transaksi: [], order: [] };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — PREVIEW HAPUS (untuk konfirmasi UI)
-    // ═══════════════════════════════════════════════════════════
-    window.om2PreviewHapus = function(tingkatList, limit) {
-        tingkatList = Array.isArray(tingkatList) ? tingkatList : [1, 2];
-        limit = parseInt(limit, 10) || 100;
-
-        try {
-            var semua = [];
-            tingkatList.forEach(function(t) {
-                var list = window.om2ScanTingkat(t);
-                list.forEach(function(it) {
-                    semua.push(Object.assign({}, it, {
-                        _umurHari: window.om2Helper.umurHari(it.tanggal),
-                        _namaTingkat: window.om2LabelTingkat(t).label
-                    }));
-                });
-            });
-
-            var total = semua.length;
-            var size = 0;
-            semua.forEach(function(it) {
-                try { size += JSON.stringify(it.item).length * 2; } catch (e) {}
-            });
-
-            function _fmt(b) {
-                if (typeof window.mdFormatSize === 'function') return window.mdFormatSize(b);
-                if (b < 1024) return b + ' B';
-                if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
-                return (b / 1024 / 1024).toFixed(2) + ' MB';
-            }
-
-            return {
-                total:    total,
-                size:     size,
-                sizeTeks: _fmt(size),
-                items:    semua.slice(0, limit),
-                truncated: total > limit
-            };
-        } catch (e) {
-            console.error('om2PreviewHapus error:', e);
-            return { total: 0, size: 0, sizeTeks: '0 B', items: [], truncated: false };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — RINGKASAN 1 BARIS
-    // ═══════════════════════════════════════════════════════════
-    window.om2Ringkasan = function() {
-        try {
-            var stat = window.om2StatistikOrphan();
-            var hemat = window.om2EstimasiHemat({ sejati: true, semu: true });
-
-            return 'OM2: ' + stat.total.total + ' items | ' +
-                   'Sejati: ' + stat.total.sejati + ' | ' +
-                   'Semu: ' + stat.total.semu + ' | ' +
-                   'Kandidat: ' + stat.total.kandidat + ' | ' +
-                   'Hemat: ' + hemat.totalTeks;
-        } catch (e) {
-            return 'OM2: error';
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 9] — LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK OM2 (3) — Klasifikasi & Statistik terpasang.',
-        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
-    console.log('   📊 Fungsi: om2Klasifikasi, om2StatistikOrphan, om2EstimasiHemat');
-    console.log('   📊 Group: om2GroupByTingkat, om2GroupByKategori');
-    console.log('   📊 Preview: om2PreviewHapus, om2Ringkasan');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK OM2 (3) — KLASIFIKASI & STATISTIK ═════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK OM2 (4) — ORPHAN MANAGEMENT EXTENDED — AKSI & API -->
-<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
-<!-- ═══ Dependency: OM2 (1) + OM2 (2) + OM2 (3) ═══════════════ -->
-<!-- ═══ Isi: om2Hapus*, om2Arsipkan, om2Relokasi, debugOM2 ══ -->
-<!-- ═══ Posisi: Setelah OM2 (3) — BLOK TERAKHIR OM2 ══════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_OM2_4_AKSI_API() {
-    if (window._om2_4Done) {
-        console.log('ℹ️ OM2 (4) — Aksi & API sudah terpasang.');
-        return;
-    }
-    if (!window._om2_3Done) {
-        console.warn('⚠️ OM2 (3) belum terpasang. OM2 (4) ditunda.');
-        return;
-    }
-    window._om2_4Done = true;
-    window._om2Done  = true; // Alias: OM2 LENGKAP
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — HAPUS ITEM DARI STORAGE
-    // ═══════════════════════════════════════════════════════════
-    // Hapus 1 item dari key storage (berdasarkan idItem)
-    // ═══════════════════════════════════════════════════════════
-    function _hapusItemDariStorage(keyStorage, idItem) {
-        try {
-            var list = window.om2Helper.loadJSON(keyStorage, []);
-            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
-
-            var before = list.length;
-            var filtered = list.filter(function(x) {
-                if (!x) return false;
-                var xid = x.id || x.kode || '-';
-                return xid !== idItem;
-            });
-
-            if (filtered.length === before) {
-                return { sukses: false, pesan: 'Item tidak ditemukan' };
-            }
-
-            // Kalau array jadi kosong, hapus key-nya
-            if (filtered.length === 0) {
-                if (typeof window.csRemoveJSON === 'function') {
-                    window.csRemoveJSON(keyStorage);
-                } else {
-                    localStorage.removeItem(keyStorage);
-                }
-            } else {
-                window.om2Helper.saveJSON(keyStorage, filtered);
-            }
-
-            return { sukses: true, dihapus: before - filtered.length };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — AKSI: HAPUS TINGKAT 1 (ORPHAN SEJATI)
-    // ═══════════════════════════════════════════════════════════
-    window.om2HapusTingkat1 = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.om2ScanTingkat(1);
-            if (list.length === 0) {
-                return { sukses: true, berhasil: 0, gagal: 0, pesan: 'Tidak ada orphan sejati' };
-            }
-
-            if (opts.dryRun === true) {
-                return { sukses: true, dryRun: true, akanDihapus: list.length };
-            }
-
-            var berhasil = 0, gagal = 0;
-            list.forEach(function(it) {
-                var h = _hapusItemDariStorage(it.keyStorage, it.idItem);
-                if (h.sukses) berhasil++; else gagal++;
-            });
-
-            try {
-                window.dispatchEvent(new CustomEvent('r2coin:om2-hapus', {
-                    detail: { tingkat: 1, berhasil: berhasil, gagal: gagal }
-                }));
-            } catch (e) {}
-
-            return { sukses: true, tingkat: 1, berhasil: berhasil, gagal: gagal };
-        } catch (e) {
-            console.error('om2HapusTingkat1 error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — AKSI: HAPUS TINGKAT 2 (ORPHAN SEMU)
-    // ═══════════════════════════════════════════════════════════
-    window.om2HapusTingkat2 = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.om2ScanTingkat(2);
-            if (list.length === 0) {
-                return { sukses: true, berhasil: 0, gagal: 0, pesan: 'Tidak ada orphan semu' };
-            }
-
-            if (opts.dryRun === true) {
-                return { sukses: true, dryRun: true, akanDihapus: list.length };
-            }
-
-            var berhasil = 0, gagal = 0;
-            list.forEach(function(it) {
-                var h = _hapusItemDariStorage(it.keyStorage, it.idItem);
-                if (h.sukses) berhasil++; else gagal++;
-            });
-
-            try {
-                window.dispatchEvent(new CustomEvent('r2coin:om2-hapus', {
-                    detail: { tingkat: 2, berhasil: berhasil, gagal: gagal }
-                }));
-            } catch (e) {}
-
-            return { sukses: true, tingkat: 2, berhasil: berhasil, gagal: gagal };
-        } catch (e) {
-            console.error('om2HapusTingkat2 error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — AKSI: HAPUS AMAN (TINGKAT 1 + 2)
-    // ═══════════════════════════════════════════════════════════
-    window.om2HapusAman = function(opts) {
-        opts = opts || {};
-        var r1 = window.om2HapusTingkat1(opts);
-        var r2 = window.om2HapusTingkat2(opts);
-        return {
-            sukses: true,
-            tingkat1: r1.berhasil || 0,
-            tingkat2: r2.berhasil || 0,
-            berhasil: (r1.berhasil || 0) + (r2.berhasil || 0),
-            gagal:    (r1.gagal || 0) + (r2.gagal || 0)
-        };
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — AKSI: HAPUS SELEKTIF
-    // ═══════════════════════════════════════════════════════════
-    window.om2HapusSelektif = function(arrayIdItem, opts) {
-        opts = opts || {};
-        if (!Array.isArray(arrayIdItem) || arrayIdItem.length === 0) {
-            return { sukses: false, pesan: 'Array ID kosong' };
-        }
-
-        try {
-            // Cari item lengkap dari scan semua
-            var semua = window.om2ScanSemua();
-            var target = [];
-            ['produk', 'transaksi', 'order'].forEach(function(kat) {
-                var r = semua[kat];
-                if (!r || !r.items) return;
-                r.items.forEach(function(it) {
-                    if (arrayIdItem.indexOf(it.idItem) !== -1) target.push(it);
-                });
-            });
-
-            if (target.length === 0) {
-                return { sukses: false, pesan: 'Tidak ada item yang cocok' };
-            }
-
-            if (opts.dryRun === true) {
-                return { sukses: true, dryRun: true, akanDihapus: target.length };
-            }
-
-            var berhasil = 0, gagal = 0;
-            target.forEach(function(it) {
-                var h = _hapusItemDariStorage(it.keyStorage, it.idItem);
-                if (h.sukses) berhasil++; else gagal++;
-            });
-
-            return { sukses: true, berhasil: berhasil, gagal: gagal };
-        } catch (e) {
-            console.error('om2HapusSelektif error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — AKSI: ARSIPKAN (PINDAH KE ARSIP)
-    // ═══════════════════════════════════════════════════════════
-    // Simpan orphan ke r2coin_arsip_orphan_om2 sebelum dihapus
-    // ═══════════════════════════════════════════════════════════
-    window.om2Arsipkan = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.om2ScanTingkat(1);
-            if (list.length === 0) {
-                return { sukses: true, diarsip: 0, pesan: 'Tidak ada orphan sejati' };
-            }
-
-            var arsip = window.om2Helper.loadJSON(window.OM2_KONSTANTA.KEY_ARSIP, {
-                _meta: { total: 0 },
-                items: []
-            });
-
-            if (!Array.isArray(arsip.items)) arsip.items = [];
-
-            var now = window.om2Helper.now();
-            var ditambah = 0;
-
-            list.forEach(function(it) {
-                arsip.items.push({
-                    kategori:  it.kategori,
-                    keyStorage: it.keyStorage,
-                    idItem:    it.idItem,
-                    nama:      it.nama,
-                    idOwner:   it.idOwner,
-                    tanggal:   it.tanggal,
-                    alasan:    it.alasan,
-                    item:      it.item,
-                    diarsip:   now
-                });
-                ditambah++;
-            });
-
-            // Batasi total arsip
-            if (arsip.items.length > window.OM2_KONSTANTA.MAX_ARSIP) {
-                arsip.items = arsip.items.slice(-window.OM2_KONSTANTA.MAX_ARSIP);
-            }
-
-            arsip._meta = arsip._meta || {};
-            arsip._meta.total = arsip.items.length;
-            arsip._meta.updatedAt = now;
-
-            window.om2Helper.saveJSON(window.OM2_KONSTANTA.KEY_ARSIP, arsip);
-
-            // Kalau opts.hapusAsli = true, hapus dari storage asli
-            var hasilHapus = { berhasil: 0 };
-            if (opts.hapusAsli === true) {
-                var berhasil = 0;
-                list.forEach(function(it) {
-                    var h = _hapusItemDariStorage(it.keyStorage, it.idItem);
-                    if (h.sukses) berhasil++;
-                });
-                hasilHapus.berhasil = berhasil;
-            }
-
-            return {
-                sukses: true,
-                diarsip: ditambah,
-                totalArsip: arsip.items.length,
-                dihapus: hasilHapus.berhasil
-            };
-        } catch (e) {
-            console.error('om2Arsipkan error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — AKSI: RELOKASI (PINDAH OWNER)
-    // ═══════════════════════════════════════════════════════════
-    // Pindahkan item dari 1 key ke key lain (ubah owner)
-    // ═══════════════════════════════════════════════════════════
-    window.om2Relokasi = function(keyAsal, idItem, keyTujuan) {
-        try {
-            if (!keyAsal || !idItem || !keyTujuan) {
-                return { sukses: false, pesan: 'Param tidak lengkap' };
-            }
-
-            var listAsal = window.om2Helper.loadJSON(keyAsal, []);
-            if (!Array.isArray(listAsal)) return { sukses: false, pesan: 'Data asal tidak valid' };
-
-            var idx = -1;
-            for (var i = 0; i < listAsal.length; i++) {
-                var xid = listAsal[i].id || listAsal[i].kode || '-';
-                if (xid === idItem) { idx = i; break; }
-            }
-            if (idx === -1) return { sukses: false, pesan: 'Item tidak ditemukan di asal' };
-
-            var item = listAsal.splice(idx, 1)[0];
-
-            // Update ownerId
-            var idOwnerBaru = keyTujuan.indexOf('_') !== -1
-                ? keyTujuan.substring(keyTujuan.lastIndexOf('_') + 1)
-                : keyTujuan;
-            item.idOwner = idOwnerBaru;
-
-            // Simpan ke key tujuan
-            var listTujuan = window.om2Helper.loadJSON(keyTujuan, []);
-            if (!Array.isArray(listTujuan)) listTujuan = [];
-            listTujuan.push(item);
-
-            window.om2Helper.saveJSON(keyAsal, listAsal);
-            window.om2Helper.saveJSON(keyTujuan, listTujuan);
-
-            return { sukses: true, dipindah: idItem, dari: keyAsal, ke: keyTujuan };
-        } catch (e) {
-            console.error('om2Relokasi error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — ARSIP: AMBIL & BERSIHKAN
-    // ═══════════════════════════════════════════════════════════
-    window.om2AmbilArsip = function(opts) {
-        opts = opts || {};
-        try {
-            var arsip = window.om2Helper.loadJSON(window.OM2_KONSTANTA.KEY_ARSIP, {
-                _meta: { total: 0 }, items: []
-            });
-            if (!Array.isArray(arsip.items)) arsip.items = [];
-            var limit = parseInt(opts.limit, 10) || 50;
-            return {
-                total: arsip.items.length,
-                items: arsip.items.slice(-limit).reverse()
-            };
-        } catch (e) {
-            return { total: 0, items: [] };
-        }
-    };
-
-    window.om2BersihkanArsip = function() {
-        try {
-            if (typeof window.csRemoveJSON === 'function') {
-                window.csRemoveJSON(window.OM2_KONSTANTA.KEY_ARSIP);
-            } else {
-                localStorage.removeItem(window.OM2_KONSTANTA.KEY_ARSIP);
-            }
-            return { sukses: true };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 9] — RERUN (RESET & SCAN ULANG)
-    // ═══════════════════════════════════════════════════════════
-    window.om2Rerun = function() {
-        try {
-            var sebelum = window.om2StatistikOrphan();
-            var hasil = window.om2ScanSemua();
-            return {
-                sukses: true,
-                sebelum: sebelum.total,
-                sesudah: {
-                    totalItems:  hasil.totalItems,
-                    totalOrphan: hasil.totalOrphan
-                }
-            };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 10] — SARAN PERBAIKAN
-    // ═══════════════════════════════════════════════════════════
-    window.om2SaranPerbaikan = function() {
-        try {
-            var stat = window.om2StatistikOrphan();
-            var saran = [];
-            if (stat.total.sejati > 0) {
-                saran.push({ prioritas: 'tinggi', pesan: stat.total.sejati + ' orphan sejati — hapus via om2HapusTingkat1()' });
-            }
-            if (stat.total.semu > 0) {
-                saran.push({ prioritas: 'sedang', pesan: stat.total.semu + ' orphan semu — hapus via om2HapusTingkat2()' });
-            }
-            if (stat.total.kandidat > 0) {
-                saran.push({ prioritas: 'rendah', pesan: stat.total.kandidat + ' kandidat — cek manual' });
-            }
-            if (saran.length === 0) {
-                saran.push({ prioritas: 'info', pesan: 'Tidak ada orphan — data bersih' });
-            }
-            return saran;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 11] — DEBUG (A5)
-    // ═══════════════════════════════════════════════════════════
-    window.debugOM2 = function() {
-        try {
-            var stat = window.om2StatistikOrphan();
-            var hemat = window.om2EstimasiHemat({ sejati: true, semu: true });
-            var arsip = window.om2AmbilArsip({ limit: 1 });
-
-            var info = {
-                blok: 'OM2',
-                versi: window.OM2_KONSTANTA.VERSI,
-                guards: {
-                    om2_1: window._om2_1Done,
-                    om2_2: window._om2_2Done,
-                    om2_3: window._om2_3Done,
-                    om2_4: window._om2_4Done
-                },
-                statistik: {
-                    total:    stat.total.total,
-                    sejati:   stat.total.sejati,
-                    semu:     stat.total.semu,
-                    kandidat: stat.total.kandidat,
-                    valid:    stat.total.valid
-                },
-                hemat: {
-                    total: hemat.totalTeks,
-                    detail: hemat.detail
-                },
-                arsip: {
-                    total: arsip.total
-                },
-                ringkasan: window.om2Ringkasan(),
-                saran: window.om2SaranPerbaikan()
-            };
-            console.log('🔍 debugOM2:', info);
-            return info;
-        } catch (e) {
-            console.error('debugOM2 error:', e);
-            return null;
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 12] — LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK OM2 (4) — Aksi & API terpasang.',
-        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
-    console.log('   ⚙️ Aksi: om2HapusTingkat1, om2HapusTingkat2, om2HapusAman, om2HapusSelektif');
-    console.log('   📥 Arsip: om2Arsipkan, om2AmbilArsip, om2BersihkanArsip');
-    console.log('   🔀 Relokasi: om2Relokasi');
-    console.log('   🔄 Rerun: om2Rerun');
-    console.log('   🔍 Debug: debugOM2()');
-    console.log('');
-    console.log('%c✅ OM2 — LENGKAP (1+2+3+4)',
-        'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK OM2 (4) — AKSI & API ═══════════════════════ -->
-<!-- ═══ AKHIR BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT EXTENDED ═══ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK GLOBAL SYSTEM UI HTML & JS ═════ -->
@@ -21073,165 +19816,64 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══ AKHIR BLOK GLOBAL SYSTEM UI HTML & JS ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK AUTO HAPUS PROFIL ORPHAN (APO) ════════════════════ -->
-<!-- ═══ Layer: L2 (Utility) ═══════════════════════════════════ -->
-<!-- ═══ Dependency: Core System (2) — csLoadJSON, csRemoveJSON -->
-<!-- ═══ Fungsi: Bersihkan profil_* yatim (tidak ada di dataLoginUser) -->
-<!-- ═══ Trigger: Auto (delay) + Manual (apoJalankan) ═══════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
+
+
+<!-- ============================================================ -->
+<!-- ===== BLOK AUTO HAPUS PROFIL ORPHAN =========================== -->
+<!-- ============================================================ -->
 <script>
-(function BLOK_AUTO_HAPUS_PROFIL_ORPHAN() {
-    if (window._blokApoDone) {
-        console.log('ℹ️ BLOK APO sudah terpasang.');
-        return;
-    }
-    window._blokApoDone = true;
-
-    var PREFIX = 'APO';
-    var MIN_ORPHAN_HAPUS = 10;      // Minimal 10 baru dihapus (hindari spam)
-    var DELAY_MS = 3000;
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — SCAN PROFIL ORPHAN
-    // ═══════════════════════════════════════════════════════════
-    window.apoScan = function() {
+(function autoHapusProfilOrphan() {
+    function jalankan() {
         try {
             var validIds = {};
 
-            // Ambil ID dari dataLoginUser (via Core System)
-            var lu = (typeof window.csLoadJSON === 'function')
-                ? window.csLoadJSON('dataLoginUser', [])
-                : JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
-            (lu || []).forEach(function(u) {
-                if (u && u.idUser) validIds[u.idUser] = true;
-                if (u && u.id) validIds[u.id] = true;
-            });
+            try {
+                var lu = JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
+                lu.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
+            } catch (e) {}
 
-            // Ambil ID dari dataAkunAktif
-            var aa = (typeof window.csLoadJSON === 'function')
-                ? window.csLoadJSON('dataAkunAktif', [])
-                : JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
-            (aa || []).forEach(function(a) {
-                if (a && a.id) validIds[a.id] = true;
-                if (a && a.idUser) validIds[a.idUser] = true;
-            });
+            try {
+                var aa = JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
+                aa.forEach(function(a) {
+                    if (a && a.id) validIds[a.id] = true;
+                    if (a && a.idUser) validIds[a.idUser] = true;
+                });
+            } catch (e) {}
 
-            // Scan profil_* yatim
             var orphan = [];
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k || k.indexOf('profil_') !== 0) continue;
-                var id = k.substring(7);
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('profil_') !== 0) return;
+                var id = k.replace('profil_', '');
                 if (!validIds[id]) orphan.push(k);
-            }
+            });
 
-            return {
-                valid: Object.keys(validIds).length,
-                orphan: orphan,
-                total: orphan.length
-            };
-        } catch (e) {
-            console.error('apoScan error:', e);
-            return { valid: 0, orphan: [], total: 0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — HAPUS PROFIL ORPHAN
-    // ═══════════════════════════════════════════════════════════
-    window.apoJalankan = function(opts) {
-        opts = opts || {};
-        try {
-            var scan = window.apoScan();
-
-            if (scan.total < (opts.minHapus || MIN_ORPHAN_HAPUS)) {
-                return {
-                    status: 'skip',
-                    total: scan.total,
-                    alasan: 'Di bawah threshold'
-                };
-            }
+            if (orphan.length < 10) return; // skip kalau cuma sedikit
 
             var freed = 0;
-            scan.orphan.forEach(function(k) {
-                try {
-                    var val = localStorage.getItem(k) || '';
-                    freed += val.length * 2;
-                    if (typeof window.csRemoveJSON === 'function') {
-                        window.csRemoveJSON(k);
-                    } else {
-                        localStorage.removeItem(k);
-                    }
-                } catch (e) {}
+            orphan.forEach(function(k) {
+                freed += (localStorage.getItem(k) || '').length * 2;
+                localStorage.removeItem(k);
             });
 
-            return {
-                status: 'sukses',
-                total: scan.total,
-                freedKB: Math.round(freed / 1024)
-            };
+            console.warn('🧹 Auto-cleanup: ' + orphan.length +
+                ' profil orphan dihapus (~' + Math.round(freed / 1024) + ' KB)');
         } catch (e) {
-            console.error('apoJalankan error:', e);
-            return { status: 'gagal', pesan: e.message };
+            console.error('autoHapusProfilOrphan error:', e);
         }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — AUTO-RUN (Setelah DOM Ready)
-    // ═══════════════════════════════════════════════════════════
-    function _autoRun() {
-        setTimeout(function() {
-            var hasil = window.apoJalankan();
-            // Silent — hanya log kalau benar-benar bersihkan (A5)
-            if (hasil.status === 'sukses') {
-                console.log('%c🧹 APO: ' + hasil.total + ' profil orphan dihapus (~' +
-                    hasil.freedKB + ' KB)',
-                    'background:#DC3545;color:#fff;padding:2px 6px;border-radius:3px;');
-            }
-        }, DELAY_MS);
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', _autoRun);
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(jalankan, 3000);
+        });
     } else {
-        _autoRun();
+        setTimeout(jalankan, 3000);
     }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — DEBUG (A5)
-    // ═══════════════════════════════════════════════════════════
-    window.debugAPO = function() {
-        var scan = window.apoScan();
-        var info = {
-            blok: PREFIX,
-            versi: '2.0',
-            totalValid: scan.valid,
-            totalOrphan: scan.total,
-            threshold: MIN_ORPHAN_HAPUS,
-            status: scan.total >= MIN_ORPHAN_HAPUS
-                ? '⚠️ Perlu dibersihkan'
-                : '✅ Bersih',
-            sample: scan.orphan.slice(0, 5)
-        };
-        console.log('🔍 debugAPO:', info);
-        return info;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c🧹 BLOK AUTO HAPUS PROFIL ORPHAN (APO) terpasang.',
-        'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
-    console.log('   🎯 Auto-run setelah ' + (DELAY_MS / 1000) + 's');
-    console.log('   📊 Threshold: ' + MIN_ORPHAN_HAPUS + ' profil');
-    console.log('   🔍 Debug: debugAPO()');
-    console.log('   📖 Manual: apoJalankan() | Scan: apoScan()');
 })();
 </script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK AUTO HAPUS PROFIL ORPHAN (APO) ══════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ============================================================ -->
+<!-- ===== AKHIR AUTO HAPUS PROFIL ORPHAN =========================== -->
+<!-- ============================================================ -->
 
 </body>
 </html>	
