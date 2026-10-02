@@ -21075,62 +21075,279 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 
 
 
-<!-- ============================================================ -->
-<!-- ===== BLOK AUTO HAPUS PROFIL ORPHAN =========================== -->
-<!-- ============================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTO HAPUS PROFIL ORPHAN (APO) ════════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain — Cleanup) ═════════════ -->
+<!-- ═══ Dependency: Core System (1)-(8) + OM2 (1) ═════════════ -->
+<!-- ═══ Isi: Scan + hapus profil_* yatim (tanpa user valid) ═══ -->
+<!-- ═══ Posisi: Setelah OM2 (4), sebelum PSM ══════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
-(function autoHapusProfilOrphan() {
-    function jalankan() {
+(function BLOK_AUTO_HAPUS_PROFIL_ORPHAN() {
+    if (window._blokApoDone) {
+        console.log('ℹ️ BLOK APO sudah terpasang.');
+        return;
+    }
+    if (!window._coreSystem8Done) {
+        console.warn('⚠️ Core System (8) belum terpasang. APO ditunda.');
+        return;
+    }
+    window._blokApoDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    var PREFIX           = 'APO';
+    var MIN_ORPHAN_HAPUS = 10;    // Minimal 10 baru dihapus (hindari spam)
+    var DELAY_MS         = 3000;  // Delay auto-run
+    var KEY_ARSIP        = 'r2coin_arsip_orphan_om2';  // Share arsip dengan OM2
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL (delegate Core System)
+    // ═══════════════════════════════════════════════════════════
+    function _loadJSON(key, fallback) {
+        if (typeof window.csLoadJSON === 'function') {
+            return window.csLoadJSON(key, fallback);
+        }
+        try {
+            var s = localStorage.getItem(key);
+            var p = s ? JSON.parse(s) : fallback;
+            return p === null || p === undefined ? fallback : p;
+        } catch (e) { return fallback; }
+    }
+
+    function _removeJSON(key) {
+        if (typeof window.csRemoveJSON === 'function') {
+            return window.csRemoveJSON(key);
+        }
+        try { localStorage.removeItem(key); return true; }
+        catch (e) { return false; }
+    }
+
+    function _now() {
+        if (typeof window.csNow === 'function') return window.csNow();
+        return new Date().toISOString();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — SCAN PROFIL ORPHAN
+    // ═══════════════════════════════════════════════════════════
+    window.apoScan = function() {
         try {
             var validIds = {};
 
-            try {
-                var lu = JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
-                lu.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
-            } catch (e) {}
+            // Ambil ID valid dari dataLoginUser
+            var lu = _loadJSON('dataLoginUser', []);
+            (lu || []).forEach(function(u) {
+                if (u && u.idUser) validIds[u.idUser] = true;
+                if (u && u.id)     validIds[u.id]     = true;
+            });
 
-            try {
-                var aa = JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
-                aa.forEach(function(a) {
-                    if (a && a.id) validIds[a.id] = true;
-                    if (a && a.idUser) validIds[a.idUser] = true;
-                });
-            } catch (e) {}
+            // Ambil ID valid dari dataAkunAktif
+            var aa = _loadJSON('dataAkunAktif', []);
+            (aa || []).forEach(function(a) {
+                if (a && a.id)     validIds[a.id]     = true;
+                if (a && a.idUser) validIds[a.idUser] = true;
+            });
 
+            // Scan key profil_* yatim
             var orphan = [];
-            Object.keys(localStorage).forEach(function(k) {
-                if (k.indexOf('profil_') !== 0) return;
-                var id = k.replace('profil_', '');
-                if (!validIds[id]) orphan.push(k);
-            });
+            var totalSize = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k || k.indexOf('profil_') !== 0) continue;
 
-            if (orphan.length < 10) return; // skip kalau cuma sedikit
+                var id = k.substring(7); // hilangkan 'profil_'
+                if (!validIds[id]) {
+                    var val = localStorage.getItem(k) || '';
+                    orphan.push({
+                        key: k,
+                        idUser: id,
+                        size: val.length * 2
+                    });
+                    totalSize += val.length * 2;
+                }
+            }
 
-            var freed = 0;
-            orphan.forEach(function(k) {
-                freed += (localStorage.getItem(k) || '').length * 2;
-                localStorage.removeItem(k);
-            });
-
-            console.warn('🧹 Auto-cleanup: ' + orphan.length +
-                ' profil orphan dihapus (~' + Math.round(freed / 1024) + ' KB)');
+            return {
+                totalValid:  Object.keys(validIds).length,
+                orphan:      orphan,
+                totalOrphan: orphan.length,
+                totalSize:   totalSize
+            };
         } catch (e) {
-            console.error('autoHapusProfilOrphan error:', e);
+            console.error('apoScan error:', e);
+            return { totalValid: 0, orphan: [], totalOrphan: 0, totalSize: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — JALANKAN HAPUS
+    // ═══════════════════════════════════════════════════════════
+    window.apoJalankan = function(opts) {
+        opts = opts || {};
+        try {
+            var scan = window.apoScan();
+            var minHapus = opts.minHapus || MIN_ORPHAN_HAPUS;
+
+            // Skip kalau di bawah threshold
+            if (scan.totalOrphan < minHapus) {
+                return {
+                    status: 'skip',
+                    total: scan.totalOrphan,
+                    alasan: 'Di bawah threshold (' + minHapus + ')'
+                };
+            }
+
+            // Dry run
+            if (opts.dryRun === true) {
+                return {
+                    status: 'dryRun',
+                    akanDihapus: scan.totalOrphan,
+                    sizeTeks: _fmt(scan.totalSize)
+                };
+            }
+
+            // Arsipkan dulu (opsional)
+            if (opts.arsip !== false) {
+                _arsipkan(scan.orphan);
+            }
+
+            // Hapus
+            var berhasil = 0, gagal = 0;
+            scan.orphan.forEach(function(it) {
+                if (_removeJSON(it.key)) berhasil++; else gagal++;
+            });
+
+            // Log sukses (A5: hanya kalau benar-benar bersihkan)
+            if (berhasil > 0) {
+                console.log('%c🧹 APO: ' + berhasil + ' profil orphan dihapus (~' +
+                    _fmt(scan.totalSize) + ')',
+                    'background:#DC3545;color:#fff;padding:2px 6px;border-radius:3px;');
+            }
+
+            return {
+                status: 'sukses',
+                berhasil: berhasil,
+                gagal: gagal,
+                size: scan.totalSize,
+                sizeTeks: _fmt(scan.totalSize)
+            };
+        } catch (e) {
+            console.error('apoJalankan error:', e);
+            return { status: 'gagal', pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — ARSIP (SHARE DENGAN OM2)
+    // ═══════════════════════════════════════════════════════════
+    function _arsipkan(orphanList) {
+        try {
+            var arsip = _loadJSON(KEY_ARSIP, { _meta: { total: 0 }, items: [] });
+            if (!Array.isArray(arsip.items)) arsip.items = [];
+
+            var now = _now();
+            orphanList.forEach(function(it) {
+                var data = _loadJSON(it.key, null);
+                arsip.items.push({
+                    kategori:  'profil',
+                    keyStorage: it.key,
+                    idItem:    it.idUser,
+                    nama:      (data && (data.nama || data.namaLengkap)) || it.idUser,
+                    alasan:    'Profil orphan',
+                    item:      data,
+                    diarsip:   now
+                });
+            });
+
+            arsip._meta = arsip._meta || {};
+            arsip._meta.total = arsip.items.length;
+            arsip._meta.updatedAt = now;
+
+            if (typeof window.csSaveJSON === 'function') {
+                window.csSaveJSON(KEY_ARSIP, arsip, { backup: false });
+            } else {
+                localStorage.setItem(KEY_ARSIP, JSON.stringify(arsip));
+            }
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
         }
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(jalankan, 3000);
-        });
-    } else {
-        setTimeout(jalankan, 3000);
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — HELPER FORMAT SIZE
+    // ═══════════════════════════════════════════════════════════
+    function _fmt(b) {
+        if (typeof window.mdFormatSize === 'function') return window.mdFormatSize(b);
+        if (b < 1024) return b + ' B';
+        if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+        return (b / 1024 / 1024).toFixed(2) + ' MB';
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — AUTO-RUN (Setelah DOM Ready)
+    // ═══════════════════════════════════════════════════════════
+    function _autoRun() {
+        setTimeout(function() {
+            window.apoJalankan();
+        }, DELAY_MS);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _autoRun);
+    } else {
+        _autoRun();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — RERUN (RESET & SCAN ULANG)
+    // ═══════════════════════════════════════════════════════════
+    window.apoRerun = function() {
+        var hasil = window.apoJalankan({ minHapus: 1 });
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugAPO = function() {
+        var scan = window.apoScan();
+        var info = {
+            blok:          PREFIX,
+            versi:         '2.0',
+            totalValid:    scan.totalValid,
+            totalOrphan:   scan.totalOrphan,
+            totalSize:     _fmt(scan.totalSize),
+            threshold:     MIN_ORPHAN_HAPUS,
+            status:        scan.totalOrphan >= MIN_ORPHAN_HAPUS
+                           ? '⚠️ Perlu dibersihkan'
+                           : '✅ Bersih',
+            delay:         DELAY_MS + 'ms',
+            sample:        scan.orphan.slice(0, 5).map(function(it) {
+                return { idUser: it.idUser, size: _fmt(it.size) };
+            })
+        };
+        console.log('🔍 debugAPO:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🧹 BLOK AUTO HAPUS PROFIL ORPHAN (APO) terpasang.',
+        'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🎯 Auto-run setelah ' + (DELAY_MS / 1000) + 's');
+    console.log('   📊 Threshold: ' + MIN_ORPHAN_HAPUS + ' profil');
+    console.log('   📥 Arsip: ' + KEY_ARSIP + ' (share dengan OM2)');
+    console.log('   🔍 Debug: debugAPO()');
+    console.log('   📖 API: apoScan(), apoJalankan(), apoRerun()');
 })();
 </script>
-<!-- ============================================================ -->
-<!-- ===== AKHIR AUTO HAPUS PROFIL ORPHAN =========================== -->
-<!-- ============================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTO HAPUS PROFIL ORPHAN (APO) ══════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 
 </body>
 </html>	
