@@ -19816,64 +19816,165 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══ AKHIR BLOK GLOBAL SYSTEM UI HTML & JS ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
-
-
-<!-- ============================================================ -->
-<!-- ===== BLOK AUTO HAPUS PROFIL ORPHAN =========================== -->
-<!-- ============================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTO HAPUS PROFIL ORPHAN (APO) ════════════════════ -->
+<!-- ═══ Layer: L2 (Utility) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: Core System (2) — csLoadJSON, csRemoveJSON -->
+<!-- ═══ Fungsi: Bersihkan profil_* yatim (tidak ada di dataLoginUser) -->
+<!-- ═══ Trigger: Auto (delay) + Manual (apoJalankan) ═══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
-(function autoHapusProfilOrphan() {
-    function jalankan() {
+(function BLOK_AUTO_HAPUS_PROFIL_ORPHAN() {
+    if (window._blokApoDone) {
+        console.log('ℹ️ BLOK APO sudah terpasang.');
+        return;
+    }
+    window._blokApoDone = true;
+
+    var PREFIX = 'APO';
+    var MIN_ORPHAN_HAPUS = 10;      // Minimal 10 baru dihapus (hindari spam)
+    var DELAY_MS = 3000;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — SCAN PROFIL ORPHAN
+    // ═══════════════════════════════════════════════════════════
+    window.apoScan = function() {
         try {
             var validIds = {};
 
-            try {
-                var lu = JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
-                lu.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
-            } catch (e) {}
-
-            try {
-                var aa = JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
-                aa.forEach(function(a) {
-                    if (a && a.id) validIds[a.id] = true;
-                    if (a && a.idUser) validIds[a.idUser] = true;
-                });
-            } catch (e) {}
-
-            var orphan = [];
-            Object.keys(localStorage).forEach(function(k) {
-                if (k.indexOf('profil_') !== 0) return;
-                var id = k.replace('profil_', '');
-                if (!validIds[id]) orphan.push(k);
+            // Ambil ID dari dataLoginUser (via Core System)
+            var lu = (typeof window.csLoadJSON === 'function')
+                ? window.csLoadJSON('dataLoginUser', [])
+                : JSON.parse(localStorage.getItem('dataLoginUser') || '[]');
+            (lu || []).forEach(function(u) {
+                if (u && u.idUser) validIds[u.idUser] = true;
+                if (u && u.id) validIds[u.id] = true;
             });
 
-            if (orphan.length < 10) return; // skip kalau cuma sedikit
+            // Ambil ID dari dataAkunAktif
+            var aa = (typeof window.csLoadJSON === 'function')
+                ? window.csLoadJSON('dataAkunAktif', [])
+                : JSON.parse(localStorage.getItem('dataAkunAktif') || '[]');
+            (aa || []).forEach(function(a) {
+                if (a && a.id) validIds[a.id] = true;
+                if (a && a.idUser) validIds[a.idUser] = true;
+            });
+
+            // Scan profil_* yatim
+            var orphan = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k || k.indexOf('profil_') !== 0) continue;
+                var id = k.substring(7);
+                if (!validIds[id]) orphan.push(k);
+            }
+
+            return {
+                valid: Object.keys(validIds).length,
+                orphan: orphan,
+                total: orphan.length
+            };
+        } catch (e) {
+            console.error('apoScan error:', e);
+            return { valid: 0, orphan: [], total: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HAPUS PROFIL ORPHAN
+    // ═══════════════════════════════════════════════════════════
+    window.apoJalankan = function(opts) {
+        opts = opts || {};
+        try {
+            var scan = window.apoScan();
+
+            if (scan.total < (opts.minHapus || MIN_ORPHAN_HAPUS)) {
+                return {
+                    status: 'skip',
+                    total: scan.total,
+                    alasan: 'Di bawah threshold'
+                };
+            }
 
             var freed = 0;
-            orphan.forEach(function(k) {
-                freed += (localStorage.getItem(k) || '').length * 2;
-                localStorage.removeItem(k);
+            scan.orphan.forEach(function(k) {
+                try {
+                    var val = localStorage.getItem(k) || '';
+                    freed += val.length * 2;
+                    if (typeof window.csRemoveJSON === 'function') {
+                        window.csRemoveJSON(k);
+                    } else {
+                        localStorage.removeItem(k);
+                    }
+                } catch (e) {}
             });
 
-            console.warn('🧹 Auto-cleanup: ' + orphan.length +
-                ' profil orphan dihapus (~' + Math.round(freed / 1024) + ' KB)');
+            return {
+                status: 'sukses',
+                total: scan.total,
+                freedKB: Math.round(freed / 1024)
+            };
         } catch (e) {
-            console.error('autoHapusProfilOrphan error:', e);
+            console.error('apoJalankan error:', e);
+            return { status: 'gagal', pesan: e.message };
         }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — AUTO-RUN (Setelah DOM Ready)
+    // ═══════════════════════════════════════════════════════════
+    function _autoRun() {
+        setTimeout(function() {
+            var hasil = window.apoJalankan();
+            // Silent — hanya log kalau benar-benar bersihkan (A5)
+            if (hasil.status === 'sukses') {
+                console.log('%c🧹 APO: ' + hasil.total + ' profil orphan dihapus (~' +
+                    hasil.freedKB + ' KB)',
+                    'background:#DC3545;color:#fff;padding:2px 6px;border-radius:3px;');
+            }
+        }, DELAY_MS);
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(jalankan, 3000);
-        });
+        document.addEventListener('DOMContentLoaded', _autoRun);
     } else {
-        setTimeout(jalankan, 3000);
+        _autoRun();
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugAPO = function() {
+        var scan = window.apoScan();
+        var info = {
+            blok: PREFIX,
+            versi: '2.0',
+            totalValid: scan.valid,
+            totalOrphan: scan.total,
+            threshold: MIN_ORPHAN_HAPUS,
+            status: scan.total >= MIN_ORPHAN_HAPUS
+                ? '⚠️ Perlu dibersihkan'
+                : '✅ Bersih',
+            sample: scan.orphan.slice(0, 5)
+        };
+        console.log('🔍 debugAPO:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🧹 BLOK AUTO HAPUS PROFIL ORPHAN (APO) terpasang.',
+        'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🎯 Auto-run setelah ' + (DELAY_MS / 1000) + 's');
+    console.log('   📊 Threshold: ' + MIN_ORPHAN_HAPUS + ' profil');
+    console.log('   🔍 Debug: debugAPO()');
+    console.log('   📖 Manual: apoJalankan() | Scan: apoScan()');
 })();
 </script>
-<!-- ============================================================ -->
-<!-- ===== AKHIR AUTO HAPUS PROFIL ORPHAN =========================== -->
-<!-- ============================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTO HAPUS PROFIL ORPHAN (APO) ══════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 
 </body>
 </html>	
