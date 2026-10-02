@@ -19227,6 +19227,743 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL SUPERADMIN ═════════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL PENGAJUAN VERIFIKASI (FPV) ═════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Dependency: CS1–CS14 + GID + MN ═══════════════════════ -->
+<!-- ═══ Isi: Konversi + Validasi + Kirim + Baca + Status ══════ -->
+<!-- ═══      + Menu Pending + Statistik + Notif + 3 Pintu ═════ -->
+<!-- ═══ Acuan: BLOK R 11.3 + BLOK R 10.7 ══════════════════════ -->
+<!-- ═══ Aturan: A1,A2,A3,A5,A11,A12,A13,A23,A28,A31,A32 ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_PENGAJUAN_VERIFIKASI() {
+    if (window._blokFPVDone) {
+        console.log('ℹ️ BLOK FPV sudah terpasang.');
+        return;
+    }
+    if (!window._coreSystem11Done || !window._blokGIDDone || !window._blokMNDone) {
+        console.warn('⚠️ FPV ditunda — dependency belum lengkap (CS11, GID, MN).');
+        return;
+    }
+    window._blokFPVDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA & REGISTRY 11 ROLE
+    // ═══════════════════════════════════════════════════════════
+    window.FPV_KONSTANTA = {
+        VERSI: '1.0',
+        KEY_VERIFIKASI: 'dataVerifikasiDokumen',
+        MAX_FILE_KB: 2000,
+        STATUS_VALID: ['Menunggu', 'Disetujui', 'Ditolak', 'Revisi'],
+
+        // 11 role yang WAJIB verifikasi
+        ROLE_WAJIB_VERIF: [
+            'Toko', 'Pedagang Pasar', 'Pedagang Makanan',
+            'COD Seller', 'Ojek', 'Grosir', 'Distributor',
+            'Jasa', 'Finance Multifinance',
+            'Dealer dan Showroom', 'Developer Properti'
+        ],
+
+        // Mapping kode role → nama role
+        KODE_ROLE: {
+            'TK': 'Toko',
+            'PP': 'Pedagang Pasar',
+            'PM': 'Pedagang Makanan',
+            'COD': 'COD Seller',
+            'OJ': 'Ojek',
+            'GR': 'Grosir',
+            'DST': 'Distributor',
+            'JS': 'Jasa',
+            'FIN': 'Finance Multifinance',
+            'DLR': 'Dealer dan Showroom',
+            'DP': 'Developer Properti'
+        },
+
+        // Tipe dokumen standar
+        TIPE_DOKUMEN: {
+            'ktp':         'Foto KTP',
+            'sku':         'Form SKU',
+            'skd':         'Form SKD',
+            'kerjasama':   'Surat Perjanjian Kerjasama',
+            'npwp':        'NPWP',
+            'nib':         'NIB',
+            'siup':        'SIUP'
+        },
+
+        // Menu yang tetap tampil saat Pending
+        AKSI_PENDING: [
+            'dashboardUtama',
+            'profil',
+            'pengajuanVerifikasi',
+            'downloadSKU',
+            'downloadKerjasama',
+            'tampilkanPengajuanVerifikasiTK',
+            'tampilkanPengajuanVerifikasiPP',
+            'tampilkanPengajuanVerifikasiPM',
+            'tampilkanPengajuanVerifikasiCOD',
+            'tampilkanPengajuanVerifikasiOJ',
+            'tampilkanPengajuanVerifikasiGR',
+            'tampilkanPengajuanVerifikasiDST',
+            'tampilkanPengajuanVerifikasiJS',
+            'tampilkanPengajuanVerifikasiFIN',
+            'tampilkanPengajuanVerifikasiDLR',
+            'tampilkanPengajuanVerifikasiDP'
+        ]
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER DASAR
+    // ═══════════════════════════════════════════════════════════
+    window.fpvEsc = function(s) {
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        if (typeof window.mppEscHtml === 'function') return window.mppEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.fpvNow = function() {
+        if (typeof window.csNow === 'function') return window.csNow();
+        return new Date().toISOString();
+    };
+
+    function _loadVerif() {
+        try {
+            var s = localStorage.getItem(window.FPV_KONSTANTA.KEY_VERIFIKASI);
+            var arr = s ? JSON.parse(s) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+
+    function _saveVerif(list) {
+        try {
+            if (!Array.isArray(list)) list = [];
+            localStorage.setItem(
+                window.FPV_KONSTANTA.KEY_VERIFIKASI,
+                JSON.stringify(list)
+            );
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — KONVERSI FILE KE BASE64
+    // ═══════════════════════════════════════════════════════════
+    // Input : File object + maxKB
+    // Output: Promise { sukses, base64, pesan }
+    // ═══════════════════════════════════════════════════════════
+    window.fpvKonversiFileKeBase64 = function(file, maxKB) {
+        return new Promise(function(resolve) {
+            try {
+                if (!file) {
+                    return resolve({ sukses: false, pesan: 'File kosong' });
+                }
+
+                // Cek tipe
+                if (file.type && file.type.indexOf('image') !== 0 &&
+                    file.type.indexOf('pdf') === -1) {
+                    return resolve({
+                        sukses: false,
+                        pesan: 'Tipe file tidak didukung: ' + file.type
+                    });
+                }
+
+                // Cek size
+                var max = (maxKB || window.FPV_KONSTANTA.MAX_FILE_KB) * 1024;
+                if (file.size > max) {
+                    return resolve({
+                        sukses: false,
+                        pesan: 'File > ' + (maxKB || window.FPV_KONSTANTA.MAX_FILE_KB) +
+                               ' KB (file: ' + Math.round(file.size / 1024) + ' KB)'
+                    });
+                }
+
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    resolve({
+                        sukses: true,
+                        base64: e.target.result,
+                        size: file.size,
+                        sizeKB: Math.round(file.size / 1024),
+                        nama: file.name,
+                        tipe: file.type
+                    });
+                };
+                reader.onerror = function() {
+                    resolve({ sukses: false, pesan: 'Gagal baca file' });
+                };
+                reader.readAsDataURL(file);
+
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — VALIDASI
+    // ═══════════════════════════════════════════════════════════
+    window.fpvValidasiFile = function(file, tipeWajib) {
+        try {
+            if (!file) return { valid: false, pesan: 'File kosong' };
+
+            if (file.type && file.type.indexOf('image') !== 0 &&
+                file.type.indexOf('pdf') === -1) {
+                return { valid: false, pesan: 'File harus gambar/PDF' };
+            }
+
+            var max = window.FPV_KONSTANTA.MAX_FILE_KB * 1024;
+            if (file.size > max) {
+                return {
+                    valid: false,
+                    pesan: 'Maks ' + window.FPV_KONSTANTA.MAX_FILE_KB + ' KB'
+                };
+            }
+            return { valid: true };
+        } catch (e) {
+            return { valid: false, pesan: e.message };
+        }
+    };
+
+    window.fpvValidasiListDokumen = function(listDokumen) {
+        try {
+            if (!Array.isArray(listDokumen) || listDokumen.length === 0) {
+                return { valid: false, pesan: 'List dokumen kosong' };
+            }
+
+            // Cek setiap item
+            for (var i = 0; i < listDokumen.length; i++) {
+                var d = listDokumen[i];
+                if (!d || !d.nama || !d.url) {
+                    return { valid: false, pesan: 'Dokumen #' + (i + 1) + ' tidak lengkap' };
+                }
+            }
+            return { valid: true, jumlah: listDokumen.length };
+        } catch (e) {
+            return { valid: false, pesan: e.message };
+        }
+    };
+
+    window.fpvCekDuplikat = function(idUser) {
+        try {
+            if (!idUser) return null;
+            var list = _loadVerif();
+            for (var i = 0; i < list.length; i++) {
+                var v = list[i];
+                if (v && v.id === idUser) {
+                    // Hanya dianggap duplikat kalau status Menunggu
+                    if (v.status === 'Menunggu') return v;
+                }
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — ID & OBJEK VERIFIKASI
+    // ═══════════════════════════════════════════════════════════
+    window.fpvBuatIdPengajuan = function(kodeRole) {
+        try {
+            var prefix = (kodeRole || 'XX').toUpperCase().substring(0, 6);
+            var ts = Date.now().toString(36).toUpperCase();
+            var rnd = Math.random().toString(36).substring(2, 6).toUpperCase();
+            return 'VERIF-' + prefix + '-' + ts + '-' + rnd;
+        } catch (e) {
+            return 'VERIF-' + Date.now();
+        }
+    };
+
+    window.fpvBuatObjekVerifikasi = function(idUser, nama, role, listDokumen) {
+        try {
+            var u = window.gidUserAktif ? window.gidUserAktif() : null;
+            var kodeRole = window.gidKodeRoleUser ? window.gidKodeRoleUser() : 'XX';
+            var now = window.fpvNow();
+
+            return {
+                id: idUser,
+                idPengajuan: window.fpvBuatIdPengajuan(kodeRole),
+                nama: nama || '-',
+                role: role || '-',
+                kodeRole: kodeRole,
+                tgl: now.split('T')[0],
+                status: 'Menunggu',
+                listDokumen: listDokumen || [],
+                createdAt: now,
+                updatedAt: now,
+                verifiedBy: null,
+                verifiedAt: null,
+                catatan: '',
+                _fpv: 'v1.0'
+            };
+        } catch (e) {
+            console.error('fpvBuatObjekVerifikasi error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — ⭐ KIRIM VERIFIKASI (CORE)
+    // ═══════════════════════════════════════════════════════════
+    // Input : idUser, nama, role, listDokumen
+    // Output: { sukses, idPengajuan, pesan }
+    // ═══════════════════════════════════════════════════════════
+    window.fpvKirimVerifikasi = function(idUser, nama, role, listDokumen) {
+        try {
+            // ── Validasi input ──
+            if (!idUser) {
+                return { sukses: false, pesan: 'ID user wajib' };
+            }
+            if (!role) {
+                return { sukses: false, pesan: 'Role wajib' };
+            }
+            if (window.FPV_KONSTANTA.ROLE_WAJIB_VERIF.indexOf(role) === -1) {
+                return { sukses: false, pesan: 'Role tidak butuh verifikasi: ' + role };
+            }
+
+            var v = window.fpvValidasiListDokumen(listDokumen);
+            if (!v.valid) {
+                return { sukses: false, pesan: v.pesan };
+            }
+
+            // ── Cek duplikat (pending) ──
+            var dup = window.fpvCekDuplikat(idUser);
+            if (dup) {
+                return {
+                    sukses: false,
+                    pesan: 'Sudah ada pengajuan menunggu. ID: ' + dup.idPengajuan,
+                    idPengajuan: dup.idPengajuan,
+                    duplikat: true
+                };
+            }
+
+            // ── Bangun objek ──
+            var objek = window.fpvBuatObjekVerifikasi(idUser, nama, role, listDokumen);
+            if (!objek) {
+                return { sukses: false, pesan: 'Gagal bangun objek' };
+            }
+
+            // ── Simpan ──
+            var list = _loadVerif();
+
+            // Hapus dulu entry lama dengan idUser sama (kalau ada yang Ditolak/Revisi)
+            list = list.filter(function(x) { return x && x.id !== idUser; });
+
+            list.push(objek);
+            var save = _saveVerif(list);
+            if (!save.sukses) {
+                return { sukses: false, pesan: 'Gagal simpan: ' + save.pesan };
+            }
+
+            // ── Sync ke variabel global ──
+            try {
+                if (Array.isArray(window.dataVerifikasiDokumen)) {
+                    window.dataVerifikasiDokumen.length = 0;
+                    list.forEach(function(x) {
+                        window.dataVerifikasiDokumen.push(x);
+                    });
+                }
+            } catch (e) {}
+
+            // ── Catat aktivitas ──
+            if (typeof window.catatAktivitasGlobal === 'function') {
+                try {
+                    window.catatAktivitasGlobal(
+                        idUser,
+                        'Kirim Verifikasi Dokumen',
+                        'Role ' + role + ' — ' + listDokumen.length + ' dokumen'
+                    );
+                } catch (e) {}
+            }
+
+            // ── Emit event ──
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:verifikasi-baru', {
+                    detail: {
+                        idUser: idUser,
+                        role: role,
+                        idPengajuan: objek.idPengajuan
+                    }
+                }));
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                idPengajuan: objek.idPengajuan,
+                objek: objek
+            };
+        } catch (e) {
+            console.error('fpvKirimVerifikasi error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — BACA
+    // ═══════════════════════════════════════════════════════════
+    window.fpvGetVerifikasiUser = function(idUser) {
+        try {
+            if (!idUser) return null;
+            var list = _loadVerif();
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id === idUser) return list[i];
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    window.fpvGetSemuaVerifikasi = function(filter) {
+        try {
+            filter = filter || {};
+            var list = _loadVerif();
+
+            if (filter.status) {
+                list = list.filter(function(x) {
+                    return x && x.status === filter.status;
+                });
+            }
+            if (filter.role) {
+                list = list.filter(function(x) {
+                    return x && x.role === filter.role;
+                });
+            }
+            if (filter.cari) {
+                var c = filter.cari.toLowerCase();
+                list = list.filter(function(x) {
+                    if (!x) return false;
+                    var s = (x.nama || '') + ' ' + (x.id || '') + ' ' + (x.idPengajuan || '');
+                    return s.toLowerCase().indexOf(c) !== -1;
+                });
+            }
+
+            // Sort terbaru dulu
+            list.sort(function(a, b) {
+                return new Date(b.updatedAt || b.createdAt || 0)
+                     - new Date(a.updatedAt || a.createdAt || 0);
+            });
+
+            return list;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — HAPUS
+    // ═══════════════════════════════════════════════════════════
+    window.fpvHapusVerifikasi = function(idUser) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user wajib' };
+            var list = _loadVerif();
+            var before = list.length;
+            list = list.filter(function(x) { return x && x.id !== idUser; });
+
+            if (list.length === before) {
+                return { sukses: false, pesan: 'Data tidak ditemukan' };
+            }
+
+            var save = _saveVerif(list);
+            if (!save.sukses) return save;
+
+            // Sync global
+            try {
+                if (Array.isArray(window.dataVerifikasiDokumen)) {
+                    window.dataVerifikasiDokumen.length = 0;
+                    list.forEach(function(x) {
+                        window.dataVerifikasiDokumen.push(x);
+                    });
+                }
+            } catch (e) {}
+
+            return { sukses: true, dihapus: before - list.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — MENU HELPER
+    // ═══════════════════════════════════════════════════════════
+    window.fpvCekStatusUser = function(idUser) {
+        try {
+            var v = window.fpvGetVerifikasiUser(idUser);
+            if (!v) return { status: 'Belum', butuhVerif: true, bolehAksesSemua: false };
+            return {
+                status: v.status,
+                butuhVerif: true,
+                bolehAksesSemua: v.status === 'Disetujui',
+                pengajuan: v
+            };
+        } catch (e) {
+            return { status: 'Error', butuhVerif: true, bolehAksesSemua: false };
+        }
+    };
+
+    window.fpvUserBolehAksesMenu = function(aksiMenu) {
+        try {
+            var kodeRole = window.gidKodeRoleUser ? window.gidKodeRoleUser() : null;
+            var role = window.gidRoleUser ? window.gidRoleUser() : null;
+
+            // Cek apakah role ini butuh verifikasi
+            if (window.FPV_KONSTANTA.ROLE_WAJIB_VERIF.indexOf(role) === -1) {
+                return true; // Role lain bebas akses
+            }
+
+            // Cek status verifikasi user
+            var u = window.gidUserAktif ? window.gidUserAktif() : null;
+            if (!u) return false;
+
+            var statusVerif = u.statusVerifikasi || u.status || 'Pending';
+
+            if (statusVerif === 'Aktif') return true; // Sudah aktif — semua boleh
+
+            // Pending: hanya menu dalam daftar AKSI_PENDING
+            return window.FPV_KONSTANTA.AKSI_PENDING.indexOf(aksiMenu) !== -1;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — DAFTAR MENU PENDING
+    // ═══════════════════════════════════════════════════════════
+    window.fpvDaftarMenuPending = function() {
+        return window.FPV_KONSTANTA.AKSI_PENDING.slice();
+    };
+
+    window.fpvIsAksiPending = function(aksiMenu) {
+        return window.FPV_KONSTANTA.AKSI_PENDING.indexOf(aksiMenu) !== -1;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.fpvStatistikGlobal = function() {
+        try {
+            var list = _loadVerif();
+            var stat = {
+                total: list.length,
+                Menunggu: 0,
+                Disetujui: 0,
+                Ditolak: 0,
+                Revisi: 0,
+                perRole: {}
+            };
+
+            list.forEach(function(v) {
+                if (!v) return;
+                var s = v.status || 'Menunggu';
+                if (stat[s] !== undefined) stat[s]++;
+                var r = v.role || 'Lainnya';
+                stat.perRole[r] = (stat.perRole[r] || 0) + 1;
+            });
+
+            return stat;
+        } catch (e) {
+            return { total: 0, Menunggu: 0, Disetujui: 0, Ditolak: 0, perRole: {} };
+        }
+    };
+
+    window.fpvStatistikPerRole = function() {
+        try {
+            var list = _loadVerif();
+            var perRole = {};
+            list.forEach(function(v) {
+                if (!v) return;
+                var r = v.role || 'Lainnya';
+                if (!perRole[r]) {
+                    perRole[r] = { total: 0, Menunggu: 0, Disetujui: 0, Ditolak: 0 };
+                }
+                perRole[r].total++;
+                var s = v.status || 'Menunggu';
+                if (perRole[r][s] !== undefined) perRole[r][s]++;
+            });
+            return perRole;
+        } catch (e) { return {}; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — NOTIFIKASI
+    // ═══════════════════════════════════════════════════════════
+    window.fpvKirimNotifKeUser = function(idUser, pesan, tipe) {
+        try {
+            if (typeof window.csNotifTambah === 'function') {
+                return window.csNotifTambah({
+                    idUser: idUser,
+                    judul: 'Verifikasi Dokumen',
+                    pesan: pesan || '-',
+                    ikon: tipe === 'success' ? 'fas fa-check-circle'
+                        : tipe === 'danger'  ? 'fas fa-times-circle'
+                        : 'fas fa-info-circle',
+                    warna: tipe || 'info',
+                    link: 'pengajuanVerifikasi'
+                });
+            }
+            return { sukses: false, pesan: 'csNotifTambah tidak tersedia' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — 3 PINTU STANDAR (A11)
+    // ═══════════════════════════════════════════════════════════
+
+    // 📤 PINTU 1: KIRIM
+    window.kirimFPV = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:  window.gidIdUser ? window.gidIdUser() : null,
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role:    window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:    'pengajuanVerifikasi',
+                    blok:    'FPV'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: window.fpvNow()
+            });
+        } catch (e) {
+            console.error('[FPV] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // 📥 PINTU 2: TERIMA
+    window.terimaFPV = function() {
+        try { return window.mnInboxMenu('pengajuanVerifikasi'); }
+        catch (e) { return []; }
+    };
+
+    // 📦 PINTU 3: AMBIL
+    window.ambilFPV = function(filter) {
+        try {
+            filter = filter || {};
+            if (filter.idUser) {
+                return window.fpvGetVerifikasiUser(filter.idUser);
+            }
+            return window.fpvGetSemuaVerifikasi(filter);
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — ALIAS KOMPATIBILITAS (untuk 11.3 dan blok lama)
+    // ═══════════════════════════════════════════════════════════
+    if (typeof window.konversiFileKeBase64Global !== 'function') {
+        window.konversiFileKeBase64Global = window.fpvKonversiFileKeBase64;
+    }
+    if (typeof window.prosesKirimVerifikasiGlobal !== 'function') {
+        window.prosesKirimVerifikasiGlobal = window.fpvKirimVerifikasi;
+    }
+    if (typeof window.getVerifikasiDokumenUserGlobal !== 'function') {
+        window.getVerifikasiDokumenUserGlobal = window.fpvGetVerifikasiUser;
+    }
+    if (typeof window.resetFormVerifikasiGlobal !== 'function') {
+        window.resetFormVerifikasiGlobal = function() {};
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugFPV = function() {
+        var info = {
+            versi: window.FPV_KONSTANTA.VERSI,
+            guard: window._blokFPVDone,
+            konfigurasi: {
+                keyVerifikasi: window.FPV_KONSTANTA.KEY_VERIFIKASI,
+                roleWajibVerif: window.FPV_KONSTANTA.ROLE_WAJIB_VERIF.length,
+                tipeDokumen: Object.keys(window.FPV_KONSTANTA.TIPE_DOKUMEN).length,
+                aksiPending: window.FPV_KONSTANTA.AKSI_PENDING.length,
+                maxFileKB: window.FPV_KONSTANTA.MAX_FILE_KB
+            },
+            fungsi: {
+                konversiFile:    typeof window.fpvKonversiFileKeBase64,
+                validasiFile:    typeof window.fpvValidasiFile,
+                validasiList:    typeof window.fpvValidasiListDokumen,
+                cekDuplikat:     typeof window.fpvCekDuplikat,
+                buatId:          typeof window.fpvBuatIdPengajuan,
+                buatObjek:       typeof window.fpvBuatObjekVerifikasi,
+                kirim:           typeof window.fpvKirimVerifikasi,
+                getByUser:       typeof window.fpvGetVerifikasiUser,
+                getSemua:        typeof window.fpvGetSemuaVerifikasi,
+                hapus:           typeof window.fpvHapusVerifikasi,
+                cekStatusUser:   typeof window.fpvCekStatusUser,
+                userBolehAkses:  typeof window.fpvUserBolehAksesMenu,
+                daftarMenuPend:  typeof window.fpvDaftarMenuPending,
+                statistik:       typeof window.fpvStatistikGlobal,
+                notif:           typeof window.fpvKirimNotifKeUser,
+                kirimPintu:      typeof window.kirimFPV,
+                terimaPintu:     typeof window.terimaFPV,
+                ambilPintu:      typeof window.ambilFPV
+            },
+            alias: {
+                konversiFileKeBase64Global: typeof window.konversiFileKeBase64Global,
+                prosesKirimVerifikasiGlobal: typeof window.prosesKirimVerifikasiGlobal,
+                getVerifikasiDokumenUserGlobal: typeof window.getVerifikasiDokumenUserGlobal
+            },
+            statistik: window.fpvStatistikGlobal()
+        };
+        console.log('🔍 debugFPV:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — AUTO-REGISTRY KE 0.1 (A7, A33, A34)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = window.CP_REGISTRY_BLOK.some(function(b) {
+                    return b.kode === 'FPV';
+                });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'FPV',
+                        nama: 'Fungsi Global Pengajuan Verifikasi',
+                        layer: 'L4',
+                        status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('fpv', {
+                    nama: 'Fungsi Global Pengajuan Verifikasi',
+                    status: 'Selesai'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'FPV',
+                    nama: 'Fungsi Global Pengajuan Verifikasi',
+                    keterangan: '18 fungsi — konversi + validasi + kirim + menu pending'
+                });
+            }
+        } catch (e) {
+            console.warn('FPV: Gagal update catatan 0.1:', e.message);
+        }
+    }, 800);
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 17] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c✅ BLOK FUNGSI GLOBAL PENGAJUAN VERIFIKASI (FPV) terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 Prefix: fpv*');
+    console.log('   🎯 11 role wajib verifikasi');
+    console.log('   🚪 3 Pintu: kirimFPV, terimaFPV, ambilFPV');
+    console.log('   📋 Daftar aksi pending: ' + window.FPV_KONSTANTA.AKSI_PENDING.length);
+    console.log('   🔗 Alias kompatibilitas: konversiFileKeBase64Global, dll');
+    console.log('   🔍 Debug: debugFPV()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL PENGAJUAN VERIFIKASI (FPV) ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+
 
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
