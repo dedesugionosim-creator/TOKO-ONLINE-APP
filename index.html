@@ -5360,6 +5360,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         {kode:'OM2',nama:'Orphan Management Extended',layer:'L4',status:'Selesai',tanggal:'2026-10-02'},
         {kode:'PSM',nama:'Penyimpanan Media',layer:'L4',status:'Selesai',tanggal:'2026-10-02'},
         {kode:'APO',nama:'Auto Hapus Profil Orphan',layer:'L4',status:'Selesai',tanggal:'2026-10-02'},
+		{kode:'FD',nama:'Fungsi Global Dasbor',layer:'L4',status:'Selesai',tanggal:'2026-10-02'},
 
         // ── Blok UI (L5) ──
         {kode:'10.1',nama:'Dasbor SuperAdmin',layer:'L5',status:'Selesai',tanggal:'2026-10-02'},
@@ -5401,6 +5402,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // [MODUL 1] — CP_RIWAYAT (12 ENTRY)
     // ═══════════════════════════════════════════════════════════
     window.CP_RIWAYAT = [
+		// ── Perbaikan (v8) ──
+        {tanggal:'2026-10-02',blok:'FD',   nama:'Fungsi Global Dasbor (FD)', keterangan:'Blok L4 baru — helper + render + dispatcher dasbor universal'},
+        {tanggal:'2026-10-02',blok:'10.1.e',nama:'Refactor 10.1.e v2', keterangan:'Handler dashboardUtama via FD dispatcher + single timer jam'},
+        {tanggal:'2026-10-02',blok:'10.1.d',nama:'Fix renderTop5SellerSA', keterangan:'Perbaiki bug getDataIdUser(id) — pakai index dataAkunAktif'},
+	
         // ── Perbaikan (v7) ──
         {tanggal:'2026-10-02',blok:'0.1',  nama:'Perbaikan Duplikasi', keterangan:'Hapus 0.1 monolithic — sisakan split 0.1.a–e'},
         {tanggal:'2026-10-02',blok:'CS13', nama:'Perbaikan Duplikasi CS13', keterangan:'Hapus CS13 posisi salah (sebelum CS1) — sisakan 1 di urutan CS1–CS14'},
@@ -5436,6 +5442,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         'om2': {nama:'Orphan Mgmt Extended',   status:'Selesai', jumlah:0},
         'psm': {nama:'Penyimpanan Media',      status:'Selesai', jumlah:0},
         'apo': {nama:'Auto Profil Orphan',     status:'Selesai', jumlah:0},
+        'fd':  {nama:'Fungsi Global Dasbor',   status:'Selesai', jumlah:0},
         'mpp': {nama:'MP-Public',              status:'Selesai', jumlah:0}
     };
 
@@ -20213,8 +20220,19 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
         console.log('ℹ️ BLOK FD sudah terpasang.');
         return;
     }
-    if (!window._coreSystem8Done || !window._blokGIDDone) {
-        console.warn('⚠️ CS8 atau GID belum terpasang. FD ditunda.');
+    // ── Cek semua dependency FD ──
+    var deps = [
+        { flag: '_coreSystem8Done', nama: 'Core System (8) — Auth Flow' },
+        { flag: '_blokGIDDone',     nama: 'GID — Identity' },
+        { flag: '_blokMNDone',      nama: 'MN — Menu Network' },
+        { flag: '_blokMPP1Done',    nama: 'MPP (1) — Foundation' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ FD ditunda — dependency belum terpasang:');
+        missing.forEach(function(d) {
+            console.warn('   • ' + d.nama + ' (' + d.flag + ')');
+        });
         return;
     }
     window._blokFDDone = true;
@@ -21801,7 +21819,7 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
         c.innerHTML = h;
     };
 
-    // ═══════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════════
     // [MODUL 2] — TOP 5 SELLER BULAN INI
     // ═══════════════════════════════════════════════════════════
     window.renderTop5SellerSA = function() {
@@ -21813,37 +21831,61 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
             var now = new Date();
             var aB = new Date(now.getFullYear(), now.getMonth(), 1);
             var kB = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-            var penjualan = {};
 
+            // ── Kumpulkan total penjualan per idToko ──
+            var penjualan = {};
             try {
                 if (typeof window.getAllTransaksiGlobal === 'function') {
                     (window.getAllTransaksiGlobal() || []).forEach(function(t) {
                         if (!t || !t.idToko) return;
                         var d = new Date(t.tanggal || 0);
                         if (d < aB || d > kB) return;
-                        if (!penjualan[t.idToko]) penjualan[t.idToko] = { total: 0, count: 0 };
+                        if (!penjualan[t.idToko]) {
+                            penjualan[t.idToko] = { total: 0, count: 0 };
+                        }
                         penjualan[t.idToko].total += parseFloat(t.total) || 0;
                         penjualan[t.idToko].count++;
                     });
                 }
             } catch (e) {}
 
+            // ── Index akun aktif berdasarkan idUser / id ──
+            //    (Fix: tidak pakai getDataIdUser(id) yang salah)
+            var indexAkun = {};
+            try {
+                var listAkun = (typeof window.csLoadJSON === 'function')
+                    ? window.csLoadJSON('dataAkunAktif', [])
+                    : [];
+                if (!Array.isArray(listAkun)) listAkun = [];
+
+                listAkun.forEach(function(a) {
+                    if (!a) return;
+                    if (a.idUser) indexAkun[a.idUser] = a;
+                    if (a.id && !indexAkun[a.id]) indexAkun[a.id] = a;
+                });
+            } catch (e) {}
+
+            // ── Susun array Top 5 ──
             var arr = Object.keys(penjualan).map(function(id) {
-                var akun = (typeof window.getDataIdUser === 'function') ? window.getDataIdUser(id) : null;
+                var akun = indexAkun[id] || null;
                 return {
                     id: id,
-                    nama: akun ? akun.nama : id,
-                    role: akun ? akun.role : '-',
+                    nama: akun ? (akun.nama || akun.username || id) : id,
+                    role: akun ? (akun.role || '-') : '-',
                     total: penjualan[id].total,
                     count: penjualan[id].count
                 };
-            }).sort(function(a, b) { return b.total - a.total; }).slice(0, 5);
+            }).sort(function(a, b) {
+                return b.total - a.total;
+            }).slice(0, 5);
 
             if (totalEl) totalEl.textContent = arr.length;
 
             if (!arr.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">' +
-                    '<i class="fas fa-chart-line fa-2x d-block mb-2 opacity-25"></i>Belum ada transaksi bulan ini.' +
+                tbody.innerHTML =
+                    '<tr><td colspan="6" class="text-center text-muted py-4">' +
+                        '<i class="fas fa-chart-line fa-2x d-block mb-2 opacity-25"></i>' +
+                        'Belum ada transaksi bulan ini.' +
                     '</td></tr>';
                 return;
             }
@@ -21860,13 +21902,18 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
                     '<td class="text-end"><strong>' + it.count + '</strong></td>' +
                     '<td class="text-end fw-bold text-success">' + _rp(it.total) + '</td>' +
                     '<td><button class="btn btn-sm btn-outline-primary" ' +
-                        'onclick="if(typeof window.tampilkanProdukDariDasbor===\'function\')window.tampilkanProdukDariDasbor(\'' + it.id + '\');else if(typeof window.tampilkanPlaceholderMenu===\'function\')window.tampilkanPlaceholderMenu(\'Produk ' + _esc(it.nama) + '\',\'10.44\');">' +
+                        'onclick="if(typeof window.tampilkanProdukDariDasbor===\'function\')' +
+                                 'window.tampilkanProdukDariDasbor(\'' + _esc(it.id) + '\');' +
+                                 'else if(typeof window.tampilkanPlaceholderMenu===\'function\')' +
+                                 'window.tampilkanPlaceholderMenu(\'Produk ' + _esc(it.nama) + '\',\'10.44\');">' +
                         '<i class="fas fa-eye me-1"></i>Lihat</button></td></tr>';
             });
             tbody.innerHTML = h;
+
         } catch (e) {
             console.error('renderTop5SellerSA error:', e);
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-4">Error: ' + _esc(e.message) + '</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-4">' +
+                'Error: ' + _esc(e.message) + '</td></tr>';
         }
     };
 
@@ -22032,6 +22079,7 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
 <!-- ═══ Dependency: 10.1.d + BLOK FD ══════════════════════════ -->
 <!-- ═══ Isi: Registrasi FD + Dispatcher via FD + Debug ════════ -->
 <!-- ═══ Revisi v2: Pakai fdRegisterDasbor, hapus handler lokal ═ -->
+<!-- ═══            Hapus timer jam lokal (pakai FD timer) ═════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
 (function BLOK_10_1_E_HANDLER() {
@@ -22059,7 +22107,7 @@ window.tampilkanMenuSA = () => renderMenuUntukRole('SA');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — AUTO-UPDATE JAM (via FD — single timer)
+    // [MODUL 2] — REFRESH JAM (via FD — single timer)
     // ═══════════════════════════════════════════════════════════
     // Jam sudah di-handle oleh FD (fdStartJam dipanggil saat FD load).
     // Cukup panggil fdUpdateJam sekali untuk refresh saat dasbor SA dibuka.
