@@ -17567,1238 +17567,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW ═══════ -->
-<!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI COIN (v1.1) ══════════════ -->
-<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
-<!-- ═══ Dependency: CS1–CS14 + GID + MN + Ekonomi-Universal ══ -->
-<!-- ═══             + Dompet-Universal ═════════════════════════ -->
-<!-- ═══ Prefix: vfc* (Verifikasi Coin) ════════════════════════ -->
-<!-- ═══ Guard: _blokVerifikasiCoinDone ════════════════════════ -->
-<!-- ═══ Pemakai: 10.47 (UI SA) + 12 blok role (notif) ═════════ -->
-<!-- ═══ Isi: 8 Modul, ~32 fungsi + ~15 alias backward compat -->
-<!-- ═══ Revisi v1.1: ⭐ Fix link notif 'Toko' → 'TK' ⭐ ═══════ -->
-<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A21, A23, ═════ -->
-<!-- ═══         A25, A31, A32, A33, A34, A35 ═════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_FUNGSI_GLOBAL_VERIFIKASI_COIN() {
-    if (window._blokVerifikasiCoinDone) {
-        console.log('ℹ️ BLOK FUNGSI GLOBAL VERIFIKASI COIN sudah terpasang.');
-        return;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT
-    // ═══════════════════════════════════════════════════════════
-    var deps = [
-        { flag: '_coreSystem8Done',          nama: 'Core System (1)-(8)' },
-        { flag: '_blokGIDDone',              nama: 'GID — Identity' },
-        { flag: '_blokMNDone',               nama: 'MN — Menu Network' },
-        { flag: '_blokEkonomiUniversalDone', nama: 'Ekonomi-Universal' },
-        { flag: '_blokDompetUniversalDone',  nama: 'Dompet-Universal' }
-    ];
-    var missing = deps.filter(function(d) { return !window[d.flag]; });
-    if (missing.length > 0) {
-        console.warn('⚠️ Verifikasi-Coin-Universal ditunda — dependency belum terpasang:');
-        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
-        return;
-    }
-
-    // Cek fungsi WAJIB dari Dompet-Universal
-    var fungsiDompet = [
-        'dompetLoadTopUpHistory', 'dompetLoadWithdrawHistory',
-        'dompetTopUpApprove', 'dompetTopUpReject',
-        'dompetWithdrawApprove', 'dompetWithdrawReject'
-    ];
-    var hilangDompet = fungsiDompet.filter(function(f) {
-        return typeof window[f] !== 'function';
-    });
-    if (hilangDompet.length > 0) {
-        console.warn('⚠️ Verifikasi-Coin-Universal ditunda — Dompet-Universal belum lengkap:');
-        hilangDompet.forEach(function(f) { console.warn('   • ' + f); });
-        return;
-    }
-
-    window._blokVerifikasiCoinDone = true;
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1b] — KONSTANTA (v1.1 — versi diupdate)
-    // ═══════════════════════════════════════════════════════════
-    window.VFC_KONSTANTA = window.VFC_KONSTANTA || {
-        VERSI: '1.1',                                    // ⭐ v1.1
-        KATEGORI: { TOPUP: 'topup', WITHDRAW: 'withdraw' },
-        STATUS_TOPUP: ['Menunggu', 'Lunas', 'Ditolak', 'Dibatalkan'],
-        STATUS_WITHDRAW: ['Menunggu', 'Disetujui', 'Ditolak'],
-        MAX_HARGA_TOLERANSI_PERSEN: 5,
-        MIN_ALASAN_TOLAK: 5,
-        CACHE_TTL_MS: 30000
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — HELPER INTERNAL
-    // ═══════════════════════════════════════════════════════════
-    function _vfcNow() {
-        return (typeof window.csNow === 'function')
-            ? window.csNow() : new Date().toISOString();
-    }
-
-    function _vfcIdUser() {
-        try {
-            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
-            if (typeof window.getIdUserAktif === 'function') return window.getIdUserAktif();
-            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
-                return window.userAktif.idUser || window.userAktif.id;
-            }
-        } catch (e) {}
-        return 'SYSTEM';
-    }
-
-    function _vfcUserInfo(idUser) {
-        if (!idUser) return null;
-        try {
-            if (typeof window.getUserByIdGlobal === 'function') {
-                return window.getUserByIdGlobal(idUser);
-            }
-            if (typeof window.getDataIdUser === 'function') {
-                return window.getDataIdUser(idUser);
-            }
-        } catch (e) {}
-        return null;
-    }
-
-    function _vfcCatat(aksi, detail) {
-        try {
-            if (typeof window.catatAktivitasGlobal !== 'function') return;
-            window.catatAktivitasGlobal(_vfcIdUser(), aksi, detail);
-        } catch (e) {}
-    }
-
-    function _vfcKurs() {
-        try {
-            if (typeof window.getSettingEkonomiGlobal === 'function') {
-                var cfg = window.getSettingEkonomiGlobal();
-                return parseFloat(cfg.hargaJual) || 1000;
-            }
-        } catch (e) {}
-        return 1000;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — READ / QUERY (8 fungsi) — delegasi ke Dompet-Universal
-    // ═══════════════════════════════════════════════════════════
-    window.vfcGetTopUpById = function(id) {
-        if (!id) return null;
-        try {
-            var list = window.dompetLoadTopUpHistory({});
-            for (var i = 0; i < list.length; i++) {
-                var t = list[i];
-                if (t && (t.id === id || t.idTrx === id)) return t;
-            }
-        } catch (e) {}
-        return null;
-    };
-
-    window.vfcGetWithdrawById = function(id) {
-        if (!id) return null;
-        try {
-            var list = window.dompetLoadWithdrawHistory({});
-            for (var i = 0; i < list.length; i++) {
-                var w = list[i];
-                if (w && (w.id === id || w.idReq === id)) return w;
-            }
-        } catch (e) {}
-        return null;
-    };
-
-    window.vfcCariTopUp = function(filter) {
-        filter = filter || {};
-        var cari    = (filter.cari || '').toLowerCase().trim();
-        var role    = filter.role || '';
-        var status  = filter.status || '';
-        var tanggal = filter.tanggal || '';
-
-        try {
-            var list = window.dompetLoadTopUpHistory({});
-            return list.filter(function(t) {
-                if (!t) return false;
-                if (role && t.role !== role) return false;
-                if (status && t.status !== status) return false;
-                if (tanggal) {
-                    var tgl = String(t.tanggal || t.createdAt || '').substring(0, 10);
-                    if (tgl !== tanggal) return false;
-                }
-                if (cari) {
-                    var s = ((t.namaPembeli || '') + ' ' + (t.idUser || '') + ' ' +
-                             (t.metode || '') + ' ' + (t.id || '')).toLowerCase();
-                    if (s.indexOf(cari) === -1) return false;
-                }
-                return true;
-            });
-        } catch (e) { return []; }
-    };
-
-    window.vfcCariWithdraw = function(filter) {
-        filter = filter || {};
-        var cari    = (filter.cari || '').toLowerCase().trim();
-        var role    = filter.role || '';
-        var status  = filter.status || '';
-        var tanggal = filter.tanggal || '';
-
-        try {
-            var list = window.dompetLoadWithdrawHistory({});
-            return list.filter(function(w) {
-                if (!w) return false;
-                if (role && w.role !== role) return false;
-                if (status && w.status !== status) return false;
-                if (tanggal) {
-                    var tgl = String(w.tanggal || w.createdAt || '').substring(0, 10);
-                    if (tgl !== tanggal) return false;
-                }
-                if (cari) {
-                    var s = ((w.namaPemohon || '') + ' ' + (w.idUser || '') + ' ' +
-                             (w.id || '')).toLowerCase();
-                    if (s.indexOf(cari) === -1) return false;
-                }
-                return true;
-            });
-        } catch (e) { return []; }
-    };
-
-    window.vfcGetTopUpPending = function() {
-        try {
-            return window.dompetLoadTopUpHistory({ status: 'Menunggu' });
-        } catch (e) { return []; }
-    };
-
-    window.vfcGetWithdrawPending = function() {
-        try {
-            return window.dompetLoadWithdrawHistory({ status: 'Menunggu' });
-        } catch (e) { return []; }
-    };
-
-    window.vfcGetAllPending = function() {
-        var t = window.vfcGetTopUpPending().map(function(x) {
-            return Object.assign({}, x, { _tipe: 'topup' });
-        });
-        var w = window.vfcGetWithdrawPending().map(function(x) {
-            return Object.assign({}, x, { _tipe: 'withdraw' });
-        });
-        return t.concat(w).sort(function(a, b) {
-            return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
-        });
-    };
-
-    window.vfcGetRiwayatGabungan = function(filter) {
-        filter = filter || {};
-        var cari = (filter.cari || '').toLowerCase().trim();
-        var combined = [];
-
-        try {
-            var topup = window.dompetLoadTopUpHistory({});
-            topup.forEach(function(t) {
-                if (!t) return;
-                if (t.status !== 'Lunas' && t.status !== 'Ditolak') return;
-                combined.push({
-                    waktuVerif: t.verifiedAt || t.updatedAt || t.createdAt,
-                    tipe: 'topup',
-                    idUser: t.idUser,
-                    nama: t.namaPembeli || t.namaUser || '-',
-                    role: t.role || '-',
-                    jumlahCoin: t.jumlahKoin || 0,
-                    totalRupiah: t.totalRupiah || 0,
-                    status: t.status,
-                    catatan: t.catatan || '-'
-                });
-            });
-        } catch (e) {}
-
-        try {
-            var wd = window.dompetLoadWithdrawHistory({});
-            wd.forEach(function(w) {
-                if (!w) return;
-                if (w.status !== 'Disetujui' && w.status !== 'Ditolak') return;
-                combined.push({
-                    waktuVerif: w.verifiedAt || w.updatedAt || w.createdAt,
-                    tipe: 'withdraw',
-                    idUser: w.idUser,
-                    nama: w.namaPemohon || '-',
-                    role: w.role || '-',
-                    jumlahCoin: w.jumlahKoin || 0,
-                    totalRupiah: w.totalRupiah || 0,
-                    status: w.status,
-                    catatan: w.catatan || '-'
-                });
-            });
-        } catch (e) {}
-
-        if (cari) {
-            combined = combined.filter(function(r) {
-                var s = (r.nama + ' ' + r.idUser + ' ' + r.catatan).toLowerCase();
-                return s.indexOf(cari) !== -1;
-            });
-        }
-
-        combined.sort(function(a, b) {
-            return new Date(b.waktuVerif || 0) - new Date(a.waktuVerif || 0);
-        });
-        return combined;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — AKSI (4 fungsi) — delegasi tipis + validasi
-    // ═══════════════════════════════════════════════════════════
-
-    // ── 4.1 SETUJUI TOP-UP ──
-    window.vfcSetujuiTopUp = function(id, catatan) {
-        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
-        try {
-            var topup = window.vfcGetTopUpById(id);
-            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
-            if (topup.status === 'Lunas') {
-                return { sukses: false, pesan: 'Top-up sudah pernah disetujui.' };
-            }
-
-            // ── Validasi minimalTopUp dari Ekonomi-Universal ──
-            var setting = (typeof window.getSettingEkonomiGlobal === 'function')
-                ? window.getSettingEkonomiGlobal()
-                : { minimalTopUp: 10000, hargaJual: 1000 };
-
-            var totalRupiah  = parseFloat(topup.totalRupiah) || 0;
-            var minimalTopUp = parseFloat(setting.minimalTopUp) || 10000;
-
-            if (totalRupiah < minimalTopUp) {
-                return {
-                    sukses: false,
-                    pesan: 'Nominal Rp ' + totalRupiah.toLocaleString('id-ID') +
-                           ' di bawah minimal Rp ' + minimalTopUp.toLocaleString('id-ID') + '.',
-                    validasi: 'minimalTopUp'
-                };
-            }
-
-            // ── Validasi harga per coin (toleransi 5%) ──
-            var jumlahKoin   = parseInt(topup.jumlahKoin, 10) || 0;
-            var hargaJual    = parseFloat(setting.hargaJual) || 1000;
-            var totalSeharus = jumlahKoin * hargaJual;
-            var toleransi    = totalSeharus * (VFC_KONSTANTA.MAX_HARGA_TOLERANSI_PERSEN / 100);
-
-            if (totalSeharus > 0 && Math.abs(totalRupiah - totalSeharus) > toleransi) {
-                try {
-                    if (typeof confirm === 'function' && !confirm(
-                        '⚠️ PERINGATAN!\n\n' +
-                        'Coin: ' + jumlahKoin + '\n' +
-                        'Bayar: Rp ' + totalRupiah.toLocaleString('id-ID') + '\n' +
-                        'Seharusnya: Rp ' + totalSeharus.toLocaleString('id-ID') + '\n' +
-                        '(harga/coin Rp ' + hargaJual.toLocaleString('id-ID') + ')\n\n' +
-                        'Selisih > ' + VFC_KONSTANTA.MAX_HARGA_TOLERANSI_PERSEN + '%. Lanjut?'
-                    )) {
-                        return { sukses: false, pesan: 'Dibatalkan SA.' };
-                    }
-                } catch (e) {}
-            }
-
-            // ── DELEGASI ke Dompet-Universal ──
-            var hasil = window.dompetTopUpApprove(id, _vfcIdUser());
-
-            if (!hasil || !hasil.sukses) {
-                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal approve.' };
-            }
-
-            // ── Notif ke user ──
-            window.vfcKirimNotifKeUser(topup.idUser, 'topup_lunas', topup, catatan);
-
-            // ── Catat aktivitas ──
-            _vfcCatat('Setujui Top-Up',
-                (topup.namaPembeli || topup.idUser) + ' +' + jumlahKoin + ' coin');
-
-            // ── Emit via pintu ──
-            try {
-                window.kirimVerifikasiCoin('topup-approved',
-                    { menu: 'dompetR2Coin', role: topup.role || null },
-                    {
-                        id: id, idUser: topup.idUser,
-                        jumlahKoin: jumlahKoin, totalRupiah: totalRupiah
-                    },
-                    id
-                );
-            } catch (e) {}
-
-            return { sukses: true, topup: hasil.entry || topup };
-        } catch (e) {
-            console.error('vfcSetujuiTopUp error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ── 4.2 TOLAK TOP-UP ──
-    window.vfcTolakTopUp = function(id, alasan) {
-        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
-        if (!alasan || String(alasan).trim().length < VFC_KONSTANTA.MIN_ALASAN_TOLAK) {
-            return { sukses: false, pesan: 'Alasan minimal ' +
-                VFC_KONSTANTA.MIN_ALASAN_TOLAK + ' karakter.' };
-        }
-
-        try {
-            var topup = window.vfcGetTopUpById(id);
-            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
-
-            // ── DELEGASI ke Dompet-Universal ──
-            var hasil = window.dompetTopUpReject(id, _vfcIdUser(), alasan);
-
-            if (!hasil || !hasil.sukses) {
-                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal reject.' };
-            }
-
-            // ── Notif ke user ──
-            window.vfcKirimNotifKeUser(topup.idUser, 'topup_tolak', topup, alasan);
-
-            // ── Catat ──
-            _vfcCatat('Tolak Top-Up',
-                (topup.namaPembeli || topup.idUser) + ' — Alasan: ' + alasan);
-
-            // ── Emit ──
-            try {
-                window.kirimVerifikasiCoin('topup-rejected',
-                    { menu: 'dompetR2Coin', role: topup.role || null },
-                    { id: id, idUser: topup.idUser, alasan: alasan },
-                    id
-                );
-            } catch (e) {}
-
-            return { sukses: true, topup: hasil.entry || topup };
-        } catch (e) {
-            console.error('vfcTolakTopUp error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ── 4.3 SETUJUI WITHDRAW ──
-    window.vfcSetujuiWithdraw = function(id, catatan) {
-        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
-        try {
-            var wd = window.vfcGetWithdrawById(id);
-            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
-            if (wd.status === 'Disetujui') {
-                return { sukses: false, pesan: 'Withdraw sudah disetujui.' };
-            }
-
-            // ── Validasi minimalWithdraw ──
-            var setting = (typeof window.getSettingEkonomiGlobal === 'function')
-                ? window.getSettingEkonomiGlobal()
-                : { minimalWithdraw: 50000 };
-
-            var totalRupiah     = parseFloat(wd.totalRupiah) || 0;
-            var minimalWithdraw = parseFloat(setting.minimalWithdraw) || 50000;
-
-            if (totalRupiah < minimalWithdraw) {
-                return {
-                    sukses: false,
-                    pesan: 'Nominal Rp ' + totalRupiah.toLocaleString('id-ID') +
-                           ' di bawah minimal Rp ' + minimalWithdraw.toLocaleString('id-ID') + '.',
-                    validasi: 'minimalWithdraw'
-                };
-            }
-
-            // ── Validasi saldo user cukup ──
-            var jumlahKoin = parseInt(wd.jumlahKoin, 10) || 0;
-            var saldoUser = 0;
-            try {
-                if (typeof window.dompetGetSaldo === 'function') {
-                    saldoUser = parseFloat(window.dompetGetSaldo(wd.idUser)) || 0;
-                }
-            } catch (e) {}
-
-            if (saldoUser < jumlahKoin) {
-                return {
-                    sukses: false,
-                    pesan: 'Saldo user tidak cukup. Saldo: ' + saldoUser +
-                           ' coin, butuh: ' + jumlahKoin + ' coin.',
-                    validasi: 'saldoTidakCukup'
-                };
-            }
-
-            // ── DELEGASI ke Dompet-Universal ──
-            var hasil = window.dompetWithdrawApprove(id, _vfcIdUser());
-
-            if (!hasil || !hasil.sukses) {
-                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal approve.' };
-            }
-
-            // ── Notif ke user ──
-            window.vfcKirimNotifKeUser(wd.idUser, 'withdraw_setuju', wd, catatan);
-
-            // ── Catat ──
-            _vfcCatat('Setujui Withdraw',
-                (wd.namaPemohon || wd.idUser) + ' -' + jumlahKoin + ' coin');
-
-            // ── Emit ──
-            try {
-                window.kirimVerifikasiCoin('withdraw-approved',
-                    { menu: 'dompetR2Coin', role: wd.role || null },
-                    { id: id, idUser: wd.idUser, jumlahKoin: jumlahKoin },
-                    id
-                );
-            } catch (e) {}
-
-            return { sukses: true, withdraw: hasil.entry || wd };
-        } catch (e) {
-            console.error('vfcSetujuiWithdraw error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ── 4.4 TOLAK WITHDRAW ──
-    window.vfcTolakWithdraw = function(id, alasan) {
-        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
-        if (!alasan || String(alasan).trim().length < VFC_KONSTANTA.MIN_ALASAN_TOLAK) {
-            return { sukses: false, pesan: 'Alasan minimal ' +
-                VFC_KONSTANTA.MIN_ALASAN_TOLAK + ' karakter.' };
-        }
-
-        try {
-            var wd = window.vfcGetWithdrawById(id);
-            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
-
-            // ── DELEGASI ke Dompet-Universal ──
-            var hasil = window.dompetWithdrawReject(id, _vfcIdUser(), alasan);
-
-            if (!hasil || !hasil.sukses) {
-                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal reject.' };
-            }
-
-            // ── Notif ke user ──
-            window.vfcKirimNotifKeUser(wd.idUser, 'withdraw_tolak', wd, alasan);
-
-            // ── Catat ──
-            _vfcCatat('Tolak Withdraw',
-                (wd.namaPemohon || wd.idUser) + ' — Alasan: ' + alasan);
-
-            // ── Emit ──
-            try {
-                window.kirimVerifikasiCoin('withdraw-rejected',
-                    { menu: 'dompetR2Coin', role: wd.role || null },
-                    { id: id, idUser: wd.idUser, alasan: alasan },
-                    id
-                );
-            } catch (e) {}
-
-            return { sukses: true, withdraw: hasil.entry || wd };
-        } catch (e) {
-            console.error('vfcTolakWithdraw error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — STATISTIK & ANALITIK (5 fungsi)
-    // ═══════════════════════════════════════════════════════════
-    window.vfcHitungStatistikTopUp = function() {
-        var data = window.vfcGetAllTopUp();
-        var stat = {
-            total: data.length, menunggu: 0, lunas: 0, ditolak: 0,
-            totalKoin: 0, totalRupiah: 0,
-            pendingKoin: 0, pendingRupiah: 0
-        };
-
-        data.forEach(function(t) {
-            if (!t) return;
-            var s = t.status || 'Menunggu';
-            if (s === 'Menunggu') {
-                stat.menunggu++;
-                stat.pendingKoin += parseInt(t.jumlahKoin, 10) || 0;
-                stat.pendingRupiah += parseFloat(t.totalRupiah) || 0;
-            } else if (s === 'Lunas') {
-                stat.lunas++;
-                stat.totalKoin += parseInt(t.jumlahKoin, 10) || 0;
-                stat.totalRupiah += parseFloat(t.totalRupiah) || 0;
-            } else if (s === 'Ditolak') {
-                stat.ditolak++;
-            }
-        });
-
-        return stat;
-    };
-
-    window.vfcHitungStatistikWithdraw = function() {
-        var data = window.vfcGetAllWithdraw();
-        var stat = {
-            total: data.length, menunggu: 0, disetujui: 0, ditolak: 0,
-            totalKoin: 0, totalRupiah: 0,
-            pendingKoin: 0, pendingRupiah: 0
-        };
-
-        data.forEach(function(w) {
-            if (!w) return;
-            var s = w.status || 'Menunggu';
-            if (s === 'Menunggu') {
-                stat.menunggu++;
-                stat.pendingKoin += parseInt(w.jumlahKoin, 10) || 0;
-                stat.pendingRupiah += parseFloat(w.totalRupiah) || 0;
-            } else if (s === 'Disetujui') {
-                stat.disetujui++;
-                stat.totalKoin += parseInt(w.jumlahKoin, 10) || 0;
-                stat.totalRupiah += parseFloat(w.totalRupiah) || 0;
-            } else if (s === 'Ditolak') {
-                stat.ditolak++;
-            }
-        });
-
-        return stat;
-    };
-
-    window.vfcGetAllTopUp = function() {
-        try { return window.dompetLoadTopUpHistory({}); }
-        catch (e) { return []; }
-    };
-
-    window.vfcGetAllWithdraw = function() {
-        try { return window.dompetLoadWithdrawHistory({}); }
-        catch (e) { return []; }
-    };
-
-    window.vfcHitungStatistikPerRole = function() {
-        var topup = window.vfcGetAllTopUp();
-        var wd = window.vfcGetAllWithdraw();
-        var stat = {
-            topup: { menunggu: 0, lunas: 0, ditolak: 0, total: topup.length },
-            withdraw: { menunggu: 0, disetujui: 0, ditolak: 0, total: wd.length },
-            perRole: {}
-        };
-
-        function _ensure(role) {
-            if (!stat.perRole[role]) {
-                stat.perRole[role] = { role: role, topup: 0, withdraw: 0, total: 0 };
-            }
-            return stat.perRole[role];
-        }
-
-        topup.forEach(function(t) {
-            if (!t) return;
-            if (t.status === 'Menunggu') stat.topup.menunggu++;
-            else if (t.status === 'Lunas') stat.topup.lunas++;
-            else if (t.status === 'Ditolak') stat.topup.ditolak++;
-            var r = _ensure(t.role || 'Lainnya');
-            r.topup++; r.total++;
-        });
-
-        wd.forEach(function(w) {
-            if (!w) return;
-            if (w.status === 'Menunggu') stat.withdraw.menunggu++;
-            else if (w.status === 'Disetujui') stat.withdraw.disetujui++;
-            else if (w.status === 'Ditolak') stat.withdraw.ditolak++;
-            var r = _ensure(w.role || 'Lainnya');
-            r.withdraw++; r.total++;
-        });
-
-        return stat;
-    };
-
-    window.vfcHitungNilaiPending = function() {
-        var tu = window.vfcHitungStatistikTopUp();
-        var wd = window.vfcHitungStatistikWithdraw();
-        return {
-            topup: tu.pendingRupiah || 0,
-            withdraw: wd.pendingRupiah || 0,
-            total: (tu.pendingRupiah || 0) + (wd.pendingRupiah || 0),
-            totalTeks: 'Rp ' + ((tu.pendingRupiah || 0) + (wd.pendingRupiah || 0))
-                .toLocaleString('id-ID')
-        };
-    };
-
-    window.vfcHitungDiprosesHariIni = function() {
-        var todayStr = new Date().toISOString().substring(0, 10);
-        var count = 0;
-
-        window.vfcGetAllTopUp().forEach(function(t) {
-            if (t && t.verifiedAt && String(t.verifiedAt).substring(0, 10) === todayStr) count++;
-        });
-        window.vfcGetAllWithdraw().forEach(function(w) {
-            if (w && w.verifiedAt && String(w.verifiedAt).substring(0, 10) === todayStr) count++;
-        });
-
-        return count;
-    };
-
-    window.vfcGetRingkasan = function() {
-        var tu = window.vfcHitungStatistikTopUp();
-        var wd = window.vfcHitungStatistikWithdraw();
-        var nilai = window.vfcHitungNilaiPending();
-
-        return {
-            topup: tu,
-            withdraw: wd,
-            totalMenunggu: (tu.menunggu || 0) + (wd.menunggu || 0),
-            totalDiprosesHariIni: window.vfcHitungDiprosesHariIni(),
-            nilaiPending: nilai,
-            grandTotal: (tu.total || 0) + (wd.total || 0)
-        };
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — NOTIFIKASI & EXPORT (4 fungsi)
-    // ═══════════════════════════════════════════════════════════
-
-    // ── 6.1 Kirim notif ke user ⭐ REVISI v1.1: link pakai TK ──
-    window.vfcKirimNotifKeUser = function(idUser, tipe, data, catatan) {
-        if (!idUser || !tipe) return { sukses: false };
-        data = data || {};
-
-        var judul = '';
-        var pesan = '';
-        var warna = 'info';
-        var ikon = 'fas fa-bell';
-        var linkAksi = 'tampilkanDompetR2CoinTK'; // ⭐ v1.1: TK (bukan Toko)
-
-        if (tipe === 'topup_lunas') {
-            judul = 'Top-Up Disetujui';
-            pesan = 'Top-up ' + (data.jumlahKoin || 0) + ' R2Coin (Rp ' +
-                (parseInt(data.totalRupiah || 0, 10)).toLocaleString('id-ID') +
-                ') berhasil disetujui.' + (catatan ? ' Catatan: ' + catatan : '');
-            warna = 'success'; ikon = 'fas fa-check-circle';
-        } else if (tipe === 'topup_tolak') {
-            judul = 'Top-Up Ditolak';
-            pesan = 'Top-up ' + (data.jumlahKoin || 0) + ' R2Coin ditolak.' +
-                (catatan ? ' Alasan: ' + catatan : '');
-            warna = 'danger'; ikon = 'fas fa-times-circle';
-        } else if (tipe === 'withdraw_setuju') {
-            judul = 'Withdraw Disetujui';
-            pesan = 'Withdraw ' + (data.jumlahKoin || 0) + ' R2Coin (Rp ' +
-                (parseInt(data.totalRupiah || 0, 10)).toLocaleString('id-ID') +
-                ') telah disetujui.' + (catatan ? ' Catatan: ' + catatan : '');
-            warna = 'success'; ikon = 'fas fa-check-circle';
-        } else if (tipe === 'withdraw_tolak') {
-            judul = 'Withdraw Ditolak';
-            pesan = 'Withdraw ' + (data.jumlahKoin || 0) + ' R2Coin ditolak.' +
-                (catatan ? ' Alasan: ' + catatan : '');
-            warna = 'danger'; ikon = 'fas fa-times-circle';
-        } else {
-            return { sukses: false, pesan: 'Tipe tidak dikenal.' };
-        }
-
-        // Prioritas 1: csNotifTambah (Core System)
-        try {
-            if (typeof window.csNotifTambah === 'function') {
-                return window.csNotifTambah({
-                    idUser: idUser,
-                    judul: judul,
-                    pesan: pesan,
-                    ikon: ikon,
-                    warna: warna,
-                    link: linkAksi
-                });
-            }
-        } catch (e) {}
-
-        // Fallback: coba kirimPesan (chat)
-        try {
-            if (typeof window.kirimPesan === 'function') {
-                var teks = (tipe.indexOf('topup') === 0 ? '💳 ' : '💸 ') + judul.toUpperCase() +
-                    '\n\n' + pesan;
-                return window.kirimPesan(idUser, teks, 'text');
-            }
-        } catch (e) {}
-
-        return { sukses: false, pesan: 'Tidak ada handler notif.' };
-    };
-
-    // ── 6.2 Export CSV ──
-    window.vfcExportCSV = function(tipe) {
-        try {
-            tipe = tipe || 'topup';
-            var data = (tipe === 'topup')
-                ? window.vfcGetAllTopUp()
-                : window.vfcGetAllWithdraw();
-
-            function esc(v) {
-                if (v == null) return '';
-                var s = String(v);
-                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
-                    return '"' + s.replace(/"/g, '""') + '"';
-                }
-                return s;
-            }
-
-            var lines = [];
-            if (tipe === 'topup') {
-                lines.push('No,Tanggal,ID User,Nama,Role,Coin,Rupiah,Metode,Status,VerifiedBy,VerifiedAt,Catatan');
-                data.forEach(function(t, i) {
-                    lines.push([
-                        i + 1,
-                        esc(t.tanggal || t.createdAt || '-'),
-                        esc(t.idUser), esc(t.namaPembeli), esc(t.role),
-                        t.jumlahKoin || 0, t.totalRupiah || 0,
-                        esc(t.metode || '-'), esc(t.status || '-'),
-                        esc(t.verifiedBy || '-'), esc(t.verifiedAt || '-'),
-                        esc((t.catatan || '').substring(0, 100))
-                    ].join(','));
-                });
-            } else {
-                lines.push('No,Tanggal,ID User,Nama,Role,Coin,Total Rp,Diterima,Rekening,Status,VerifiedBy,VerifiedAt,Catatan');
-                data.forEach(function(w, i) {
-                    var rek = w.rekeningTujuan || {};
-                    var rekTeks = (rek.bank || '') + ' ' + (rek.nomor || '') + ' a/n ' + (rek.atasNama || '');
-                    lines.push([
-                        i + 1,
-                        esc(w.tanggal || w.createdAt || '-'),
-                        esc(w.idUser), esc(w.namaPemohon), esc(w.role),
-                        w.jumlahKoin || 0, w.totalRupiah || 0, w.diterima || 0,
-                        esc(rekTeks.trim()), esc(w.status || '-'),
-                        esc(w.verifiedBy || '-'), esc(w.verifiedAt || '-'),
-                        esc((w.catatan || '').substring(0, 100))
-                    ].join(','));
-                });
-            }
-
-            var csv = '\uFEFF' + lines.join('\n');
-            var namaFile = 'verifikasi_' + tipe + '_' +
-                new Date().toISOString().split('T')[0] + '.csv';
-
-            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-            var url = URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url; a.download = namaFile;
-            document.body.appendChild(a); a.click();
-            document.body.removeChild(a);
-            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-
-            return { sukses: true, namaFile: namaFile, total: data.length };
-        } catch (e) {
-            console.error('vfcExportCSV error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ── 6.3 Export JSON ──
-    window.vfcExportJSON = function() {
-        try {
-            var paket = {
-                versi: VFC_KONSTANTA.VERSI,
-                tipe: 'verifikasi-coin-export',
-                exportedAt: _vfcNow(),
-                topup: window.vfcGetAllTopUp(),
-                withdraw: window.vfcGetAllWithdraw(),
-                statistik: window.vfcGetRingkasan()
-            };
-            return { sukses: true, json: JSON.stringify(paket, null, 2) };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ── 6.4 Get ringkasan teks (1 baris) ──
-    window.vfcGetRingkasanTeks = function() {
-        try {
-            var r = window.vfcGetRingkasan();
-            return 'VFC: ' + r.totalMenunggu + ' pending | ' +
-                   r.nilaiPending.totalTeks + ' | Hari ini: ' + r.totalDiprosesHariIni;
-        } catch (e) { return 'VFC: -'; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — HELPER RENDER UI (5 fungsi)
-    // ═══════════════════════════════════════════════════════════
-    window.vfcFormatMetode = function(metode) {
-        var map = {
-            'transfer_bca':     '🏦 Transfer BCA',
-            'transfer_mandiri': '🏦 Transfer Mandiri',
-            'transfer_bri':     '🏦 Transfer BRI',
-            'transfer_bni':     '🏦 Transfer BNI',
-            'transfer_bank':    '🏦 Transfer Bank',
-            'cash':             '💵 Cash / Tunai',
-            'transfer_sa':      '🏦 Transfer ke SA',
-            'ewallet':          '💳 E-Wallet',
-            'dana':             '💳 DANA',
-            'ovo':              '💳 OVO',
-            'gopay':            '💳 GoPay',
-            'shopeepay':        '💳 ShopeePay'
-        };
-        return map[metode] || ('💳 ' + (metode || '-'));
-    };
-
-    window.vfcFormatRekening = function(rek) {
-        if (!rek) return '-';
-        if (typeof rek === 'string') return rek;
-        return (rek.bank || rek.namaBank || '') + ' • ' +
-               (rek.nomor || rek.nomorRekening || '') +
-               ' a/n ' + (rek.atasNama || rek.namaPemilik || '');
-    };
-
-    window.vfcWarnaStatus = function(status) {
-        var map = {
-            'Menunggu':  'warning',
-            'Lunas':     'success',
-            'Disetujui': 'success',
-            'Ditolak':   'danger',
-            'Dibatalkan':'secondary'
-        };
-        return map[status] || 'secondary';
-    };
-
-    window.vfcRenderKartuStatistik = function(idTarget) {
-        try {
-            var el = document.getElementById(idTarget);
-            if (!el) return false;
-
-            var r = window.vfcGetRingkasan();
-
-            el.innerHTML =
-                '<div class="row g-3">' +
-                    '<div class="col-md-3 col-6">' +
-                        '<div class="card border-0 shadow-sm bg-white h-100">' +
-                            '<div class="card-body text-center py-3">' +
-                                '<i class="fas fa-hourglass-half fa-2x mb-2 text-warning"></i>' +
-                                '<h4 class="fw-bold mb-0">' + (r.topup.menunggu || 0) + '</h4>' +
-                                '<small class="text-muted">Top-Up Pending</small>' +
-                            '</div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="col-md-3 col-6">' +
-                        '<div class="card border-0 shadow-sm bg-white h-100">' +
-                            '<div class="card-body text-center py-3">' +
-                                '<i class="fas fa-hand-holding-usd fa-2x mb-2 text-danger"></i>' +
-                                '<h4 class="fw-bold mb-0">' + (r.withdraw.menunggu || 0) + '</h4>' +
-                                '<small class="text-muted">Withdraw Pending</small>' +
-                            '</div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="col-md-3 col-6">' +
-                        '<div class="card border-0 shadow-sm bg-white h-100">' +
-                            '<div class="card-body text-center py-3">' +
-                                '<i class="fas fa-check-circle fa-2x mb-2 text-success"></i>' +
-                                '<h4 class="fw-bold mb-0">' + (r.totalDiprosesHariIni || 0) + '</h4>' +
-                                '<small class="text-muted">Hari Ini</small>' +
-                            '</div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="col-md-3 col-6">' +
-                        '<div class="card border-0 shadow-sm bg-white h-100">' +
-                            '<div class="card-body text-center py-3">' +
-                                '<i class="fas fa-coins fa-2x mb-2" style="color:#FFC107;"></i>' +
-                                '<h5 class="fw-bold mb-0">' + r.nilaiPending.totalTeks + '</h5>' +
-                                '<small class="text-muted">Nilai Pending</small>' +
-                            '</div>' +
-                        '</div>' +
-                    '</div>' +
-                '</div>';
-
-            return true;
-        } catch (e) {
-            console.error('vfcRenderKartuStatistik error:', e);
-            return false;
-        }
-    };
-
-    window.vfcRenderAlertPending = function(idTarget) {
-        try {
-            var el = document.getElementById(idTarget);
-            if (!el) return false;
-
-            var r = window.vfcGetRingkasan();
-
-            if (r.totalMenunggu === 0) {
-                el.innerHTML =
-                    '<div class="alert alert-success border-0 shadow-sm d-flex align-items-center mb-0">' +
-                        '<i class="fas fa-check-circle fa-2x me-3"></i>' +
-                        '<div>' +
-                            '<strong>✅ Semua Beres!</strong><br>' +
-                            '<small>Tidak ada pengajuan yang menunggu verifikasi.</small>' +
-                        '</div>' +
-                    '</div>';
-                return true;
-            }
-
-            el.innerHTML =
-                '<div class="alert border-0 shadow-sm d-flex align-items-center mb-0" ' +
-                     'style="background:#FFF3E0;border-left:5px solid #FF8C00 !important;">' +
-                    '<i class="fas fa-bell fa-2x me-3" style="color:#FF8C00;"></i>' +
-                    '<div class="flex-grow-1">' +
-                        '<strong>Ada ' + r.totalMenunggu + ' pengajuan menunggu</strong><br>' +
-                        '<small>Top-Up: <strong>' + r.topup.menunggu + '</strong> • ' +
-                        'Withdraw: <strong>' + r.withdraw.menunggu + '</strong></small>' +
-                    '</div>' +
-                    '<button class="btn btn-warning btn-sm" ' +
-                            'onclick="if(typeof vfcSetTab===\'function\')vfcSetTab(\'topup\')">' +
-                        'Proses →</button>' +
-                '</div>';
-
-            return true;
-        } catch (e) {
-            console.error('vfcRenderAlertPending error:', e);
-            return false;
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — 3 PINTU + ALIAS + DEBUG + REGISTRY
-    // ═══════════════════════════════════════════════════════════
-
-    // ── 📤 PINTU 1: KIRIM ──
-    window.kirimVerifikasiCoin = function(tipe, ke, data, idRef) {
-        try {
-            return window.mnKirimKeMenu({
-                tipe: tipe,
-                dari: {
-                    idUser: _vfcIdUser(),
-                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
-                    role: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
-                    menu: 'verifikasiTopUp',
-                    blok: 'Verifikasi-Coin-Universal'
-                },
-                ke: ke,
-                data: data || {},
-                idRef: idRef || null,
-                timestamp: _vfcNow()
-            });
-        } catch (e) {
-            console.error('[VFC] kirim error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ── 📥 PINTU 2: TERIMA ──
-    window.terimaVerifikasiCoin = function() {
-        try { return window.mnInboxMenu('verifikasiTopUp'); }
-        catch (e) { return []; }
-    };
-
-    // ── 📦 PINTU 3: AMBIL ──
-    window.ambilVerifikasiCoin = function(filter) {
-        filter = filter || {};
-        var tipe = filter.tipe || 'all';
-        try {
-            if (tipe === 'all-pending')       return window.vfcGetAllPending();
-            if (tipe === 'topup-pending')     return window.vfcGetTopUpPending();
-            if (tipe === 'withdraw-pending')  return window.vfcGetWithdrawPending();
-            if (tipe === 'topup-by-id')       return window.vfcGetTopUpById(filter.id);
-            if (tipe === 'withdraw-by-id')    return window.vfcGetWithdrawById(filter.id);
-            if (tipe === 'cari-topup')        return window.vfcCariTopUp(filter);
-            if (tipe === 'cari-withdraw')     return window.vfcCariWithdraw(filter);
-            if (tipe === 'riwayat-gabungan')  return window.vfcGetRiwayatGabungan(filter);
-            if (tipe === 'statistik')         return window.vfcGetRingkasan();
-            if (tipe === 'statistik-topup')   return window.vfcHitungStatistikTopUp();
-            if (tipe === 'statistik-withdraw')return window.vfcHitungStatistikWithdraw();
-            if (tipe === 'statistik-role')    return window.vfcHitungStatistikPerRole();
-            if (tipe === 'nilai-pending')     return window.vfcHitungNilaiPending();
-            if (tipe === 'all-topup')         return window.vfcGetAllTopUp();
-            if (tipe === 'all-withdraw')      return window.vfcGetAllWithdraw();
-        } catch (e) {
-            console.error('[VFC] ambil error:', e);
-        }
-        return null;
-    };
-
-    // ── BACKWARD COMPAT ALIAS (~18) ──
-    try {
-        if (typeof window.loadTopUpHistoryGlobal !== 'function') {
-            window.loadTopUpHistoryGlobal = function() {
-                return window.vfcGetAllTopUp();
-            };
-        }
-        if (typeof window.loadWithdrawalRequestsGlobal !== 'function') {
-            window.loadWithdrawalRequestsGlobal = function() {
-                return window.vfcGetAllWithdraw();
-            };
-        }
-        if (typeof window.getTopUpByIdGlobal !== 'function') {
-            window.getTopUpByIdGlobal = window.vfcGetTopUpById;
-        }
-        if (typeof window.getWithdrawByIdGlobal !== 'function') {
-            window.getWithdrawByIdGlobal = window.vfcGetWithdrawById;
-        }
-        if (typeof window.getTopUpByStatusGlobal !== 'function') {
-            window.getTopUpByStatusGlobal = function(status) {
-                return window.dompetLoadTopUpHistory({ status: status });
-            };
-        }
-        if (typeof window.getWithdrawByStatusGlobal !== 'function') {
-            window.getWithdrawByStatusGlobal = function(status) {
-                return window.dompetLoadWithdrawHistory({ status: status });
-            };
-        }
-        if (typeof window.cariTopUpByFilter !== 'function') {
-            window.cariTopUpByFilter = window.vfcCariTopUp;
-        }
-        if (typeof window.cariWithdrawByFilter !== 'function') {
-            window.cariWithdrawByFilter = window.vfcCariWithdraw;
-        }
-        if (typeof window.hitungStatistikVerifikasiTopUp !== 'function') {
-            window.hitungStatistikVerifikasiTopUp = window.vfcHitungStatistikTopUp;
-        }
-        if (typeof window.hitungStatistikVerifikasiWithdraw !== 'function') {
-            window.hitungStatistikVerifikasiWithdraw = window.vfcHitungStatistikWithdraw;
-        }
-        if (typeof window.hitungStatistikVerifikasiCoinPerRole !== 'function') {
-            window.hitungStatistikVerifikasiCoinPerRole = window.vfcHitungStatistikPerRole;
-        }
-        if (typeof window.prosesSetujuiTopUpGlobal !== 'function') {
-            window.prosesSetujuiTopUpGlobal = function(id, catatan) {
-                return window.vfcSetujuiTopUp(id, catatan);
-            };
-        }
-        if (typeof window.prosesTolakTopUpGlobal !== 'function') {
-            window.prosesTolakTopUpGlobal = window.vfcTolakTopUp;
-        }
-        if (typeof window.prosesSetujuiWithdrawGlobal !== 'function') {
-            window.prosesSetujuiWithdrawGlobal = function(id, catatan) {
-                return window.vfcSetujuiWithdraw(id, catatan);
-            };
-        }
-        if (typeof window.prosesTolakWithdrawGlobal !== 'function') {
-            window.prosesTolakWithdrawGlobal = window.vfcTolakWithdraw;
-        }
-        if (typeof window.exportVerifikasiCoinCSVGlobal !== 'function') {
-            window.exportVerifikasiCoinCSVGlobal = window.vfcExportCSV;
-        }
-        if (typeof window.getRingkasanVerifikasiCoinGlobal !== 'function') {
-            window.getRingkasanVerifikasiCoinGlobal = window.vfcGetRingkasan;
-        }
-        if (typeof window.formatMetodeTopUp !== 'function') {
-            window.formatMetodeTopUp = window.vfcFormatMetode;
-        }
-        if (typeof window.formatRekeningTujuan !== 'function') {
-            window.formatRekeningTujuan = window.vfcFormatRekening;
-        }
-        if (typeof window.getWarnaStatusCoin !== 'function') {
-            window.getWarnaStatusCoin = window.vfcWarnaStatus;
-        }
-        if (typeof window.kirimNotifVerifikasiCoinKeUser !== 'function') {
-            window.kirimNotifVerifikasiCoinKeUser = window.vfcKirimNotifKeUser;
-        }
-    } catch (e) {
-        console.warn('Verifikasi-Coin-Universal: Gagal pasang alias:', e.message);
-    }
-
-    // ── DEBUG (A5) ──
-    window.debugVerifikasiCoin = function() {
-        var s = window.vfcKirimNotifKeUser
-            ? window.vfcKirimNotifKeUser.toString() : '';
-        var pakaiTK = s.indexOf('tampilkanDompetR2CoinTK') !== -1;
-        var pakaiToko = s.indexOf('tampilkanDompetR2CoinToko') !== -1;
-
-        return {
-            versi: VFC_KONSTANTA.VERSI,
-            guard: window._blokVerifikasiCoinDone,
-            modul3_Query: {
-                getTopUpById:       typeof window.vfcGetTopUpById,
-                getWithdrawById:    typeof window.vfcGetWithdrawById,
-                cariTopUp:          typeof window.vfcCariTopUp,
-                cariWithdraw:       typeof window.vfcCariWithdraw,
-                getTopUpPending:    typeof window.vfcGetTopUpPending,
-                getWithdrawPending: typeof window.vfcGetWithdrawPending,
-                getAllPending:      typeof window.vfcGetAllPending,
-                getRiwayatGabungan: typeof window.vfcGetRiwayatGabungan
-            },
-            modul4_Aksi: {
-                setujuiTopUp:     typeof window.vfcSetujuiTopUp,
-                tolakTopUp:       typeof window.vfcTolakTopUp,
-                setujuiWithdraw:  typeof window.vfcSetujuiWithdraw,
-                tolakWithdraw:    typeof window.vfcTolakWithdraw
-            },
-            modul5_Statistik: {
-                statistikTopUp:    typeof window.vfcHitungStatistikTopUp,
-                statistikWithdraw: typeof window.vfcHitungStatistikWithdraw,
-                statistikPerRole:  typeof window.vfcHitungStatistikPerRole,
-                nilaiPending:      typeof window.vfcHitungNilaiPending,
-                diprosesHariIni:   typeof window.vfcHitungDiprosesHariIni,
-                ringkasan:         typeof window.vfcGetRingkasan
-            },
-            modul6_NotifExport: {
-                kirimNotifKeUser: typeof window.vfcKirimNotifKeUser,
-                exportCSV:        typeof window.vfcExportCSV,
-                exportJSON:       typeof window.vfcExportJSON,
-                ringkasanTeks:    typeof window.vfcGetRingkasanTeks
-            },
-            modul7_RenderHelper: {
-                formatMetode:        typeof window.vfcFormatMetode,
-                formatRekening:      typeof window.vfcFormatRekening,
-                warnaStatus:         typeof window.vfcWarnaStatus,
-                renderKartuStatistik: typeof window.vfcRenderKartuStatistik,
-                renderAlertPending:  typeof window.vfcRenderAlertPending
-            },
-            modul8_Pintu: {
-                kirim:  typeof window.kirimVerifikasiCoin,
-                terima: typeof window.terimaVerifikasiCoin,
-                ambil:  typeof window.ambilVerifikasiCoin
-            },
-            delegasiKeDompetUniversal: {
-                topUpApprove:      typeof window.dompetTopUpApprove,
-                topUpReject:       typeof window.dompetTopUpReject,
-                withdrawApprove:   typeof window.dompetWithdrawApprove,
-                withdrawReject:    typeof window.dompetWithdrawReject
-            },
-            revisi_v1_1: {
-                linkNotifPakaiTK: pakaiTK,
-                linkNotifPakaiTokoLama: pakaiToko,
-                status: pakaiTK && !pakaiToko ? '✅ BENAR' : '⚠️ PERLU DIPERIKSA'
-            },
-            ringkasan: window.vfcGetRingkasanTeks()
-        };
-    };
-
-    // ── AUTO-REGISTRY (A33, A34, A35) ──
-    setTimeout(function() {
-        try {
-            if (typeof window.cpTambahBlok === 'function') {
-                var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
-                    return b && b.kode === 'Verifikasi-Coin-Universal';
-                });
-                if (!sudahAda) {
-                    window.cpTambahBlok({
-                        kode: 'Verifikasi-Coin-Universal',
-                        nama: 'Fungsi Global Verifikasi TopUp & Withdraw',
-                        layer: 'L4',
-                        status: 'Selesai'
-                    });
-                }
-            }
-            if (typeof window.cpUpdateFungsi === 'function') {
-                window.cpUpdateFungsi('vfc', {
-                    nama: 'Fungsi Global Verifikasi Coin',
-                    status: 'Selesai',
-                    jumlah: 30
-                });
-            }
-            if (typeof window.cpTambahRiwayat === 'function') {
-                window.cpTambahRiwayat({
-                    blok: 'Verifikasi-Coin-Universal',
-                    nama: 'Fungsi Global Verifikasi TopUp & Withdraw (v1.1)',
-                    keterangan: '30 fungsi + 3 pintu + delegasi Dompet-Universal + fix link notif TK'
-                });
-            }
-        } catch (e) {
-            console.warn('Verifikasi-Coin-Universal: Gagal update catatan 0.1:', e.message);
-        }
-    }, 1000);
-
-    // ── LOG TERPASANG ──
-    console.log('%c✅ BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW (v1.1) terpasang.',
-        'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
-    console.log('   📦 8 Modul, ~32 fungsi:');
-    console.log('   1.  Konstanta & Config (VERSI 1.1)');
-    console.log('   2.  Helper Internal (via CS2)');
-    console.log('   3.  Read/Query (8)');
-    console.log('   4.  Aksi (4) — 100% delegasi ke Dompet-Universal ⭐');
-    console.log('   5.  Statistik & Analitik (5)');
-    console.log('   6.  Notifikasi & Export (4) — ⭐ fix link TK');
-    console.log('   7.  Helper Render UI (5)');
-    console.log('   8.  3 Pintu + Alias + Debug + Registry');
-    console.log('');
-    console.log('   ⭐ Revisi v1.1:');
-    console.log('   • vfcKirimNotifKeUser: link "tampilkanDompetR2CoinToko"');
-    console.log('     → "tampilkanDompetR2CoinTK" (cocok menuConfig)');
-    console.log('');
-    console.log('   🚪 3 Pintu: kirimVerifikasiCoin, terimaVerifikasiCoin, ambilVerifikasiCoin');
-    console.log('   🔗 Delegasi: dompetTopUpApprove, dompetTopUpReject,');
-    console.log('                dompetWithdrawApprove, dompetWithdrawReject');
-    console.log('   🔄 Backward compat: ~18 alias');
-    console.log('   🎯 Pemakai: 10.47 (UI SA) + 12 blok role');
-    console.log('   🔍 Debug: debugVerifikasiCoin()');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW ═ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL DOMPET R2COIN UNIVERSAL ════════════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
 <!-- ═══ Dependency: CS1–CS14 + GID + MN + Ekonomi-Universal ══ -->
@@ -22071,6 +20839,1238 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL DOMPET R2COIN USER (v1.2) ═════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW ═══════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI COIN (v1.1) ══════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Dependency: CS1–CS14 + GID + MN + Ekonomi-Universal ══ -->
+<!-- ═══             + Dompet-Universal ═════════════════════════ -->
+<!-- ═══ Prefix: vfc* (Verifikasi Coin) ════════════════════════ -->
+<!-- ═══ Guard: _blokVerifikasiCoinDone ════════════════════════ -->
+<!-- ═══ Pemakai: 10.47 (UI SA) + 12 blok role (notif) ═════════ -->
+<!-- ═══ Isi: 8 Modul, ~32 fungsi + ~15 alias backward compat -->
+<!-- ═══ Revisi v1.1: ⭐ Fix link notif 'Toko' → 'TK' ⭐ ═══════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A21, A23, ═════ -->
+<!-- ═══         A25, A31, A32, A33, A34, A35 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_VERIFIKASI_COIN() {
+    if (window._blokVerifikasiCoinDone) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL VERIFIKASI COIN sudah terpasang.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT
+    // ═══════════════════════════════════════════════════════════
+    var deps = [
+        { flag: '_coreSystem8Done',          nama: 'Core System (1)-(8)' },
+        { flag: '_blokGIDDone',              nama: 'GID — Identity' },
+        { flag: '_blokMNDone',               nama: 'MN — Menu Network' },
+        { flag: '_blokEkonomiUniversalDone', nama: 'Ekonomi-Universal' },
+        { flag: '_blokDompetUniversalDone',  nama: 'Dompet-Universal' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ Verifikasi-Coin-Universal ditunda — dependency belum terpasang:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // Cek fungsi WAJIB dari Dompet-Universal
+    var fungsiDompet = [
+        'dompetLoadTopUpHistory', 'dompetLoadWithdrawHistory',
+        'dompetTopUpApprove', 'dompetTopUpReject',
+        'dompetWithdrawApprove', 'dompetWithdrawReject'
+    ];
+    var hilangDompet = fungsiDompet.filter(function(f) {
+        return typeof window[f] !== 'function';
+    });
+    if (hilangDompet.length > 0) {
+        console.warn('⚠️ Verifikasi-Coin-Universal ditunda — Dompet-Universal belum lengkap:');
+        hilangDompet.forEach(function(f) { console.warn('   • ' + f); });
+        return;
+    }
+
+    window._blokVerifikasiCoinDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1b] — KONSTANTA (v1.1 — versi diupdate)
+    // ═══════════════════════════════════════════════════════════
+    window.VFC_KONSTANTA = window.VFC_KONSTANTA || {
+        VERSI: '1.1',                                    // ⭐ v1.1
+        KATEGORI: { TOPUP: 'topup', WITHDRAW: 'withdraw' },
+        STATUS_TOPUP: ['Menunggu', 'Lunas', 'Ditolak', 'Dibatalkan'],
+        STATUS_WITHDRAW: ['Menunggu', 'Disetujui', 'Ditolak'],
+        MAX_HARGA_TOLERANSI_PERSEN: 5,
+        MIN_ALASAN_TOLAK: 5,
+        CACHE_TTL_MS: 30000
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _vfcNow() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    function _vfcIdUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+            if (typeof window.getIdUserAktif === 'function') return window.getIdUserAktif();
+            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
+                return window.userAktif.idUser || window.userAktif.id;
+            }
+        } catch (e) {}
+        return 'SYSTEM';
+    }
+
+    function _vfcUserInfo(idUser) {
+        if (!idUser) return null;
+        try {
+            if (typeof window.getUserByIdGlobal === 'function') {
+                return window.getUserByIdGlobal(idUser);
+            }
+            if (typeof window.getDataIdUser === 'function') {
+                return window.getDataIdUser(idUser);
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function _vfcCatat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal !== 'function') return;
+            window.catatAktivitasGlobal(_vfcIdUser(), aksi, detail);
+        } catch (e) {}
+    }
+
+    function _vfcKurs() {
+        try {
+            if (typeof window.getSettingEkonomiGlobal === 'function') {
+                var cfg = window.getSettingEkonomiGlobal();
+                return parseFloat(cfg.hargaJual) || 1000;
+            }
+        } catch (e) {}
+        return 1000;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — READ / QUERY (8 fungsi) — delegasi ke Dompet-Universal
+    // ═══════════════════════════════════════════════════════════
+    window.vfcGetTopUpById = function(id) {
+        if (!id) return null;
+        try {
+            var list = window.dompetLoadTopUpHistory({});
+            for (var i = 0; i < list.length; i++) {
+                var t = list[i];
+                if (t && (t.id === id || t.idTrx === id)) return t;
+            }
+        } catch (e) {}
+        return null;
+    };
+
+    window.vfcGetWithdrawById = function(id) {
+        if (!id) return null;
+        try {
+            var list = window.dompetLoadWithdrawHistory({});
+            for (var i = 0; i < list.length; i++) {
+                var w = list[i];
+                if (w && (w.id === id || w.idReq === id)) return w;
+            }
+        } catch (e) {}
+        return null;
+    };
+
+    window.vfcCariTopUp = function(filter) {
+        filter = filter || {};
+        var cari    = (filter.cari || '').toLowerCase().trim();
+        var role    = filter.role || '';
+        var status  = filter.status || '';
+        var tanggal = filter.tanggal || '';
+
+        try {
+            var list = window.dompetLoadTopUpHistory({});
+            return list.filter(function(t) {
+                if (!t) return false;
+                if (role && t.role !== role) return false;
+                if (status && t.status !== status) return false;
+                if (tanggal) {
+                    var tgl = String(t.tanggal || t.createdAt || '').substring(0, 10);
+                    if (tgl !== tanggal) return false;
+                }
+                if (cari) {
+                    var s = ((t.namaPembeli || '') + ' ' + (t.idUser || '') + ' ' +
+                             (t.metode || '') + ' ' + (t.id || '')).toLowerCase();
+                    if (s.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+        } catch (e) { return []; }
+    };
+
+    window.vfcCariWithdraw = function(filter) {
+        filter = filter || {};
+        var cari    = (filter.cari || '').toLowerCase().trim();
+        var role    = filter.role || '';
+        var status  = filter.status || '';
+        var tanggal = filter.tanggal || '';
+
+        try {
+            var list = window.dompetLoadWithdrawHistory({});
+            return list.filter(function(w) {
+                if (!w) return false;
+                if (role && w.role !== role) return false;
+                if (status && w.status !== status) return false;
+                if (tanggal) {
+                    var tgl = String(w.tanggal || w.createdAt || '').substring(0, 10);
+                    if (tgl !== tanggal) return false;
+                }
+                if (cari) {
+                    var s = ((w.namaPemohon || '') + ' ' + (w.idUser || '') + ' ' +
+                             (w.id || '')).toLowerCase();
+                    if (s.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+        } catch (e) { return []; }
+    };
+
+    window.vfcGetTopUpPending = function() {
+        try {
+            return window.dompetLoadTopUpHistory({ status: 'Menunggu' });
+        } catch (e) { return []; }
+    };
+
+    window.vfcGetWithdrawPending = function() {
+        try {
+            return window.dompetLoadWithdrawHistory({ status: 'Menunggu' });
+        } catch (e) { return []; }
+    };
+
+    window.vfcGetAllPending = function() {
+        var t = window.vfcGetTopUpPending().map(function(x) {
+            return Object.assign({}, x, { _tipe: 'topup' });
+        });
+        var w = window.vfcGetWithdrawPending().map(function(x) {
+            return Object.assign({}, x, { _tipe: 'withdraw' });
+        });
+        return t.concat(w).sort(function(a, b) {
+            return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+        });
+    };
+
+    window.vfcGetRiwayatGabungan = function(filter) {
+        filter = filter || {};
+        var cari = (filter.cari || '').toLowerCase().trim();
+        var combined = [];
+
+        try {
+            var topup = window.dompetLoadTopUpHistory({});
+            topup.forEach(function(t) {
+                if (!t) return;
+                if (t.status !== 'Lunas' && t.status !== 'Ditolak') return;
+                combined.push({
+                    waktuVerif: t.verifiedAt || t.updatedAt || t.createdAt,
+                    tipe: 'topup',
+                    idUser: t.idUser,
+                    nama: t.namaPembeli || t.namaUser || '-',
+                    role: t.role || '-',
+                    jumlahCoin: t.jumlahKoin || 0,
+                    totalRupiah: t.totalRupiah || 0,
+                    status: t.status,
+                    catatan: t.catatan || '-'
+                });
+            });
+        } catch (e) {}
+
+        try {
+            var wd = window.dompetLoadWithdrawHistory({});
+            wd.forEach(function(w) {
+                if (!w) return;
+                if (w.status !== 'Disetujui' && w.status !== 'Ditolak') return;
+                combined.push({
+                    waktuVerif: w.verifiedAt || w.updatedAt || w.createdAt,
+                    tipe: 'withdraw',
+                    idUser: w.idUser,
+                    nama: w.namaPemohon || '-',
+                    role: w.role || '-',
+                    jumlahCoin: w.jumlahKoin || 0,
+                    totalRupiah: w.totalRupiah || 0,
+                    status: w.status,
+                    catatan: w.catatan || '-'
+                });
+            });
+        } catch (e) {}
+
+        if (cari) {
+            combined = combined.filter(function(r) {
+                var s = (r.nama + ' ' + r.idUser + ' ' + r.catatan).toLowerCase();
+                return s.indexOf(cari) !== -1;
+            });
+        }
+
+        combined.sort(function(a, b) {
+            return new Date(b.waktuVerif || 0) - new Date(a.waktuVerif || 0);
+        });
+        return combined;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — AKSI (4 fungsi) — delegasi tipis + validasi
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 4.1 SETUJUI TOP-UP ──
+    window.vfcSetujuiTopUp = function(id, catatan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        try {
+            var topup = window.vfcGetTopUpById(id);
+            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+            if (topup.status === 'Lunas') {
+                return { sukses: false, pesan: 'Top-up sudah pernah disetujui.' };
+            }
+
+            // ── Validasi minimalTopUp dari Ekonomi-Universal ──
+            var setting = (typeof window.getSettingEkonomiGlobal === 'function')
+                ? window.getSettingEkonomiGlobal()
+                : { minimalTopUp: 10000, hargaJual: 1000 };
+
+            var totalRupiah  = parseFloat(topup.totalRupiah) || 0;
+            var minimalTopUp = parseFloat(setting.minimalTopUp) || 10000;
+
+            if (totalRupiah < minimalTopUp) {
+                return {
+                    sukses: false,
+                    pesan: 'Nominal Rp ' + totalRupiah.toLocaleString('id-ID') +
+                           ' di bawah minimal Rp ' + minimalTopUp.toLocaleString('id-ID') + '.',
+                    validasi: 'minimalTopUp'
+                };
+            }
+
+            // ── Validasi harga per coin (toleransi 5%) ──
+            var jumlahKoin   = parseInt(topup.jumlahKoin, 10) || 0;
+            var hargaJual    = parseFloat(setting.hargaJual) || 1000;
+            var totalSeharus = jumlahKoin * hargaJual;
+            var toleransi    = totalSeharus * (VFC_KONSTANTA.MAX_HARGA_TOLERANSI_PERSEN / 100);
+
+            if (totalSeharus > 0 && Math.abs(totalRupiah - totalSeharus) > toleransi) {
+                try {
+                    if (typeof confirm === 'function' && !confirm(
+                        '⚠️ PERINGATAN!\n\n' +
+                        'Coin: ' + jumlahKoin + '\n' +
+                        'Bayar: Rp ' + totalRupiah.toLocaleString('id-ID') + '\n' +
+                        'Seharusnya: Rp ' + totalSeharus.toLocaleString('id-ID') + '\n' +
+                        '(harga/coin Rp ' + hargaJual.toLocaleString('id-ID') + ')\n\n' +
+                        'Selisih > ' + VFC_KONSTANTA.MAX_HARGA_TOLERANSI_PERSEN + '%. Lanjut?'
+                    )) {
+                        return { sukses: false, pesan: 'Dibatalkan SA.' };
+                    }
+                } catch (e) {}
+            }
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetTopUpApprove(id, _vfcIdUser());
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal approve.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(topup.idUser, 'topup_lunas', topup, catatan);
+
+            // ── Catat aktivitas ──
+            _vfcCatat('Setujui Top-Up',
+                (topup.namaPembeli || topup.idUser) + ' +' + jumlahKoin + ' coin');
+
+            // ── Emit via pintu ──
+            try {
+                window.kirimVerifikasiCoin('topup-approved',
+                    { menu: 'dompetR2Coin', role: topup.role || null },
+                    {
+                        id: id, idUser: topup.idUser,
+                        jumlahKoin: jumlahKoin, totalRupiah: totalRupiah
+                    },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, topup: hasil.entry || topup };
+        } catch (e) {
+            console.error('vfcSetujuiTopUp error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 4.2 TOLAK TOP-UP ──
+    window.vfcTolakTopUp = function(id, alasan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        if (!alasan || String(alasan).trim().length < VFC_KONSTANTA.MIN_ALASAN_TOLAK) {
+            return { sukses: false, pesan: 'Alasan minimal ' +
+                VFC_KONSTANTA.MIN_ALASAN_TOLAK + ' karakter.' };
+        }
+
+        try {
+            var topup = window.vfcGetTopUpById(id);
+            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetTopUpReject(id, _vfcIdUser(), alasan);
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal reject.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(topup.idUser, 'topup_tolak', topup, alasan);
+
+            // ── Catat ──
+            _vfcCatat('Tolak Top-Up',
+                (topup.namaPembeli || topup.idUser) + ' — Alasan: ' + alasan);
+
+            // ── Emit ──
+            try {
+                window.kirimVerifikasiCoin('topup-rejected',
+                    { menu: 'dompetR2Coin', role: topup.role || null },
+                    { id: id, idUser: topup.idUser, alasan: alasan },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, topup: hasil.entry || topup };
+        } catch (e) {
+            console.error('vfcTolakTopUp error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 4.3 SETUJUI WITHDRAW ──
+    window.vfcSetujuiWithdraw = function(id, catatan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        try {
+            var wd = window.vfcGetWithdrawById(id);
+            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+            if (wd.status === 'Disetujui') {
+                return { sukses: false, pesan: 'Withdraw sudah disetujui.' };
+            }
+
+            // ── Validasi minimalWithdraw ──
+            var setting = (typeof window.getSettingEkonomiGlobal === 'function')
+                ? window.getSettingEkonomiGlobal()
+                : { minimalWithdraw: 50000 };
+
+            var totalRupiah     = parseFloat(wd.totalRupiah) || 0;
+            var minimalWithdraw = parseFloat(setting.minimalWithdraw) || 50000;
+
+            if (totalRupiah < minimalWithdraw) {
+                return {
+                    sukses: false,
+                    pesan: 'Nominal Rp ' + totalRupiah.toLocaleString('id-ID') +
+                           ' di bawah minimal Rp ' + minimalWithdraw.toLocaleString('id-ID') + '.',
+                    validasi: 'minimalWithdraw'
+                };
+            }
+
+            // ── Validasi saldo user cukup ──
+            var jumlahKoin = parseInt(wd.jumlahKoin, 10) || 0;
+            var saldoUser = 0;
+            try {
+                if (typeof window.dompetGetSaldo === 'function') {
+                    saldoUser = parseFloat(window.dompetGetSaldo(wd.idUser)) || 0;
+                }
+            } catch (e) {}
+
+            if (saldoUser < jumlahKoin) {
+                return {
+                    sukses: false,
+                    pesan: 'Saldo user tidak cukup. Saldo: ' + saldoUser +
+                           ' coin, butuh: ' + jumlahKoin + ' coin.',
+                    validasi: 'saldoTidakCukup'
+                };
+            }
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetWithdrawApprove(id, _vfcIdUser());
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal approve.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(wd.idUser, 'withdraw_setuju', wd, catatan);
+
+            // ── Catat ──
+            _vfcCatat('Setujui Withdraw',
+                (wd.namaPemohon || wd.idUser) + ' -' + jumlahKoin + ' coin');
+
+            // ── Emit ──
+            try {
+                window.kirimVerifikasiCoin('withdraw-approved',
+                    { menu: 'dompetR2Coin', role: wd.role || null },
+                    { id: id, idUser: wd.idUser, jumlahKoin: jumlahKoin },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, withdraw: hasil.entry || wd };
+        } catch (e) {
+            console.error('vfcSetujuiWithdraw error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 4.4 TOLAK WITHDRAW ──
+    window.vfcTolakWithdraw = function(id, alasan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        if (!alasan || String(alasan).trim().length < VFC_KONSTANTA.MIN_ALASAN_TOLAK) {
+            return { sukses: false, pesan: 'Alasan minimal ' +
+                VFC_KONSTANTA.MIN_ALASAN_TOLAK + ' karakter.' };
+        }
+
+        try {
+            var wd = window.vfcGetWithdrawById(id);
+            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetWithdrawReject(id, _vfcIdUser(), alasan);
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal reject.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(wd.idUser, 'withdraw_tolak', wd, alasan);
+
+            // ── Catat ──
+            _vfcCatat('Tolak Withdraw',
+                (wd.namaPemohon || wd.idUser) + ' — Alasan: ' + alasan);
+
+            // ── Emit ──
+            try {
+                window.kirimVerifikasiCoin('withdraw-rejected',
+                    { menu: 'dompetR2Coin', role: wd.role || null },
+                    { id: id, idUser: wd.idUser, alasan: alasan },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, withdraw: hasil.entry || wd };
+        } catch (e) {
+            console.error('vfcTolakWithdraw error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — STATISTIK & ANALITIK (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.vfcHitungStatistikTopUp = function() {
+        var data = window.vfcGetAllTopUp();
+        var stat = {
+            total: data.length, menunggu: 0, lunas: 0, ditolak: 0,
+            totalKoin: 0, totalRupiah: 0,
+            pendingKoin: 0, pendingRupiah: 0
+        };
+
+        data.forEach(function(t) {
+            if (!t) return;
+            var s = t.status || 'Menunggu';
+            if (s === 'Menunggu') {
+                stat.menunggu++;
+                stat.pendingKoin += parseInt(t.jumlahKoin, 10) || 0;
+                stat.pendingRupiah += parseFloat(t.totalRupiah) || 0;
+            } else if (s === 'Lunas') {
+                stat.lunas++;
+                stat.totalKoin += parseInt(t.jumlahKoin, 10) || 0;
+                stat.totalRupiah += parseFloat(t.totalRupiah) || 0;
+            } else if (s === 'Ditolak') {
+                stat.ditolak++;
+            }
+        });
+
+        return stat;
+    };
+
+    window.vfcHitungStatistikWithdraw = function() {
+        var data = window.vfcGetAllWithdraw();
+        var stat = {
+            total: data.length, menunggu: 0, disetujui: 0, ditolak: 0,
+            totalKoin: 0, totalRupiah: 0,
+            pendingKoin: 0, pendingRupiah: 0
+        };
+
+        data.forEach(function(w) {
+            if (!w) return;
+            var s = w.status || 'Menunggu';
+            if (s === 'Menunggu') {
+                stat.menunggu++;
+                stat.pendingKoin += parseInt(w.jumlahKoin, 10) || 0;
+                stat.pendingRupiah += parseFloat(w.totalRupiah) || 0;
+            } else if (s === 'Disetujui') {
+                stat.disetujui++;
+                stat.totalKoin += parseInt(w.jumlahKoin, 10) || 0;
+                stat.totalRupiah += parseFloat(w.totalRupiah) || 0;
+            } else if (s === 'Ditolak') {
+                stat.ditolak++;
+            }
+        });
+
+        return stat;
+    };
+
+    window.vfcGetAllTopUp = function() {
+        try { return window.dompetLoadTopUpHistory({}); }
+        catch (e) { return []; }
+    };
+
+    window.vfcGetAllWithdraw = function() {
+        try { return window.dompetLoadWithdrawHistory({}); }
+        catch (e) { return []; }
+    };
+
+    window.vfcHitungStatistikPerRole = function() {
+        var topup = window.vfcGetAllTopUp();
+        var wd = window.vfcGetAllWithdraw();
+        var stat = {
+            topup: { menunggu: 0, lunas: 0, ditolak: 0, total: topup.length },
+            withdraw: { menunggu: 0, disetujui: 0, ditolak: 0, total: wd.length },
+            perRole: {}
+        };
+
+        function _ensure(role) {
+            if (!stat.perRole[role]) {
+                stat.perRole[role] = { role: role, topup: 0, withdraw: 0, total: 0 };
+            }
+            return stat.perRole[role];
+        }
+
+        topup.forEach(function(t) {
+            if (!t) return;
+            if (t.status === 'Menunggu') stat.topup.menunggu++;
+            else if (t.status === 'Lunas') stat.topup.lunas++;
+            else if (t.status === 'Ditolak') stat.topup.ditolak++;
+            var r = _ensure(t.role || 'Lainnya');
+            r.topup++; r.total++;
+        });
+
+        wd.forEach(function(w) {
+            if (!w) return;
+            if (w.status === 'Menunggu') stat.withdraw.menunggu++;
+            else if (w.status === 'Disetujui') stat.withdraw.disetujui++;
+            else if (w.status === 'Ditolak') stat.withdraw.ditolak++;
+            var r = _ensure(w.role || 'Lainnya');
+            r.withdraw++; r.total++;
+        });
+
+        return stat;
+    };
+
+    window.vfcHitungNilaiPending = function() {
+        var tu = window.vfcHitungStatistikTopUp();
+        var wd = window.vfcHitungStatistikWithdraw();
+        return {
+            topup: tu.pendingRupiah || 0,
+            withdraw: wd.pendingRupiah || 0,
+            total: (tu.pendingRupiah || 0) + (wd.pendingRupiah || 0),
+            totalTeks: 'Rp ' + ((tu.pendingRupiah || 0) + (wd.pendingRupiah || 0))
+                .toLocaleString('id-ID')
+        };
+    };
+
+    window.vfcHitungDiprosesHariIni = function() {
+        var todayStr = new Date().toISOString().substring(0, 10);
+        var count = 0;
+
+        window.vfcGetAllTopUp().forEach(function(t) {
+            if (t && t.verifiedAt && String(t.verifiedAt).substring(0, 10) === todayStr) count++;
+        });
+        window.vfcGetAllWithdraw().forEach(function(w) {
+            if (w && w.verifiedAt && String(w.verifiedAt).substring(0, 10) === todayStr) count++;
+        });
+
+        return count;
+    };
+
+    window.vfcGetRingkasan = function() {
+        var tu = window.vfcHitungStatistikTopUp();
+        var wd = window.vfcHitungStatistikWithdraw();
+        var nilai = window.vfcHitungNilaiPending();
+
+        return {
+            topup: tu,
+            withdraw: wd,
+            totalMenunggu: (tu.menunggu || 0) + (wd.menunggu || 0),
+            totalDiprosesHariIni: window.vfcHitungDiprosesHariIni(),
+            nilaiPending: nilai,
+            grandTotal: (tu.total || 0) + (wd.total || 0)
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — NOTIFIKASI & EXPORT (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 6.1 Kirim notif ke user ⭐ REVISI v1.1: link pakai TK ──
+    window.vfcKirimNotifKeUser = function(idUser, tipe, data, catatan) {
+        if (!idUser || !tipe) return { sukses: false };
+        data = data || {};
+
+        var judul = '';
+        var pesan = '';
+        var warna = 'info';
+        var ikon = 'fas fa-bell';
+        var linkAksi = 'tampilkanDompetR2CoinTK'; // ⭐ v1.1: TK (bukan Toko)
+
+        if (tipe === 'topup_lunas') {
+            judul = 'Top-Up Disetujui';
+            pesan = 'Top-up ' + (data.jumlahKoin || 0) + ' R2Coin (Rp ' +
+                (parseInt(data.totalRupiah || 0, 10)).toLocaleString('id-ID') +
+                ') berhasil disetujui.' + (catatan ? ' Catatan: ' + catatan : '');
+            warna = 'success'; ikon = 'fas fa-check-circle';
+        } else if (tipe === 'topup_tolak') {
+            judul = 'Top-Up Ditolak';
+            pesan = 'Top-up ' + (data.jumlahKoin || 0) + ' R2Coin ditolak.' +
+                (catatan ? ' Alasan: ' + catatan : '');
+            warna = 'danger'; ikon = 'fas fa-times-circle';
+        } else if (tipe === 'withdraw_setuju') {
+            judul = 'Withdraw Disetujui';
+            pesan = 'Withdraw ' + (data.jumlahKoin || 0) + ' R2Coin (Rp ' +
+                (parseInt(data.totalRupiah || 0, 10)).toLocaleString('id-ID') +
+                ') telah disetujui.' + (catatan ? ' Catatan: ' + catatan : '');
+            warna = 'success'; ikon = 'fas fa-check-circle';
+        } else if (tipe === 'withdraw_tolak') {
+            judul = 'Withdraw Ditolak';
+            pesan = 'Withdraw ' + (data.jumlahKoin || 0) + ' R2Coin ditolak.' +
+                (catatan ? ' Alasan: ' + catatan : '');
+            warna = 'danger'; ikon = 'fas fa-times-circle';
+        } else {
+            return { sukses: false, pesan: 'Tipe tidak dikenal.' };
+        }
+
+        // Prioritas 1: csNotifTambah (Core System)
+        try {
+            if (typeof window.csNotifTambah === 'function') {
+                return window.csNotifTambah({
+                    idUser: idUser,
+                    judul: judul,
+                    pesan: pesan,
+                    ikon: ikon,
+                    warna: warna,
+                    link: linkAksi
+                });
+            }
+        } catch (e) {}
+
+        // Fallback: coba kirimPesan (chat)
+        try {
+            if (typeof window.kirimPesan === 'function') {
+                var teks = (tipe.indexOf('topup') === 0 ? '💳 ' : '💸 ') + judul.toUpperCase() +
+                    '\n\n' + pesan;
+                return window.kirimPesan(idUser, teks, 'text');
+            }
+        } catch (e) {}
+
+        return { sukses: false, pesan: 'Tidak ada handler notif.' };
+    };
+
+    // ── 6.2 Export CSV ──
+    window.vfcExportCSV = function(tipe) {
+        try {
+            tipe = tipe || 'topup';
+            var data = (tipe === 'topup')
+                ? window.vfcGetAllTopUp()
+                : window.vfcGetAllWithdraw();
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = [];
+            if (tipe === 'topup') {
+                lines.push('No,Tanggal,ID User,Nama,Role,Coin,Rupiah,Metode,Status,VerifiedBy,VerifiedAt,Catatan');
+                data.forEach(function(t, i) {
+                    lines.push([
+                        i + 1,
+                        esc(t.tanggal || t.createdAt || '-'),
+                        esc(t.idUser), esc(t.namaPembeli), esc(t.role),
+                        t.jumlahKoin || 0, t.totalRupiah || 0,
+                        esc(t.metode || '-'), esc(t.status || '-'),
+                        esc(t.verifiedBy || '-'), esc(t.verifiedAt || '-'),
+                        esc((t.catatan || '').substring(0, 100))
+                    ].join(','));
+                });
+            } else {
+                lines.push('No,Tanggal,ID User,Nama,Role,Coin,Total Rp,Diterima,Rekening,Status,VerifiedBy,VerifiedAt,Catatan');
+                data.forEach(function(w, i) {
+                    var rek = w.rekeningTujuan || {};
+                    var rekTeks = (rek.bank || '') + ' ' + (rek.nomor || '') + ' a/n ' + (rek.atasNama || '');
+                    lines.push([
+                        i + 1,
+                        esc(w.tanggal || w.createdAt || '-'),
+                        esc(w.idUser), esc(w.namaPemohon), esc(w.role),
+                        w.jumlahKoin || 0, w.totalRupiah || 0, w.diterima || 0,
+                        esc(rekTeks.trim()), esc(w.status || '-'),
+                        esc(w.verifiedBy || '-'), esc(w.verifiedAt || '-'),
+                        esc((w.catatan || '').substring(0, 100))
+                    ].join(','));
+                });
+            }
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'verifikasi_' + tipe + '_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+
+            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = namaFile;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            return { sukses: true, namaFile: namaFile, total: data.length };
+        } catch (e) {
+            console.error('vfcExportCSV error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 6.3 Export JSON ──
+    window.vfcExportJSON = function() {
+        try {
+            var paket = {
+                versi: VFC_KONSTANTA.VERSI,
+                tipe: 'verifikasi-coin-export',
+                exportedAt: _vfcNow(),
+                topup: window.vfcGetAllTopUp(),
+                withdraw: window.vfcGetAllWithdraw(),
+                statistik: window.vfcGetRingkasan()
+            };
+            return { sukses: true, json: JSON.stringify(paket, null, 2) };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 6.4 Get ringkasan teks (1 baris) ──
+    window.vfcGetRingkasanTeks = function() {
+        try {
+            var r = window.vfcGetRingkasan();
+            return 'VFC: ' + r.totalMenunggu + ' pending | ' +
+                   r.nilaiPending.totalTeks + ' | Hari ini: ' + r.totalDiprosesHariIni;
+        } catch (e) { return 'VFC: -'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — HELPER RENDER UI (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.vfcFormatMetode = function(metode) {
+        var map = {
+            'transfer_bca':     '🏦 Transfer BCA',
+            'transfer_mandiri': '🏦 Transfer Mandiri',
+            'transfer_bri':     '🏦 Transfer BRI',
+            'transfer_bni':     '🏦 Transfer BNI',
+            'transfer_bank':    '🏦 Transfer Bank',
+            'cash':             '💵 Cash / Tunai',
+            'transfer_sa':      '🏦 Transfer ke SA',
+            'ewallet':          '💳 E-Wallet',
+            'dana':             '💳 DANA',
+            'ovo':              '💳 OVO',
+            'gopay':            '💳 GoPay',
+            'shopeepay':        '💳 ShopeePay'
+        };
+        return map[metode] || ('💳 ' + (metode || '-'));
+    };
+
+    window.vfcFormatRekening = function(rek) {
+        if (!rek) return '-';
+        if (typeof rek === 'string') return rek;
+        return (rek.bank || rek.namaBank || '') + ' • ' +
+               (rek.nomor || rek.nomorRekening || '') +
+               ' a/n ' + (rek.atasNama || rek.namaPemilik || '');
+    };
+
+    window.vfcWarnaStatus = function(status) {
+        var map = {
+            'Menunggu':  'warning',
+            'Lunas':     'success',
+            'Disetujui': 'success',
+            'Ditolak':   'danger',
+            'Dibatalkan':'secondary'
+        };
+        return map[status] || 'secondary';
+    };
+
+    window.vfcRenderKartuStatistik = function(idTarget) {
+        try {
+            var el = document.getElementById(idTarget);
+            if (!el) return false;
+
+            var r = window.vfcGetRingkasan();
+
+            el.innerHTML =
+                '<div class="row g-3">' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-hourglass-half fa-2x mb-2 text-warning"></i>' +
+                                '<h4 class="fw-bold mb-0">' + (r.topup.menunggu || 0) + '</h4>' +
+                                '<small class="text-muted">Top-Up Pending</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-hand-holding-usd fa-2x mb-2 text-danger"></i>' +
+                                '<h4 class="fw-bold mb-0">' + (r.withdraw.menunggu || 0) + '</h4>' +
+                                '<small class="text-muted">Withdraw Pending</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-check-circle fa-2x mb-2 text-success"></i>' +
+                                '<h4 class="fw-bold mb-0">' + (r.totalDiprosesHariIni || 0) + '</h4>' +
+                                '<small class="text-muted">Hari Ini</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-coins fa-2x mb-2" style="color:#FFC107;"></i>' +
+                                '<h5 class="fw-bold mb-0">' + r.nilaiPending.totalTeks + '</h5>' +
+                                '<small class="text-muted">Nilai Pending</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            return true;
+        } catch (e) {
+            console.error('vfcRenderKartuStatistik error:', e);
+            return false;
+        }
+    };
+
+    window.vfcRenderAlertPending = function(idTarget) {
+        try {
+            var el = document.getElementById(idTarget);
+            if (!el) return false;
+
+            var r = window.vfcGetRingkasan();
+
+            if (r.totalMenunggu === 0) {
+                el.innerHTML =
+                    '<div class="alert alert-success border-0 shadow-sm d-flex align-items-center mb-0">' +
+                        '<i class="fas fa-check-circle fa-2x me-3"></i>' +
+                        '<div>' +
+                            '<strong>✅ Semua Beres!</strong><br>' +
+                            '<small>Tidak ada pengajuan yang menunggu verifikasi.</small>' +
+                        '</div>' +
+                    '</div>';
+                return true;
+            }
+
+            el.innerHTML =
+                '<div class="alert border-0 shadow-sm d-flex align-items-center mb-0" ' +
+                     'style="background:#FFF3E0;border-left:5px solid #FF8C00 !important;">' +
+                    '<i class="fas fa-bell fa-2x me-3" style="color:#FF8C00;"></i>' +
+                    '<div class="flex-grow-1">' +
+                        '<strong>Ada ' + r.totalMenunggu + ' pengajuan menunggu</strong><br>' +
+                        '<small>Top-Up: <strong>' + r.topup.menunggu + '</strong> • ' +
+                        'Withdraw: <strong>' + r.withdraw.menunggu + '</strong></small>' +
+                    '</div>' +
+                    '<button class="btn btn-warning btn-sm" ' +
+                            'onclick="if(typeof vfcSetTab===\'function\')vfcSetTab(\'topup\')">' +
+                        'Proses →</button>' +
+                '</div>';
+
+            return true;
+        } catch (e) {
+            console.error('vfcRenderAlertPending error:', e);
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — 3 PINTU + ALIAS + DEBUG + REGISTRY
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 📤 PINTU 1: KIRIM ──
+    window.kirimVerifikasiCoin = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser: _vfcIdUser(),
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu: 'verifikasiTopUp',
+                    blok: 'Verifikasi-Coin-Universal'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _vfcNow()
+            });
+        } catch (e) {
+            console.error('[VFC] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 📥 PINTU 2: TERIMA ──
+    window.terimaVerifikasiCoin = function() {
+        try { return window.mnInboxMenu('verifikasiTopUp'); }
+        catch (e) { return []; }
+    };
+
+    // ── 📦 PINTU 3: AMBIL ──
+    window.ambilVerifikasiCoin = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'all';
+        try {
+            if (tipe === 'all-pending')       return window.vfcGetAllPending();
+            if (tipe === 'topup-pending')     return window.vfcGetTopUpPending();
+            if (tipe === 'withdraw-pending')  return window.vfcGetWithdrawPending();
+            if (tipe === 'topup-by-id')       return window.vfcGetTopUpById(filter.id);
+            if (tipe === 'withdraw-by-id')    return window.vfcGetWithdrawById(filter.id);
+            if (tipe === 'cari-topup')        return window.vfcCariTopUp(filter);
+            if (tipe === 'cari-withdraw')     return window.vfcCariWithdraw(filter);
+            if (tipe === 'riwayat-gabungan')  return window.vfcGetRiwayatGabungan(filter);
+            if (tipe === 'statistik')         return window.vfcGetRingkasan();
+            if (tipe === 'statistik-topup')   return window.vfcHitungStatistikTopUp();
+            if (tipe === 'statistik-withdraw')return window.vfcHitungStatistikWithdraw();
+            if (tipe === 'statistik-role')    return window.vfcHitungStatistikPerRole();
+            if (tipe === 'nilai-pending')     return window.vfcHitungNilaiPending();
+            if (tipe === 'all-topup')         return window.vfcGetAllTopUp();
+            if (tipe === 'all-withdraw')      return window.vfcGetAllWithdraw();
+        } catch (e) {
+            console.error('[VFC] ambil error:', e);
+        }
+        return null;
+    };
+
+    // ── BACKWARD COMPAT ALIAS (~18) ──
+    try {
+        if (typeof window.loadTopUpHistoryGlobal !== 'function') {
+            window.loadTopUpHistoryGlobal = function() {
+                return window.vfcGetAllTopUp();
+            };
+        }
+        if (typeof window.loadWithdrawalRequestsGlobal !== 'function') {
+            window.loadWithdrawalRequestsGlobal = function() {
+                return window.vfcGetAllWithdraw();
+            };
+        }
+        if (typeof window.getTopUpByIdGlobal !== 'function') {
+            window.getTopUpByIdGlobal = window.vfcGetTopUpById;
+        }
+        if (typeof window.getWithdrawByIdGlobal !== 'function') {
+            window.getWithdrawByIdGlobal = window.vfcGetWithdrawById;
+        }
+        if (typeof window.getTopUpByStatusGlobal !== 'function') {
+            window.getTopUpByStatusGlobal = function(status) {
+                return window.dompetLoadTopUpHistory({ status: status });
+            };
+        }
+        if (typeof window.getWithdrawByStatusGlobal !== 'function') {
+            window.getWithdrawByStatusGlobal = function(status) {
+                return window.dompetLoadWithdrawHistory({ status: status });
+            };
+        }
+        if (typeof window.cariTopUpByFilter !== 'function') {
+            window.cariTopUpByFilter = window.vfcCariTopUp;
+        }
+        if (typeof window.cariWithdrawByFilter !== 'function') {
+            window.cariWithdrawByFilter = window.vfcCariWithdraw;
+        }
+        if (typeof window.hitungStatistikVerifikasiTopUp !== 'function') {
+            window.hitungStatistikVerifikasiTopUp = window.vfcHitungStatistikTopUp;
+        }
+        if (typeof window.hitungStatistikVerifikasiWithdraw !== 'function') {
+            window.hitungStatistikVerifikasiWithdraw = window.vfcHitungStatistikWithdraw;
+        }
+        if (typeof window.hitungStatistikVerifikasiCoinPerRole !== 'function') {
+            window.hitungStatistikVerifikasiCoinPerRole = window.vfcHitungStatistikPerRole;
+        }
+        if (typeof window.prosesSetujuiTopUpGlobal !== 'function') {
+            window.prosesSetujuiTopUpGlobal = function(id, catatan) {
+                return window.vfcSetujuiTopUp(id, catatan);
+            };
+        }
+        if (typeof window.prosesTolakTopUpGlobal !== 'function') {
+            window.prosesTolakTopUpGlobal = window.vfcTolakTopUp;
+        }
+        if (typeof window.prosesSetujuiWithdrawGlobal !== 'function') {
+            window.prosesSetujuiWithdrawGlobal = function(id, catatan) {
+                return window.vfcSetujuiWithdraw(id, catatan);
+            };
+        }
+        if (typeof window.prosesTolakWithdrawGlobal !== 'function') {
+            window.prosesTolakWithdrawGlobal = window.vfcTolakWithdraw;
+        }
+        if (typeof window.exportVerifikasiCoinCSVGlobal !== 'function') {
+            window.exportVerifikasiCoinCSVGlobal = window.vfcExportCSV;
+        }
+        if (typeof window.getRingkasanVerifikasiCoinGlobal !== 'function') {
+            window.getRingkasanVerifikasiCoinGlobal = window.vfcGetRingkasan;
+        }
+        if (typeof window.formatMetodeTopUp !== 'function') {
+            window.formatMetodeTopUp = window.vfcFormatMetode;
+        }
+        if (typeof window.formatRekeningTujuan !== 'function') {
+            window.formatRekeningTujuan = window.vfcFormatRekening;
+        }
+        if (typeof window.getWarnaStatusCoin !== 'function') {
+            window.getWarnaStatusCoin = window.vfcWarnaStatus;
+        }
+        if (typeof window.kirimNotifVerifikasiCoinKeUser !== 'function') {
+            window.kirimNotifVerifikasiCoinKeUser = window.vfcKirimNotifKeUser;
+        }
+    } catch (e) {
+        console.warn('Verifikasi-Coin-Universal: Gagal pasang alias:', e.message);
+    }
+
+    // ── DEBUG (A5) ──
+    window.debugVerifikasiCoin = function() {
+        var s = window.vfcKirimNotifKeUser
+            ? window.vfcKirimNotifKeUser.toString() : '';
+        var pakaiTK = s.indexOf('tampilkanDompetR2CoinTK') !== -1;
+        var pakaiToko = s.indexOf('tampilkanDompetR2CoinToko') !== -1;
+
+        return {
+            versi: VFC_KONSTANTA.VERSI,
+            guard: window._blokVerifikasiCoinDone,
+            modul3_Query: {
+                getTopUpById:       typeof window.vfcGetTopUpById,
+                getWithdrawById:    typeof window.vfcGetWithdrawById,
+                cariTopUp:          typeof window.vfcCariTopUp,
+                cariWithdraw:       typeof window.vfcCariWithdraw,
+                getTopUpPending:    typeof window.vfcGetTopUpPending,
+                getWithdrawPending: typeof window.vfcGetWithdrawPending,
+                getAllPending:      typeof window.vfcGetAllPending,
+                getRiwayatGabungan: typeof window.vfcGetRiwayatGabungan
+            },
+            modul4_Aksi: {
+                setujuiTopUp:     typeof window.vfcSetujuiTopUp,
+                tolakTopUp:       typeof window.vfcTolakTopUp,
+                setujuiWithdraw:  typeof window.vfcSetujuiWithdraw,
+                tolakWithdraw:    typeof window.vfcTolakWithdraw
+            },
+            modul5_Statistik: {
+                statistikTopUp:    typeof window.vfcHitungStatistikTopUp,
+                statistikWithdraw: typeof window.vfcHitungStatistikWithdraw,
+                statistikPerRole:  typeof window.vfcHitungStatistikPerRole,
+                nilaiPending:      typeof window.vfcHitungNilaiPending,
+                diprosesHariIni:   typeof window.vfcHitungDiprosesHariIni,
+                ringkasan:         typeof window.vfcGetRingkasan
+            },
+            modul6_NotifExport: {
+                kirimNotifKeUser: typeof window.vfcKirimNotifKeUser,
+                exportCSV:        typeof window.vfcExportCSV,
+                exportJSON:       typeof window.vfcExportJSON,
+                ringkasanTeks:    typeof window.vfcGetRingkasanTeks
+            },
+            modul7_RenderHelper: {
+                formatMetode:        typeof window.vfcFormatMetode,
+                formatRekening:      typeof window.vfcFormatRekening,
+                warnaStatus:         typeof window.vfcWarnaStatus,
+                renderKartuStatistik: typeof window.vfcRenderKartuStatistik,
+                renderAlertPending:  typeof window.vfcRenderAlertPending
+            },
+            modul8_Pintu: {
+                kirim:  typeof window.kirimVerifikasiCoin,
+                terima: typeof window.terimaVerifikasiCoin,
+                ambil:  typeof window.ambilVerifikasiCoin
+            },
+            delegasiKeDompetUniversal: {
+                topUpApprove:      typeof window.dompetTopUpApprove,
+                topUpReject:       typeof window.dompetTopUpReject,
+                withdrawApprove:   typeof window.dompetWithdrawApprove,
+                withdrawReject:    typeof window.dompetWithdrawReject
+            },
+            revisi_v1_1: {
+                linkNotifPakaiTK: pakaiTK,
+                linkNotifPakaiTokoLama: pakaiToko,
+                status: pakaiTK && !pakaiToko ? '✅ BENAR' : '⚠️ PERLU DIPERIKSA'
+            },
+            ringkasan: window.vfcGetRingkasanTeks()
+        };
+    };
+
+    // ── AUTO-REGISTRY (A33, A34, A35) ──
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Verifikasi-Coin-Universal';
+                });
+                if (!sudahAda) {
+                    window.cpTambahBlok({
+                        kode: 'Verifikasi-Coin-Universal',
+                        nama: 'Fungsi Global Verifikasi TopUp & Withdraw',
+                        layer: 'L4',
+                        status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('vfc', {
+                    nama: 'Fungsi Global Verifikasi Coin',
+                    status: 'Selesai',
+                    jumlah: 30
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Verifikasi-Coin-Universal',
+                    nama: 'Fungsi Global Verifikasi TopUp & Withdraw (v1.1)',
+                    keterangan: '30 fungsi + 3 pintu + delegasi Dompet-Universal + fix link notif TK'
+                });
+            }
+        } catch (e) {
+            console.warn('Verifikasi-Coin-Universal: Gagal update catatan 0.1:', e.message);
+        }
+    }, 1000);
+
+    // ── LOG TERPASANG ──
+    console.log('%c✅ BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW (v1.1) terpasang.',
+        'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 8 Modul, ~32 fungsi:');
+    console.log('   1.  Konstanta & Config (VERSI 1.1)');
+    console.log('   2.  Helper Internal (via CS2)');
+    console.log('   3.  Read/Query (8)');
+    console.log('   4.  Aksi (4) — 100% delegasi ke Dompet-Universal ⭐');
+    console.log('   5.  Statistik & Analitik (5)');
+    console.log('   6.  Notifikasi & Export (4) — ⭐ fix link TK');
+    console.log('   7.  Helper Render UI (5)');
+    console.log('   8.  3 Pintu + Alias + Debug + Registry');
+    console.log('');
+    console.log('   ⭐ Revisi v1.1:');
+    console.log('   • vfcKirimNotifKeUser: link "tampilkanDompetR2CoinToko"');
+    console.log('     → "tampilkanDompetR2CoinTK" (cocok menuConfig)');
+    console.log('');
+    console.log('   🚪 3 Pintu: kirimVerifikasiCoin, terimaVerifikasiCoin, ambilVerifikasiCoin');
+    console.log('   🔗 Delegasi: dompetTopUpApprove, dompetTopUpReject,');
+    console.log('                dompetWithdrawApprove, dompetWithdrawReject');
+    console.log('   🔄 Backward compat: ~18 alias');
+    console.log('   🎯 Pemakai: 10.47 (UI SA) + 12 blok role');
+    console.log('   🔍 Debug: debugVerifikasiCoin()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW ═ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
