@@ -15492,6 +15492,593 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 </script>
 <!-- ═══ AKHIR BLOK STOK OPNAME ═══ -->
 
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL BLACKLIST UNIVERSAL ═════════════════ -->
+<!-- ═══ Layer: L4 | Prefix: blacklist* | Guard: _blokBlacklistDone ═ -->
+<!-- ═══ Dependency: CS + GID | Isi: 4 Modul, 12 fungsi ════════ -->
+<!-- ═══ Pemakai: 11.5, 11.6, TK-Offline, semua modul transaksi ═ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_BLACKLIST_UNIVERSAL() {
+    if (window._blokBlacklistDone) { console.log('ℹ️ Blacklist sudah ada.'); return; }
+    if (!window._coreSystem8Done || !window._blokGIDDone) {
+        console.warn('⚠️ Blacklist ditunda — CS/GID belum ada.');
+        return;
+    }
+    window._blokBlacklistDone = true;
+
+    window.BLACKLIST_KONSTANTA = window.BLACKLIST_KONSTANTA || {
+        VERSI: '1.0',
+        KEY_REGISTRY: 'r2coin_blacklist_registry',
+        ALASAN_VALID: ['kasbon_macet', 'spam', 'penipuan', 'kasar', 'lainnya'],
+        MAX_ITEMS: 5000
+    };
+
+    // ═══ HELPER ═══
+    function _blLoad() {
+        if (typeof csLoadJSON === 'function') {
+            var v = csLoadJSON(window.BLACKLIST_KONSTANTA.KEY_REGISTRY, { items: [] });
+            if (!v || typeof v !== 'object') return { items: [] };
+            if (!Array.isArray(v.items)) v.items = [];
+            return v;
+        }
+        try {
+            var s = localStorage.getItem(window.BLACKLIST_KONSTANTA.KEY_REGISTRY);
+            var p = s ? JSON.parse(s) : { items: [] };
+            if (!Array.isArray(p.items)) p.items = [];
+            return p;
+        } catch (e) { return { items: [] }; }
+    }
+    function _blSave(data) {
+        if (!data || typeof data !== 'object') data = { items: [] };
+        if (!Array.isArray(data.items)) data.items = [];
+        if (data.items.length > window.BLACKLIST_KONSTANTA.MAX_ITEMS) {
+            data.items = data.items.slice(-window.BLACKLIST_KONSTANTA.MAX_ITEMS);
+        }
+        data.updatedAt = (typeof csNow === 'function') ? csNow() : new Date().toISOString();
+        if (typeof csSaveJSON === 'function') return csSaveJSON(window.BLACKLIST_KONSTANTA.KEY_REGISTRY, data, { backup:false });
+        try { localStorage.setItem(window.BLACKLIST_KONSTANTA.KEY_REGISTRY, JSON.stringify(data)); return { sukses:true }; }
+        catch (e) { return { sukses:false, pesan:e.message }; }
+    }
+    function _blNow() { return (typeof csNow === 'function') ? csNow() : new Date().toISOString(); }
+    function _blIdUser() { try { return gidIdUser ? gidIdUser() : null; } catch(e){return null;} }
+    function _blIdOwner() { try { return gidIdOwner ? gidIdOwner() : _blIdUser(); } catch(e){return null;} }
+    function _blGenId() {
+        try { return generateKodeUnik ? generateKodeUnik('BLK') : 'BLK-'+Date.now(); }
+        catch(e){ return 'BLK-'+Date.now(); }
+    }
+
+    // ═══ MODUL 1: CRUD (4 fungsi) ═══
+    window.blacklistTambah = function(opts) {
+        opts = opts || {};
+        try {
+            if (!opts.idPelanggan) return { sukses:false, pesan:'idPelanggan wajib' };
+            var alasan = opts.alasan || 'lainnya';
+            if (window.BLACKLIST_KONSTANTA.ALASAN_VALID.indexOf(alasan) === -1) alasan = 'lainnya';
+
+            var data = _blLoad();
+            // Cek duplikat
+            var dup = data.items.find(function(x){
+                return x && x.idPelanggan === opts.idPelanggan &&
+                       x.idOwner === (opts.idOwner || _blIdOwner());
+            });
+            if (dup) return { sukses:false, pesan:'Pelanggan sudah di-blacklist', existing:dup };
+
+            var entry = {
+                id: _blGenId(),
+                idPelanggan: opts.idPelanggan,
+                namaPelanggan: opts.namaPelanggan || '-',
+                hpPelanggan: opts.hpPelanggan || '-',
+                idOwner: opts.idOwner || _blIdOwner(),
+                idUser: _blIdUser(),
+                alasan: alasan,
+                catatan: opts.catatan || '',
+                bukti: opts.bukti || null,
+                createdAt: _blNow()
+            };
+            data.items.push(entry);
+            var simpan = _blSave(data);
+            if (!simpan.sukses) return simpan;
+
+            try { window.dispatchEvent(new CustomEvent('r2coin:blacklist-ditambah', { detail:entry })); } catch (e) {}
+            return { sukses:true, entry:entry };
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    window.blacklistGetById = function(id) {
+        try {
+            if (!id) return null;
+            var data = _blLoad();
+            for (var i=0; i<data.items.length; i++) if (data.items[i].id === id) return data.items[i];
+            return null;
+        } catch (e) { return null; }
+    };
+
+    window.blacklistUpdate = function(id, updates) {
+        try {
+            if (!id || !updates) return { sukses:false };
+            var data = _blLoad();
+            var idx = data.items.findIndex(function(x){ return x && x.id === id; });
+            if (idx === -1) return { sukses:false, pesan:'Tidak ditemukan' };
+
+            var allowed = ['alasan','catatan','bukti','namaPelanggan','hpPelanggan'];
+            allowed.forEach(function(k){
+                if (updates[k] !== undefined) data.items[idx][k] = updates[k];
+            });
+            data.items[idx].updatedAt = _blNow();
+            data.items[idx].updatedBy = _blIdUser();
+            return _blSave(data);
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    window.blacklistHapus = function(id) {
+        try {
+            if (!id) return { sukses:false };
+            var data = _blLoad();
+            var item = data.items.find(function(x){ return x && x.id === id; });
+            if (!item) return { sukses:false, pesan:'Tidak ditemukan' };
+
+            data.items = data.items.filter(function(x){ return x && x.id !== id; });
+            var simpan = _blSave(data);
+            if (simpan.sukses) {
+                try { window.dispatchEvent(new CustomEvent('r2coin:blacklist-dihapus', { detail:item })); } catch (e) {}
+            }
+            return simpan;
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    // ═══ MODUL 2: QUERY (4 fungsi) ═══
+    window.blacklistGetAll = function(filter) {
+        filter = filter || {};
+        try {
+            var data = _blLoad();
+            var list = data.items.slice();
+            if (filter.idOwner) list = list.filter(function(x){ return x && x.idOwner === filter.idOwner; });
+            if (filter.alasan) list = list.filter(function(x){ return x && x.alasan === filter.alasan; });
+            if (filter.idPelanggan) list = list.filter(function(x){ return x && x.idPelanggan === filter.idPelanggan; });
+            list.sort(function(a,b){ return new Date(b.createdAt||0) - new Date(a.createdAt||0); });
+            return list;
+        } catch (e) { return []; }
+    };
+
+    window.blacklistGetByOwner = function(idOwner) {
+        return window.blacklistGetAll({ idOwner: idOwner || _blIdOwner() });
+    };
+
+    window.blacklistGetByPelanggan = function(idPelanggan) {
+        return window.blacklistGetAll({ idPelanggan: idPelanggan });
+    };
+
+    window.blacklistCari = function(filter) {
+        filter = filter || {};
+        try {
+            var list = window.blacklistGetAll(filter);
+            if (filter.cari) {
+                var c = filter.cari.toLowerCase();
+                list = list.filter(function(x){
+                    var s = ((x.namaPelanggan||'')+' '+(x.hpPelanggan||'')+' '+(x.idPelanggan||'')+' '+(x.catatan||'')).toLowerCase();
+                    return s.indexOf(c) !== -1;
+                });
+            }
+            var lim = parseInt(filter.limit,10) || 0;
+            if (lim) list = list.slice(0, lim);
+            return list;
+        } catch (e) { return []; }
+    };
+
+    // ═══ MODUL 3: CEK (2 fungsi) ═══
+    window.blacklistCek = function(idPelanggan, idOwner) {
+        try {
+            if (!idPelanggan) return { blacklist:false };
+            var list = window.blacklistGetByPelanggan(idPelanggan);
+            if (idOwner) list = list.filter(function(x){ return x && x.idOwner === idOwner; });
+            if (list.length === 0) return { blacklist:false };
+            return {
+                blacklist: true,
+                jumlah: list.length,
+                entry: list[0],
+                alasan: list[0].alasan,
+                catatan: list[0].catatan
+            };
+        } catch (e) { return { blacklist:false }; }
+    };
+
+    window.blacklistCekMulti = function(arrayId) {
+        try {
+            if (!Array.isArray(arrayId)) return {};
+            var hasil = {};
+            arrayId.forEach(function(id){
+                hasil[id] = window.blacklistCek(id);
+            });
+            return hasil;
+        } catch (e) { return {}; }
+    };
+
+    // ═══ MODUL 4: INFO (2 fungsi) ═══
+    window.blacklistStatistik = function(idOwner) {
+        try {
+            var list = window.blacklistGetAll(idOwner ? { idOwner:idOwner } : {});
+            var perAlasan = {};
+            list.forEach(function(x){
+                var a = x.alasan || 'lainnya';
+                perAlasan[a] = (perAlasan[a] || 0) + 1;
+            });
+            return { total: list.length, perAlasan: perAlasan };
+        } catch (e) { return { total:0, perAlasan:{} }; }
+    };
+
+    window.blacklistCekSemua = function() {
+        try {
+            return window.blacklistGetAll({});
+        } catch (e) { return []; }
+    };
+
+    // ═══ 3 PINTU ═══
+    window.kirimBlacklist = function(tipe, ke, data, idRef) {
+        try {
+            return mnKirimKeMenu({
+                tipe: tipe,
+                dari: { idUser:_blIdUser(), idOwner:_blIdOwner(),
+                    role: gidKodeRoleUser ? gidKodeRoleUser() : null,
+                    menu:'blacklist', blok:'Blacklist-Universal' },
+                ke: ke, data:data||{}, idRef:idRef||null, timestamp:_blNow()
+            });
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+    window.terimaBlacklist = function() { try { return mnInboxMenu('blacklist'); } catch (e) { return []; } };
+    window.ambilBlacklist = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'all';
+        try {
+            if (tipe === 'all') return window.blacklistGetAll(filter);
+            if (tipe === 'by-id') return window.blacklistGetById(filter.id);
+            if (tipe === 'by-owner') return window.blacklistGetByOwner(filter.idOwner);
+            if (tipe === 'by-pelanggan') return window.blacklistGetByPelanggan(filter.idPelanggan);
+            if (tipe === 'cari') return window.blacklistCari(filter);
+            if (tipe === 'cek') return window.blacklistCek(filter.idPelanggan, filter.idOwner);
+            if (tipe === 'statistik') return window.blacklistStatistik(filter.idOwner);
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══ DEBUG ═══
+    window.debugBlacklist = function() {
+        var info = {
+            versi: window.BLACKLIST_KONSTANTA.VERSI, guard: window._blokBlacklistDone,
+            alasanValid: window.BLACKLIST_KONSTANTA.ALASAN_VALID,
+            modul1_CRUD: {
+                tambah:typeof window.blacklistTambah, getById:typeof window.blacklistGetById,
+                update:typeof window.blacklistUpdate, hapus:typeof window.blacklistHapus
+            },
+            modul2_Query: {
+                getAll:typeof window.blacklistGetAll, byOwner:typeof window.blacklistGetByOwner,
+                byPelanggan:typeof window.blacklistGetByPelanggan, cari:typeof window.blacklistCari
+            },
+            modul3_Cek: { cek:typeof window.blacklistCek, cekMulti:typeof window.blacklistCekMulti },
+            modul4_Info: { statistik:typeof window.blacklistStatistik, cekSemua:typeof window.blacklistCekSemua },
+            pintu: { kirim:typeof window.kirimBlacklist, terima:typeof window.terimaBlacklist, ambil:typeof window.ambilBlacklist },
+            statistik: window.blacklistStatistik()
+        };
+        console.log('🔍 debugBlacklist:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (cpTambahBlok) cpTambahBlok({ kode:'Blacklist-Universal', nama:'Fungsi Global Blacklist Pelanggan', layer:'L4', status:'Selesai' });
+            if (cpUpdateFungsi) cpUpdateFungsi('blacklist', { nama:'Blacklist', status:'Selesai', jumlah:12 });
+            if (cpTambahRiwayat) cpTambahRiwayat({ blok:'Blacklist-Universal', nama:'Blacklist Universal', keterangan:'12 fungsi + 4 modul + 3 pintu' });
+        } catch (e) {}
+    }, 800);
+
+    console.log('%c✅ BLACKLIST UNIVERSAL terpasang (12 fungsi).', 'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK BLACKLIST ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL PENGECUALIAN UNIVERSAL ══════════════ -->
+<!-- ═══ Layer: L4 | Prefix: pengecualian* | Guard: _blokPengecualianDone -->
+<!-- ═══ Dependency: CS + GID + Ekonomi-Universal ══════════════ -->
+<!-- ═══ Isi: 4 Modul, 12 fungsi ═══════════════════════════════ -->
+<!-- ═══ Pemakai: 10.105, 11.5, 11.6, semua modul transaksi ════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_PENGECUALIAN_UNIVERSAL() {
+    if (window._blokPengecualianDone) { console.log('ℹ️ Pengecualian sudah ada.'); return; }
+    if (!window._coreSystem8Done || !window._blokGIDDone) {
+        console.warn('⚠️ Pengecualian ditunda — CS/GID belum ada.');
+        return;
+    }
+    window._blokPengecualianDone = true;
+
+    window.PENGECUALIAN_KONSTANTA = window.PENGECUALIAN_KONSTANTA || {
+        VERSI: '1.0',
+        KEY_REGISTRY: 'r2coin_pengecualian_registry',
+        TIPE_VALID: ['owner', 'role', 'pelanggan', 'kategori'],
+        MAX_ITEMS: 2000
+    };
+
+    // ═══ HELPER ═══
+    function _pnLoad() {
+        if (typeof csLoadJSON === 'function') {
+            var v = csLoadJSON(window.PENGECUALIAN_KONSTANTA.KEY_REGISTRY, { items: [] });
+            if (!v || typeof v !== 'object') return { items: [] };
+            if (!Array.isArray(v.items)) v.items = [];
+            return v;
+        }
+        try {
+            var s = localStorage.getItem(window.PENGECUALIAN_KONSTANTA.KEY_REGISTRY);
+            var p = s ? JSON.parse(s) : { items: [] };
+            if (!Array.isArray(p.items)) p.items = [];
+            return p;
+        } catch (e) { return { items: [] }; }
+    }
+    function _pnSave(data) {
+        if (!data || typeof data !== 'object') data = { items: [] };
+        if (!Array.isArray(data.items)) data.items = [];
+        if (data.items.length > window.PENGECUALIAN_KONSTANTA.MAX_ITEMS) {
+            data.items = data.items.slice(-window.PENGECUALIAN_KONSTANTA.MAX_ITEMS);
+        }
+        data.updatedAt = (typeof csNow === 'function') ? csNow() : new Date().toISOString();
+        if (typeof csSaveJSON === 'function') return csSaveJSON(window.PENGECUALIAN_KONSTANTA.KEY_REGISTRY, data, { backup:false });
+        try { localStorage.setItem(window.PENGECUALIAN_KONSTANTA.KEY_REGISTRY, JSON.stringify(data)); return { sukses:true }; }
+        catch (e) { return { sukses:false, pesan:e.message }; }
+    }
+    function _pnNow() { return (typeof csNow === 'function') ? csNow() : new Date().toISOString(); }
+    function _pnIdUser() { try { return gidIdUser ? gidIdUser() : null; } catch(e){return null;} }
+    function _pnGenId() {
+        try { return generateKodeUnik ? generateKodeUnik('PEN') : 'PEN-'+Date.now(); }
+        catch(e){ return 'PEN-'+Date.now(); }
+    }
+
+    // ═══ MODUL 1: CRUD (4 fungsi) ═══
+    window.pengecualianTambah = function(opts) {
+        opts = opts || {};
+        try {
+            var tipe = opts.tipe || 'owner';
+            if (window.PENGECUALIAN_KONSTANTA.TIPE_VALID.indexOf(tipe) === -1) {
+                return { sukses:false, pesan:'Tipe tidak valid' };
+            }
+
+            var target = opts.target || null;
+            if (!target) return { sukses:false, pesan:'Target wajib (owner/role/pelanggan/kategori)' };
+
+            var data = _pnLoad();
+            var dup = data.items.find(function(x){
+                return x && x.tipe === tipe && x.target === target;
+            });
+            if (dup) return { sukses:false, pesan:'Pengecualian sudah ada', existing:dup };
+
+            var entry = {
+                id: _pnGenId(),
+                tipe: tipe,
+                target: target,
+                nama: opts.nama || target,
+                batasMinimal: parseFloat(opts.batasMinimal) || 0,
+                berlakuSampai: opts.berlakuSampai || null,
+                catatan: opts.catatan || '',
+                status: 'aktif',
+                createdAt: _pnNow(),
+                createdBy: _pnIdUser()
+            };
+            data.items.push(entry);
+            var simpan = _pnSave(data);
+            if (!simpan.sukses) return simpan;
+            try { window.dispatchEvent(new CustomEvent('r2coin:pengecualian-ditambah', { detail:entry })); } catch (e) {}
+            return { sukses:true, entry:entry };
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    window.pengecualianGetById = function(id) {
+        try {
+            if (!id) return null;
+            var data = _pnLoad();
+            for (var i=0; i<data.items.length; i++) if (data.items[i].id === id) return data.items[i];
+            return null;
+        } catch (e) { return null; }
+    };
+
+    window.pengecualianUpdate = function(id, updates) {
+        try {
+            if (!id || !updates) return { sukses:false };
+            var data = _pnLoad();
+            var idx = data.items.findIndex(function(x){ return x && x.id === id; });
+            if (idx === -1) return { sukses:false, pesan:'Tidak ditemukan' };
+            var allowed = ['nama','batasMinimal','berlakuSampai','catatan','status'];
+            allowed.forEach(function(k){
+                if (updates[k] !== undefined) data.items[idx][k] = updates[k];
+            });
+            data.items[idx].updatedAt = _pnNow();
+            data.items[idx].updatedBy = _pnIdUser();
+            return _pnSave(data);
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    window.pengecualianHapus = function(id) {
+        try {
+            if (!id) return { sukses:false };
+            var data = _pnLoad();
+            var item = data.items.find(function(x){ return x && x.id === id; });
+            if (!item) return { sukses:false, pesan:'Tidak ditemukan' };
+            data.items = data.items.filter(function(x){ return x && x.id !== id; });
+            var simpan = _pnSave(data);
+            if (simpan.sukses) {
+                try { window.dispatchEvent(new CustomEvent('r2coin:pengecualian-dihapus', { detail:item })); } catch (e) {}
+            }
+            return simpan;
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    // ═══ MODUL 2: QUERY (2 fungsi) ═══
+    window.pengecualianGetAll = function(filter) {
+        filter = filter || {};
+        try {
+            var data = _pnLoad();
+            var list = data.items.slice();
+            if (filter.tipe) list = list.filter(function(x){ return x && x.tipe === filter.tipe; });
+            if (filter.status) list = list.filter(function(x){ return x && x.status === filter.status; });
+            list.sort(function(a,b){ return new Date(b.createdAt||0) - new Date(a.createdAt||0); });
+            return list;
+        } catch (e) { return []; }
+    };
+
+    window.pengecualianGetAktif = function() {
+        try {
+            var list = window.pengecualianGetAll({ status: 'aktif' });
+            var now = Date.now();
+            return list.filter(function(x){
+                if (!x.berlakuSampai) return true;
+                var t = new Date(x.berlakuSampai).getTime();
+                return isNaN(t) || t > now;
+            });
+        } catch (e) { return []; }
+    };
+
+    // ═══ MODUL 3: CEK (2 fungsi) ═══
+    window.pengecualianCek = function(idOwner, totalBelanja, role, idPelanggan) {
+        try {
+            var list = window.pengecualianGetAktif();
+            // Cek target dengan prioritas: pelanggan > owner > role > kategori
+            var prioritas = ['pelanggan', 'owner', 'role', 'kategori'];
+            var target = null;
+
+            for (var i=0; i<prioritas.length; i++) {
+                var tipe = prioritas[i];
+                var val = null;
+                if (tipe === 'owner') val = idOwner;
+                else if (tipe === 'role') val = role;
+                else if (tipe === 'pelanggan') val = idPelanggan;
+                if (!val) continue;
+
+                var found = list.find(function(x){ return x.tipe === tipe && x.target === val; });
+                if (found) { target = found; break; }
+            }
+
+            if (!target) return { dikecualikan:false, reason:'Tidak ada pengecualian' };
+
+            var batas = parseFloat(target.batasMinimal) || 0;
+            if (batas <= 0) return {
+                dikecualikan: true, entry:target,
+                reason: 'Dikecualikan total oleh ' + target.tipe + ':' + target.nama
+            };
+            if (parseFloat(totalBelanja) >= batas) {
+                return { dikecualikan:true, entry:target, reason:'Total ≥ batas (' + batas + ')' };
+            }
+            return {
+                dikecualikan: false,
+                entry: target,
+                reason: 'Total < batas (' + batas + ')'
+            };
+        } catch (e) { return { dikecualikan:false, reason:e.message }; }
+    };
+
+    window.pengecualianCekByRole = function(role, totalBelanja) {
+        try {
+            var list = window.pengecualianGetAktif().filter(function(x){ return x.tipe === 'role'; });
+            var found = list.find(function(x){ return x.target === role; });
+            if (!found) return { dikecualikan:false };
+            var batas = parseFloat(found.batasMinimal) || 0;
+            if (batas <= 0) return { dikecualikan:true, entry:found };
+            return { dikecualikan: parseFloat(totalBelanja) >= batas, entry:found };
+        } catch (e) { return { dikecualikan:false }; }
+    };
+
+    // ═══ MODUL 4: INFO (2 fungsi) ═══
+    window.pengecualianStatistik = function() {
+        try {
+            var list = window.pengecualianGetAll({});
+            var perTipe = {}, aktif = 0, kadaluarsa = 0;
+            var now = Date.now();
+            list.forEach(function(x){
+                if (!x) return;
+                perTipe[x.tipe] = (perTipe[x.tipe] || 0) + 1;
+                if (x.status !== 'aktif') return;
+                if (x.berlakuSampai) {
+                    var t = new Date(x.berlakuSampai).getTime();
+                    if (!isNaN(t) && t <= now) { kadaluarsa++; return; }
+                }
+                aktif++;
+            });
+            return { total: list.length, aktif: aktif, kadaluarsa: kadaluarsa, perTipe: perTipe };
+        } catch (e) { return { total:0, aktif:0, kadaluarsa:0, perTipe:{} }; }
+    };
+
+    window.pengecualianBersihkanKadaluarsa = function() {
+        try {
+            var data = _pnLoad();
+            var now = Date.now();
+            var before = data.items.length;
+            data.items = data.items.filter(function(x){
+                if (!x || !x.berlakuSampai) return true;
+                var t = new Date(x.berlakuSampai).getTime();
+                return isNaN(t) || t > now;
+            });
+            var dihapus = before - data.items.length;
+            if (dihapus > 0) _pnSave(data);
+            return { sukses:true, dihapus:dihapus };
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+
+    // ═══ 3 PINTU ═══
+    window.kirimPengecualian = function(tipe, ke, data, idRef) {
+        try {
+            return mnKirimKeMenu({
+                tipe: tipe,
+                dari: { idUser:_pnIdUser(), idOwner: gidIdOwner ? gidIdOwner() : null,
+                    role: gidKodeRoleUser ? gidKodeRoleUser() : null,
+                    menu:'pengecualian', blok:'Pengecualian-Universal' },
+                ke: ke, data:data||{}, idRef:idRef||null, timestamp:_pnNow()
+            });
+        } catch (e) { return { sukses:false, pesan:e.message }; }
+    };
+    window.terimaPengecualian = function() { try { return mnInboxMenu('pengecualian'); } catch (e) { return []; } };
+    window.ambilPengecualian = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'all';
+        try {
+            if (tipe === 'all') return window.pengecualianGetAll(filter);
+            if (tipe === 'aktif') return window.pengecualianGetAktif();
+            if (tipe === 'by-id') return window.pengecualianGetById(filter.id);
+            if (tipe === 'cek') return window.pengecualianCek(filter.idOwner, filter.total, filter.role, filter.idPelanggan);
+            if (tipe === 'statistik') return window.pengecualianStatistik();
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══ DEBUG ═══
+    window.debugPengecualian = function() {
+        var info = {
+            versi: window.PENGECUALIAN_KONSTANTA.VERSI, guard: window._blokPengecualianDone,
+            tipeValid: window.PENGECUALIAN_KONSTANTA.TIPE_VALID,
+            modul1_CRUD: {
+                tambah:typeof window.pengecualianTambah, getById:typeof window.pengecualianGetById,
+                update:typeof window.pengecualianUpdate, hapus:typeof window.pengecualianHapus
+            },
+            modul2_Query: { getAll:typeof window.pengecualianGetAll, getAktif:typeof window.pengecualianGetAktif },
+            modul3_Cek: { cek:typeof window.pengecualianCek, cekByRole:typeof window.pengecualianCekByRole },
+            modul4_Info: { statistik:typeof window.pengecualianStatistik, bersihkanKadaluarsa:typeof window.pengecualianBersihkanKadaluarsa },
+            pintu: { kirim:typeof window.kirimPengecualian, terima:typeof window.terimaPengecualian, ambil:typeof window.ambilPengecualian },
+            statistik: window.pengecualianStatistik()
+        };
+        console.log('🔍 debugPengecualian:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (cpTambahBlok) cpTambahBlok({ kode:'Pengecualian-Universal', nama:'Fungsi Global Pengecualian Minimal Belanja', layer:'L4', status:'Selesai' });
+            if (cpUpdateFungsi) cpUpdateFungsi('pengecualian', { nama:'Pengecualian', status:'Selesai', jumlah:12 });
+            if (cpTambahRiwayat) cpTambahRiwayat({ blok:'Pengecualian-Universal', nama:'Pengecualian Universal', keterangan:'12 fungsi + 4 modul + 3 pintu' });
+        } catch (e) {}
+    }, 800);
+
+    console.log('%c✅ PENGECUALIAN UNIVERSAL terpasang (12 fungsi).', 'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK PENGECUALIAN ═══ -->
+
+
 
 
 <!-- ═══ AKHIR BLOK MP-PUBLIC — FOUNDATION ═════════════════ -->
