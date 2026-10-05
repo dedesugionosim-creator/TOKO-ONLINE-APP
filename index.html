@@ -15532,6 +15532,1032 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL MANAJEMEN REKENING ══════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Dependency: CS1–CS14 + GID + MN + Dompet-Universal ════ -->
+<!-- ═══ Prefix: rekening* ══════════════════════════════════════ -->
+<!-- ═══ Guard: _blokRekeningUniversalDone ═════════════════════ -->
+<!-- ═══ Pemakai: 10.41 (SA) + 10.46 (Dompet SA) ══════════════ -->
+<!-- ═══          10.47 (Verifikasi TopUp) + 12 blok role ══════ -->
+<!-- ═══ Isi: 8 Modul, ~35 fungsi inti + ~14 alias ═════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A21, A23, ═════ -->
+<!-- ═══         A25, A31, A32, A33, A34, A35 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_MANAJEMEN_REKENING() {
+    if (window._blokRekeningUniversalDone) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL MANAJEMEN REKENING sudah terpasang.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT
+    // ═══════════════════════════════════════════════════════════
+    var deps = [
+        { flag: '_coreSystem8Done',    nama: 'Core System (1)-(8)' },
+        { flag: '_blokGIDDone',        nama: 'GID — Identity' },
+        { flag: '_blokMNDone',         nama: 'MN — Menu Network' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ Rekening-Universal ditunda — dependency belum terpasang:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // ✓ Guard — pola A18
+    window._blokRekeningUniversalDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1b] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.REKENING_KONSTANTA = window.REKENING_KONSTANTA || {
+        VERSI: '1.0',
+        KEY_STORAGE: 'r2coin_rekening',        // key baru
+        KEY_STORAGE_LAMA: 'rekeningBank',      // untuk migrasi otomatis
+        TIPE_VALID: ['Bank', 'E-Wallet', 'Lainnya'],
+        STATUS_VALID: ['Aktif', 'Nonaktif'],
+        MAX_REKENING: 20,
+        AUTO_SEED_DEFAULT: true,
+        BANK_NOMOR_MIN: 8,
+        BANK_NOMOR_MAX: 20,
+        EWALLET_PREFIX_VALID: ['08', '62', '+62']
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _rekLoad() {
+        if (typeof window.csLoadJSON === 'function') {
+            var v = window.csLoadJSON(REKENING_KONSTANTA.KEY_STORAGE, []);
+            return Array.isArray(v) ? v : [];
+        }
+        try {
+            var s = localStorage.getItem(REKENING_KONSTANTA.KEY_STORAGE);
+            var p = s ? JSON.parse(s) : [];
+            return Array.isArray(p) ? p : [];
+        } catch (e) { return []; }
+    }
+
+    function _rekSave(data) {
+        if (!Array.isArray(data)) data = [];
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(REKENING_KONSTANTA.KEY_STORAGE, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(REKENING_KONSTANTA.KEY_STORAGE, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _rekNow() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    function _rekIdUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+            if (typeof window.getIdUserAktif === 'function') return window.getIdUserAktif();
+            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
+                return window.userAktif.idUser || window.userAktif.id;
+            }
+        } catch (e) {}
+        return 'SYSTEM';
+    }
+
+    function _rekGenId(prefix) {
+        try {
+            if (typeof window.generateKodeUnik === 'function') {
+                return window.generateKodeUnik(prefix || 'REK');
+            }
+        } catch (e) {}
+        return (prefix || 'REK') + '-' + Date.now().toString(36).toUpperCase() +
+               '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    }
+
+    function _rekCatat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal !== 'function') return;
+            window.catatAktivitasGlobal(_rekIdUser(), aksi, detail);
+        } catch (e) {}
+    }
+
+    function _rekSyncGlobal(list) {
+        try {
+            if (typeof window.dataRekening !== 'undefined' &&
+                Array.isArray(window.dataRekening)) {
+                window.dataRekening.length = 0;
+                list.forEach(function(x) { window.dataRekening.push(x); });
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — CORE CRUD (9 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.rekeningGetAll = function() {
+        try {
+            var list = _rekLoad();
+            return Array.isArray(list) ? list : [];
+        } catch (e) {
+            console.error('rekeningGetAll error:', e);
+            return [];
+        }
+    };
+
+    window.rekeningSetAll = function(list) {
+        if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array.' };
+        var hasil = _rekSave(list);
+        if (hasil.sukses) _rekSyncGlobal(list);
+        return hasil;
+    };
+
+    window.rekeningGetById = function(id) {
+        if (!id) return null;
+        var list = window.rekeningGetAll();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id) return list[i];
+        }
+        return null;
+    };
+
+    window.rekeningGetAktif = function(tipe) {
+        var list = window.rekeningGetAll();
+        return list.filter(function(r) {
+            if (!r) return false;
+            if (r.status !== 'Aktif') return false;
+            if (tipe && r.tipe !== tipe) return false;
+            return true;
+        });
+    };
+
+    window.rekeningGetByTipe = function(tipe) {
+        if (!tipe) return window.rekeningGetAll();
+        return window.rekeningGetAll().filter(function(r) {
+            return r && r.tipe === tipe;
+        });
+    };
+
+    window.rekeningCari = function(filter) {
+        filter = filter || {};
+        var cari = (filter.cari || '').toLowerCase().trim();
+        var tipe = filter.tipe || '';
+        var status = filter.status || '';
+
+        return window.rekeningGetAll().filter(function(r) {
+            if (!r) return false;
+            if (cari) {
+                var hay = ((r.nama || '') + ' ' + (r.nomor || '') + ' ' +
+                           (r.atasNama || '')).toLowerCase();
+                if (hay.indexOf(cari) === -1) return false;
+            }
+            if (tipe && r.tipe !== tipe) return false;
+            if (status && r.status !== status) return false;
+            return true;
+        });
+    };
+
+    window.rekeningTambah = function(opts) {
+        opts = opts || {};
+
+        // Validasi
+        var v = window.rekeningValidasiData(opts);
+        if (!v.valid) return { sukses: false, pesan: v.pesan };
+
+        // Cek max
+        var list = window.rekeningGetAll();
+        if (list.length >= REKENING_KONSTANTA.MAX_REKENING) {
+            return { sukses: false, pesan: 'Maksimal ' +
+                REKENING_KONSTANTA.MAX_REKENING + ' rekening.' };
+        }
+
+        // Cek duplikat nomor
+        if (window.rekeningCekDuplikat(opts.nomor)) {
+            return { sukses: false, pesan: 'Nomor rekening sudah terdaftar.' };
+        }
+
+        try {
+            var now = _rekNow();
+            var idUser = _rekIdUser();
+
+            var rekeningBaru = {
+                id: _rekGenId('REK'),
+                tipe: opts.tipe,
+                nama: String(opts.nama || '').trim(),
+                nomor: String(opts.nomor || '').trim(),
+                atasNama: String(opts.atasNama || '').trim(),
+                catatan: String(opts.catatan || '').trim(),
+                status: opts.status || 'Aktif',
+                createdBy: idUser,
+                createdAt: now,
+                updatedBy: null,
+                updatedAt: null
+            };
+
+            list.push(rekeningBaru);
+            var save = _rekSave(list);
+            if (!save.sukses) return save;
+            _rekSyncGlobal(list);
+
+            _rekCatat('Tambah Rekening',
+                'Rekening ' + rekeningBaru.tipe + ' ' + rekeningBaru.nama +
+                ' (' + rekeningBaru.nomor + ') ditambahkan');
+
+            // Emit event via pintu
+            try {
+                window.kirimRekening('rekening-added',
+                    { menu: 'manajemenRekening' },
+                    { id: rekeningBaru.id, nama: rekeningBaru.nama },
+                    rekeningBaru.id
+                );
+            } catch (e) {}
+
+            return { sukses: true, rekening: rekeningBaru };
+        } catch (e) {
+            console.error('rekeningTambah error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.rekeningUpdate = function(id, updates) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        if (!updates || typeof updates !== 'object') {
+            return { sukses: false, pesan: 'Data update tidak valid.' };
+        }
+
+        var list = window.rekeningGetAll();
+        var idx = -1;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id) { idx = i; break; }
+        }
+        if (idx === -1) return { sukses: false, pesan: 'Rekening tidak ditemukan.' };
+
+        // Cek duplikat nomor baru (kalau ada)
+        if (updates.nomor && updates.nomor !== list[idx].nomor) {
+            if (window.rekeningCekDuplikat(updates.nomor, id)) {
+                return { sukses: false, pesan: 'Nomor rekening sudah terdaftar.' };
+            }
+        }
+
+        try {
+            var allowed = ['tipe', 'nama', 'nomor', 'atasNama', 'catatan', 'status'];
+            allowed.forEach(function(k) {
+                if (updates[k] !== undefined) {
+                    list[idx][k] = String(updates[k]).trim();
+                }
+            });
+
+            list[idx].updatedBy = _rekIdUser();
+            list[idx].updatedAt = _rekNow();
+
+            var save = _rekSave(list);
+            if (!save.sukses) return save;
+            _rekSyncGlobal(list);
+
+            _rekCatat('Edit Rekening',
+                'Rekening ' + list[idx].nama + ' (' + list[idx].nomor + ') diedit');
+
+            try {
+                window.kirimRekening('rekening-updated',
+                    { menu: 'manajemenRekening' },
+                    { id: id, nama: list[idx].nama },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, rekening: list[idx] };
+        } catch (e) {
+            console.error('rekeningUpdate error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.rekeningHapus = function(id) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+
+        var list = window.rekeningGetAll();
+        var item = null;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id) { item = list[i]; break; }
+        }
+        if (!item) return { sukses: false, pesan: 'Rekening tidak ditemukan.' };
+
+        try {
+            var baru = list.filter(function(r) { return r && r.id !== id; });
+            var save = _rekSave(baru);
+            if (!save.sukses) return save;
+            _rekSyncGlobal(baru);
+
+            _rekCatat('Hapus Rekening',
+                'Rekening ' + item.nama + ' (' + item.nomor + ') dihapus');
+
+            try {
+                window.kirimRekening('rekening-deleted',
+                    { menu: 'manajemenRekening' },
+                    { id: id, nama: item.nama },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, rekening: item };
+        } catch (e) {
+            console.error('rekeningHapus error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.rekeningToggleStatus = function(id) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+
+        var list = window.rekeningGetAll();
+        var idx = -1;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id) { idx = i; break; }
+        }
+        if (idx === -1) return { sukses: false, pesan: 'Rekening tidak ditemukan.' };
+
+        try {
+            var statusBaru = list[idx].status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+            list[idx].status = statusBaru;
+            list[idx].updatedBy = _rekIdUser();
+            list[idx].updatedAt = _rekNow();
+
+            var save = _rekSave(list);
+            if (!save.sukses) return save;
+            _rekSyncGlobal(list);
+
+            _rekCatat('Toggle Status Rekening',
+                'Rekening ' + list[idx].nama + ' → ' + statusBaru);
+
+            try {
+                window.kirimRekening('rekening-status-changed',
+                    { menu: 'manajemenRekening' },
+                    { id: id, status: statusBaru },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, status: statusBaru, rekening: list[idx] };
+        } catch (e) {
+            console.error('rekeningToggleStatus error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — VALIDASI (3 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.rekeningValidasiData = function(opts) {
+        opts = opts || {};
+        var errors = [];
+
+        if (!opts.tipe) {
+            errors.push('Tipe wajib diisi.');
+        } else if (REKENING_KONSTANTA.TIPE_VALID.indexOf(opts.tipe) === -1) {
+            errors.push('Tipe tidak valid.');
+        }
+
+        if (!opts.nama || String(opts.nama).trim().length < 2) {
+            errors.push('Nama wajib (min 2 karakter).');
+        }
+        if (!opts.nomor || String(opts.nomor).trim().length < 3) {
+            errors.push('Nomor wajib (min 3 karakter).');
+        }
+        if (!opts.atasNama || String(opts.atasNama).trim().length < 3) {
+            errors.push('Atas nama wajib (min 3 karakter).');
+        }
+
+        if (errors.length > 0) {
+            return { valid: false, pesan: errors.join(' '), errors: errors };
+        }
+        return { valid: true };
+    };
+
+    window.rekeningCekDuplikat = function(nomor, excludeId) {
+        if (!nomor) return false;
+        var nomorBersih = String(nomor).replace(/\D/g, '');
+        if (!nomorBersih) return false;
+
+        var list = window.rekeningGetAll();
+        return list.some(function(r) {
+            if (!r) return false;
+            if (excludeId && r.id === excludeId) return false;
+            var rBersih = String(r.nomor || '').replace(/\D/g, '');
+            return rBersih === nomorBersih;
+        });
+    };
+
+    window.rekeningIsValidNomor = function(tipe, nomor) {
+        try {
+            if (!tipe || !nomor) return { valid: false, pesan: 'Tipe/nomor kosong.' };
+            var nomorBersih = String(nomor).replace(/[\s\-]/g, '');
+
+            if (tipe === 'Bank') {
+                var digit = nomorBersih.replace(/\D/g, '');
+                if (digit.length < REKENING_KONSTANTA.BANK_NOMOR_MIN) {
+                    return { valid: false, pesan: 'Nomor bank minimal ' +
+                        REKENING_KONSTANTA.BANK_NOMOR_MIN + ' digit.' };
+                }
+                if (digit.length > REKENING_KONSTANTA.BANK_NOMOR_MAX) {
+                    return { valid: false, pesan: 'Nomor bank maksimal ' +
+                        REKENING_KONSTANTA.BANK_NOMOR_MAX + ' digit.' };
+                }
+                return { valid: true };
+            }
+
+            if (tipe === 'E-Wallet') {
+                var valid = REKENING_KONSTANTA.EWALLET_PREFIX_VALID.some(function(p) {
+                    return nomorBersih.indexOf(p) === 0;
+                });
+                if (!valid) {
+                    return { valid: false, pesan: 'Nomor e-wallet harus diawali 08 / 62 / +62.' };
+                }
+                return { valid: true };
+            }
+
+            return { valid: true };
+        } catch (e) {
+            return { valid: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — STATISTIK (3 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.rekeningHitungStatistik = function() {
+        var data = window.rekeningGetAll();
+        var stat = {
+            total: data.length,
+            totalAktif: 0, totalNonaktif: 0,
+            totalBank: 0, totalEwallet: 0, totalLainnya: 0,
+            totalBankAktif: 0, totalEwalletAktif: 0
+        };
+
+        data.forEach(function(r) {
+            if (!r) return;
+            if (r.status === 'Aktif') stat.totalAktif++;
+            else if (r.status === 'Nonaktif') stat.totalNonaktif++;
+
+            if (r.tipe === 'Bank') {
+                stat.totalBank++;
+                if (r.status === 'Aktif') stat.totalBankAktif++;
+            } else if (r.tipe === 'E-Wallet') {
+                stat.totalEwallet++;
+                if (r.status === 'Aktif') stat.totalEwalletAktif++;
+            } else {
+                stat.totalLainnya++;
+            }
+        });
+
+        return stat;
+    };
+
+    window.rekeningHitungAktif = function() {
+        return {
+            totalAktif: window.rekeningGetAktif().length,
+            bank: window.rekeningGetAktif('Bank').length,
+            ewallet: window.rekeningGetAktif('E-Wallet').length
+        };
+    };
+
+    window.rekeningGetSummaryTipe = function() {
+        var data = window.rekeningGetAll();
+        var hasil = {};
+        data.forEach(function(r) {
+            if (!r) return;
+            var t = r.tipe || 'Lainnya';
+            if (!hasil[t]) hasil[t] = { tipe: t, total: 0, aktif: 0 };
+            hasil[t].total++;
+            if (r.status === 'Aktif') hasil[t].aktif++;
+        });
+        return Object.keys(hasil).map(function(k) { return hasil[k]; });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — SEEDER & BULK (3 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.rekeningSeedDefault = function() {
+        try {
+            var data = window.rekeningGetAll();
+            if (data.length > 0) {
+                return { sukses: false, pesan: 'Sudah ada ' + data.length + ' rekening.' };
+            }
+
+            var now = _rekNow();
+            var idUser = _rekIdUser();
+
+            var defaultRek = [
+                {
+                    id: _rekGenId('REK'),
+                    tipe: 'Bank',
+                    nama: 'BCA',
+                    nomor: '1234567890',
+                    atasNama: 'PT ADHIKARYA BINTANG MANDIRI',
+                    catatan: 'Rekening utama platform',
+                    status: 'Aktif',
+                    createdBy: idUser, createdAt: now,
+                    updatedBy: null, updatedAt: null
+                },
+                {
+                    id: _rekGenId('REK'),
+                    tipe: 'E-Wallet',
+                    nama: 'DANA',
+                    nomor: '081234567890',
+                    atasNama: 'SUGIONO',
+                    catatan: 'E-wallet alternatif',
+                    status: 'Aktif',
+                    createdBy: idUser, createdAt: now,
+                    updatedBy: null, updatedAt: null
+                }
+            ];
+
+            var save = _rekSave(defaultRek);
+            if (!save.sukses) return save;
+            _rekSyncGlobal(defaultRek);
+
+            _rekCatat('Seed Rekening Default',
+                defaultRek.length + ' rekening default dibuat');
+
+            return { sukses: true, total: defaultRek.length };
+        } catch (e) {
+            console.error('rekeningSeedDefault error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.rekeningBulkTambah = function(list) {
+        if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array.' };
+
+        var current = window.rekeningGetAll();
+        var berhasil = 0, gagal = 0;
+
+        list.forEach(function(item) {
+            var v = window.rekeningValidasiData(item);
+            if (!v.valid) { gagal++; return; }
+            if (window.rekeningCekDuplikat(item.nomor)) { gagal++; return; }
+
+            current.push({
+                id: _rekGenId('REK'),
+                tipe: item.tipe,
+                nama: String(item.nama || '').trim(),
+                nomor: String(item.nomor || '').trim(),
+                atasNama: String(item.atasNama || '').trim(),
+                catatan: String(item.catatan || '').trim(),
+                status: item.status || 'Aktif',
+                createdBy: _rekIdUser(),
+                createdAt: _rekNow(),
+                updatedBy: null, updatedAt: null
+            });
+            berhasil++;
+        });
+
+        var save = _rekSave(current);
+        if (!save.sukses) return save;
+        _rekSyncGlobal(current);
+
+        return { sukses: true, berhasil: berhasil, gagal: gagal };
+    };
+
+    window.rekeningReset = function(opts) {
+        opts = opts || {};
+        if (!opts.konfirmasi) {
+            return { sukses: false, pesan: 'Reset butuh { konfirmasi: true }' };
+        }
+        try {
+            var backup = localStorage.getItem(REKENING_KONSTANTA.KEY_STORAGE);
+            if (backup) {
+                try {
+                    localStorage.setItem('backup_rekening_' + Date.now(), backup);
+                } catch (e) {}
+            }
+            _rekSave([]);
+            _rekSyncGlobal([]);
+            _rekCatat('Reset Rekening', 'Semua rekening dihapus');
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — EXPORT / IMPORT (3 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.rekeningExportCSV = function(items) {
+        try {
+            if (!Array.isArray(items)) items = window.rekeningGetAll();
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 ||
+                    s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = ['No,ID,Tipe,Nama,Nomor,Atas Nama,Status,Catatan,Dibuat'];
+            items.forEach(function(r, i) {
+                lines.push([
+                    i + 1,
+                    esc(r.id), esc(r.tipe), esc(r.nama), esc(r.nomor),
+                    esc(r.atasNama), esc(r.status), esc(r.catatan),
+                    esc(r.createdAt ? new Date(r.createdAt).toLocaleString('id-ID') : '-')
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'rekening_' + new Date().toISOString().split('T')[0] + '.csv';
+
+            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = namaFile;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            return { sukses: true, namaFile: namaFile, total: items.length };
+        } catch (e) {
+            console.error('rekeningExportCSV error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.rekeningExportJSON = function(items) {
+        try {
+            if (!Array.isArray(items)) items = window.rekeningGetAll();
+            var paket = {
+                versi: REKENING_KONSTANTA.VERSI,
+                tipe: 'rekening-export',
+                exportedAt: _rekNow(),
+                total: items.length,
+                data: items
+            };
+            return {
+                sukses: true,
+                json: JSON.stringify(paket, null, 2),
+                total: items.length
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.rekeningImportJSON = function(jsonString, opsi) {
+        opsi = opsi || {};
+        var mode = opsi.mode === 'replace' ? 'replace' : 'gabung';
+
+        try {
+            if (!jsonString || !jsonString.trim()) {
+                return { sukses: false, pesan: 'JSON kosong.' };
+            }
+            var parsed = JSON.parse(jsonString);
+            var arr = Array.isArray(parsed) ? parsed : parsed.data;
+            if (!Array.isArray(arr)) {
+                return { sukses: false, pesan: 'JSON tidak berisi array.' };
+            }
+
+            var current = mode === 'replace' ? [] : window.rekeningGetAll();
+            var berhasil = 0, gagal = 0;
+            var now = _rekNow();
+
+            arr.forEach(function(item) {
+                if (!item) { gagal++; return; }
+                var v = window.rekeningValidasiData(item);
+                if (!v.valid) { gagal++; return; }
+                if (window.rekeningCekDuplikat(item.nomor)) { gagal++; return; }
+
+                current.push({
+                    id: item.id || _rekGenId('REK'),
+                    tipe: item.tipe,
+                    nama: item.nama,
+                    nomor: item.nomor,
+                    atasNama: item.atasNama,
+                    catatan: item.catatan || '',
+                    status: item.status || 'Aktif',
+                    createdBy: _rekIdUser(),
+                    createdAt: item.createdAt || now,
+                    updatedBy: null, updatedAt: null
+                });
+                berhasil++;
+            });
+
+            var save = _rekSave(current);
+            if (!save.sukses) return save;
+            _rekSyncGlobal(current);
+
+            _rekCatat('Import Rekening',
+                'Mode: ' + mode + ' | Berhasil: ' + berhasil + ' | Gagal: ' + gagal);
+
+            return { sukses: true, berhasil: berhasil, gagal: gagal, mode: mode };
+        } catch (e) {
+            console.error('rekeningImportJSON error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — 3 PINTU + HELPER UI + ALIAS + DEBUG + REGISTRY
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 📤 PINTU 1: KIRIM ──
+    window.kirimRekening = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser: _rekIdUser(),
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu: 'manajemenRekening',
+                    blok: 'Rekening-Universal'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _rekNow()
+            });
+        } catch (e) {
+            console.error('[Rekening] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 📥 PINTU 2: TERIMA ──
+    window.terimaRekening = function() {
+        try {
+            return window.mnInboxMenu('manajemenRekening');
+        } catch (e) {
+            console.error('[Rekening] terima error:', e);
+            return [];
+        }
+    };
+
+    // ── 📦 PINTU 3: AMBIL ──
+    window.ambilRekening = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'all';
+        try {
+            if (tipe === 'all')       return window.rekeningGetAll();
+            if (tipe === 'aktif')     return window.rekeningGetAktif(filter.kategori);
+            if (tipe === 'by-id')     return window.rekeningGetById(filter.id);
+            if (tipe === 'bank')      return window.rekeningGetAktif('Bank');
+            if (tipe === 'ewallet')   return window.rekeningGetAktif('E-Wallet');
+            if (tipe === 'statistik') return window.rekeningHitungStatistik();
+            if (tipe === 'cari')      return window.rekeningCari(filter);
+        } catch (e) {
+            console.error('[Rekening] ambil error:', e);
+        }
+        return null;
+    };
+
+    // ── HELPER UI — dipakai 12 blok dompet role ──
+    window.rekeningGetBankAktif = function() {
+        return window.rekeningGetAktif('Bank');
+    };
+
+    window.rekeningGetEwalletAktif = function() {
+        return window.rekeningGetAktif('E-Wallet');
+    };
+
+    window.rekeningRenderListUntukTopUp = function() {
+        var list = window.rekeningGetBankAktif();
+        if (list.length === 0) {
+            return '<div class="alert alert-warning small">' +
+                '<i class="fas fa-exclamation-triangle me-1"></i>' +
+                'Belum ada rekening tujuan. Hubungi SA.</div>';
+        }
+        var h = '<div class="list-group">';
+        list.forEach(function(r) {
+            var noEsc = String(r.nomor || '').replace(/'/g, "\\'");
+            h += '<div class="list-group-item py-2">' +
+                '<div class="d-flex justify-content-between align-items-center">' +
+                    '<div>' +
+                        '<i class="fas fa-university text-primary me-1"></i>' +
+                        '<strong>' + window.mppEscHtml ? window.mppEscHtml(r.nama) : r.nama + '</strong>' +
+                        '<br><small class="text-muted">' +
+                        (window.mppEscHtml ? window.mppEscHtml(r.nomor) : r.nomor) +
+                        ' • a/n ' + (window.mppEscHtml ? window.mppEscHtml(r.atasNama) : r.atasNama) +
+                        '</small>' +
+                    '</div>' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary" ' +
+                            'onclick="if(navigator.clipboard)navigator.clipboard.writeText(\'' +
+                            noEsc + '\')">' +
+                        '<i class="fas fa-copy"></i>' +
+                    '</button>' +
+                '</div>' +
+            '</div>';
+        });
+        h += '</div>';
+        return h;
+    };
+
+    // ── ALIAS BACKWARD COMPAT ──
+    try {
+        if (typeof window.rekeningBankGetAll !== 'function') {
+            window.rekeningBankGetAll = window.rekeningGetAll;
+        }
+        if (typeof window.rekeningBankSave !== 'function') {
+            window.rekeningBankSave = window.rekeningSetAll;
+        }
+        if (typeof window.rekeningBankGetById !== 'function') {
+            window.rekeningBankGetById = window.rekeningGetById;
+        }
+        if (typeof window.rekeningBankGetAktif !== 'function') {
+            window.rekeningBankGetAktif = window.rekeningGetAktif;
+        }
+        if (typeof window.rekeningBankCari !== 'function') {
+            window.rekeningBankCari = window.rekeningCari;
+        }
+        if (typeof window.rekeningBankTambah !== 'function') {
+            window.rekeningBankTambah = window.rekeningTambah;
+        }
+        if (typeof window.rekeningBankUpdate !== 'function') {
+            window.rekeningBankUpdate = window.rekeningUpdate;
+        }
+        if (typeof window.rekeningBankHapus !== 'function') {
+            window.rekeningBankHapus = window.rekeningHapus;
+        }
+        if (typeof window.rekeningBankToggleStatus !== 'function') {
+            window.rekeningBankToggleStatus = window.rekeningToggleStatus;
+        }
+        if (typeof window.hitungStatistikRekeningBank !== 'function') {
+            window.hitungStatistikRekeningBank = window.rekeningHitungStatistik;
+        }
+        if (typeof window.rekeningBankExportCSV !== 'function') {
+            window.rekeningBankExportCSV = window.rekeningExportCSV;
+        }
+        if (typeof window.rekeningBankReset !== 'function') {
+            window.rekeningBankReset = window.rekeningReset;
+        }
+        if (typeof window.rekeningBankCekDuplikat !== 'function') {
+            window.rekeningBankCekDuplikat = window.rekeningCekDuplikat;
+        }
+        if (typeof window.rekeningBankSeedDefault !== 'function') {
+            window.rekeningBankSeedDefault = window.rekeningSeedDefault;
+        }
+        if (typeof window.getAllRekeningUnified !== 'function') {
+            window.getAllRekeningUnified = function(kategoriSumber) {
+                return window.rekeningGetAll();
+            };
+        }
+    } catch (e) {
+        console.warn('Rekening-Universal: Gagal pasang alias:', e.message);
+    }
+
+    // ── MIGRASI OTOMATIS dari 'rekeningBank' lama ──
+    setTimeout(function() {
+        try {
+            var adaBaru = window.rekeningGetAll().length > 0;
+            if (adaBaru) return;
+
+            var s = localStorage.getItem(REKENING_KONSTANTA.KEY_STORAGE_LAMA);
+            if (!s) return;
+            var lama = JSON.parse(s);
+            if (!Array.isArray(lama) || lama.length === 0) return;
+
+            _rekSave(lama);
+            _rekSyncGlobal(lama);
+            console.log('✅ Migrasi: ' + lama.length + ' rekening dari "rekeningBank" ke "r2coin_rekening"');
+
+            _rekCatat('Migrasi Rekening', lama.length + ' rekening dipindah dari key lama');
+        } catch (e) {
+            console.warn('Migrasi rekening error:', e.message);
+        }
+    }, 1500);
+
+    // ── AUTO-SEED default kalau kosong ──
+    setTimeout(function() {
+        try {
+            if (REKENING_KONSTANTA.AUTO_SEED_DEFAULT &&
+                window.rekeningGetAll().length === 0) {
+                var r = window.rekeningSeedDefault();
+                if (r.sukses) {
+                    console.log('✅ Auto-seed: ' + r.total + ' rekening default dibuat');
+                }
+            }
+        } catch (e) {}
+    }, 2500);
+
+    // ── DEBUG ──
+    window.debugRekening = function() {
+        return {
+            versi: REKENING_KONSTANTA.VERSI,
+            guard: window._blokRekeningUniversalDone,
+            totalRekening: window.rekeningGetAll().length,
+            totalAktif: window.rekeningGetAktif().length,
+            modul3_CRUD: {
+                getAll:      typeof window.rekeningGetAll,
+                setAll:      typeof window.rekeningSetAll,
+                getById:     typeof window.rekeningGetById,
+                getAktif:    typeof window.rekeningGetAktif,
+                getByTipe:   typeof window.rekeningGetByTipe,
+                cari:        typeof window.rekeningCari,
+                tambah:      typeof window.rekeningTambah,
+                update:      typeof window.rekeningUpdate,
+                hapus:       typeof window.rekeningHapus,
+                toggleStatus: typeof window.rekeningToggleStatus
+            },
+            modul4_Validasi: {
+                validasiData: typeof window.rekeningValidasiData,
+                cekDuplikat:  typeof window.rekeningCekDuplikat,
+                isValidNomor: typeof window.rekeningIsValidNomor
+            },
+            modul5_Statistik: {
+                hitung:        typeof window.rekeningHitungStatistik,
+                hitungAktif:   typeof window.rekeningHitungAktif,
+                getSummaryTipe: typeof window.rekeningGetSummaryTipe
+            },
+            modul6_Seeder: {
+                seedDefault:  typeof window.rekeningSeedDefault,
+                bulkTambah:   typeof window.rekeningBulkTambah,
+                reset:        typeof window.rekeningReset
+            },
+            modul7_ExportImport: {
+                exportCSV:   typeof window.rekeningExportCSV,
+                exportJSON:  typeof window.rekeningExportJSON,
+                importJSON:  typeof window.rekeningImportJSON
+            },
+            modul8_PintuHelper: {
+                kirim:               typeof window.kirimRekening,
+                terima:              typeof window.terimaRekening,
+                ambil:               typeof window.ambilRekening,
+                getBankAktif:        typeof window.rekeningGetBankAktif,
+                getEwalletAktif:     typeof window.rekeningGetEwalletAktif,
+                renderListUntukTopUp: typeof window.rekeningRenderListUntukTopUp
+            },
+            aliasBackwardCompat: {
+                rekeningBankGetAll:        typeof window.rekeningBankGetAll,
+                rekeningBankTambah:        typeof window.rekeningBankTambah,
+                hitungStatistikRekeningBank: typeof window.hitungStatistikRekeningBank,
+                getAllRekeningUnified:     typeof window.getAllRekeningUnified
+            }
+        };
+    };
+
+    // ── AUTO-REGISTRY (A33, A34, A35) ──
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Rekening-Universal';
+                });
+                if (!sudahAda) {
+                    window.cpTambahBlok({
+                        kode: 'Rekening-Universal',
+                        nama: 'Fungsi Global Manajemen Rekening',
+                        layer: 'L4',
+                        status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('rekening', {
+                    nama: 'Fungsi Global Manajemen Rekening',
+                    status: 'Selesai',
+                    jumlah: 35
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Rekening-Universal',
+                    nama: 'Fungsi Global Manajemen Rekening',
+                    keterangan: '35 fungsi + 3 pintu + backward compat rekeningBank*'
+                });
+            }
+        } catch (e) {
+            console.warn('Rekening-Universal: Gagal update catatan 0.1:', e.message);
+        }
+    }, 1000);
+
+    // ── LOG TERPASANG ──
+    console.log('%c✅ BLOK FUNGSI GLOBAL MANAJEMEN REKENING terpasang.',
+        'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 8 Modul, ~35 fungsi:');
+    console.log('   1.  Konstanta & Config');
+    console.log('   2.  Helper Internal (via CS2)');
+    console.log('   3.  Core CRUD (10)');
+    console.log('   4.  Validasi (3)');
+    console.log('   5.  Statistik (3)');
+    console.log('   6.  Seeder & Bulk (3)');
+    console.log('   7.  Export / Import (3)');
+    console.log('   8.  3 Pintu + Helper UI + Alias + Debug + Registry');
+    console.log('');
+    console.log('   🚪 3 Pintu: kirimRekening, terimaRekening, ambilRekening');
+    console.log('   🎨 Helper UI: rekeningRenderListUntukTopUp() — dipakai 12 blok role');
+    console.log('   🔗 Backward compat: rekeningBank* (14 alias)');
+    console.log('   💾 Storage: r2coin_rekening (migrasi otomatis dari rekeningBank)');
+    console.log('   🎯 Pemakai: 10.41, 10.46, 10.47, 11.31–36.31');
+    console.log('   🔍 Debug: debugRekening()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL MANAJEMEN REKENING ═══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL SETTING EKONOMI R2COIN ═════════════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
 <!-- ═══ Dependency: CS1-CS14 + GID + MN + (MD opsional) ═══════ -->
@@ -32013,6 +33039,1551 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══ AKHIR BLOK R 10.38 JS ═══ --> 
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.41.a — MANAJEMEN BANK/REKENING (HTML) ═══════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: TIDAK ADA (murni HTML) ════════════════════ -->
+<!-- ═══ Isi: 5 sub-seksi [10.41.1]-[10.41.5] + 2 modal ═══════ -->
+<!-- ═══ Acuan: BLOK R 10.45.a + BLOK R 10.46.a ════════════════ -->
+<!-- ═══ Aturan: A3, A29, A30 ══════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="manajemenRekeningContainer" style="display:none;">
+    <div class="container-fluid px-3 px-md-4 py-3 py-md-4">
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.41.1] HEADER & NAVIGASI                             -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-university me-2"></i>Manajemen Bank / Rekening
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Kelola rekening tujuan Top-Up & sumber Withdraw untuk seluruh user
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-info btn-sm text-white" onclick="mrbExportCSV()">
+                    <i class="fas fa-file-csv me-1"></i>Export CSV
+                </button>
+                <button class="btn btn-outline-warning btn-sm" onclick="mrbExportJSON()">
+                    <i class="fas fa-file-export me-1"></i>Export JSON
+                </button>
+                <button class="btn btn-outline-info btn-sm" onclick="mrbBukaImport()">
+                    <i class="fas fa-file-import me-1"></i>Import
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="mrbReload()">
+                    <i class="fas fa-sync me-1"></i>Refresh
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i>Kembali
+                </button>
+            </div>
+        </div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.41.2] STATISTIK 4 KARTU                             -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div class="row mb-3 g-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-list fa-2x mb-2" style="color:#1976D2;"></i>
+                        <h5 class="fw-bold mb-0" id="mrbStatTotal">0</h5>
+                        <small class="text-muted">Total Rekening</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h5 class="fw-bold mb-0" id="mrbStatAktif">0</h5>
+                        <small class="text-muted">Aktif</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-university fa-2x mb-2 text-primary"></i>
+                        <h5 class="fw-bold mb-0" id="mrbStatBank">0</h5>
+                        <small class="text-muted">Bank</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm bg-white h-100">
+                    <div class="card-body text-center py-3">
+                        <i class="fas fa-wallet fa-2x mb-2 text-warning"></i>
+                        <h5 class="fw-bold mb-0" id="mrbStatEwallet">0</h5>
+                        <small class="text-muted">E-Wallet</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.41.3] TOOLBAR & FILTER                              -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body py-2">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-4 col-12">
+                        <label class="fw-bold small">
+                            <i class="fas fa-search me-1"></i>Cari
+                        </label>
+                        <input type="text" id="mrbFilterCari"
+                               class="form-control form-control-sm"
+                               placeholder="Nama / Nomor / Atas Nama..."
+                               oninput="mrbRenderTabel()">
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-filter me-1"></i>Tipe
+                        </label>
+                        <select id="mrbFilterTipe" class="form-select form-select-sm"
+                                onchange="mrbRenderTabel()">
+                            <option value="">Semua Tipe</option>
+                            <option value="Bank">Bank</option>
+                            <option value="E-Wallet">E-Wallet</option>
+                            <option value="Lainnya">Lainnya</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <label class="fw-bold small">
+                            <i class="fas fa-toggle-on me-1"></i>Status
+                        </label>
+                        <select id="mrbFilterStatus" class="form-select form-select-sm"
+                                onchange="mrbRenderTabel()">
+                            <option value="">Semua Status</option>
+                            <option value="Aktif">Aktif</option>
+                            <option value="Nonaktif">Nonaktif</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <button class="btn btn-sm btn-outline-secondary w-100"
+                                onclick="mrbResetFilter()">
+                            <i class="fas fa-undo me-1"></i>Reset
+                        </button>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <button class="btn btn-sm text-white w-100" style="background:#1976D2;"
+                                onclick="mrbBukaTambah()">
+                            <i class="fas fa-plus-circle me-1"></i>Tambah
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <span class="badge bg-dark" id="mrbInfoJumlah">0 rekening</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.41.4] TABEL REKENING                                -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div class="card border-0 shadow">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#1976D2;">
+                <span><i class="fas fa-list me-2"></i>Daftar Rekening</span>
+                <span class="badge bg-light text-dark" id="mrbTotal">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th style="width:60px;">Tipe</th>
+                                <th>Nama Bank/E-Wallet</th>
+                                <th>Nomor</th>
+                                <th>Atas Nama</th>
+                                <th style="width:100px;" class="text-center">Status</th>
+                                <th style="width:100px;">Diperbarui</th>
+                                <th style="width:180px;" class="text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mrbTbody">
+                            <tr>
+                                <td colspan="8" class="text-center text-muted py-4">
+                                    <i class="fas fa-spinner fa-spin me-1"></i>Memuat...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.41.5] NOTIFIKASI & EMPTY STATE                      -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div id="mrbEmpty" class="text-center py-5" style="display:none;">
+            <i class="fas fa-university fa-3x text-white-50 mb-3 d-block opacity-50"></i>
+            <h5 class="text-white">Belum Ada Rekening</h5>
+            <p class="text-white-50 small">Klik tombol <strong>Tambah</strong> untuk menambah rekening.</p>
+        </div>
+
+        <div class="position-fixed" style="bottom:20px;right:20px;z-index:9999;">
+            <div id="mrbNotifGlobal" class="alert d-none mb-2" style="min-width:250px;"></div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MODAL 1: FORM TAMBAH / EDIT REKENING                           -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="mrbModalForm" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#1976D2;">
+                <h5 class="modal-title">
+                    <i class="fas fa-university me-2"></i>
+                    <span id="mrbModalTitle">Tambah Rekening</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="mrbFormId">
+
+                <!-- Tipe -->
+                <div class="mb-3">
+                    <label class="fw-bold small">
+                        <i class="fas fa-tag me-1"></i>Tipe <span class="text-danger">*</span>
+                    </label>
+                    <div class="btn-group w-100" role="group">
+                        <input type="radio" class="btn-check" name="mrbFormTipe"
+                               id="mrbTipeBank" value="Bank" checked
+                               onchange="mrbFormUpdateHint()">
+                        <label class="btn btn-outline-primary" for="mrbTipeBank">
+                            <i class="fas fa-university me-1"></i>Bank
+                        </label>
+
+                        <input type="radio" class="btn-check" name="mrbFormTipe"
+                               id="mrbTipeEwallet" value="E-Wallet"
+                               onchange="mrbFormUpdateHint()">
+                        <label class="btn btn-outline-warning" for="mrbTipeEwallet">
+                            <i class="fas fa-wallet me-1"></i>E-Wallet
+                        </label>
+
+                        <input type="radio" class="btn-check" name="mrbFormTipe"
+                               id="mrbTipeLainnya" value="Lainnya"
+                               onchange="mrbFormUpdateHint()">
+                        <label class="btn btn-outline-secondary" for="mrbTipeLainnya">
+                            <i class="fas fa-circle me-1"></i>Lainnya
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Nama -->
+                <div class="mb-3">
+                    <label class="fw-bold small">
+                        <i class="fas fa-signature me-1"></i>Nama Bank / E-Wallet
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="text" id="mrbFormNama" class="form-control"
+                           placeholder="Contoh: BCA, BRI, DANA, OVO"
+                           maxlength="50">
+                    <small class="text-muted" id="mrbFormNamaHint">
+                        Nama bank/e-wallet yang tampil ke user
+                    </small>
+                </div>
+
+                <!-- Nomor -->
+                <div class="mb-3">
+                    <label class="fw-bold small">
+                        <i class="fas fa-hashtag me-1"></i>Nomor Rekening
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="text" id="mrbFormNomor" class="form-control"
+                           placeholder="Contoh: 1234567890 atau 08123456789"
+                           maxlength="30" oninput="mrbFormCekNomor()">
+                    <small class="text-muted" id="mrbFormNomorHint">
+                        Minimal 8 digit untuk bank, diawali 08 untuk e-wallet
+                    </small>
+                    <div id="mrbFormNomorWarn" class="alert alert-warning small py-2 mt-2 mb-0"
+                         style="display:none;"></div>
+                </div>
+
+                <!-- Atas Nama -->
+                <div class="mb-3">
+                    <label class="fw-bold small">
+                        <i class="fas fa-user me-1"></i>Atas Nama
+                        <span class="text-danger">*</span>
+                    </label>
+                    <input type="text" id="mrbFormAtasNama" class="form-control"
+                           placeholder="Contoh: PT ADHIKARYA BINTANG MANDIRI"
+                           maxlength="80">
+                    <small class="text-muted">
+                        Nama pemilik rekening sesuai buku tabungan
+                    </small>
+                </div>
+
+                <!-- Catatan -->
+                <div class="mb-3">
+                    <label class="fw-bold small">
+                        <i class="fas fa-sticky-note me-1"></i>Catatan (Opsional)
+                    </label>
+                    <textarea id="mrbFormCatatan" class="form-control" rows="2"
+                              maxlength="200"
+                              placeholder="Contoh: Rekening utama platform"></textarea>
+                    <small class="text-muted">
+                        <span id="mrbFormCatatanCount">0</span>/200 karakter
+                    </small>
+                </div>
+
+                <!-- Status -->
+                <div class="mb-3">
+                    <label class="fw-bold small">
+                        <i class="fas fa-toggle-on me-1"></i>Status
+                    </label>
+                    <div class="btn-group w-100" role="group">
+                        <input type="radio" class="btn-check" name="mrbFormStatus"
+                               id="mrbStatusAktif" value="Aktif" checked>
+                        <label class="btn btn-outline-success" for="mrbStatusAktif">
+                            <i class="fas fa-check-circle me-1"></i>Aktif
+                        </label>
+                        <input type="radio" class="btn-check" name="mrbFormStatus"
+                               id="mrbStatusNonaktif" value="Nonaktif">
+                        <label class="btn btn-outline-secondary" for="mrbStatusNonaktif">
+                            <i class="fas fa-times-circle me-1"></i>Nonaktif
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Preview info -->
+                <div class="alert alert-info small py-2 mb-0" id="mrbFormPreview">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Rekening Aktif akan muncul sebagai <strong>tujuan top-up</strong>
+                    di semua halaman dompet user.
+                </div>
+
+                <div id="mrbFormNotif" class="alert d-none mt-3 mb-0"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-primary" id="mrbFormTombolSimpan"
+                        onclick="mrbFormSimpan()">
+                    <i class="fas fa-save me-1"></i>Simpan
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MODAL 2: KONFIRMASI HAPUS                                      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="mrbModalHapus" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#DC3545;">
+                <h5 class="modal-title">
+                    <i class="fas fa-trash me-2"></i>Hapus Rekening
+                </h5>
+                <button type="button" class="btn-close btn-close-white"
+                        data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small mb-2">Hapus rekening berikut?</p>
+                <div class="alert alert-light border small mb-2" id="mrbHapusInfo">
+                    <strong>-</strong>
+                </div>
+                <p class="small text-muted mb-0">
+                    <i class="fas fa-exclamation-triangle text-warning me-1"></i>
+                    Rekening yang dihapus <strong>tidak bisa dikembalikan</strong>.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm"
+                        data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-danger btn-sm"
+                        onclick="mrbHapusKonfirmasi()">
+                    <i class="fas fa-trash me-1"></i>Hapus
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.41.a — MANAJEMEN BANK/REKENING (HTML) ═ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.41.b — MANAJEMEN BANK/REKENING (Entry) ══════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: 10.41.a + CS8 + GID + MN + Rekening-Univ ═ -->
+<!-- ═══ Isi: Entry + Helper Lokal + 3 Pintu Standar ══════════ -->
+<!-- ═══ Acuan: BLOK R 10.45.b + BLOK R 10.46.b ════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A23, A31, A32 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_41_B_ENTRY() {
+    if (window._blok1041bDone) {
+        console.log('ℹ️ BLOK 10.41.b sudah terpasang.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY
+    // ═══════════════════════════════════════════════════════════
+    var deps = [
+        { flag: '_coreSystem8Done',          nama: 'Core System (8) — Auth' },
+        { flag: '_blokGIDDone',              nama: 'GID — Identity' },
+        { flag: '_blokMNDone',               nama: 'MN — Menu Network' },
+        { flag: '_blokRekeningUniversalDone', nama: 'Rekening-Universal (L4)' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ 10.41.b ditunda — dependency belum terpasang:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // Cek fungsi WAJIB dari Rekening-Universal
+    var fungsiWajib = [
+        'rekeningGetAll', 'rekeningGetById', 'rekeningGetAktif',
+        'rekeningCari', 'rekeningTambah', 'rekeningUpdate', 'rekeningHapus',
+        'rekeningToggleStatus', 'rekeningHitungStatistik',
+        'rekeningExportCSV', 'rekeningExportJSON', 'rekeningImportJSON',
+        'rekeningValidasiData', 'rekeningCekDuplikat'
+    ];
+    var fungsiHilang = fungsiWajib.filter(function(f) {
+        return typeof window[f] !== 'function';
+    });
+    if (fungsiHilang.length > 0) {
+        console.warn('⚠️ 10.41.b ditunda — Rekening-Universal belum lengkap:');
+        fungsiHilang.forEach(function(f) { console.warn('   • ' + f); });
+        return;
+    }
+
+    window._blok1041bDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — STATE
+    // ═══════════════════════════════════════════════════════════
+    window.mrbState = window.mrbState || {
+        hapusId: null,
+        sedangEdit: null,
+        lastRender: null
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER LOKAL
+    // ═══════════════════════════════════════════════════════════
+    window.mrbEsc = function(s) {
+        if (typeof window.mppEscHtml === 'function') return window.mppEscHtml(s);
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.mrbSetText = function(id, v) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = (v == null ? '' : String(v));
+    };
+
+    window.mrbSetVal = function(id, v) {
+        var el = document.getElementById(id);
+        if (el) el.value = (v == null ? '' : String(v));
+    };
+
+    window.mrbGetVal = function(id) {
+        var el = document.getElementById(id);
+        return el ? el.value : '';
+    };
+
+    window.mrbSetHtml = function(id, html) {
+        var el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+    };
+
+    window.mrbToast = function(pesan, tipe) {
+        var el = document.getElementById('mrbNotifGlobal');
+        if (!el) { console.log('[mrbToast]', pesan); return; }
+        var warna = {
+            success: 'alert-success',
+            danger:  'alert-danger',
+            warning: 'alert-warning',
+            info:    'alert-info'
+        }[tipe] || 'alert-info';
+        el.className = 'alert ' + warna;
+        el.innerHTML = pesan;
+        el.classList.remove('d-none');
+        setTimeout(function() { el.classList.add('d-none'); }, 4000);
+    };
+
+    window.mrbModalNotif = function(id, pesan, tipe) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.className = 'alert alert-' + (tipe || 'info');
+        el.innerHTML = pesan;
+        el.classList.remove('d-none');
+        if (tipe === 'success') {
+            setTimeout(function() { el.classList.add('d-none'); }, 4000);
+        }
+    };
+
+    window.mrbFormatTgl = function(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: '2-digit',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            });
+        } catch (e) { return '-'; }
+    };
+
+    window.mrbIkonTipe = function(tipe) {
+        if (tipe === 'Bank')       return { ikon: 'fas fa-university', warna: '#1976D2', label: 'Bank' };
+        if (tipe === 'E-Wallet')   return { ikon: 'fas fa-wallet',     warna: '#FFC107', label: 'E-Wallet' };
+        return { ikon: 'fas fa-circle', warna: '#6C757D', label: tipe || 'Lainnya' };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — 3 PINTU STANDAR
+    // ═══════════════════════════════════════════════════════════
+    window.kirim1041 = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:  window.gidIdUser ? window.gidIdUser() : null,
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role:    window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:    'manajemenRekening',
+                    blok:    '10.41'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: (window.csNow ? window.csNow() : new Date().toISOString())
+            });
+        } catch (e) {
+            console.error('[10.41] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terima1041 = function() {
+        try { return window.mnInboxMenu('manajemenRekening'); }
+        catch (e) { return []; }
+    };
+
+    window.ambil1041 = function(filter) {
+        try {
+            filter = filter || {};
+            // Delegasi ke ambilRekening
+            if (typeof window.ambilRekening === 'function') {
+                return window.ambilRekening(filter);
+            }
+            return null;
+        } catch (e) {
+            console.error('[10.41] ambil error:', e);
+            return null;
+        }
+    };
+
+    window.cekPintu1041 = function() {
+        return {
+            blok: '10.41',
+            kirim:  typeof window.kirim1041 === 'function',
+            terima: typeof window.terima1041 === 'function',
+            ambil:  typeof window.ambil1041 === 'function'
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanManajemenRekening = function(opts) {
+        opts = opts || {};
+        try {
+            var u = window.userAktif;
+            if (!u || !u.idUser) {
+                if (typeof window.tampilkanHalaman === 'function') {
+                    window.tampilkanHalaman('login');
+                }
+                return false;
+            }
+
+            var kodeRole = window.gidKodeRoleUser ? window.gidKodeRoleUser() : null;
+            if (kodeRole && kodeRole !== 'SA') {
+                console.warn('[10.41] Role bukan SA:', kodeRole);
+                if (typeof window.tampilkanPlaceholderMenu === 'function') {
+                    window.tampilkanPlaceholderMenu('Manajemen Bank / Rekening', '10.41');
+                }
+                return false;
+            }
+
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            // Cache template
+            if (!window._tplManajemenRekening) {
+                var c = document.getElementById('manajemenRekeningContainer');
+                if (!c) {
+                    console.warn('[10.41] Container manajemenRekeningContainer tidak ada');
+                    if (typeof window.tampilkanPlaceholderMenu === 'function') {
+                        window.tampilkanPlaceholderMenu('Manajemen Bank / Rekening', '10.41');
+                    }
+                    return false;
+                }
+                window._tplManajemenRekening = c.innerHTML;
+                c.remove();
+            }
+
+            konten.innerHTML = window._tplManajemenRekening;
+
+            setTimeout(function() {
+                if (typeof window.mrbRenderStatistik === 'function') window.mrbRenderStatistik();
+                if (typeof window.mrbRenderTabel === 'function')      window.mrbRenderTabel();
+                console.log('✅ BLOK R 10.41 — Manajemen Bank/Rekening rendered');
+            }, 150);
+
+            return true;
+        } catch (e) {
+            console.error('tampilkanManajemenRekening error:', e);
+            return false;
+        }
+    };
+
+    window.bukaManajemenRekening = window.tampilkanManajemenRekening;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1041b = function() {
+        return {
+            blok: '10.41.b',
+            versi: '1.0',
+            guard: window._blok1041bDone,
+            entry: typeof window.tampilkanManajemenRekening,
+            pintu: {
+                kirim:  typeof window.kirim1041,
+                terima: typeof window.terima1041,
+                ambil:  typeof window.ambil1041,
+                skor:   (typeof window.kirim1041 === 'function' ? 1 : 0) +
+                        (typeof window.terima1041 === 'function' ? 1 : 0) +
+                        (typeof window.ambil1041 === 'function' ? 1 : 0)
+            },
+            helper: {
+                esc:        typeof window.mrbEsc,
+                setText:    typeof window.mrbSetText,
+                setVal:     typeof window.mrbSetVal,
+                getVal:     typeof window.mrbGetVal,
+                toast:      typeof window.mrbToast,
+                modalNotif: typeof window.mrbModalNotif,
+                formatTgl:  typeof window.mrbFormatTgl,
+                ikonTipe:   typeof window.mrbIkonTipe
+            },
+            rekeningUniversal: {
+                getAll:       typeof window.rekeningGetAll,
+                tambah:       typeof window.rekeningTambah,
+                update:       typeof window.rekeningUpdate,
+                hapus:        typeof window.rekeningHapus,
+                toggleStatus: typeof window.rekeningToggleStatus
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.41.b — Entry + Helper + 3 Pintu terpasang.',
+        'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🎯 Entry: tampilkanManajemenRekening()');
+    console.log('   🚪 3 Pintu: kirim1041, terima1041, ambil1041');
+    console.log('   🔧 Helper: mrbEsc, mrbSetText, mrbSetVal, mrbGetVal, mrbToast');
+    console.log('   🔍 Debug: debug1041b()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.41.b ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.41.c — MANAJEMEN BANK/REKENING (Render) ═════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: 10.41.b + Rekening-Universal ══════════════ -->
+<!-- ═══ Isi: Render statistik + tabel ═════════════════════════ -->
+<!-- ═══ Acuan: BLOK R 10.45.c + BLOK R 10.46.c ════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A23, A31, A32 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_41_C_RENDER() {
+    if (window._blok1041cDone) {
+        console.log('ℹ️ BLOK 10.41.c sudah terpasang.');
+        return;
+    }
+    if (!window._blok1041bDone) {
+        console.warn('⚠️ 10.41.c ditunda — 10.41.b belum terpasang.');
+        return;
+    }
+    window._blok1041cDone = true;
+
+    var _esc = window.mrbEsc;
+    var _set = window.mrbSetText;
+    var _get = window.mrbGetVal;
+    var _ft  = window.mrbFormatTgl;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — RENDER STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.mrbRenderStatistik = function() {
+        try {
+            var stat = window.ambil1041({ tipe: 'statistik' }) ||
+                       { total: 0, totalAktif: 0, totalBank: 0, totalEwallet: 0 };
+
+            _set('mrbStatTotal',    stat.total || 0);
+            _set('mrbStatAktif',    stat.totalAktif || 0);
+            _set('mrbStatBank',     stat.totalBank || 0);
+            _set('mrbStatEwallet',  stat.totalEwallet || 0);
+        } catch (e) {
+            console.error('mrbRenderStatistik error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — RENDER TABEL
+    // ═══════════════════════════════════════════════════════════
+    window.mrbRenderTabel = function() {
+        var tbody = document.getElementById('mrbTbody');
+        var empty = document.getElementById('mrbEmpty');
+        if (!tbody) return;
+
+        try {
+            var filter = {
+                cari:   (_get('mrbFilterCari') || '').trim(),
+                tipe:   _get('mrbFilterTipe') || '',
+                status: _get('mrbFilterStatus') || ''
+            };
+
+            var list = window.ambil1041({
+                tipe: 'cari',
+                cari: filter.cari,
+                tipe_filter: filter.tipe,
+                status: filter.status
+            });
+
+            // Kalau ambilRekening tidak support filter kompleks, fallback manual
+            if (!Array.isArray(list)) {
+                list = window.rekeningGetAll();
+                if (filter.cari) {
+                    var c = filter.cari.toLowerCase();
+                    list = list.filter(function(r) {
+                        var s = ((r.nama || '') + ' ' + (r.nomor || '') + ' ' +
+                                 (r.atasNama || '')).toLowerCase();
+                        return s.indexOf(c) !== -1;
+                    });
+                }
+                if (filter.tipe)   list = list.filter(function(r) { return r.tipe === filter.tipe; });
+                if (filter.status) list = list.filter(function(r) { return r.status === filter.status; });
+            }
+
+            _set('mrbInfoJumlah', list.length + ' rekening');
+            _set('mrbTotal', list.length);
+
+            if (list.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="8" class="text-center text-muted py-4">' +
+                        '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                        'Tidak ada rekening ditemukan.' +
+                    '</td></tr>';
+                if (empty) empty.style.display = window.rekeningGetAll().length === 0 ? 'block' : 'none';
+                return;
+            }
+            if (empty) empty.style.display = 'none';
+
+            var html = '';
+            list.forEach(function(r, i) {
+                var tipeInfo = window.mrbIkonTipe(r.tipe);
+                var statusBadge = r.status === 'Aktif'
+                    ? '<span class="badge bg-success"><i class="fas fa-check me-1"></i>Aktif</span>'
+                    : '<span class="badge bg-secondary"><i class="fas fa-times me-1"></i>Nonaktif</span>';
+                var idEsc = String(r.id || '').replace(/'/g, "\\'");
+
+                html +=
+                    '<tr>' +
+                        '<td class="text-muted small">' + (i + 1) + '</td>' +
+                        '<td class="text-center">' +
+                            '<i class="' + tipeInfo.ikon + ' fa-lg" ' +
+                               'style="color:' + tipeInfo.warna + ';" ' +
+                               'title="' + _esc(tipeInfo.label) + '"></i>' +
+                        '</td>' +
+                        '<td>' +
+                            '<strong>' + _esc(r.nama || '-') + '</strong>' +
+                            (r.catatan ? '<br><small class="text-muted">' +
+                                _esc(r.catatan.substring(0, 50)) + '</small>' : '') +
+                        '</td>' +
+                        '<td>' +
+                            '<code style="cursor:pointer;" ' +
+                                   'onclick="mrbCopyNomor(\'' + _esc(r.nomor || '') + '\')" ' +
+                                   'title="Klik untuk copy">' +
+                                _esc(r.nomor || '-') +
+                            '</code>' +
+                        '</td>' +
+                        '<td><small>' + _esc(r.atasNama || '-') + '</small></td>' +
+                        '<td class="text-center">' + statusBadge + '</td>' +
+                        '<td><small class="text-muted">' + _ft(r.updatedAt || r.createdAt) + '</small></td>' +
+                        '<td class="text-center">' +
+                            '<button class="btn btn-sm btn-outline-primary me-1" ' +
+                                    'onclick="mrbBukaEdit(\'' + idEsc + '\')" title="Edit">' +
+                                '<i class="fas fa-edit"></i>' +
+                            '</button>' +
+                            '<button class="btn btn-sm btn-outline-warning me-1" ' +
+                                    'onclick="mrbToggleStatus(\'' + idEsc + '\')" ' +
+                                    'title="Toggle Status">' +
+                                '<i class="fas fa-toggle-on"></i>' +
+                            '</button>' +
+                            '<button class="btn btn-sm btn-outline-danger" ' +
+                                    'onclick="mrbBukaHapus(\'' + idEsc + '\')" title="Hapus">' +
+                                '<i class="fas fa-trash"></i>' +
+                            '</button>' +
+                        '</td>' +
+                    '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('mrbRenderTabel error:', e);
+            tbody.innerHTML = '<tr><td colspan="8" class="text-danger text-center py-3">' +
+                'Error: ' + _esc(e.message) + '</td></tr>';
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER RENDER: COPY NOMOR
+    // ═══════════════════════════════════════════════════════════
+    window.mrbCopyNomor = function(nomor) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(nomor).then(function() {
+                    window.mrbToast('✅ Nomor dicopy: ' + nomor, 'success');
+                }).catch(function() {
+                    window.mrbToast('Nomor: ' + nomor, 'info');
+                });
+            } else {
+                window.mrbToast('Nomor: ' + nomor, 'info');
+            }
+        } catch (e) {
+            console.error('mrbCopyNomor error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — FILTER
+    // ═══════════════════════════════════════════════════════════
+    window.mrbResetFilter = function() {
+        ['mrbFilterCari', 'mrbFilterTipe', 'mrbFilterStatus'].forEach(function(id) {
+            var e = document.getElementById(id);
+            if (e) e.value = '';
+        });
+        window.mrbRenderTabel();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — RELOAD
+    // ═══════════════════════════════════════════════════════════
+    window.mrbReload = function() {
+        try {
+            window.mrbRenderStatistik();
+            window.mrbRenderTabel();
+            window.mrbToast('✅ Data di-refresh', 'success');
+        } catch (e) {
+            console.error('mrbReload error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1041c = function() {
+        return {
+            blok: '10.41.c',
+            versi: '1.0',
+            guard: window._blok1041cDone,
+            render: {
+                statistik:  typeof window.mrbRenderStatistik,
+                tabel:      typeof window.mrbRenderTabel,
+                resetFilter: typeof window.mrbResetFilter,
+                reload:     typeof window.mrbReload,
+                copyNomor:  typeof window.mrbCopyNomor
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.41.c — Render terpasang.',
+        'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📊 Render: statistik, tabel, resetFilter, reload, copyNomor');
+    console.log('   🔍 Debug: debug1041c()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.41.c ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.41.d — MANAJEMEN BANK/REKENING (Aksi) ═══════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: 10.41.c + Rekening-Universal ══════════════ -->
+<!-- ═══ Isi: Buka form, simpan, hapus, toggle, export, import -->
+<!-- ═══ Acuan: BLOK R 10.45.d + BLOK R 10.46.d ════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A23, A31, A32 ════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_41_D_AKSI() {
+    if (window._blok1041dDone) {
+        console.log('ℹ️ BLOK 10.41.d sudah terpasang.');
+        return;
+    }
+    if (!window._blok1041cDone) {
+        console.warn('⚠️ 10.41.d ditunda — 10.41.c belum terpasang.');
+        return;
+    }
+    window._blok1041dDone = true;
+
+    var _esc = window.mrbEsc;
+    var _set = window.mrbSetText;
+    var _val = window.mrbSetVal;
+    var _get = window.mrbGetVal;
+    var _setH = window.mrbSetHtml;
+    var _toast = window.mrbToast;
+    var _mNotif = window.mrbModalNotif;
+    var _state = window.mrbState;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — BUKA MODAL TAMBAH
+    // ═══════════════════════════════════════════════════════════
+    window.mrbBukaTambah = function() {
+        try {
+            _state.sedangEdit = null;
+            _set('mrbModalTitle', 'Tambah Rekening');
+            _val('mrbFormId', '');
+            _val('mrbFormNama', '');
+            _val('mrbFormNomor', '');
+            _val('mrbFormAtasNama', '');
+            _val('mrbFormCatatan', '');
+            _set('mrbFormCatatanCount', '0');
+            document.getElementById('mrbTipeBank').checked = true;
+            document.getElementById('mrbStatusAktif').checked = true;
+            document.getElementById('mrbFormNomorWarn').style.display = 'none';
+            document.getElementById('mrbFormNotif').classList.add('d-none');
+            _setH('mrbFormPreview',
+                '<i class="fas fa-info-circle me-1"></i>' +
+                'Rekening Aktif akan muncul sebagai <strong>tujuan top-up</strong> ' +
+                'di semua halaman dompet user.');
+
+            window.mrbFormUpdateHint();
+
+            if (typeof bootstrap !== 'undefined') {
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('mrbModalForm')).show();
+            }
+        } catch (e) {
+            console.error('mrbBukaTambah error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — BUKA MODAL EDIT
+    // ═══════════════════════════════════════════════════════════
+    window.mrbBukaEdit = function(id) {
+        try {
+            var r = window.rekeningGetById(id);
+            if (!r) { _toast('⚠️ Rekening tidak ditemukan.', 'warning'); return; }
+
+            _state.sedangEdit = id;
+            _set('mrbModalTitle', 'Edit Rekening');
+            _val('mrbFormId', id);
+            _val('mrbFormNama', r.nama || '');
+            _val('mrbFormNomor', r.nomor || '');
+            _val('mrbFormAtasNama', r.atasNama || '');
+            _val('mrbFormCatatan', r.catatan || '');
+            _set('mrbFormCatatanCount', (r.catatan || '').length);
+
+            // Tipe
+            var tipeRadio = {
+                'Bank':     'mrbTipeBank',
+                'E-Wallet': 'mrbTipeEwallet',
+                'Lainnya':  'mrbTipeLainnya'
+            }[r.tipe] || 'mrbTipeBank';
+            var elTipe = document.getElementById(tipeRadio);
+            if (elTipe) elTipe.checked = true;
+
+            // Status
+            var statusRadio = r.status === 'Aktif' ? 'mrbStatusAktif' : 'mrbStatusNonaktif';
+            var elStatus = document.getElementById(statusRadio);
+            if (elStatus) elStatus.checked = true;
+
+            document.getElementById('mrbFormNomorWarn').style.display = 'none';
+            document.getElementById('mrbFormNotif').classList.add('d-none');
+
+            window.mrbFormUpdateHint();
+            window.mrbFormCekNomor();
+
+            if (typeof bootstrap !== 'undefined') {
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('mrbModalForm')).show();
+            }
+        } catch (e) {
+            console.error('mrbBukaEdit error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER FORM: HINT + CEK NOMOR
+    // ═══════════════════════════════════════════════════════════
+    window.mrbFormUpdateHint = function() {
+        try {
+            var tipe = (document.querySelector('input[name="mrbFormTipe"]:checked') || {}).value || 'Bank';
+            var hintNama = document.getElementById('mrbFormNamaHint');
+            var hintNomor = document.getElementById('mrbFormNomorHint');
+            var preview = document.getElementById('mrbFormPreview');
+            var nomorInput = document.getElementById('mrbFormNomor');
+
+            if (tipe === 'Bank') {
+                if (hintNama) hintNama.textContent = 'Nama bank, contoh: BCA, BRI, Mandiri, BNI';
+                if (hintNomor) hintNomor.textContent = 'Nomor rekening bank (8–20 digit angka)';
+                if (nomorInput) nomorInput.placeholder = 'Contoh: 1234567890';
+                if (preview) preview.innerHTML =
+                    '<i class="fas fa-university me-1"></i>' +
+                    'Rekening <strong>Bank</strong> akan muncul di form Top-Up ' +
+                    'sebagai <strong>tujuan transfer</strong>.';
+            } else if (tipe === 'E-Wallet') {
+                if (hintNama) hintNama.textContent = 'Nama e-wallet, contoh: DANA, OVO, GoPay, ShopeePay';
+                if (hintNomor) hintNomor.textContent = 'Nomor HP terdaftar e-wallet (diawali 08)';
+                if (nomorInput) nomorInput.placeholder = 'Contoh: 081234567890';
+                if (preview) preview.innerHTML =
+                    '<i class="fas fa-wallet me-1"></i>' +
+                    'Rekening <strong>E-Wallet</strong> akan muncul sebagai ' +
+                    '<strong>alternatif transfer</strong>.';
+            } else {
+                if (hintNama) hintNama.textContent = 'Nama institusi / metode lain';
+                if (hintNomor) hintNomor.textContent = 'Nomor / identitas';
+                if (nomorInput) nomorInput.placeholder = 'Nomor / identitas';
+                if (preview) preview.innerHTML =
+                    '<i class="fas fa-circle me-1"></i>' +
+                    'Metode <strong>Lainnya</strong> — pastikan nama jelas & mudah dikenali user.';
+            }
+        } catch (e) {}
+    };
+
+    window.mrbFormCekNomor = function() {
+        try {
+            var tipe = (document.querySelector('input[name="mrbFormTipe"]:checked') || {}).value || 'Bank';
+            var nomor = (_get('mrbFormNomor') || '').trim();
+            var warnEl = document.getElementById('mrbFormNomorWarn');
+            if (!warnEl) return;
+
+            if (!nomor) { warnEl.style.display = 'none'; return; }
+
+            // Cek validasi format
+            var v = window.rekeningIsValidNomor(tipe, nomor);
+            if (!v.valid) {
+                warnEl.style.display = 'block';
+                warnEl.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>' + _esc(v.pesan);
+                return;
+            }
+
+            // Cek duplikat
+            var editId = _get('mrbFormId');
+            var dup = window.rekeningCekDuplikat(nomor, editId);
+            if (dup) {
+                warnEl.style.display = 'block';
+                warnEl.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>' +
+                    'Nomor ini sudah terdaftar di rekening lain.';
+                return;
+            }
+
+            warnEl.style.display = 'none';
+        } catch (e) {}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — SIMPAN FORM
+    // ═══════════════════════════════════════════════════════════
+    window.mrbFormSimpan = function() {
+        try {
+            var id       = _get('mrbFormId');
+            var tipe     = (document.querySelector('input[name="mrbFormTipe"]:checked') || {}).value || 'Bank';
+            var status   = (document.querySelector('input[name="mrbFormStatus"]:checked') || {}).value || 'Aktif';
+            var nama     = (_get('mrbFormNama') || '').trim();
+            var nomor    = (_get('mrbFormNomor') || '').trim();
+            var atasNama = (_get('mrbFormAtasNama') || '').trim();
+            var catatan  = (_get('mrbFormCatatan') || '').trim();
+
+            var data = {
+                tipe: tipe, nama: nama, nomor: nomor,
+                atasNama: atasNama, catatan: catatan, status: status
+            };
+
+            // Validasi dasar
+            var v = window.rekeningValidasiData(data);
+            if (!v.valid) {
+                _mNotif('mrbFormNotif', '⚠️ ' + _esc(v.pesan), 'warning');
+                return;
+            }
+
+            // Validasi format nomor
+            var vn = window.rekeningIsValidNomor(tipe, nomor);
+            if (!vn.valid) {
+                _mNotif('mrbFormNotif', '⚠️ ' + _esc(vn.pesan), 'warning');
+                return;
+            }
+
+            // Cek duplikat
+            if (window.rekeningCekDuplikat(nomor, id)) {
+                _mNotif('mrbFormNotif', '⚠️ Nomor rekening sudah terdaftar.', 'warning');
+                return;
+            }
+
+            // Simpan
+            var hasil;
+            if (id) {
+                hasil = window.rekeningUpdate(id, data);
+            } else {
+                hasil = window.rekeningTambah(data);
+            }
+
+            if (!hasil || !hasil.sukses) {
+                _mNotif('mrbFormNotif', '❌ ' + _esc((hasil && hasil.pesan) || 'Gagal simpan'), 'danger');
+                return;
+            }
+
+            _mNotif('mrbFormNotif',
+                '✅ Rekening ' + (id ? 'diperbarui' : 'ditambahkan') + '!', 'success');
+
+            // Emit event via 3 Pintu
+            try {
+                window.kirim1041(id ? 'rekening-updated' : 'rekening-created',
+                    { menu: 'dompetR2Coin', role: 'SA' },
+                    { id: hasil.rekening.id, nama: hasil.rekening.nama },
+                    hasil.rekening.id
+                );
+            } catch (e) {}
+
+            setTimeout(function() {
+                var m = bootstrap.Modal.getInstance(document.getElementById('mrbModalForm'));
+                if (m) m.hide();
+                window.mrbRenderStatistik();
+                window.mrbRenderTabel();
+                _toast('✅ ' + (id ? 'Rekening diperbarui' : 'Rekening ditambahkan'),
+                    'success');
+            }, 800);
+        } catch (e) {
+            console.error('mrbFormSimpan error:', e);
+            _mNotif('mrbFormNotif', '❌ Error: ' + _esc(e.message), 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — TOGGLE STATUS
+    // ═══════════════════════════════════════════════════════════
+    window.mrbToggleStatus = function(id) {
+        try {
+            var r = window.rekeningGetById(id);
+            if (!r) return;
+
+            var statusBaru = r.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
+            if (!confirm('Ubah status "' + r.nama + '" menjadi ' + statusBaru + '?')) return;
+
+            var hasil = window.rekeningToggleStatus(id);
+            if (hasil && hasil.sukses) {
+                window.mrbRenderStatistik();
+                window.mrbRenderTabel();
+                _toast('✅ Status diubah ke ' + statusBaru, 'success');
+            } else {
+                _toast('❌ ' + _esc((hasil && hasil.pesan) || 'Gagal'), 'danger');
+            }
+        } catch (e) {
+            console.error('mrbToggleStatus error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — BUKA HAPUS
+    // ═══════════════════════════════════════════════════════════
+    window.mrbBukaHapus = function(id) {
+        try {
+            var r = window.rekeningGetById(id);
+            if (!r) return;
+
+            _state.hapusId = id;
+
+            var info = '' +
+                '<div><i class="fas fa-university me-1"></i>' +
+                    '<strong>' + _esc(r.nama) + '</strong></div>' +
+                '<div class="small text-muted mt-1">' +
+                    'Nomor: ' + _esc(r.nomor) + '<br>' +
+                    'Atas Nama: ' + _esc(r.atasNama) + '<br>' +
+                    'Tipe: ' + _esc(r.tipe) +
+                '</div>';
+
+            _setH('mrbHapusInfo', info);
+
+            if (typeof bootstrap !== 'undefined') {
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('mrbModalHapus')).show();
+            }
+        } catch (e) {
+            console.error('mrbBukaHapus error:', e);
+        }
+    };
+
+    window.mrbHapusKonfirmasi = function() {
+        try {
+            if (!_state.hapusId) return;
+
+            var hasil = window.rekeningHapus(_state.hapusId);
+            var modal = document.getElementById('mrbModalHapus');
+            if (modal && typeof bootstrap !== 'undefined') {
+                var inst = bootstrap.Modal.getInstance(modal);
+                if (inst) inst.hide();
+            }
+            _state.hapusId = null;
+
+            if (hasil && hasil.sukses) {
+                window.mrbRenderStatistik();
+                window.mrbRenderTabel();
+                _toast('✅ Rekening dihapus', 'success');
+            } else {
+                _toast('❌ ' + _esc((hasil && hasil.pesan) || 'Gagal hapus'), 'danger');
+            }
+        } catch (e) {
+            console.error('mrbHapusKonfirmasi error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — EXPORT CSV
+    // ═══════════════════════════════════════════════════════════
+    window.mrbExportCSV = function() {
+        try {
+            var list = window.rekeningGetAll();
+            if (list.length === 0) {
+                _toast('⚠️ Tidak ada data untuk diexport.', 'warning');
+                return;
+            }
+            var r = window.rekeningExportCSV(list);
+            if (r && r.sukses) _toast('✅ Export CSV: ' + r.namaFile, 'success');
+            else _toast('❌ Gagal export', 'danger');
+        } catch (e) {
+            console.error('mrbExportCSV error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — EXPORT JSON
+    // ═══════════════════════════════════════════════════════════
+    window.mrbExportJSON = function() {
+        try {
+            var r = window.rekeningExportJSON();
+            if (!r || !r.sukses) { _toast('❌ Gagal export JSON', 'danger'); return; }
+
+            var blob = new Blob([r.json], { type: 'application/json' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'rekening_' + new Date().toISOString().split('T')[0] + '.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            _toast('✅ Export JSON: ' + r.total + ' rekening', 'success');
+        } catch (e) {
+            console.error('mrbExportJSON error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — IMPORT JSON
+    // ═══════════════════════════════════════════════════════════
+    window.mrbBukaImport = function() {
+        try {
+            var inp = document.createElement('input');
+            inp.type = 'file';
+            inp.accept = '.json';
+            inp.onchange = function() {
+                var f = inp.files && inp.files[0];
+                if (!f) return;
+
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    var mode = confirm(
+                        'Gabungkan dengan data existing?\n\n' +
+                        'OK = Gabung (tambah ke daftar)\n' +
+                        'Batal = Ganti semua (hapus yang lama)'
+                    ) ? 'gabung' : 'replace';
+
+                    var r = window.rekeningImportJSON(e.target.result, { mode: mode });
+                    if (r && r.sukses) {
+                        window.mrbRenderStatistik();
+                        window.mrbRenderTabel();
+                        _toast('✅ Import selesai: ' + r.berhasil + ' berhasil, ' +
+                            r.gagal + ' gagal', 'success');
+                    } else {
+                        _toast('❌ ' + _esc((r && r.pesan) || 'Gagal import'), 'danger');
+                    }
+                };
+                reader.readAsText(f);
+            };
+            inp.click();
+        } catch (e) {
+            console.error('mrbBukaImport error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1041d = function() {
+        return {
+            blok: '10.41.d',
+            versi: '1.0',
+            guard: window._blok1041dDone,
+            aksi: {
+                bukaTambah:   typeof window.mrbBukaTambah,
+                bukaEdit:     typeof window.mrbBukaEdit,
+                formSimpan:   typeof window.mrbFormSimpan,
+                formUpdateHint: typeof window.mrbFormUpdateHint,
+                formCekNomor: typeof window.mrbFormCekNomor,
+                toggleStatus: typeof window.mrbToggleStatus,
+                bukaHapus:    typeof window.mrbBukaHapus,
+                hapusKonfirmasi: typeof window.mrbHapusKonfirmasi,
+                exportCSV:    typeof window.mrbExportCSV,
+                exportJSON:   typeof window.mrbExportJSON,
+                bukaImport:   typeof window.mrbBukaImport
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.41.d — Aksi terpasang.',
+        'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   ⚙️ 11 Aksi: bukaTambah, bukaEdit, formSimpan, toggleStatus,');
+    console.log('              bukaHapus, hapusKonfirmasi, exportCSV, exportJSON, import');
+    console.log('   🔍 Debug: debug1041d()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.41.d ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.41.e — MANAJEMEN BANK/REKENING (Handler) ════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: 10.41.d + MN + CS7 + 0.1 ══════════════════ -->
+<!-- ═══ Isi: Menu Handler + Auto-Registry + Debug ═════════════ -->
+<!-- ═══ Acuan: BLOK R 10.45.e + BLOK R 10.46.e ════════════════ -->
+<!-- ═══ Aturan: A7, A9, A10, A14, A15, A23, A31, A32, A33, ═══ -->
+<!-- ═══         A34, A35 ══════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_41_E_HANDLER() {
+    if (window._blok1041eDone) {
+        console.log('ℹ️ BLOK 10.41.e sudah terpasang.');
+        return;
+    }
+    if (!window._blok1041dDone) {
+        console.warn('⚠️ 10.41.e ditunda — 10.41.d belum terpasang.');
+        return;
+    }
+    if (typeof window.tampilkanManajemenRekening !== 'function') {
+        console.warn('⚠️ 10.41.e ditunda — tampilkanManajemenRekening() belum ada.');
+        return;
+    }
+    window._blok1041eDone = true;
+    window._blok1041Done  = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — MENU HANDLER (A10 — 1 baris delegasi)
+    // ═══════════════════════════════════════════════════════════
+    // COCOKKAN dengan menuConfig['SA'].aksi = 'manajemenRekening'
+    // (lihat BLOK 9.3.1(1) → 'Manajemen Bank/Rekening', aksi: 'manajemenRekening')
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+
+    // ── Handler UTAMA: cocok dengan menuConfig['SA'].aksi ──
+    window.menuHandlers['manajemenRekening'] = function(opts) {
+        return window.tampilkanManajemenRekening(opts);
+    };
+
+    // ── Alias ──
+    window.menuHandlers['tampilkanManajemenRekening'] = function(opts) {
+        return window.tampilkanManajemenRekening(opts);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — DAFTAR AKSI KE SUDAH_ADA_UI_1 (A14)
+    // ═══════════════════════════════════════════════════════════
+    // Melaporkan ke 9.3.2(1) bahwa handler berikut SUDAH ADA.
+    // Nama HARUS cocok dengan menuConfig['SA'].aksi.
+    // ═══════════════════════════════════════════════════════════
+    try {
+        if (!window._SUDAH_ADA_UI_1) window._SUDAH_ADA_UI_1 = [];
+        [
+            'manajemenRekening',           // ← nama utama (cocok menuConfig['SA'])
+            'tampilkanManajemenRekening'   // ← alias
+        ].forEach(function(aksi) {
+            if (window._SUDAH_ADA_UI_1.indexOf(aksi) === -1) {
+                window._SUDAH_ADA_UI_1.push(aksi);
+            }
+        });
+    } catch (e) {}
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — EVENT LISTENERS (auto-refresh dari modul lain)
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:rekening-added', function() {
+        if (!window._blok1041Done) return;
+        if (!document.getElementById('mrbTbody')) return;
+        window.mrbRenderStatistik();
+        window.mrbRenderTabel();
+    });
+    window.addEventListener('r2coin:rekening-updated', function() {
+        if (!window._blok1041Done) return;
+        if (!document.getElementById('mrbTbody')) return;
+        window.mrbRenderStatistik();
+        window.mrbRenderTabel();
+    });
+    window.addEventListener('r2coin:rekening-deleted', function() {
+        if (!window._blok1041Done) return;
+        if (!document.getElementById('mrbTbody')) return;
+        window.mrbRenderStatistik();
+        window.mrbRenderTabel();
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — AUTO-REGISTRY KE 0.1 (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === '10.41';
+                });
+                if (!sudahAda) {
+                    window.cpTambahBlok({
+                        kode:    '10.41',
+                        nama:    'Manajemen Bank/Rekening',
+                        layer:   'L5',
+                        status:  'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('10.41', { status: 'Selesai' });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('mrb', {
+                    nama:   'Manajemen Bank/Rekening UI (L5)',
+                    status: 'Selesai',
+                    jumlah: 20
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok:       '10.41',
+                    nama:       'Manajemen Bank/Rekening',
+                    keterangan: 'UI SA (a-e) — via Rekening-Universal + 3 pintu'
+                });
+            }
+        } catch (e) {
+            console.warn('10.41.e: Gagal update catatan 0.1:', e.message);
+        }
+    }, 500);
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1041 = function() {
+        var h = window.menuHandlers && window.menuHandlers['manajemenRekening'];
+        var s = h ? h.toString() : '';
+        var isReal = s.indexOf('tampilkanManajemenRekening') !== -1;
+
+        var info = {
+            blok: '10.41',
+            versi: '2.0',
+            guards: {
+                b: window._blok1041bDone,
+                c: window._blok1041cDone,
+                d: window._blok1041dDone,
+                e: window._blok1041eDone,
+                done: window._blok1041Done
+            },
+            entry: typeof window.tampilkanManajemenRekening,
+            handler: {
+                utama: typeof window.menuHandlers['manajemenRekening'],
+                alias: typeof window.menuHandlers['tampilkanManajemenRekening'],
+                nyata: isReal ? '✅ YA' : '❌ TIDAK (placeholder?)'
+            },
+            pintu: {
+                kirim:  typeof window.kirim1041,
+                terima: typeof window.terima1041,
+                ambil:  typeof window.ambil1041,
+                skor:   (typeof window.kirim1041 === 'function' ? 1 : 0) +
+                        (typeof window.terima1041 === 'function' ? 1 : 0) +
+                        (typeof window.ambil1041 === 'function' ? 1 : 0)
+            },
+            render: {
+                statistik:   typeof window.mrbRenderStatistik,
+                tabel:       typeof window.mrbRenderTabel,
+                resetFilter: typeof window.mrbResetFilter,
+                reload:      typeof window.mrbReload,
+                copyNomor:   typeof window.mrbCopyNomor
+            },
+            aksi: {
+                bukaTambah:     typeof window.mrbBukaTambah,
+                bukaEdit:       typeof window.mrbBukaEdit,
+                formSimpan:     typeof window.mrbFormSimpan,
+                toggleStatus:   typeof window.mrbToggleStatus,
+                bukaHapus:      typeof window.mrbBukaHapus,
+                hapusKonfirmasi: typeof window.mrbHapusKonfirmasi,
+                exportCSV:      typeof window.mrbExportCSV,
+                exportJSON:     typeof window.mrbExportJSON,
+                bukaImport:     typeof window.mrbBukaImport
+            },
+            whitelist: {
+                ada: window._SUDAH_ADA_UI_1 &&
+                     window._SUDAH_ADA_UI_1.indexOf('manajemenRekening') !== -1,
+                total: (window._SUDAH_ADA_UI_1 || []).length
+            },
+            rekeningUniversal: {
+                getAll:  typeof window.rekeningGetAll,
+                tambah:  typeof window.rekeningTambah,
+                update:  typeof window.rekeningUpdate,
+                hapus:   typeof window.rekeningHapus
+            }
+        };
+        console.log('🔍 debug1041:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c📦 BLOK 10.41.e — Handler terpasang.',
+        'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🔗 Handler: menuHandlers["manajemenRekening"] (cocok menuConfig)');
+    console.log('   🔗 Alias  : menuHandlers["tampilkanManajemenRekening"]');
+    console.log('   ✅ Whitelist SUDAH_ADA_UI_1 diupdate');
+    console.log('');
+    console.log('%c✅ BLOK R 10.41 — MANAJEMEN BANK/REKENING LENGKAP (a+b+c+d+e)',
+        'background:#28A745;color:#fff;padding:6px 12px;font-weight:bold;font-size:14px;');
+    console.log('   🎯 Entry    : tampilkanManajemenRekening()');
+    console.log('   🔗 Handler  : menuHandlers["manajemenRekening"]');
+    console.log('   🚪 3 Pintu  : kirim1041, terima1041, ambil1041');
+    console.log('   📊 5 Render : statistik, tabel, resetFilter, reload, copyNomor');
+    console.log('   ⚙️  11 Aksi  : bukaTambah, bukaEdit, formSimpan, toggleStatus,');
+    console.log('                 bukaHapus, hapusKonfirmasi, exportCSV, exportJSON, import');
+    console.log('   📋 2 Modal  : Form (Tambah/Edit), Konfirmasi Hapus');
+    console.log('   🔗 Delegasi : 100% ke Rekening-Universal');
+    console.log('   📦 Registry : CP_REGISTRY_BLOK["10.41"] + CP_RIWAYAT');
+    console.log('   🔍 Debug    : debug1041()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.41.e ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.45.a — SETTING EKONOMI R2COIN (HTML) ════════ -->
 <!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
 <!-- ═══ Dependency: TIDAK ADA (murni HTML) ════════════════════ -->
@@ -47267,8 +49838,10 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══ BLOK R 11.31.e — DOMPET R2COIN TOKO (Handler) v2 ══════ -->
 <!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
 <!-- ═══ Dependency: 11.31.d + MN + CS7 + 0.1 ══════════════════ -->
-<!-- ═══ Isi: Menu Handler (nama cocok menuConfig) + Auto-Registry -->
-<!-- ═══ Acuan: BLOK R 10.46.e + BLOK R 11.5.e ═════════════════ -->
+<!-- ═══ Isi: Menu Handler (nama cocok menuConfig) + Registry ══ -->
+<!-- ═══ Revisi v2: ⭐ Handler pakai nama 'tampilkanDompetR2CoinTK' -->
+<!-- ═══            ⭐ yang COCOK dengan menuConfig['TK'].aksi ⭐ -->
+<!-- ═══ Acuan: BLOK R 10.46.e + BLOK R 10.41.e ════════════════ -->
 <!-- ═══ Aturan: A6, A7, A9, A10, A14, A15, A23, A31, A32, ════ -->
 <!-- ═══         A33, A34, A35 ═════════════════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -47292,8 +49865,16 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // [MODUL 1] — MENU HANDLER (A10 — 1 baris delegasi)
     // ═══════════════════════════════════════════════════════════
-    // Handler didaftarkan dengan nama yang COCOK dengan menuConfig['TK'].
-    // menuConfig['TK'] untuk Dompet R2Coin: aksi = 'tampilkanDompetR2CoinTK'
+    // ⚠️ PENTING: Nama handler HARUS SAMA PERSIS dengan
+    //    menuConfig['TK'].aksi untuk menu Dompet R2Coin.
+    //
+    //    Cek BLOK 9.3.1(2) → menuConfig['TK']:
+    //    { nama: 'Dompet R2Coin', blok: '11.31',
+    //      aksi: 'tampilkanDompetR2CoinTK', ... }
+    //
+    //    ⇒ Handler WAJIB: menuHandlers['tampilkanDompetR2CoinTK']
+    //    ⇒ DILARANG pakai 'tampilkanDompetR2CoinToko' sebagai
+    //      handler UTAMA (boleh sebagai alias).
     // ═══════════════════════════════════════════════════════════
     window.menuHandlers = window.menuHandlers || {};
 
@@ -47302,7 +49883,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         return window.tampilkanDompetR2CoinToko(opts);
     };
 
-    // ── Alias ──
+    // ── Alias (untuk fleksibilitas dari blok lain) ──
     window.menuHandlers['tampilkanDompetR2CoinToko'] = function(opts) {
         return window.tampilkanDompetR2CoinToko(opts);
     };
@@ -47310,24 +49891,27 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // [MODUL 2] — DAFTAR AKSI KE SUDAH_ADA_UI_2 (A14)
     // ═══════════════════════════════════════════════════════════
-    // Melaporkan ke 9.3.2(2) bahwa handler berikut SUDAH ADA.
-    // Nama HARUS cocok dengan menuConfig['TK'].aksi.
+    // Melaporkan ke 9.3.2(2) bahwa handler berikut SUDAH ADA
+    // (bukan placeholder). Nama HARUS cocok dengan menuConfig.
     // ═══════════════════════════════════════════════════════════
     try {
         if (!window._SUDAH_ADA_UI_2) window._SUDAH_ADA_UI_2 = [];
         [
-            'tampilkanDompetR2CoinTK',     // ← nama utama (cocok menuConfig['TK'])
+            'tampilkanDompetR2CoinTK',     // ← nama UTAMA (cocok menuConfig['TK'])
             'tampilkanDompetR2CoinToko'    // ← alias
         ].forEach(function(aksi) {
             if (window._SUDAH_ADA_UI_2.indexOf(aksi) === -1) {
                 window._SUDAH_ADA_UI_2.push(aksi);
             }
         });
-    } catch (e) {}
+    } catch (e) {
+        console.warn('11.31.e: Gagal update _SUDAH_ADA_UI_2:', e.message);
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — EVENT LISTENERS (auto-refresh)
+    // [MODUL 3] — EVENT LISTENERS (auto-refresh dari modul lain)
     // ═══════════════════════════════════════════════════════════
+    // Top-up disetujui → refresh kartu saldo & tabel
     window.addEventListener('r2coin:topup-approved', function(e) {
         if (!window._blok1131Done) return;
         if (!document.getElementById('dtkTabs')) return;
@@ -47336,6 +49920,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         window.dtkToast('✅ Top-up Anda disetujui!', 'success');
     });
 
+    // Withdraw disetujui → refresh
     window.addEventListener('r2coin:withdraw-approved', function(e) {
         if (!window._blok1131Done) return;
         if (!document.getElementById('dtkTabs')) return;
@@ -47344,6 +49929,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         window.dtkToast('✅ Withdraw Anda disetujui!', 'success');
     });
 
+    // Dompet di-update (intervensi SA, dll) → refresh kartu saldo
     window.addEventListener('r2coin:dompet-updated', function(e) {
         if (!window._blok1131Done) return;
         if (!document.getElementById('dtkTabs')) return;
@@ -47352,7 +49938,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     });
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — AUTO-REGISTRY (A33, A34, A35)
+    // [MODUL 4] — AUTO-REGISTRY KE 0.1 (A33, A34, A35)
     // ═══════════════════════════════════════════════════════════
     setTimeout(function() {
         try {
@@ -47383,7 +49969,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 window.cpTambahRiwayat({
                     blok:       '11.31',
                     nama:       'Dompet R2Coin Toko',
-                    keterangan: 'UI Toko (a-e) — via Dompet-User + 3 pintu + 4 tab'
+                    keterangan: 'UI Toko (a-e v2) — via Dompet-User + 3 pintu + 4 tab'
                 });
             }
         } catch (e) {
@@ -47392,21 +49978,22 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }, 500);
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — DEBUG
+    // [MODUL 5] — DEBUG (A5)
     // ═══════════════════════════════════════════════════════════
     window.debug1131 = function() {
         var h = window.menuHandlers && window.menuHandlers['tampilkanDompetR2CoinTK'];
         var s = h ? h.toString() : '';
         var isReal = s.indexOf('tampilkanDompetR2CoinToko') !== -1;
+        var inWhitelist = (window._SUDAH_ADA_UI_2 || []).indexOf('tampilkanDompetR2CoinTK') !== -1;
 
         var info = {
             blok: '11.31',
             versi: '2.0',
             guards: {
-                b: window._blok1131bDone,
-                c: window._blok1131cDone,
-                d: window._blok1131dDone,
-                e: window._blok1131eDone,
+                b:    window._blok1131bDone,
+                c:    window._blok1131cDone,
+                d:    window._blok1131dDone,
+                e:    window._blok1131eDone,
                 done: window._blok1131Done
             },
             entry: typeof window.tampilkanDompetR2CoinToko,
@@ -47430,19 +50017,21 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 tabelRiwayat:  typeof window.dtkRenderTabelRiwayat,
                 tabelTopUp:    typeof window.dtkRenderTabelTopUp,
                 tabelWithdraw: typeof window.dtkRenderTabelWithdraw,
-                tabelGif:      typeof window.dtkRenderTabelGif
+                tabelGif:      typeof window.dtkRenderTabelGif,
+                reload:        typeof window.dtkReload
             },
             aksi: {
                 bukaModalTopUp:      typeof window.dtkBukaModalTopUp,
                 topUpProses:         typeof window.dtkTopUpProses,
+                topUpBatalkan:       typeof window.dtkTopUpBatalkan,
                 bukaModalWithdraw:   typeof window.dtkBukaModalWithdraw,
                 withdrawProses:      typeof window.dtkWithdrawProses,
                 simpanRekening:      typeof window.dtkSimpanRekening,
+                hapusRekening:       typeof window.dtkWithdrawHapusRekening,
                 bukaDetailTrx:       typeof window.dtkBukaDetailTrx
             },
             whitelist: {
-                ada: window._SUDAH_ADA_UI_2 &&
-                     window._SUDAH_ADA_UI_2.indexOf('tampilkanDompetR2CoinTK') !== -1,
+                ada: inWhitelist,
                 total: (window._SUDAH_ADA_UI_2 || []).length
             }
         };
@@ -47468,11 +50057,14 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     console.log('                 tabelTopUp, tabelWithdraw, tabelGif, reload');
     console.log('   ⚙️  9 Aksi   : topUp, withdraw, rekening, detailTrx');
     console.log('   📋 4 Modal  : TopUp, Withdraw, Rekening, Detail Trx');
+    console.log('   🔗 Delegasi : 100% ke Dompet-User + Dompet-Universal');
     console.log('   📦 Registry : CP_REGISTRY_BLOK["11.31"] + CP_RIWAYAT');
     console.log('   🔍 Debug    : debug1131()');
 })();
 </script>
-<!-- ═══ AKHIR BLOK R 11.31.e v2 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 11.31.e v2 ════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK UI ALL DASBOR ══════ -->
