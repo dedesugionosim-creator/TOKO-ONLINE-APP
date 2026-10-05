@@ -17567,6 +17567,1221 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW ═══════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Dependency: CS1–CS14 + GID + MN + Ekonomi-Universal ══ -->
+<!-- ═══             + Dompet-Universal ════════════════════════ -->
+<!-- ═══ Prefix: vfc* (Verifikasi Coin) ════════════════════════ -->
+<!-- ═══ Guard: _blokVerifikasiCoinDone ════════════════════════ -->
+<!-- ═══ Pemakai: 10.47 (UI SA) + 12 blok role (notif) ═════════ -->
+<!-- ═══ Isi: 8 Modul, ~32 fungsi + ~15 alias backward compat -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A21, A23, ═════ -->
+<!-- ═══         A25, A31, A32, A33, A34, A35 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_VERIFIKASI_COIN() {
+    if (window._blokVerifikasiCoinDone) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL VERIFIKASI COIN sudah terpasang.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT
+    // ═══════════════════════════════════════════════════════════
+    var deps = [
+        { flag: '_coreSystem8Done',          nama: 'Core System (1)-(8)' },
+        { flag: '_blokGIDDone',              nama: 'GID — Identity' },
+        { flag: '_blokMNDone',               nama: 'MN — Menu Network' },
+        { flag: '_blokEkonomiUniversalDone', nama: 'Ekonomi-Universal' },
+        { flag: '_blokDompetUniversalDone',  nama: 'Dompet-Universal' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ Verifikasi-Coin-Universal ditunda — dependency belum terpasang:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // Cek fungsi WAJIB dari Dompet-Universal
+    var fungsiDompet = [
+        'dompetLoadTopUpHistory', 'dompetLoadWithdrawHistory',
+        'dompetTopUpApprove', 'dompetTopUpReject',
+        'dompetWithdrawApprove', 'dompetWithdrawReject'
+    ];
+    var hilangDompet = fungsiDompet.filter(function(f) {
+        return typeof window[f] !== 'function';
+    });
+    if (hilangDompet.length > 0) {
+        console.warn('⚠️ Verifikasi-Coin-Universal ditunda — Dompet-Universal belum lengkap:');
+        hilangDompet.forEach(function(f) { console.warn('   • ' + f); });
+        return;
+    }
+
+    window._blokVerifikasiCoinDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1b] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.VFC_KONSTANTA = window.VFC_KONSTANTA || {
+        VERSI: '1.0',
+        KATEGORI: { TOPUP: 'topup', WITHDRAW: 'withdraw' },
+        STATUS_TOPUP: ['Menunggu', 'Lunas', 'Ditolak', 'Dibatalkan'],
+        STATUS_WITHDRAW: ['Menunggu', 'Disetujui', 'Ditolak'],
+        MAX_HARGA_TOLERANSI_PERSEN: 5,
+        MIN_ALASAN_TOLAK: 5,
+        CACHE_TTL_MS: 30000
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _vfcNow() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    function _vfcIdUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+            if (typeof window.getIdUserAktif === 'function') return window.getIdUserAktif();
+            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
+                return window.userAktif.idUser || window.userAktif.id;
+            }
+        } catch (e) {}
+        return 'SYSTEM';
+    }
+
+    function _vfcUserInfo(idUser) {
+        if (!idUser) return null;
+        try {
+            if (typeof window.getUserByIdGlobal === 'function') {
+                return window.getUserByIdGlobal(idUser);
+            }
+            if (typeof window.getDataIdUser === 'function') {
+                return window.getDataIdUser(idUser);
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function _vfcCatat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal !== 'function') return;
+            window.catatAktivitasGlobal(_vfcIdUser(), aksi, detail);
+        } catch (e) {}
+    }
+
+    function _vfcKurs() {
+        try {
+            if (typeof window.getSettingEkonomiGlobal === 'function') {
+                var cfg = window.getSettingEkonomiGlobal();
+                return parseFloat(cfg.hargaJual) || 1000;
+            }
+        } catch (e) {}
+        return 1000;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — READ / QUERY (8 fungsi) — delegasi ke Dompet-Universal
+    // ═══════════════════════════════════════════════════════════
+    window.vfcGetTopUpById = function(id) {
+        if (!id) return null;
+        try {
+            var list = window.dompetLoadTopUpHistory({});
+            for (var i = 0; i < list.length; i++) {
+                var t = list[i];
+                if (t && (t.id === id || t.idTrx === id)) return t;
+            }
+        } catch (e) {}
+        return null;
+    };
+
+    window.vfcGetWithdrawById = function(id) {
+        if (!id) return null;
+        try {
+            var list = window.dompetLoadWithdrawHistory({});
+            for (var i = 0; i < list.length; i++) {
+                var w = list[i];
+                if (w && (w.id === id || w.idReq === id)) return w;
+            }
+        } catch (e) {}
+        return null;
+    };
+
+    window.vfcCariTopUp = function(filter) {
+        filter = filter || {};
+        var cari    = (filter.cari || '').toLowerCase().trim();
+        var role    = filter.role || '';
+        var status  = filter.status || '';
+        var tanggal = filter.tanggal || '';
+
+        try {
+            var list = window.dompetLoadTopUpHistory({});
+            return list.filter(function(t) {
+                if (!t) return false;
+                if (role && t.role !== role) return false;
+                if (status && t.status !== status) return false;
+                if (tanggal) {
+                    var tgl = String(t.tanggal || t.createdAt || '').substring(0, 10);
+                    if (tgl !== tanggal) return false;
+                }
+                if (cari) {
+                    var s = ((t.namaPembeli || '') + ' ' + (t.idUser || '') + ' ' +
+                             (t.metode || '') + ' ' + (t.id || '')).toLowerCase();
+                    if (s.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+        } catch (e) { return []; }
+    };
+
+    window.vfcCariWithdraw = function(filter) {
+        filter = filter || {};
+        var cari    = (filter.cari || '').toLowerCase().trim();
+        var role    = filter.role || '';
+        var status  = filter.status || '';
+        var tanggal = filter.tanggal || '';
+
+        try {
+            var list = window.dompetLoadWithdrawHistory({});
+            return list.filter(function(w) {
+                if (!w) return false;
+                if (role && w.role !== role) return false;
+                if (status && w.status !== status) return false;
+                if (tanggal) {
+                    var tgl = String(w.tanggal || w.createdAt || '').substring(0, 10);
+                    if (tgl !== tanggal) return false;
+                }
+                if (cari) {
+                    var s = ((w.namaPemohon || '') + ' ' + (w.idUser || '') + ' ' +
+                             (w.id || '')).toLowerCase();
+                    if (s.indexOf(cari) === -1) return false;
+                }
+                return true;
+            });
+        } catch (e) { return []; }
+    };
+
+    window.vfcGetTopUpPending = function() {
+        try {
+            return window.dompetLoadTopUpHistory({ status: 'Menunggu' });
+        } catch (e) { return []; }
+    };
+
+    window.vfcGetWithdrawPending = function() {
+        try {
+            return window.dompetLoadWithdrawHistory({ status: 'Menunggu' });
+        } catch (e) { return []; }
+    };
+
+    window.vfcGetAllPending = function() {
+        var t = window.vfcGetTopUpPending().map(function(x) {
+            return Object.assign({}, x, { _tipe: 'topup' });
+        });
+        var w = window.vfcGetWithdrawPending().map(function(x) {
+            return Object.assign({}, x, { _tipe: 'withdraw' });
+        });
+        return t.concat(w).sort(function(a, b) {
+            return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+        });
+    };
+
+    window.vfcGetRiwayatGabungan = function(filter) {
+        filter = filter || {};
+        var cari = (filter.cari || '').toLowerCase().trim();
+        var combined = [];
+
+        try {
+            var topup = window.dompetLoadTopUpHistory({});
+            topup.forEach(function(t) {
+                if (!t) return;
+                if (t.status !== 'Lunas' && t.status !== 'Ditolak') return;
+                combined.push({
+                    waktuVerif: t.verifiedAt || t.updatedAt || t.createdAt,
+                    tipe: 'topup',
+                    idUser: t.idUser,
+                    nama: t.namaPembeli || t.namaUser || '-',
+                    role: t.role || '-',
+                    jumlahCoin: t.jumlahKoin || 0,
+                    totalRupiah: t.totalRupiah || 0,
+                    status: t.status,
+                    catatan: t.catatan || '-'
+                });
+            });
+        } catch (e) {}
+
+        try {
+            var wd = window.dompetLoadWithdrawHistory({});
+            wd.forEach(function(w) {
+                if (!w) return;
+                if (w.status !== 'Disetujui' && w.status !== 'Ditolak') return;
+                combined.push({
+                    waktuVerif: w.verifiedAt || w.updatedAt || w.createdAt,
+                    tipe: 'withdraw',
+                    idUser: w.idUser,
+                    nama: w.namaPemohon || '-',
+                    role: w.role || '-',
+                    jumlahCoin: w.jumlahKoin || 0,
+                    totalRupiah: w.totalRupiah || 0,
+                    status: w.status,
+                    catatan: w.catatan || '-'
+                });
+            });
+        } catch (e) {}
+
+        if (cari) {
+            combined = combined.filter(function(r) {
+                var s = (r.nama + ' ' + r.idUser + ' ' + r.catatan).toLowerCase();
+                return s.indexOf(cari) !== -1;
+            });
+        }
+
+        combined.sort(function(a, b) {
+            return new Date(b.waktuVerif || 0) - new Date(a.waktuVerif || 0);
+        });
+        return combined;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — AKSI (4 fungsi) — delegasi tipis + validasi
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 4.1 SETUJUI TOP-UP ──
+    window.vfcSetujuiTopUp = function(id, catatan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        try {
+            var topup = window.vfcGetTopUpById(id);
+            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+            if (topup.status === 'Lunas') {
+                return { sukses: false, pesan: 'Top-up sudah pernah disetujui.' };
+            }
+
+            // ── Validasi minimalTopUp dari Ekonomi-Universal ──
+            var setting = (typeof window.getSettingEkonomiGlobal === 'function')
+                ? window.getSettingEkonomiGlobal()
+                : { minimalTopUp: 10000, hargaJual: 1000 };
+
+            var totalRupiah  = parseFloat(topup.totalRupiah) || 0;
+            var minimalTopUp = parseFloat(setting.minimalTopUp) || 10000;
+
+            if (totalRupiah < minimalTopUp) {
+                return {
+                    sukses: false,
+                    pesan: 'Nominal Rp ' + totalRupiah.toLocaleString('id-ID') +
+                           ' di bawah minimal Rp ' + minimalTopUp.toLocaleString('id-ID') + '.',
+                    validasi: 'minimalTopUp'
+                };
+            }
+
+            // ── Validasi harga per coin (toleransi 5%) ──
+            var jumlahKoin   = parseInt(topup.jumlahKoin, 10) || 0;
+            var hargaJual    = parseFloat(setting.hargaJual) || 1000;
+            var totalSeharus = jumlahKoin * hargaJual;
+            var toleransi    = totalSeharus * (VFC_KONSTANTA.MAX_HARGA_TOLERANSI_PERSEN / 100);
+
+            if (totalSeharus > 0 && Math.abs(totalRupiah - totalSeharus) > toleransi) {
+                try {
+                    if (typeof confirm === 'function' && !confirm(
+                        '⚠️ PERINGATAN!\n\n' +
+                        'Coin: ' + jumlahKoin + '\n' +
+                        'Bayar: Rp ' + totalRupiah.toLocaleString('id-ID') + '\n' +
+                        'Seharusnya: Rp ' + totalSeharus.toLocaleString('id-ID') + '\n' +
+                        '(harga/coin Rp ' + hargaJual.toLocaleString('id-ID') + ')\n\n' +
+                        'Selisih > ' + VFC_KONSTANTA.MAX_HARGA_TOLERANSI_PERSEN + '%. Lanjut?'
+                    )) {
+                        return { sukses: false, pesan: 'Dibatalkan SA.' };
+                    }
+                } catch (e) {}
+            }
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetTopUpApprove(id, _vfcIdUser());
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal approve.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(topup.idUser, 'topup_lunas', topup, catatan);
+
+            // ── Catat aktivitas ──
+            _vfcCatat('Setujui Top-Up',
+                (topup.namaPembeli || topup.idUser) + ' +' + jumlahKoin + ' coin');
+
+            // ── Emit via pintu ──
+            try {
+                window.kirimVerifikasiCoin('topup-approved',
+                    { menu: 'dompetR2Coin', role: topup.role || null },
+                    {
+                        id: id, idUser: topup.idUser,
+                        jumlahKoin: jumlahKoin, totalRupiah: totalRupiah
+                    },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, topup: hasil.entry || topup };
+        } catch (e) {
+            console.error('vfcSetujuiTopUp error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 4.2 TOLAK TOP-UP ──
+    window.vfcTolakTopUp = function(id, alasan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        if (!alasan || String(alasan).trim().length < VFC_KONSTANTA.MIN_ALASAN_TOLAK) {
+            return { sukses: false, pesan: 'Alasan minimal ' +
+                VFC_KONSTANTA.MIN_ALASAN_TOLAK + ' karakter.' };
+        }
+
+        try {
+            var topup = window.vfcGetTopUpById(id);
+            if (!topup) return { sukses: false, pesan: 'Top-up tidak ditemukan.' };
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetTopUpReject(id, _vfcIdUser(), alasan);
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal reject.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(topup.idUser, 'topup_tolak', topup, alasan);
+
+            // ── Catat ──
+            _vfcCatat('Tolak Top-Up',
+                (topup.namaPembeli || topup.idUser) + ' — Alasan: ' + alasan);
+
+            // ── Emit ──
+            try {
+                window.kirimVerifikasiCoin('topup-rejected',
+                    { menu: 'dompetR2Coin', role: topup.role || null },
+                    { id: id, idUser: topup.idUser, alasan: alasan },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, topup: hasil.entry || topup };
+        } catch (e) {
+            console.error('vfcTolakTopUp error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 4.3 SETUJUI WITHDRAW ──
+    window.vfcSetujuiWithdraw = function(id, catatan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        try {
+            var wd = window.vfcGetWithdrawById(id);
+            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+            if (wd.status === 'Disetujui') {
+                return { sukses: false, pesan: 'Withdraw sudah disetujui.' };
+            }
+
+            // ── Validasi minimalWithdraw ──
+            var setting = (typeof window.getSettingEkonomiGlobal === 'function')
+                ? window.getSettingEkonomiGlobal()
+                : { minimalWithdraw: 50000 };
+
+            var totalRupiah     = parseFloat(wd.totalRupiah) || 0;
+            var minimalWithdraw = parseFloat(setting.minimalWithdraw) || 50000;
+
+            if (totalRupiah < minimalWithdraw) {
+                return {
+                    sukses: false,
+                    pesan: 'Nominal Rp ' + totalRupiah.toLocaleString('id-ID') +
+                           ' di bawah minimal Rp ' + minimalWithdraw.toLocaleString('id-ID') + '.',
+                    validasi: 'minimalWithdraw'
+                };
+            }
+
+            // ── Validasi saldo user cukup ──
+            var jumlahKoin = parseInt(wd.jumlahKoin, 10) || 0;
+            var saldoUser = 0;
+            try {
+                if (typeof window.dompetGetSaldo === 'function') {
+                    saldoUser = parseFloat(window.dompetGetSaldo(wd.idUser)) || 0;
+                }
+            } catch (e) {}
+
+            if (saldoUser < jumlahKoin) {
+                return {
+                    sukses: false,
+                    pesan: 'Saldo user tidak cukup. Saldo: ' + saldoUser +
+                           ' coin, butuh: ' + jumlahKoin + ' coin.',
+                    validasi: 'saldoTidakCukup'
+                };
+            }
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetWithdrawApprove(id, _vfcIdUser());
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal approve.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(wd.idUser, 'withdraw_setuju', wd, catatan);
+
+            // ── Catat ──
+            _vfcCatat('Setujui Withdraw',
+                (wd.namaPemohon || wd.idUser) + ' -' + jumlahKoin + ' coin');
+
+            // ── Emit ──
+            try {
+                window.kirimVerifikasiCoin('withdraw-approved',
+                    { menu: 'dompetR2Coin', role: wd.role || null },
+                    { id: id, idUser: wd.idUser, jumlahKoin: jumlahKoin },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, withdraw: hasil.entry || wd };
+        } catch (e) {
+            console.error('vfcSetujuiWithdraw error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 4.4 TOLAK WITHDRAW ──
+    window.vfcTolakWithdraw = function(id, alasan) {
+        if (!id) return { sukses: false, pesan: 'ID tidak valid.' };
+        if (!alasan || String(alasan).trim().length < VFC_KONSTANTA.MIN_ALASAN_TOLAK) {
+            return { sukses: false, pesan: 'Alasan minimal ' +
+                VFC_KONSTANTA.MIN_ALASAN_TOLAK + ' karakter.' };
+        }
+
+        try {
+            var wd = window.vfcGetWithdrawById(id);
+            if (!wd) return { sukses: false, pesan: 'Withdraw tidak ditemukan.' };
+
+            // ── DELEGASI ke Dompet-Universal ──
+            var hasil = window.dompetWithdrawReject(id, _vfcIdUser(), alasan);
+
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal reject.' };
+            }
+
+            // ── Notif ke user ──
+            window.vfcKirimNotifKeUser(wd.idUser, 'withdraw_tolak', wd, alasan);
+
+            // ── Catat ──
+            _vfcCatat('Tolak Withdraw',
+                (wd.namaPemohon || wd.idUser) + ' — Alasan: ' + alasan);
+
+            // ── Emit ──
+            try {
+                window.kirimVerifikasiCoin('withdraw-rejected',
+                    { menu: 'dompetR2Coin', role: wd.role || null },
+                    { id: id, idUser: wd.idUser, alasan: alasan },
+                    id
+                );
+            } catch (e) {}
+
+            return { sukses: true, withdraw: hasil.entry || wd };
+        } catch (e) {
+            console.error('vfcTolakWithdraw error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — STATISTIK & ANALITIK (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.vfcHitungStatistikTopUp = function() {
+        var data = window.vfcGetAllTopUp();
+        var stat = {
+            total: data.length, menunggu: 0, lunas: 0, ditolak: 0,
+            totalKoin: 0, totalRupiah: 0,
+            pendingKoin: 0, pendingRupiah: 0
+        };
+
+        data.forEach(function(t) {
+            if (!t) return;
+            var s = t.status || 'Menunggu';
+            if (s === 'Menunggu') {
+                stat.menunggu++;
+                stat.pendingKoin += parseInt(t.jumlahKoin, 10) || 0;
+                stat.pendingRupiah += parseFloat(t.totalRupiah) || 0;
+            } else if (s === 'Lunas') {
+                stat.lunas++;
+                stat.totalKoin += parseInt(t.jumlahKoin, 10) || 0;
+                stat.totalRupiah += parseFloat(t.totalRupiah) || 0;
+            } else if (s === 'Ditolak') {
+                stat.ditolak++;
+            }
+        });
+
+        return stat;
+    };
+
+    window.vfcHitungStatistikWithdraw = function() {
+        var data = window.vfcGetAllWithdraw();
+        var stat = {
+            total: data.length, menunggu: 0, disetujui: 0, ditolak: 0,
+            totalKoin: 0, totalRupiah: 0,
+            pendingKoin: 0, pendingRupiah: 0
+        };
+
+        data.forEach(function(w) {
+            if (!w) return;
+            var s = w.status || 'Menunggu';
+            if (s === 'Menunggu') {
+                stat.menunggu++;
+                stat.pendingKoin += parseInt(w.jumlahKoin, 10) || 0;
+                stat.pendingRupiah += parseFloat(w.totalRupiah) || 0;
+            } else if (s === 'Disetujui') {
+                stat.disetujui++;
+                stat.totalKoin += parseInt(w.jumlahKoin, 10) || 0;
+                stat.totalRupiah += parseFloat(w.totalRupiah) || 0;
+            } else if (s === 'Ditolak') {
+                stat.ditolak++;
+            }
+        });
+
+        return stat;
+    };
+
+    window.vfcGetAllTopUp = function() {
+        try { return window.dompetLoadTopUpHistory({}); }
+        catch (e) { return []; }
+    };
+
+    window.vfcGetAllWithdraw = function() {
+        try { return window.dompetLoadWithdrawHistory({}); }
+        catch (e) { return []; }
+    };
+
+    window.vfcHitungStatistikPerRole = function() {
+        var topup = window.vfcGetAllTopUp();
+        var wd = window.vfcGetAllWithdraw();
+        var stat = {
+            topup: { menunggu: 0, lunas: 0, ditolak: 0, total: topup.length },
+            withdraw: { menunggu: 0, disetujui: 0, ditolak: 0, total: wd.length },
+            perRole: {}
+        };
+
+        function _ensure(role) {
+            if (!stat.perRole[role]) {
+                stat.perRole[role] = { role: role, topup: 0, withdraw: 0, total: 0 };
+            }
+            return stat.perRole[role];
+        }
+
+        topup.forEach(function(t) {
+            if (!t) return;
+            if (t.status === 'Menunggu') stat.topup.menunggu++;
+            else if (t.status === 'Lunas') stat.topup.lunas++;
+            else if (t.status === 'Ditolak') stat.topup.ditolak++;
+            var r = _ensure(t.role || 'Lainnya');
+            r.topup++; r.total++;
+        });
+
+        wd.forEach(function(w) {
+            if (!w) return;
+            if (w.status === 'Menunggu') stat.withdraw.menunggu++;
+            else if (w.status === 'Disetujui') stat.withdraw.disetujui++;
+            else if (w.status === 'Ditolak') stat.withdraw.ditolak++;
+            var r = _ensure(w.role || 'Lainnya');
+            r.withdraw++; r.total++;
+        });
+
+        return stat;
+    };
+
+    window.vfcHitungNilaiPending = function() {
+        var tu = window.vfcHitungStatistikTopUp();
+        var wd = window.vfcHitungStatistikWithdraw();
+        return {
+            topup: tu.pendingRupiah || 0,
+            withdraw: wd.pendingRupiah || 0,
+            total: (tu.pendingRupiah || 0) + (wd.pendingRupiah || 0),
+            totalTeks: 'Rp ' + ((tu.pendingRupiah || 0) + (wd.pendingRupiah || 0))
+                .toLocaleString('id-ID')
+        };
+    };
+
+    window.vfcHitungDiprosesHariIni = function() {
+        var todayStr = new Date().toISOString().substring(0, 10);
+        var count = 0;
+
+        window.vfcGetAllTopUp().forEach(function(t) {
+            if (t && t.verifiedAt && String(t.verifiedAt).substring(0, 10) === todayStr) count++;
+        });
+        window.vfcGetAllWithdraw().forEach(function(w) {
+            if (w && w.verifiedAt && String(w.verifiedAt).substring(0, 10) === todayStr) count++;
+        });
+
+        return count;
+    };
+
+    window.vfcGetRingkasan = function() {
+        var tu = window.vfcHitungStatistikTopUp();
+        var wd = window.vfcHitungStatistikWithdraw();
+        var nilai = window.vfcHitungNilaiPending();
+
+        return {
+            topup: tu,
+            withdraw: wd,
+            totalMenunggu: (tu.menunggu || 0) + (wd.menunggu || 0),
+            totalDiprosesHariIni: window.vfcHitungDiprosesHariIni(),
+            nilaiPending: nilai,
+            grandTotal: (tu.total || 0) + (wd.total || 0)
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — NOTIFIKASI & EXPORT (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 6.1 Kirim notif ke user ──
+    window.vfcKirimNotifKeUser = function(idUser, tipe, data, catatan) {
+        if (!idUser || !tipe) return { sukses: false };
+        data = data || {};
+
+        var judul = '';
+        var pesan = '';
+        var warna = 'info';
+        var ikon = 'fas fa-bell';
+
+        if (tipe === 'topup_lunas') {
+            judul = 'Top-Up Disetujui';
+            pesan = 'Top-up ' + (data.jumlahKoin || 0) + ' R2Coin (Rp ' +
+                (parseInt(data.totalRupiah || 0, 10)).toLocaleString('id-ID') +
+                ') berhasil disetujui.' + (catatan ? ' Catatan: ' + catatan : '');
+            warna = 'success'; ikon = 'fas fa-check-circle';
+        } else if (tipe === 'topup_tolak') {
+            judul = 'Top-Up Ditolak';
+            pesan = 'Top-up ' + (data.jumlahKoin || 0) + ' R2Coin ditolak.' +
+                (catatan ? ' Alasan: ' + catatan : '');
+            warna = 'danger'; ikon = 'fas fa-times-circle';
+        } else if (tipe === 'withdraw_setuju') {
+            judul = 'Withdraw Disetujui';
+            pesan = 'Withdraw ' + (data.jumlahKoin || 0) + ' R2Coin (Rp ' +
+                (parseInt(data.totalRupiah || 0, 10)).toLocaleString('id-ID') +
+                ') telah disetujui.' + (catatan ? ' Catatan: ' + catatan : '');
+            warna = 'success'; ikon = 'fas fa-check-circle';
+        } else if (tipe === 'withdraw_tolak') {
+            judul = 'Withdraw Ditolak';
+            pesan = 'Withdraw ' + (data.jumlahKoin || 0) + ' R2Coin ditolak.' +
+                (catatan ? ' Alasan: ' + catatan : '');
+            warna = 'danger'; ikon = 'fas fa-times-circle';
+        } else {
+            return { sukses: false, pesan: 'Tipe tidak dikenal.' };
+        }
+
+        // Prioritas 1: csNotifTambah (Core System)
+        try {
+            if (typeof window.csNotifTambah === 'function') {
+                return window.csNotifTambah({
+                    idUser: idUser,
+                    judul: judul,
+                    pesan: pesan,
+                    ikon: ikon,
+                    warna: warna,
+                    link: 'tampilkanDompetR2CoinToko'
+                });
+            }
+        } catch (e) {}
+
+        // Fallback: coba kirimPesan (chat) kalau ada
+        try {
+            if (typeof window.kirimPesan === 'function') {
+                var teks = (tipe.indexOf('topup') === 0 ? '💳 ' : '💸 ') + judul.toUpperCase() +
+                    '\n\n' + pesan;
+                return window.kirimPesan(idUser, teks, 'text');
+            }
+        } catch (e) {}
+
+        return { sukses: false, pesan: 'Tidak ada handler notif.' };
+    };
+
+    // ── 6.2 Export CSV ──
+    window.vfcExportCSV = function(tipe) {
+        try {
+            tipe = tipe || 'topup';
+            var data = (tipe === 'topup')
+                ? window.vfcGetAllTopUp()
+                : window.vfcGetAllWithdraw();
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = [];
+            if (tipe === 'topup') {
+                lines.push('No,Tanggal,ID User,Nama,Role,Coin,Rupiah,Metode,Status,VerifiedBy,VerifiedAt,Catatan');
+                data.forEach(function(t, i) {
+                    lines.push([
+                        i + 1,
+                        esc(t.tanggal || t.createdAt || '-'),
+                        esc(t.idUser), esc(t.namaPembeli), esc(t.role),
+                        t.jumlahKoin || 0, t.totalRupiah || 0,
+                        esc(t.metode || '-'), esc(t.status || '-'),
+                        esc(t.verifiedBy || '-'), esc(t.verifiedAt || '-'),
+                        esc((t.catatan || '').substring(0, 100))
+                    ].join(','));
+                });
+            } else {
+                lines.push('No,Tanggal,ID User,Nama,Role,Coin,Total Rp,Diterima,Rekening,Status,VerifiedBy,VerifiedAt,Catatan');
+                data.forEach(function(w, i) {
+                    var rek = w.rekeningTujuan || {};
+                    var rekTeks = (rek.bank || '') + ' ' + (rek.nomor || '') + ' a/n ' + (rek.atasNama || '');
+                    lines.push([
+                        i + 1,
+                        esc(w.tanggal || w.createdAt || '-'),
+                        esc(w.idUser), esc(w.namaPemohon), esc(w.role),
+                        w.jumlahKoin || 0, w.totalRupiah || 0, w.diterima || 0,
+                        esc(rekTeks.trim()), esc(w.status || '-'),
+                        esc(w.verifiedBy || '-'), esc(w.verifiedAt || '-'),
+                        esc((w.catatan || '').substring(0, 100))
+                    ].join(','));
+                });
+            }
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'verifikasi_' + tipe + '_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+
+            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = namaFile;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            return { sukses: true, namaFile: namaFile, total: data.length };
+        } catch (e) {
+            console.error('vfcExportCSV error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 6.3 Export JSON ──
+    window.vfcExportJSON = function() {
+        try {
+            var paket = {
+                versi: VFC_KONSTANTA.VERSI,
+                tipe: 'verifikasi-coin-export',
+                exportedAt: _vfcNow(),
+                topup: window.vfcGetAllTopUp(),
+                withdraw: window.vfcGetAllWithdraw(),
+                statistik: window.vfcGetRingkasan()
+            };
+            return { sukses: true, json: JSON.stringify(paket, null, 2) };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 6.4 Get ringkasan teks (1 baris) ──
+    window.vfcGetRingkasanTeks = function() {
+        try {
+            var r = window.vfcGetRingkasan();
+            return 'VFC: ' + r.totalMenunggu + ' pending | ' +
+                   r.nilaiPending.totalTeks + ' | Hari ini: ' + r.totalDiprosesHariIni;
+        } catch (e) { return 'VFC: -'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — HELPER RENDER UI (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.vfcFormatMetode = function(metode) {
+        var map = {
+            'transfer_bca':     '🏦 Transfer BCA',
+            'transfer_mandiri': '🏦 Transfer Mandiri',
+            'transfer_bri':     '🏦 Transfer BRI',
+            'transfer_bni':     '🏦 Transfer BNI',
+            'transfer_bank':    '🏦 Transfer Bank',
+            'cash':             '💵 Cash / Tunai',
+            'transfer_sa':      '🏦 Transfer ke SA',
+            'ewallet':          '💳 E-Wallet',
+            'dana':             '💳 DANA',
+            'ovo':              '💳 OVO',
+            'gopay':            '💳 GoPay',
+            'shopeepay':        '💳 ShopeePay'
+        };
+        return map[metode] || ('💳 ' + (metode || '-'));
+    };
+
+    window.vfcFormatRekening = function(rek) {
+        if (!rek) return '-';
+        if (typeof rek === 'string') return rek;
+        return (rek.bank || rek.namaBank || '') + ' • ' +
+               (rek.nomor || rek.nomorRekening || '') +
+               ' a/n ' + (rek.atasNama || rek.namaPemilik || '');
+    };
+
+    window.vfcWarnaStatus = function(status) {
+        var map = {
+            'Menunggu':  'warning',
+            'Lunas':     'success',
+            'Disetujui': 'success',
+            'Ditolak':   'danger',
+            'Dibatalkan':'secondary'
+        };
+        return map[status] || 'secondary';
+    };
+
+    window.vfcRenderKartuStatistik = function(idTarget) {
+        try {
+            var el = document.getElementById(idTarget);
+            if (!el) return false;
+
+            var r = window.vfcGetRingkasan();
+
+            el.innerHTML =
+                '<div class="row g-3">' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-hourglass-half fa-2x mb-2 text-warning"></i>' +
+                                '<h4 class="fw-bold mb-0">' + (r.topup.menunggu || 0) + '</h4>' +
+                                '<small class="text-muted">Top-Up Pending</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-hand-holding-usd fa-2x mb-2 text-danger"></i>' +
+                                '<h4 class="fw-bold mb-0">' + (r.withdraw.menunggu || 0) + '</h4>' +
+                                '<small class="text-muted">Withdraw Pending</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-check-circle fa-2x mb-2 text-success"></i>' +
+                                '<h4 class="fw-bold mb-0">' + (r.totalDiprosesHariIni || 0) + '</h4>' +
+                                '<small class="text-muted">Hari Ini</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="col-md-3 col-6">' +
+                        '<div class="card border-0 shadow-sm bg-white h-100">' +
+                            '<div class="card-body text-center py-3">' +
+                                '<i class="fas fa-coins fa-2x mb-2" style="color:#FFC107;"></i>' +
+                                '<h5 class="fw-bold mb-0">' + r.nilaiPending.totalTeks + '</h5>' +
+                                '<small class="text-muted">Nilai Pending</small>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            return true;
+        } catch (e) {
+            console.error('vfcRenderKartuStatistik error:', e);
+            return false;
+        }
+    };
+
+    window.vfcRenderAlertPending = function(idTarget) {
+        try {
+            var el = document.getElementById(idTarget);
+            if (!el) return false;
+
+            var r = window.vfcGetRingkasan();
+
+            if (r.totalMenunggu === 0) {
+                el.innerHTML =
+                    '<div class="alert alert-success border-0 shadow-sm d-flex align-items-center mb-0">' +
+                        '<i class="fas fa-check-circle fa-2x me-3"></i>' +
+                        '<div>' +
+                            '<strong>✅ Semua Beres!</strong><br>' +
+                            '<small>Tidak ada pengajuan yang menunggu verifikasi.</small>' +
+                        '</div>' +
+                    '</div>';
+                return true;
+            }
+
+            el.innerHTML =
+                '<div class="alert border-0 shadow-sm d-flex align-items-center mb-0" ' +
+                     'style="background:#FFF3E0;border-left:5px solid #FF8C00 !important;">' +
+                    '<i class="fas fa-bell fa-2x me-3" style="color:#FF8C00;"></i>' +
+                    '<div class="flex-grow-1">' +
+                        '<strong>Ada ' + r.totalMenunggu + ' pengajuan menunggu</strong><br>' +
+                        '<small>Top-Up: <strong>' + r.topup.menunggu + '</strong> • ' +
+                        'Withdraw: <strong>' + r.withdraw.menunggu + '</strong></small>' +
+                    '</div>' +
+                    '<button class="btn btn-warning btn-sm" ' +
+                            'onclick="if(typeof vfcSetTab===\'function\')vfcSetTab(\'topup\')">' +
+                        'Proses →</button>' +
+                '</div>';
+
+            return true;
+        } catch (e) {
+            console.error('vfcRenderAlertPending error:', e);
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — 3 PINTU + ALIAS + DEBUG + REGISTRY
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 📤 PINTU 1: KIRIM ──
+    window.kirimVerifikasiCoin = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser: _vfcIdUser(),
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu: 'verifikasiTopUp',
+                    blok: 'Verifikasi-Coin-Universal'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _vfcNow()
+            });
+        } catch (e) {
+            console.error('[VFC] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 📥 PINTU 2: TERIMA ──
+    window.terimaVerifikasiCoin = function() {
+        try { return window.mnInboxMenu('verifikasiTopUp'); }
+        catch (e) { return []; }
+    };
+
+    // ── 📦 PINTU 3: AMBIL ──
+    window.ambilVerifikasiCoin = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'all';
+        try {
+            if (tipe === 'all-pending')       return window.vfcGetAllPending();
+            if (tipe === 'topup-pending')     return window.vfcGetTopUpPending();
+            if (tipe === 'withdraw-pending')  return window.vfcGetWithdrawPending();
+            if (tipe === 'topup-by-id')       return window.vfcGetTopUpById(filter.id);
+            if (tipe === 'withdraw-by-id')    return window.vfcGetWithdrawById(filter.id);
+            if (tipe === 'cari-topup')        return window.vfcCariTopUp(filter);
+            if (tipe === 'cari-withdraw')     return window.vfcCariWithdraw(filter);
+            if (tipe === 'riwayat-gabungan')  return window.vfcGetRiwayatGabungan(filter);
+            if (tipe === 'statistik')         return window.vfcGetRingkasan();
+            if (tipe === 'statistik-topup')   return window.vfcHitungStatistikTopUp();
+            if (tipe === 'statistik-withdraw')return window.vfcHitungStatistikWithdraw();
+            if (tipe === 'statistik-role')    return window.vfcHitungStatistikPerRole();
+            if (tipe === 'nilai-pending')     return window.vfcHitungNilaiPending();
+            if (tipe === 'all-topup')         return window.vfcGetAllTopUp();
+            if (tipe === 'all-withdraw')      return window.vfcGetAllWithdraw();
+        } catch (e) {
+            console.error('[VFC] ambil error:', e);
+        }
+        return null;
+    };
+
+    // ── BACKWARD COMPAT ALIAS (~15) ──
+    try {
+        if (typeof window.loadTopUpHistoryGlobal !== 'function') {
+            window.loadTopUpHistoryGlobal = function() {
+                return window.vfcGetAllTopUp();
+            };
+        }
+        if (typeof window.loadWithdrawalRequestsGlobal !== 'function') {
+            window.loadWithdrawalRequestsGlobal = function() {
+                return window.vfcGetAllWithdraw();
+            };
+        }
+        if (typeof window.getTopUpByIdGlobal !== 'function') {
+            window.getTopUpByIdGlobal = window.vfcGetTopUpById;
+        }
+        if (typeof window.getWithdrawByIdGlobal !== 'function') {
+            window.getWithdrawByIdGlobal = window.vfcGetWithdrawById;
+        }
+        if (typeof window.getTopUpByStatusGlobal !== 'function') {
+            window.getTopUpByStatusGlobal = function(status) {
+                return window.dompetLoadTopUpHistory({ status: status });
+            };
+        }
+        if (typeof window.getWithdrawByStatusGlobal !== 'function') {
+            window.getWithdrawByStatusGlobal = function(status) {
+                return window.dompetLoadWithdrawHistory({ status: status });
+            };
+        }
+        if (typeof window.cariTopUpByFilter !== 'function') {
+            window.cariTopUpByFilter = window.vfcCariTopUp;
+        }
+        if (typeof window.cariWithdrawByFilter !== 'function') {
+            window.cariWithdrawByFilter = window.vfcCariWithdraw;
+        }
+        if (typeof window.hitungStatistikVerifikasiTopUp !== 'function') {
+            window.hitungStatistikVerifikasiTopUp = window.vfcHitungStatistikTopUp;
+        }
+        if (typeof window.hitungStatistikVerifikasiWithdraw !== 'function') {
+            window.hitungStatistikVerifikasiWithdraw = window.vfcHitungStatistikWithdraw;
+        }
+        if (typeof window.hitungStatistikVerifikasiCoinPerRole !== 'function') {
+            window.hitungStatistikVerifikasiCoinPerRole = window.vfcHitungStatistikPerRole;
+        }
+        if (typeof window.prosesSetujuiTopUpGlobal !== 'function') {
+            window.prosesSetujuiTopUpGlobal = function(id, catatan) {
+                return window.vfcSetujuiTopUp(id, catatan);
+            };
+        }
+        if (typeof window.prosesTolakTopUpGlobal !== 'function') {
+            window.prosesTolakTopUpGlobal = window.vfcTolakTopUp;
+        }
+        if (typeof window.prosesSetujuiWithdrawGlobal !== 'function') {
+            window.prosesSetujuiWithdrawGlobal = function(id, catatan) {
+                return window.vfcSetujuiWithdraw(id, catatan);
+            };
+        }
+        if (typeof window.prosesTolakWithdrawGlobal !== 'function') {
+            window.prosesTolakWithdrawGlobal = window.vfcTolakWithdraw;
+        }
+        if (typeof window.exportVerifikasiCoinCSVGlobal !== 'function') {
+            window.exportVerifikasiCoinCSVGlobal = window.vfcExportCSV;
+        }
+        if (typeof window.getRingkasanVerifikasiCoinGlobal !== 'function') {
+            window.getRingkasanVerifikasiCoinGlobal = window.vfcGetRingkasan;
+        }
+        if (typeof window.formatMetodeTopUp !== 'function') {
+            window.formatMetodeTopUp = window.vfcFormatMetode;
+        }
+        if (typeof window.formatRekeningTujuan !== 'function') {
+            window.formatRekeningTujuan = window.vfcFormatRekening;
+        }
+        if (typeof window.getWarnaStatusCoin !== 'function') {
+            window.getWarnaStatusCoin = window.vfcWarnaStatus;
+        }
+        if (typeof window.kirimNotifVerifikasiCoinKeUser !== 'function') {
+            window.kirimNotifVerifikasiCoinKeUser = window.vfcKirimNotifKeUser;
+        }
+    } catch (e) {
+        console.warn('Verifikasi-Coin-Universal: Gagal pasang alias:', e.message);
+    }
+
+    // ── DEBUG (A5) ──
+    window.debugVerifikasiCoin = function() {
+        return {
+            versi: VFC_KONSTANTA.VERSI,
+            guard: window._blokVerifikasiCoinDone,
+            modul3_Query: {
+                getTopUpById:       typeof window.vfcGetTopUpById,
+                getWithdrawById:    typeof window.vfcGetWithdrawById,
+                cariTopUp:          typeof window.vfcCariTopUp,
+                cariWithdraw:       typeof window.vfcCariWithdraw,
+                getTopUpPending:    typeof window.vfcGetTopUpPending,
+                getWithdrawPending: typeof window.vfcGetWithdrawPending,
+                getAllPending:      typeof window.vfcGetAllPending,
+                getRiwayatGabungan: typeof window.vfcGetRiwayatGabungan
+            },
+            modul4_Aksi: {
+                setujuiTopUp:     typeof window.vfcSetujuiTopUp,
+                tolakTopUp:       typeof window.vfcTolakTopUp,
+                setujuiWithdraw:  typeof window.vfcSetujuiWithdraw,
+                tolakWithdraw:    typeof window.vfcTolakWithdraw
+            },
+            modul5_Statistik: {
+                statistikTopUp:    typeof window.vfcHitungStatistikTopUp,
+                statistikWithdraw: typeof window.vfcHitungStatistikWithdraw,
+                statistikPerRole:  typeof window.vfcHitungStatistikPerRole,
+                nilaiPending:      typeof window.vfcHitungNilaiPending,
+                diprosesHariIni:   typeof window.vfcHitungDiprosesHariIni,
+                ringkasan:         typeof window.vfcGetRingkasan
+            },
+            modul6_NotifExport: {
+                kirimNotifKeUser: typeof window.vfcKirimNotifKeUser,
+                exportCSV:        typeof window.vfcExportCSV,
+                exportJSON:       typeof window.vfcExportJSON,
+                ringkasanTeks:    typeof window.vfcGetRingkasanTeks
+            },
+            modul7_RenderHelper: {
+                formatMetode:        typeof window.vfcFormatMetode,
+                formatRekening:      typeof window.vfcFormatRekening,
+                warnaStatus:         typeof window.vfcWarnaStatus,
+                renderKartuStatistik: typeof window.vfcRenderKartuStatistik,
+                renderAlertPending:  typeof window.vfcRenderAlertPending
+            },
+            modul8_Pintu: {
+                kirim:  typeof window.kirimVerifikasiCoin,
+                terima: typeof window.terimaVerifikasiCoin,
+                ambil:  typeof window.ambilVerifikasiCoin
+            },
+            delegasiKeDompetUniversal: {
+                topUpApprove:      typeof window.dompetTopUpApprove,
+                topUpReject:       typeof window.dompetTopUpReject,
+                withdrawApprove:   typeof window.dompetWithdrawApprove,
+                withdrawReject:    typeof window.dompetWithdrawReject
+            },
+            ringkasan: window.vfcGetRingkasanTeks()
+        };
+    };
+
+    // ── AUTO-REGISTRY (A33, A34, A35) ──
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Verifikasi-Coin-Universal';
+                });
+                if (!sudahAda) {
+                    window.cpTambahBlok({
+                        kode: 'Verifikasi-Coin-Universal',
+                        nama: 'Fungsi Global Verifikasi TopUp & Withdraw',
+                        layer: 'L4',
+                        status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('vfc', {
+                    nama: 'Fungsi Global Verifikasi Coin',
+                    status: 'Selesai',
+                    jumlah: 30
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Verifikasi-Coin-Universal',
+                    nama: 'Fungsi Global Verifikasi TopUp & Withdraw',
+                    keterangan: '30 fungsi + 3 pintu + delegasi Dompet-Universal + backward compat 0.10.47'
+                });
+            }
+        } catch (e) {
+            console.warn('Verifikasi-Coin-Universal: Gagal update catatan 0.1:', e.message);
+        }
+    }, 1000);
+
+    // ── LOG TERPASANG ──
+    console.log('%c✅ BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW terpasang.',
+        'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 8 Modul, ~32 fungsi:');
+    console.log('   1.  Konstanta & Config');
+    console.log('   2.  Helper Internal (via CS2)');
+    console.log('   3.  Read/Query (8)');
+    console.log('   4.  Aksi (4) — 100% delegasi ke Dompet-Universal ⭐');
+    console.log('   5.  Statistik & Analitik (5)');
+    console.log('   6.  Notifikasi & Export (4)');
+    console.log('   7.  Helper Render UI (5)');
+    console.log('   8.  3 Pintu + Alias + Debug + Registry');
+    console.log('');
+    console.log('   🚪 3 Pintu: kirimVerifikasiCoin, terimaVerifikasiCoin, ambilVerifikasiCoin');
+    console.log('   🔗 Delegasi: dompetTopUpApprove, dompetTopUpReject,');
+    console.log('                dompetWithdrawApprove, dompetWithdrawReject');
+    console.log('   🔄 Backward compat: ~18 alias (0.10.47)');
+    console.log('   🎯 Pemakai: 10.47 (UI SA) + 12 blok role');
+    console.log('   🔍 Debug: debugVerifikasiCoin()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL VERIFIKASI TOP-UP & WITHDRAW ═ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL DOMPET R2COIN UNIVERSAL ════════════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
 <!-- ═══ Dependency: CS1–CS14 + GID + MN + Ekonomi-Universal ══ -->
@@ -38800,6 +40015,1274 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 })();
 </script>
 <!-- ═══ AKHIR BLOK R 10.46.e ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.47.a — VERIFIKASI TOP-UP & WITHDRAW (HTML) ══ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: TIDAK ADA (murni HTML) ════════════════════ -->
+<!-- ═══ Isi: 5 sub-seksi [10.47.1]-[10.47.5] + 3 modal ═══════ -->
+<!-- ═══ Acuan: BLOK R 10.41.a + BLOK R 10.45.a ════════════════ -->
+<!-- ═══ Aturan: A3, A29, A30 ══════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="verifikasiCoinContainer" style="display:none;">
+    <div class="container-fluid px-3 px-md-4 py-3 py-md-4">
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.47.1] HEADER & STATISTIK                            -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-check-double me-2"></i>Verifikasi Top-Up & Withdraw
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Setujui atau tolak pengajuan top-up dan withdraw coin dari user
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-info btn-sm text-white" onclick="vfcExportCSV()">
+                    <i class="fas fa-file-csv me-1"></i>Export
+                </button>
+                <button class="btn btn-outline-warning btn-sm" onclick="vfcReload()">
+                    <i class="fas fa-sync me-1"></i>Refresh
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i>Kembali
+                </button>
+            </div>
+        </div>
+
+        <!-- Statistik 4 kartu (di-render JS) -->
+        <div id="vfcKartuStatistik" class="mb-3"></div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.47.2] ALERT PENDING                                 -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div id="vfcAlertPending" class="mb-3"></div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.47.3] TAB NAVIGASI (3 Tab)                          -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <ul class="nav nav-pills mb-3 flex-wrap gap-1" id="vfcTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <a class="nav-link active" href="#" data-vfc-tab="topup"
+                   onclick="event.preventDefault(); vfcSetTab('topup');">
+                    <i class="fas fa-arrow-down me-1"></i> Top-Up
+                    <span class="badge bg-light text-dark ms-1" id="vfcBadgeTopup">0</span>
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" href="#" data-vfc-tab="withdraw"
+                   onclick="event.preventDefault(); vfcSetTab('withdraw');">
+                    <i class="fas fa-arrow-up me-1"></i> Withdraw
+                    <span class="badge bg-light text-dark ms-1" id="vfcBadgeWithdraw">0</span>
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" href="#" data-vfc-tab="riwayat"
+                   onclick="event.preventDefault(); vfcSetTab('riwayat');">
+                    <i class="fas fa-history me-1"></i> Riwayat
+                </a>
+            </li>
+        </ul>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.47.4] KONTEN TAB (di-render 10.47.c)                -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div id="vfcTabContent">
+            <div class="card border-0 shadow">
+                <div class="card-body text-center py-5">
+                    <i class="fas fa-spinner fa-spin fa-2x text-primary"></i>
+                    <p class="mt-2 text-muted">Memuat data...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─────────────────────────────────────────────────────── -->
+        <!-- [10.47.5] NOTIFIKASI STICKY                             -->
+        <!-- ─────────────────────────────────────────────────────── -->
+        <div class="position-fixed" style="bottom:20px;right:20px;z-index:9999;">
+            <div id="vfcNotifGlobal" class="alert d-none mb-2" style="min-width:250px;"></div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MODAL 1: DETAIL TOP-UP                                        -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="vfcModalTopup" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title">
+                    <i class="fas fa-arrow-down me-2"></i>Detail Top-Up
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="vfcTopupDetailBody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-danger" onclick="vfcTolakDariTopup()">
+                    <i class="fas fa-times me-1"></i>Tolak
+                </button>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+                    <button type="button" class="btn btn-success" onclick="vfcSetujuiDariTopup()">
+                        <i class="fas fa-check me-1"></i>Setujui
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MODAL 2: DETAIL WITHDRAW                                      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="vfcModalWithdraw" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#DC3545;">
+                <h5 class="modal-title">
+                    <i class="fas fa-arrow-up me-2"></i>Detail Withdraw
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="vfcWithdrawDetailBody">
+                <p class="text-muted text-center py-4">Memuat...</p>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-danger" onclick="vfcTolakDariWithdraw()">
+                    <i class="fas fa-times me-1"></i>Tolak
+                </button>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+                    <button type="button" class="btn btn-success" onclick="vfcSetujuiDariWithdraw()">
+                        <i class="fas fa-check me-1"></i>Setujui
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MODAL 3: TOLAK                                                -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="vfcModalTolak" tabindex="-1" aria-hidden="true"
+     data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#DC3545;">
+                <h5 class="modal-title">
+                    <i class="fas fa-times-circle me-2"></i>Tolak Pengajuan
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="vfcTolakId" value="">
+                <input type="hidden" id="vfcTolakTipe" value="">
+
+                <div class="alert alert-light border small" id="vfcTolakInfo">-</div>
+
+                <div class="mb-3">
+                    <label class="fw-bold">
+                        Alasan Penolakan <span class="text-danger">*</span>
+                    </label>
+                    <textarea id="vfcTolakAlasan" class="form-control" rows="3"
+                              maxlength="300" minlength="10"
+                              placeholder="Contoh: Bukti transfer tidak jelas, nominal tidak sesuai..."
+                              oninput="vfcUpdateCounterTolak()"></textarea>
+                    <small class="text-muted">
+                        Minimal 10 karakter. <span id="vfcTolakCounter">0</span>/300
+                    </small>
+                </div>
+
+                <div class="mb-3">
+                    <label class="fw-bold small">Alasan Cepat</label>
+                    <div class="d-flex flex-wrap gap-1">
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="vfcAlasanCepat('Bukti transfer tidak jelas / blur')">Bukti blur</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="vfcAlasanCepat('Nominal transfer tidak sesuai')">Nominal salah</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="vfcAlasanCepat('Rekening tujuan tidak valid')">Rekening invalid</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="vfcAlasanCepat('Data pengajuan tidak lengkap')">Data tidak lengkap</button>
+                    </div>
+                </div>
+
+                <div class="alert alert-warning small py-2 mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    User akan menerima notifikasi otomatis dengan alasan ini.
+                </div>
+
+                <div id="vfcTolakNotif" class="alert d-none mt-3 mb-0"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button type="button" class="btn btn-danger" onclick="vfcKonfirmasiTolak()">
+                    <i class="fas fa-check me-1"></i>Konfirmasi Tolak
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.47.a — VERIFIKASI TOP-UP & WITHDRAW ══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.47.b — VERIFIKASI (Entry) ═══════════════════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: 10.47.a + CS8 + GID + MN + Verif-Coin-Univ -->
+<!-- ═══ Isi: Entry + Helper Lokal + 3 Pintu Standar ══════════ -->
+<!-- ═══ Acuan: BLOK R 10.41.b + BLOK R 10.45.b ════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A23, A31, A32 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_47_B_ENTRY() {
+    if (window._blok1047bDone) {
+        console.log('ℹ️ BLOK 10.47.b sudah terpasang.');
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY
+    // ═══════════════════════════════════════════════════════════
+    var deps = [
+        { flag: '_coreSystem8Done',           nama: 'Core System (8) — Auth' },
+        { flag: '_blokGIDDone',               nama: 'GID — Identity' },
+        { flag: '_blokMNDone',                nama: 'MN — Menu Network' },
+        { flag: '_blokVerifikasiCoinDone',    nama: 'Verifikasi-Coin-Universal (L4)' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ 10.47.b ditunda — dependency belum terpasang:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // Cek fungsi WAJIB dari Verifikasi-Coin-Universal
+    var fungsiWajib = [
+        'vfcGetTopUpById', 'vfcGetWithdrawById',
+        'vfcCariTopUp', 'vfcCariWithdraw',
+        'vfcGetTopUpPending', 'vfcGetWithdrawPending',
+        'vfcGetRiwayatGabungan',
+        'vfcSetujuiTopUp', 'vfcTolakTopUp',
+        'vfcSetujuiWithdraw', 'vfcTolakWithdraw',
+        'vfcGetRingkasan', 'vfcExportCSV',
+        'vfcRenderKartuStatistik', 'vfcRenderAlertPending'
+    ];
+    var hilang = fungsiWajib.filter(function(f) {
+        return typeof window[f] !== 'function';
+    });
+    if (hilang.length > 0) {
+        console.warn('⚠️ 10.47.b ditunda — Verifikasi-Coin-Universal belum lengkap:');
+        hilang.forEach(function(f) { console.warn('   • ' + f); });
+        return;
+    }
+
+    window._blok1047bDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — STATE
+    // ═══════════════════════════════════════════════════════════
+    window.vfcState = window.vfcState || {
+        tabAktif: 'topup',
+        pageTopup: 1,
+        pageWithdraw: 1,
+        pageRiwayat: 1,
+        perPage: 15,
+        detailIdTopup: null,
+        detailIdWithdraw: null,
+        tolakId: null,
+        tolakTipe: null
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER LOKAL
+    // ═══════════════════════════════════════════════════════════
+    window.vfcEsc = function(s) {
+        if (typeof window.mppEscHtml === 'function') return window.mppEscHtml(s);
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.vfcSetText = function(id, v) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = (v == null ? '' : String(v));
+    };
+
+    window.vfcSetVal = function(id, v) {
+        var el = document.getElementById(id);
+        if (el) el.value = (v == null ? '' : String(v));
+    };
+
+    window.vfcGetVal = function(id) {
+        var el = document.getElementById(id);
+        return el ? el.value : '';
+    };
+
+    window.vfcSetHtml = function(id, html) {
+        var el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+    };
+
+    window.vfcRupiah = function(n) {
+        if (typeof window.csFormatRp === 'function') return window.csFormatRp(n);
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    };
+
+    window.vfcFormatCoin = function(n) {
+        return (parseFloat(n) || 0).toLocaleString('id-ID');
+    };
+
+    window.vfcFormatTgl = function(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: '2-digit',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            });
+        } catch (e) { return '-'; }
+    };
+
+    window.vfcToast = function(pesan, tipe) {
+        var el = document.getElementById('vfcNotifGlobal');
+        if (!el) { console.log('[vfcToast]', pesan); return; }
+        var warna = {
+            success: 'alert-success', danger: 'alert-danger',
+            warning: 'alert-warning', info: 'alert-info'
+        }[tipe] || 'alert-info';
+        el.className = 'alert ' + warna;
+        el.innerHTML = pesan;
+        el.classList.remove('d-none');
+        setTimeout(function() { el.classList.add('d-none'); }, 4000);
+    };
+
+    window.vfcModalNotif = function(id, pesan, tipe) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.className = 'alert alert-' + (tipe || 'info');
+        el.innerHTML = pesan;
+        el.classList.remove('d-none');
+        if (tipe === 'success') {
+            setTimeout(function() { el.classList.add('d-none'); }, 4000);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — 3 PINTU STANDAR
+    // ═══════════════════════════════════════════════════════════
+    window.kirim1047 = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:  window.gidIdUser ? window.gidIdUser() : null,
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role:    window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:    'verifikasiTopUp',
+                    blok:    '10.47'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: (window.csNow ? window.csNow() : new Date().toISOString())
+            });
+        } catch (e) {
+            console.error('[10.47] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terima1047 = function() {
+        try { return window.mnInboxMenu('verifikasiTopUp'); }
+        catch (e) { return []; }
+    };
+
+    window.ambil1047 = function(filter) {
+        try {
+            filter = filter || {};
+            // Delegasi ke ambilVerifikasiCoin
+            if (typeof window.ambilVerifikasiCoin === 'function') {
+                return window.ambilVerifikasiCoin(filter);
+            }
+            return null;
+        } catch (e) {
+            console.error('[10.47] ambil error:', e);
+            return null;
+        }
+    };
+
+    window.cekPintu1047 = function() {
+        return {
+            blok: '10.47',
+            kirim:  typeof window.kirim1047 === 'function',
+            terima: typeof window.terima1047 === 'function',
+            ambil:  typeof window.ambil1047 === 'function'
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanVerifikasiCoinSA = function(opts) {
+        opts = opts || {};
+        try {
+            var u = window.userAktif;
+            if (!u || !u.idUser) {
+                if (typeof window.tampilkanHalaman === 'function') {
+                    window.tampilkanHalaman('login');
+                }
+                return false;
+            }
+
+            var kodeRole = window.gidKodeRoleUser ? window.gidKodeRoleUser() : null;
+            if (kodeRole && kodeRole !== 'SA') {
+                console.warn('[10.47] Role bukan SA:', kodeRole);
+                if (typeof window.tampilkanPlaceholderMenu === 'function') {
+                    window.tampilkanPlaceholderMenu('Verifikasi Top-Up & Withdraw', '10.47');
+                }
+                return false;
+            }
+
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            // Cache template
+            if (!window._tplVerifikasiCoinV2) {
+                var c = document.getElementById('verifikasiCoinContainer');
+                if (!c) {
+                    console.warn('[10.47] Container tidak ada');
+                    if (typeof window.tampilkanPlaceholderMenu === 'function') {
+                        window.tampilkanPlaceholderMenu('Verifikasi Top-Up & Withdraw', '10.47');
+                    }
+                    return false;
+                }
+                window._tplVerifikasiCoinV2 = c.innerHTML;
+                c.remove();
+            }
+
+            konten.innerHTML = window._tplVerifikasiCoinV2;
+
+            window.vfcState.tabAktif = 'topup';
+            window.vfcState.pageTopup = 1;
+
+            setTimeout(function() {
+                if (typeof window.vfcRenderStatistik === 'function') window.vfcRenderStatistik();
+                if (typeof window.vfcSetTab === 'function')          window.vfcSetTab('topup');
+                console.log('✅ BLOK R 10.47 — Verifikasi Coin rendered');
+            }, 150);
+
+            return true;
+        } catch (e) {
+            console.error('tampilkanVerifikasiCoinSA error:', e);
+            return false;
+        }
+    };
+
+    window.bukaVerifikasiCoinSA = window.tampilkanVerifikasiCoinSA;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1047b = function() {
+        return {
+            blok: '10.47.b',
+            versi: '2.0-refactored',
+            guard: window._blok1047bDone,
+            entry: typeof window.tampilkanVerifikasiCoinSA,
+            pintu: {
+                kirim:  typeof window.kirim1047,
+                terima: typeof window.terima1047,
+                ambil:  typeof window.ambil1047,
+                skor:   (typeof window.kirim1047 === 'function' ? 1 : 0) +
+                        (typeof window.terima1047 === 'function' ? 1 : 0) +
+                        (typeof window.ambil1047 === 'function' ? 1 : 0)
+            },
+            helper: {
+                esc:        typeof window.vfcEsc,
+                setText:    typeof window.vfcSetText,
+                setVal:     typeof window.vfcSetVal,
+                getVal:     typeof window.vfcGetVal,
+                setHtml:    typeof window.vfcSetHtml,
+                rupiah:     typeof window.vfcRupiah,
+                formatCoin: typeof window.vfcFormatCoin,
+                formatTgl:  typeof window.vfcFormatTgl,
+                toast:      typeof window.vfcToast,
+                modalNotif: typeof window.vfcModalNotif
+            },
+            delegasi: {
+                vfcSetujuiTopUp:    typeof window.vfcSetujuiTopUp,
+                vfcTolakTopUp:      typeof window.vfcTolakTopUp,
+                vfcSetujuiWithdraw: typeof window.vfcSetujuiWithdraw,
+                vfcTolakWithdraw:   typeof window.vfcTolakWithdraw
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.47.b — Entry + Helper + 3 Pintu terpasang.',
+        'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🎯 Entry: tampilkanVerifikasiCoinSA()');
+    console.log('   🚪 3 Pintu: kirim1047, terima1047, ambil1047');
+    console.log('   🔧 Helper: vfcEsc, vfcSetText, vfcSetVal, vfcGetVal, vfcRupiah, vfcToast');
+    console.log('   🔍 Debug: debug1047b()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.47.b ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.47.c — VERIFIKASI (Render) ══════════════════ -->
+<!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
+<!-- ═══ Dependency: 10.47.b + Verifikasi-Coin-Universal ═══════ -->
+<!-- ═══ Isi: 4 render (statistik, setTab, tabel topup/withdraw/ -->
+<!-- ═══      riwayat) — semua delegasi ke vfc* ═══════════════ -->
+<!-- ═══ Acuan: BLOK R 10.41.c + BLOK R 10.46.c ════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A23, A31, A32 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_47_C_RENDER() {
+    if (window._blok1047cDone) {
+        console.log('ℹ️ BLOK 10.47.c sudah terpasang.');
+        return;
+    }
+    if (!window._blok1047bDone) {
+        console.warn('⚠️ 10.47.c ditunda — 10.47.b belum terpasang.');
+        return;
+    }
+    window._blok1047cDone = true;
+
+    var _esc = window.vfcEsc;
+    var _set = window.vfcSetText;
+    var _get = window.vfcGetVal;
+    var _setH = window.vfcSetHtml;
+    var _rp  = window.vfcRupiah;
+    var _fc  = window.vfcFormatCoin;
+    var _ft  = window.vfcFormatTgl;
+    var _state = window.vfcState;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — RENDER STATISTIK (delegasi ke vfcRenderKartuStatistik)
+    // ═══════════════════════════════════════════════════════════
+    window.vfcRenderStatistik = function() {
+        try {
+            // Pakai helper dari Verifikasi-Coin-Universal
+            window.vfcRenderKartuStatistik('vfcKartuStatistik');
+            window.vfcRenderAlertPending('vfcAlertPending');
+
+            // Update badge counts
+            var r = window.vfcGetRingkasan();
+            if (r && r.topup) {
+                var bT = document.getElementById('vfcBadgeTopup');
+                if (bT) bT.textContent = r.topup.menunggu || 0;
+                var bW = document.getElementById('vfcBadgeWithdraw');
+                if (bW) bW.textContent = r.withdraw.menunggu || 0;
+            }
+        } catch (e) {
+            console.error('vfcRenderStatistik error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — SET TAB
+    // ═══════════════════════════════════════════════════════════
+    window.vfcSetTab = function(tab) {
+        _state.tabAktif = tab || 'topup';
+
+        document.querySelectorAll('#vfcTabs .nav-link').forEach(function(a) {
+            a.classList.toggle('active',
+                a.getAttribute('data-vfc-tab') === _state.tabAktif);
+        });
+
+        var container = document.getElementById('vfcTabContent');
+        if (!container) return;
+
+        if (_state.tabAktif === 'topup') {
+            container.innerHTML = _renderTabTopupHTML();
+            window.vfcRenderTabelTopup(1);
+        } else if (_state.tabAktif === 'withdraw') {
+            container.innerHTML = _renderTabWithdrawHTML();
+            window.vfcRenderTabelWithdraw(1);
+        } else if (_state.tabAktif === 'riwayat') {
+            container.innerHTML = _renderTabRiwayatHTML();
+            window.vfcRenderTabelRiwayat(1);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — TAB TOP-UP (HTML + RENDER)
+    // ═══════════════════════════════════════════════════════════
+    function _renderTabTopupHTML() {
+        return '' +
+        '<div class="card border-0 shadow mb-3">' +
+            '<div class="card-body">' +
+                '<div class="row g-2 align-items-end">' +
+                    '<div class="col-md-3">' +
+                        '<label class="fw-bold small">' +
+                            '<i class="fas fa-search me-1"></i>Cari' +
+                        '</label>' +
+                        '<input type="text" id="vfcFilterTopupCari" class="form-control form-control-sm" ' +
+                               'placeholder="Nama / ID / Metode..." oninput="vfcRenderTabelTopup(1)">' +
+                    '</div>' +
+                    '<div class="col-md-2">' +
+                        '<label class="fw-bold small">Status</label>' +
+                        '<select id="vfcFilterTopupStatus" class="form-select form-select-sm" ' +
+                                'onchange="vfcRenderTabelTopup(1)">' +
+                            '<option value="Menunggu">Menunggu</option>' +
+                            '<option value="">Semua</option>' +
+                            '<option value="Lunas">Lunas</option>' +
+                            '<option value="Ditolak">Ditolak</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="col-md-3">' +
+                        '<label class="fw-bold small">Role</label>' +
+                        '<select id="vfcFilterTopupRole" class="form-select form-select-sm" ' +
+                                'onchange="vfcRenderTabelTopup(1)">' +
+                            '<option value="">Semua Role</option>' +
+                            '<option value="Toko">Toko</option>' +
+                            '<option value="Ojek">Ojek</option>' +
+                            '<option value="Pedagang Pasar">Pedagang Pasar</option>' +
+                            '<option value="Pedagang Makanan">Pedagang Makanan</option>' +
+                            '<option value="COD Seller">COD Seller</option>' +
+                            '<option value="Grosir">Grosir</option>' +
+                            '<option value="Distributor">Distributor</option>' +
+                            '<option value="Customer">Customer</option>' +
+                            '<option value="Kasir">Kasir</option>' +
+                            '<option value="Jasa">Jasa</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="col-md-2">' +
+                        '<label class="fw-bold small">Tanggal</label>' +
+                        '<input type="date" id="vfcFilterTopupTgl" class="form-control form-control-sm" ' +
+                               'onchange="vfcRenderTabelTopup(1)">' +
+                    '</div>' +
+                    '<div class="col-md-2 text-end">' +
+                        '<button class="btn btn-sm btn-outline-secondary w-100" ' +
+                                'onclick="vfcResetFilterTopup()">' +
+                            '<i class="fas fa-undo me-1"></i>Reset</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="mt-2 d-flex justify-content-between align-items-center">' +
+                    '<span class="badge bg-dark" id="vfcInfoTopup">0 data</span>' +
+                    '<small class="text-muted">' +
+                        '<i class="fas fa-info-circle me-1"></i>' +
+                        'Klik <i class="fas fa-eye"></i> untuk detail & verifikasi' +
+                    '</small>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        '<div class="card border-0 shadow">' +
+            '<div class="card-header text-white d-flex justify-content-between align-items-center" ' +
+                 'style="background:#28A745;">' +
+                '<span><i class="fas fa-arrow-down me-2"></i>Daftar Pengajuan Top-Up</span>' +
+                '<span class="badge bg-light text-dark" id="vfcTotalTopup">0</span>' +
+            '</div>' +
+            '<div class="card-body p-0">' +
+                '<div class="table-responsive">' +
+                    '<table class="table table-hover align-middle mb-0">' +
+                        '<thead class="table-light">' +
+                            '<tr>' +
+                                '<th style="width:40px;">#</th>' +
+                                '<th>Tanggal</th>' +
+                                '<th>User</th>' +
+                                '<th>Role</th>' +
+                                '<th class="text-end">Coin</th>' +
+                                '<th class="text-end">Total Rp</th>' +
+                                '<th>Metode</th>' +
+                                '<th>Status</th>' +
+                                '<th style="width:140px;">Aksi</th>' +
+                            '</tr>' +
+                        '</thead>' +
+                        '<tbody id="vfcTabelTopup">' +
+                            '<tr><td colspan="9" class="text-center text-muted py-4">Memuat...</td></tr>' +
+                        '</tbody>' +
+                    '</table>' +
+                '</div>' +
+            '</div>' +
+            '<div class="card-footer bg-white d-flex justify-content-between align-items-center">' +
+                '<div><span class="text-muted small" id="vfcPaginationTopup">-</span></div>' +
+                '<div>' +
+                    '<button class="btn btn-outline-secondary btn-sm me-1" ' +
+                            'id="vfcBtnPrevTopup" onclick="vfcPrevTopup()" disabled>' +
+                        '<i class="fas fa-chevron-left"></i></button>' +
+                    '<button class="btn btn-outline-secondary btn-sm" ' +
+                            'id="vfcBtnNextTopup" onclick="vfcNextTopup()">' +
+                        '<i class="fas fa-chevron-right"></i></button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    window.vfcRenderTabelTopup = function(hal) {
+        var tbody = document.getElementById('vfcTabelTopup');
+        if (!tbody) return;
+
+        try {
+            _state.pageTopup = hal || 1;
+
+            var cari   = (_get('vfcFilterTopupCari') || '').toLowerCase().trim();
+            var status = _get('vfcFilterTopupStatus') || '';
+            var role   = _get('vfcFilterTopupRole') || '';
+            var tgl    = _get('vfcFilterTopupTgl') || '';
+
+            // Delegasi ke vfcCariTopUp
+            var list = window.vfcCariTopUp({
+                cari: cari, role: role, status: status, tanggal: tgl
+            });
+
+            // Sort terbaru dulu
+            list.sort(function(a, b) {
+                return new Date(b.createdAt || b.tanggal || 0) -
+                       new Date(a.createdAt || a.tanggal || 0);
+            });
+
+            _set('vfcInfoTopup', list.length + ' data');
+            _set('vfcTotalTopup', list.length);
+
+            if (list.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                        '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                        'Tidak ada pengajuan top-up.' +
+                    '</td></tr>';
+                _set('vfcPaginationTopup', '-');
+                return;
+            }
+
+            // Pagination
+            var total = list.length;
+            var perPage = _state.perPage;
+            var totalPages = Math.ceil(total / perPage) || 1;
+            if (_state.pageTopup > totalPages) _state.pageTopup = totalPages;
+            if (_state.pageTopup < 1) _state.pageTopup = 1;
+
+            var start = (_state.pageTopup - 1) * perPage;
+            var paged = list.slice(start, start + perPage);
+
+            _set('vfcPaginationTopup',
+                'Halaman ' + _state.pageTopup + ' / ' + totalPages + ' (' + total + ' data)');
+
+            var bPrev = document.getElementById('vfcBtnPrevTopup');
+            if (bPrev) bPrev.disabled = (_state.pageTopup === 1);
+            var bNext = document.getElementById('vfcBtnNextTopup');
+            if (bNext) bNext.disabled = (_state.pageTopup === totalPages);
+
+            var html = '';
+            paged.forEach(function(t, idx) {
+                var nomor = start + idx + 1;
+                var idEsc = String(t.id || '').replace(/'/g, "\\'");
+                var roleColor = (typeof window.saWarnaRole === 'function')
+                    ? window.saWarnaRole(t.role) : '#6C757D';
+
+                var badgeStatus = '';
+                if (t.status === 'Menunggu') badgeStatus = '<span class="badge bg-warning text-dark">Menunggu</span>';
+                else if (t.status === 'Lunas') badgeStatus = '<span class="badge bg-success">Lunas</span>';
+                else if (t.status === 'Ditolak') badgeStatus = '<span class="badge bg-danger">Ditolak</span>';
+                else badgeStatus = '<span class="badge bg-secondary">' + _esc(t.status) + '</span>';
+
+                var aksiHtml = '';
+                if (t.status === 'Menunggu') {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-outline-info me-1" ' +
+                                'onclick="vfcBukaDetailTopup(\'' + idEsc + '\')" title="Detail">' +
+                            '<i class="fas fa-eye"></i></button>' +
+                        '<button class="btn btn-sm btn-outline-success me-1" ' +
+                                'onclick="vfcSetujuiTopup(\'' + idEsc + '\')" title="Setujui">' +
+                            '<i class="fas fa-check"></i></button>' +
+                        '<button class="btn btn-sm btn-outline-danger" ' +
+                                'onclick="vfcBukaModalTolak(\'' + idEsc + '\', \'topup\')" title="Tolak">' +
+                            '<i class="fas fa-times"></i></button>';
+                } else {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-outline-info me-1" ' +
+                                'onclick="vfcBukaDetailTopup(\'' + idEsc + '\')" title="Detail">' +
+                            '<i class="fas fa-eye"></i></button>' +
+                        '<span class="text-muted small">' + _esc(t.status) + '</span>';
+                }
+
+                var rowCls = t.status === 'Menunggu' ? 'table-warning' : '';
+
+                html += '<tr class="' + rowCls + '">' +
+                    '<td>' + nomor + '</td>' +
+                    '<td><small>' + _ft(t.createdAt || t.tanggal) + '</small></td>' +
+                    '<td>' +
+                        '<strong>' + _esc(t.namaPembeli || t.namaUser || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + _esc(t.idUser || '-') + '</small>' +
+                    '</td>' +
+                    '<td><span class="badge" style="background:' + roleColor + ';">' +
+                        _esc(t.role || '-') + '</span></td>' +
+                    '<td class="text-end fw-bold text-success">+' + _fc(t.jumlahKoin) + '</td>' +
+                    '<td class="text-end">' + _rp(t.totalRupiah) + '</td>' +
+                    '<td><small>' + _esc(t.metode || '-') + '</small></td>' +
+                    '<td>' + badgeStatus + '</td>' +
+                    '<td>' + aksiHtml + '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('vfcRenderTabelTopup error:', e);
+        }
+    };
+
+    window.vfcPrevTopup = function() {
+        if (_state.pageTopup > 1) window.vfcRenderTabelTopup(_state.pageTopup - 1);
+    };
+    window.vfcNextTopup = function() {
+        window.vfcRenderTabelTopup(_state.pageTopup + 1);
+    };
+    window.vfcResetFilterTopup = function() {
+        ['vfcFilterTopupCari', 'vfcFilterTopupRole', 'vfcFilterTopupTgl'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        var elS = document.getElementById('vfcFilterTopupStatus');
+        if (elS) elS.value = 'Menunggu';
+        window.vfcRenderTabelTopup(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — TAB WITHDRAW (HTML + RENDER)
+    // ═══════════════════════════════════════════════════════════
+    function _renderTabWithdrawHTML() {
+        return '' +
+        '<div class="card border-0 shadow mb-3">' +
+            '<div class="card-body">' +
+                '<div class="row g-2 align-items-end">' +
+                    '<div class="col-md-3">' +
+                        '<label class="fw-bold small">' +
+                            '<i class="fas fa-search me-1"></i>Cari' +
+                        '</label>' +
+                        '<input type="text" id="vfcFilterWdCari" class="form-control form-control-sm" ' +
+                               'placeholder="Nama / ID..." oninput="vfcRenderTabelWithdraw(1)">' +
+                    '</div>' +
+                    '<div class="col-md-2">' +
+                        '<label class="fw-bold small">Status</label>' +
+                        '<select id="vfcFilterWdStatus" class="form-select form-select-sm" ' +
+                                'onchange="vfcRenderTabelWithdraw(1)">' +
+                            '<option value="Menunggu">Menunggu</option>' +
+                            '<option value="">Semua</option>' +
+                            '<option value="Disetujui">Disetujui</option>' +
+                            '<option value="Ditolak">Ditolak</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="col-md-3">' +
+                        '<label class="fw-bold small">Role</label>' +
+                        '<select id="vfcFilterWdRole" class="form-select form-select-sm" ' +
+                                'onchange="vfcRenderTabelWithdraw(1)">' +
+                            '<option value="">Semua Role</option>' +
+                            '<option value="Toko">Toko</option>' +
+                            '<option value="Ojek">Ojek</option>' +
+                            '<option value="Pedagang Pasar">Pedagang Pasar</option>' +
+                            '<option value="Pedagang Makanan">Pedagang Makanan</option>' +
+                            '<option value="COD Seller">COD Seller</option>' +
+                            '<option value="Grosir">Grosir</option>' +
+                            '<option value="Distributor">Distributor</option>' +
+                            '<option value="Customer">Customer</option>' +
+                            '<option value="Jasa">Jasa</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="col-md-2">' +
+                        '<label class="fw-bold small">Tanggal</label>' +
+                        '<input type="date" id="vfcFilterWdTgl" class="form-control form-control-sm" ' +
+                               'onchange="vfcRenderTabelWithdraw(1)">' +
+                    '</div>' +
+                    '<div class="col-md-2 text-end">' +
+                        '<button class="btn btn-sm btn-outline-secondary w-100" ' +
+                                'onclick="vfcResetFilterWithdraw()">' +
+                            '<i class="fas fa-undo me-1"></i>Reset</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="mt-2 d-flex justify-content-between align-items-center">' +
+                    '<span class="badge bg-dark" id="vfcInfoWd">0 data</span>' +
+                    '<small class="text-muted">' +
+                        '<i class="fas fa-info-circle me-1"></i>' +
+                        'Setujui withdraw = saldo coin user otomatis dipotong' +
+                    '</small>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        '<div class="card border-0 shadow">' +
+            '<div class="card-header text-white d-flex justify-content-between align-items-center" ' +
+                 'style="background:#DC3545;">' +
+                '<span><i class="fas fa-arrow-up me-2"></i>Daftar Pengajuan Withdraw</span>' +
+                '<span class="badge bg-light text-dark" id="vfcTotalWd">0</span>' +
+            '</div>' +
+            '<div class="card-body p-0">' +
+                '<div class="table-responsive">' +
+                    '<table class="table table-hover align-middle mb-0">' +
+                        '<thead class="table-light">' +
+                            '<tr>' +
+                                '<th style="width:40px;">#</th>' +
+                                '<th>Tanggal</th>' +
+                                '<th>User</th>' +
+                                '<th>Role</th>' +
+                                '<th class="text-end">Coin</th>' +
+                                '<th class="text-end">Diterima</th>' +
+                                '<th>Rekening</th>' +
+                                '<th>Status</th>' +
+                                '<th style="width:140px;">Aksi</th>' +
+                            '</tr>' +
+                        '</thead>' +
+                        '<tbody id="vfcTabelWithdraw">' +
+                            '<tr><td colspan="9" class="text-center text-muted py-4">Memuat...</td></tr>' +
+                        '</tbody>' +
+                    '</table>' +
+                '</div>' +
+            '</div>' +
+            '<div class="card-footer bg-white d-flex justify-content-between align-items-center">' +
+                '<div><span class="text-muted small" id="vfcPaginationWd">-</span></div>' +
+                '<div>' +
+                    '<button class="btn btn-outline-secondary btn-sm me-1" ' +
+                            'id="vfcBtnPrevWd" onclick="vfcPrevWd()" disabled>' +
+                        '<i class="fas fa-chevron-left"></i></button>' +
+                    '<button class="btn btn-outline-secondary btn-sm" ' +
+                            'id="vfcBtnNextWd" onclick="vfcNextWd()">' +
+                        '<i class="fas fa-chevron-right"></i></button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    window.vfcRenderTabelWithdraw = function(hal) {
+        var tbody = document.getElementById('vfcTabelWithdraw');
+        if (!tbody) return;
+
+        try {
+            _state.pageWithdraw = hal || 1;
+
+            var cari   = (_get('vfcFilterWdCari') || '').toLowerCase().trim();
+            var status = _get('vfcFilterWdStatus') || '';
+            var role   = _get('vfcFilterWdRole') || '';
+            var tgl    = _get('vfcFilterWdTgl') || '';
+
+            var list = window.vfcCariWithdraw({
+                cari: cari, role: role, status: status, tanggal: tgl
+            });
+
+            list.sort(function(a, b) {
+                return new Date(b.createdAt || b.tanggal || 0) -
+                       new Date(a.createdAt || a.tanggal || 0);
+            });
+
+            _set('vfcInfoWd', list.length + ' data');
+            _set('vfcTotalWd', list.length);
+
+            if (list.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                        '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                        'Tidak ada pengajuan withdraw.' +
+                    '</td></tr>';
+                _set('vfcPaginationWd', '-');
+                return;
+            }
+
+            var total = list.length;
+            var perPage = _state.perPage;
+            var totalPages = Math.ceil(total / perPage) || 1;
+            if (_state.pageWithdraw > totalPages) _state.pageWithdraw = totalPages;
+            if (_state.pageWithdraw < 1) _state.pageWithdraw = 1;
+
+            var start = (_state.pageWithdraw - 1) * perPage;
+            var paged = list.slice(start, start + perPage);
+
+            _set('vfcPaginationWd',
+                'Halaman ' + _state.pageWithdraw + ' / ' + totalPages + ' (' + total + ' data)');
+
+            var bPrev = document.getElementById('vfcBtnPrevWd');
+            if (bPrev) bPrev.disabled = (_state.pageWithdraw === 1);
+            var bNext = document.getElementById('vfcBtnNextWd');
+            if (bNext) bNext.disabled = (_state.pageWithdraw === totalPages);
+
+            var html = '';
+            paged.forEach(function(w, idx) {
+                var nomor = start + idx + 1;
+                var idEsc = String(w.id || '').replace(/'/g, "\\'");
+                var roleColor = (typeof window.saWarnaRole === 'function')
+                    ? window.saWarnaRole(w.role) : '#6C757D';
+
+                var badgeStatus = '';
+                if (w.status === 'Menunggu') badgeStatus = '<span class="badge bg-warning text-dark">Menunggu</span>';
+                else if (w.status === 'Disetujui') badgeStatus = '<span class="badge bg-success">Disetujui</span>';
+                else if (w.status === 'Ditolak') badgeStatus = '<span class="badge bg-danger">Ditolak</span>';
+                else badgeStatus = '<span class="badge bg-secondary">' + _esc(w.status) + '</span>';
+
+                var rek = w.rekeningTujuan || {};
+                var rekDisplay =
+                    '<small><strong>' + _esc(rek.bank || '-') + '</strong><br>' +
+                    _esc(rek.nomor || '-') + '<br>' +
+                    '<span class="text-muted">a/n ' + _esc(rek.atasNama || '-') + '</span></small>';
+
+                var aksiHtml = '';
+                if (w.status === 'Menunggu') {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-outline-info me-1" ' +
+                                'onclick="vfcBukaDetailWithdraw(\'' + idEsc + '\')" title="Detail">' +
+                            '<i class="fas fa-eye"></i></button>' +
+                        '<button class="btn btn-sm btn-outline-success me-1" ' +
+                                'onclick="vfcSetujuiWithdraw(\'' + idEsc + '\')" title="Setujui">' +
+                            '<i class="fas fa-check"></i></button>' +
+                        '<button class="btn btn-sm btn-outline-danger" ' +
+                                'onclick="vfcBukaModalTolak(\'' + idEsc + '\', \'withdraw\')" title="Tolak">' +
+                            '<i class="fas fa-times"></i></button>';
+                } else {
+                    aksiHtml =
+                        '<button class="btn btn-sm btn-outline-info me-1" ' +
+                                'onclick="vfcBukaDetailWithdraw(\'' + idEsc + '\')" title="Detail">' +
+                            '<i class="fas fa-eye"></i></button>' +
+                        '<span class="text-muted small">' + _esc(w.status) + '</span>';
+                }
+
+                var rowCls = w.status === 'Menunggu' ? 'table-warning' : '';
+
+                html += '<tr class="' + rowCls + '">' +
+                    '<td>' + nomor + '</td>' +
+                    '<td><small>' + _ft(w.createdAt || w.tanggal) + '</small></td>' +
+                    '<td>' +
+                        '<strong>' + _esc(w.namaPemohon || '-') + '</strong><br>' +
+                        '<small class="text-muted">' + _esc(w.idUser || '-') + '</small>' +
+                    '</td>' +
+                    '<td><span class="badge" style="background:' + roleColor + ';">' +
+                        _esc(w.role || '-') + '</span></td>' +
+                    '<td class="text-end fw-bold text-danger">-' + _fc(w.jumlahKoin) + '</td>' +
+                    '<td class="text-end">' + _rp(w.diterima || w.totalRupiah) + '</td>' +
+                    '<td>' + rekDisplay + '</td>' +
+                    '<td>' + badgeStatus + '</td>' +
+                    '<td>' + aksiHtml + '</td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('vfcRenderTabelWithdraw error:', e);
+        }
+    };
+
+    window.vfcPrevWd = function() {
+        if (_state.pageWithdraw > 1) window.vfcRenderTabelWithdraw(_state.pageWithdraw - 1);
+    };
+    window.vfcNextWd = function() {
+        window.vfcRenderTabelWithdraw(_state.pageWithdraw + 1);
+    };
+    window.vfcResetFilterWithdraw = function() {
+        ['vfcFilterWdCari', 'vfcFilterWdRole', 'vfcFilterWdTgl'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        var elS = document.getElementById('vfcFilterWdStatus');
+        if (elS) elS.value = 'Menunggu';
+        window.vfcRenderTabelWithdraw(1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — TAB RIWAYAT (HTML + RENDER)
+    // ═══════════════════════════════════════════════════════════
+    function _renderTabRiwayatHTML() {
+        return '' +
+        '<div class="card border-0 shadow mb-3">' +
+            '<div class="card-body">' +
+                '<div class="row g-2 align-items-end">' +
+                    '<div class="col-md-8">' +
+                        '<label class="fw-bold small">' +
+                            '<i class="fas fa-search me-1"></i>Cari Riwayat' +
+                        '</label>' +
+                        '<input type="text" id="vfcFilterRiwayatCari" class="form-control form-control-sm" ' +
+                               'placeholder="Nama / ID / Keterangan..." ' +
+                               'oninput="vfcRenderTabelRiwayat(1)">' +
+                    '</div>' +
+                    '<div class="col-md-4 text-end">' +
+                        '<span class="badge bg-dark" id="vfcInfoRiwayat">0 data</span>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+        '</div>' +
+
+        '<div class="card border-0 shadow">' +
+            '<div class="card-header text-white d-flex justify-content-between align-items-center" ' +
+                 'style="background:#6C757D;">' +
+                '<span><i class="fas fa-history me-2"></i>Riwayat Verifikasi</span>' +
+                '<span class="badge bg-light text-dark" id="vfcTotalRiwayat">0</span>' +
+            '</div>' +
+            '<div class="card-body p-0">' +
+                '<div class="table-responsive">' +
+                    '<table class="table table-hover align-middle mb-0">' +
+                        '<thead class="table-light">' +
+                            '<tr>' +
+                                '<th>Waktu Verifikasi</th>' +
+                                '<th>Tipe</th>' +
+                                '<th>User</th>' +
+                                '<th>Role</th>' +
+                                '<th class="text-end">Jumlah</th>' +
+                                '<th>Status</th>' +
+                                '<th>Catatan</th>' +
+                            '</tr>' +
+                        '</thead>' +
+                        '<tbody id="vfcTabelRiwayat">' +
+                            '<tr><td colspan="7" class="text-center text-muted py-4">Memuat...</td></tr>' +
+                        '</tbody>' +
+                    '</table>' +
+                '</div>' +
+            '</div>' +
+            '<div class="card-footer bg-white d-flex justify-content-between align-items-center">' +
+                '<div><span class="text-muted small" id="vfcPaginationRiwayat">-</span></div>' +
+                '<div>' +
+                    '<button class="btn btn-outline-secondary btn-sm me-1" ' +
+                            'id="vfcBtnPrevRiwayat" onclick="vfcPrevRiwayat()" disabled>' +
+                        '<i class="fas fa-chevron-left"></i></button>' +
+                    '<button class="btn btn-outline-secondary btn-sm" ' +
+                            'id="vfcBtnNextRiwayat" onclick="vfcNextRiwayat()">' +
+                        '<i class="fas fa-chevron-right"></i></button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }
+
+    window.vfcRenderTabelRiwayat = function(hal) {
+        var tbody = document.getElementById('vfcTabelRiwayat');
+        if (!tbody) return;
+
+        try {
+            _state.pageRiwayat = hal || 1;
+
+            var cari = (_get('vfcFilterRiwayatCari') || '').toLowerCase().trim();
+
+            // Delegasi ke vfcGetRiwayatGabungan
+            var combined = window.vfcGetRiwayatGabungan({ cari: cari });
+
+            _set('vfcInfoRiwayat', combined.length + ' data');
+            _set('vfcTotalRiwayat', combined.length);
+
+            if (combined.length === 0) {
+                tbody.innerHTML =
+                    '<tr><td colspan="7" class="text-center text-muted py-4">' +
+                        '<i class="fas fa-inbox fa-2x d-block mb-2 opacity-50"></i>' +
+                        'Belum ada riwayat verifikasi.' +
+                    '</td></tr>';
+                _set('vfcPaginationRiwayat', '-');
+                return;
+            }
+
+            var total = combined.length;
+            var perPage = _state.perPage;
+            var totalPages = Math.ceil(total / perPage) || 1;
+            if (_state.pageRiwayat > totalPages) _state.pageRiwayat = totalPages;
+            if (_state.pageRiwayat < 1) _state.pageRiwayat = 1;
+
+            var start = (_state.pageRiwayat - 1) * perPage;
+            var paged = combined.slice(start, start + perPage);
+
+            _set('vfcPaginationRiwayat',
+                'Halaman ' + _state.pageRiwayat + ' / ' + totalPages + ' (' + total + ' data)');
+
+            var bPrev = document.getElementById('vfcBtnPrevRiwayat');
+            if (bPrev) bPrev.disabled = (_state.pageRiwayat === 1);
+            var bNext = document.getElementById('vfcBtnNextRiwayat');
+            if (bNext) bNext.disabled = (_state.pageRiwayat === totalPages);
+
+            var html = '';
+            paged.forEach(function(r) {
+                var tipeBadge = r.tipe === 'topup'
+                    ? '<span class="badge bg-success"><i class="fas fa-arrow-down me-1"></i>Top-Up</span>'
+                    : '<span class="badge bg-danger"><i class="fas fa-arrow-up me-1"></i>Withdraw</span>';
+
+                var statusBadge = (r.status === 'Lunas' || r.status === 'Disetujui')
+                    ? '<span class="badge bg-success">' + _esc(r.status) + '</span>'
+                    : '<span class="badge bg-danger">' + _esc(r.status) + '</span>';
+
+                var roleColor = (typeof window.saWarnaRole === 'function')
+                    ? window.saWarnaRole(r.role) : '#6C757D';
+
+                var coinCls = r.tipe === 'topup' ? 'text-success' : 'text-danger';
+                var coinPrefix = r.tipe === 'topup' ? '+' : '-';
+
+                html += '<tr>' +
+                    '<td><small>' + _ft(r.waktuVerif) + '</small></td>' +
+                    '<td>' + tipeBadge + '</td>' +
+                    '<td>' +
+                        '<strong>' + _esc(r.nama) + '</strong><br>' +
+                        '<small class="text-muted">' + _esc(r.idUser) + '</small>' +
+                    '</td>' +
+                    '<td><span class="badge" style="background:' + roleColor + ';">' +
+                        _esc(r.role) + '</span></td>' +
+                    '<td class="text-end ' + coinCls + ' fw-bold">' +
+                        coinPrefix + _fc(r.jumlahCoin) + '</td>' +
+                    '<td>' + statusBadge + '</td>' +
+                    '<td><small>' + _esc((r.catatan || '-').substring(0, 40)) + '</small></td>' +
+                '</tr>';
+            });
+            tbody.innerHTML = html;
+        } catch (e) {
+            console.error('vfcRenderTabelRiwayat error:', e);
+        }
+    };
+
+    window.vfcPrevRiwayat = function() {
+        if (_state.pageRiwayat > 1) window.vfcRenderTabelRiwayat(_state.pageRiwayat - 1);
+    };
+    window.vfcNextRiwayat = function() {
+        window.vfcRenderTabelRiwayat(_state.pageRiwayat + 1);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — RELOAD
+    // ═══════════════════════════════════════════════════════════
+    window.vfcReload = function() {
+        try {
+            window.vfcRenderStatistik();
+            window.vfcSetTab(_state.tabAktif);
+            window.vfcToast('✅ Data di-refresh', 'success');
+        } catch (e) {
+            console.error('vfcReload error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1047c = function() {
+        return {
+            blok: '10.47.c',
+            versi: '2.0-refactored',
+            guard: window._blok1047cDone,
+            render: {
+                statistik:     typeof window.vfcRenderStatistik,
+                setTab:        typeof window.vfcSetTab,
+                tabelTopup:    typeof window.vfcRenderTabelTopup,
+                tabelWithdraw: typeof window.vfcRenderTabelWithdraw,
+                tabelRiwayat:  typeof window.vfcRenderTabelRiwayat,
+                reload:        typeof window.vfcReload
+            },
+            filter: {
+                resetTopup:    typeof window.vfcResetFilterTopup,
+                resetWithdraw: typeof window.vfcResetFilterWithdraw
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.47.c — Render terpasang.',
+        'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📊 6 Render: statistik, setTab, tabelTopup, tabelWithdraw,');
+    console.log('               tabelRiwayat, reload');
+    console.log('   🔍 Debug: debug1047c()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.47.c ═══ -->
+
+
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.82.a — ORPHAN EXTENDED (HTML) ════════════════ -->
