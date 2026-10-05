@@ -21124,9 +21124,9 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 10.7.c — VERIFIKASI DOKUMEN (Render) ════════════ -->
+<!-- ═══ BLOK R 10.7.c — VERIFIKASI DOKUMEN (Render) v2 ═════════ -->
 <!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
-<!-- ═══ Dependency: 10.7.b + FPV ══════════════════════════════ -->
+<!-- ═══ Dependency: 10.7.b + FPV (getSemua, statistikGlobal) ═══ -->
 <!-- ═══ Isi: Render statistik + breakdown role + tabel + pagination -->
 <!-- ═══ Acuan: BLOK R 10.1.c + BLOK R 11.3.c ══════════════════ -->
 <!-- ═══ Aturan: A1, A2, A3, A5, A23, A31, A32 ═════════════════ -->
@@ -21137,14 +21137,59 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         console.log('ℹ️ BLOK 10.7.c sudah terpasang.');
         return;
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT (A1, A2)
+    // ═══════════════════════════════════════════════════════════
+    // 1a. Cek sub-blok sebelumnya (10.7.b)
     if (!window._blok107bDone) {
-        console.warn('⚠️ 10.7.b belum terpasang. 10.7.c ditunda.');
+        console.warn('⚠️ 10.7.c ditunda — 10.7.b belum terpasang.');
         return;
     }
+
+    // 1b. Cek fungsi FPV yang WAJIB untuk render
+    var depsFungsi = [
+        { nama: 'fpvGetSemuaVerifikasi', wajib: true,
+          pesan: 'untuk ambil data verifikasi' },
+        { nama: 'fpvStatistikGlobal',    wajib: false,
+          pesan: 'untuk statistik (opsional — ada fallback hitung manual)' }
+    ];
+
+    var depsHilang = depsFungsi.filter(function(d) {
+        return d.wajib && typeof window[d.nama] !== 'function';
+    });
+
+    if (depsHilang.length > 0) {
+        console.warn('⚠️ 10.7.c ditunda — fungsi FPV WAJIB belum ada:');
+        depsHilang.forEach(function(d) {
+            console.warn('   • ' + d.nama + ' (' + d.pesan + ')');
+        });
+        return;
+    }
+
+    // 1c. Cek helper dari 10.7.b
+    var helperWajib = ['vdEsc', 'vdSetText', 'vdSetHtml', 'vdGetVal', 'vdToast', 'vdState'];
+    var helperHilang = helperWajib.filter(function(n) {
+        return typeof window[n] === 'undefined';
+    });
+
+    if (helperHilang.length > 0) {
+        console.warn('⚠️ 10.7.c ditunda — helper 10.7.b belum lengkap:');
+        helperHilang.forEach(function(n) { console.warn('   • ' + n); });
+        return;
+    }
+
+    // 1d. Cek pintu AMBIL
+    if (typeof window.ambil107 !== 'function') {
+        console.warn('⚠️ 10.7.c ditunda — pintu ambil107() belum ada.');
+        return;
+    }
+
+    // ✓ Semua dependency OK
     window._blok107cDone = true;
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — REFERENSI HELPER (dari 10.7.b)
+    // [MODUL 2] — REFERENSI HELPER (dari 10.7.b)
     // ═══════════════════════════════════════════════════════════
     var _esc    = window.vdEsc;
     var _set    = window.vdSetText;
@@ -21153,7 +21198,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     var _state  = window.vdState;
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — KONSTANTA ROLE (badge & ikon)
+    // [MODUL 3] — KONSTANTA ROLE (badge & ikon)
     // ═══════════════════════════════════════════════════════════
     var VD_ROLE_BADGE = {
         'Toko':                 { warna: 'bg-warning text-dark',   ikon: 'fas fa-store' },
@@ -21170,7 +21215,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — HELPER: BADGE ROLE
+    // [MODUL 4] — HELPER: BADGE ROLE & STATUS
     // ═══════════════════════════════════════════════════════════
     function _vdBadgeRole(role) {
         var cfg = VD_ROLE_BADGE[role] || { warna: 'bg-secondary', ikon: 'fas fa-user' };
@@ -21179,9 +21224,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         '</span>';
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — HELPER: BADGE STATUS
-    // ═══════════════════════════════════════════════════════════
     function _vdBadgeStatus(status) {
         var map = {
             'Menunggu':  '<span class="badge bg-warning text-dark"><i class="fas fa-clock me-1"></i>Menunggu</span>',
@@ -21195,27 +21237,41 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // [MODUL 5] — RENDER STATISTIK (4 Kartu)
     // ═══════════════════════════════════════════════════════════
+    // Prioritas: pakai fpvStatistikGlobal() kalau ada.
+    // Fallback: hitung manual dari list ambil107().
+    // ═══════════════════════════════════════════════════════════
     window.vdRenderStatistik = function() {
         try {
-            var semua = window.ambil107({});
-            if (!Array.isArray(semua)) semua = [];
+            var menunggu = 0, disetujui = 0, ditolak = 0, total = 0;
 
-            var menunggu  = 0;
-            var disetujui = 0;
-            var ditolak   = 0;
-
-            semua.forEach(function(item) {
-                if (!item) return;
-                var s = item.status || 'Menunggu';
-                if (s === 'Menunggu')  menunggu++;
-                else if (s === 'Disetujui') disetujui++;
-                else if (s === 'Ditolak')   ditolak++;
-            });
+            // ── Prioritas 1: fpvStatistikGlobal ──
+            if (typeof window.fpvStatistikGlobal === 'function') {
+                var stat = window.fpvStatistikGlobal();
+                if (stat && typeof stat === 'object') {
+                    total     = stat.total     || 0;
+                    menunggu  = stat.Menunggu  || 0;
+                    disetujui = stat.Disetujui || 0;
+                    ditolak   = stat.Ditolak   || 0;
+                }
+            } else {
+                // ── Prioritas 2: hitung manual dari ambil107 ──
+                var semua = window.ambil107({});
+                if (Array.isArray(semua)) {
+                    total = semua.length;
+                    semua.forEach(function(item) {
+                        if (!item) return;
+                        var s = item.status || 'Menunggu';
+                        if (s === 'Menunggu')  menunggu++;
+                        else if (s === 'Disetujui') disetujui++;
+                        else if (s === 'Ditolak')   ditolak++;
+                    });
+                }
+            }
 
             _set('vdStatMenunggu',  menunggu.toLocaleString('id-ID'));
             _set('vdStatDisetujui', disetujui.toLocaleString('id-ID'));
             _set('vdStatDitolak',   ditolak.toLocaleString('id-ID'));
-            _set('vdStatTotal',     semua.length.toLocaleString('id-ID'));
+            _set('vdStatTotal',     total.toLocaleString('id-ID'));
         } catch (e) {
             console.error('vdRenderStatistik error:', e);
         }
@@ -21232,7 +21288,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             var semua = window.ambil107({});
             if (!Array.isArray(semua)) semua = [];
 
-            // Hitung per role
             var perRole = {};
             semua.forEach(function(item) {
                 if (!item || !item.role) return;
@@ -21245,10 +21300,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return;
             }
 
-            // Sort descending by jumlah
-            roleList.sort(function(a, b) {
-                return perRole[b] - perRole[a];
-            });
+            roleList.sort(function(a, b) { return perRole[b] - perRole[a]; });
 
             var h =
                 '<div class="card border-0 shadow-sm bg-white">' +
@@ -21280,7 +21332,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         }
     };
 
-    // ── Filter cepat via chip ──
     window.vdFilterRoleCepat = function(role) {
         var sel = document.getElementById('vdFilterRole');
         if (sel) sel.value = role || '';
@@ -21289,15 +21340,15 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — RENDER TABEL (dengan filter + pagination)
+    // [MODUL 7] — RENDER TABEL
     // ═══════════════════════════════════════════════════════════
     window.vdRenderTabel = function() {
-        var tbody = document.getElementById('vdTbody');
+        var tbody   = document.getElementById('vdTbody');
         var emptyEl = document.getElementById('vdEmpty');
         if (!tbody) return;
 
         try {
-            // ── 1. Ambil semua data via FPV ──
+            // ── 1. Ambil data via FPV ──
             var semua = window.ambil107({});
             if (!Array.isArray(semua)) semua = [];
 
@@ -21309,7 +21360,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             var filtered = semua.filter(function(item) {
                 if (!item) return false;
-
                 if (fRole && item.role !== fRole) return false;
                 if (fStatus && item.status !== fStatus) return false;
 
@@ -21335,9 +21385,9 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             });
 
             // ── 4. Update info jumlah ──
-            _set('vdInfoJumlah',      filtered.length + ' Data');
-            _set('vdTotalTerfilter',  filtered.length.toLocaleString('id-ID'));
-            _set('vdBadgeJumlah',     filtered.length.toLocaleString('id-ID'));
+            _set('vdInfoJumlah',     filtered.length + ' Data');
+            _set('vdTotalTerfilter', filtered.length.toLocaleString('id-ID'));
+            _set('vdBadgeJumlah',    filtered.length.toLocaleString('id-ID'));
 
             // ── 5. Pagination ──
             var perPage = _state.perPage || 10;
@@ -21393,7 +21443,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         var idUserEsc = String(idUser).replace(/'/g, "\\'");
         var jumlahDok = (item.listDokumen || []).length;
 
-        // ── Aksi: beda untuk Menunggu vs sudah diproses ──
         var tombolAksi = '';
         if (item.status === 'Menunggu') {
             tombolAksi =
@@ -21425,7 +21474,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 '</button>';
         }
 
-        // ── Tanggal ──
         var tglTeks = item.tgl || '-';
         if (item.createdAt) {
             try {
@@ -21479,16 +21527,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     window.vdResetFilter = function() {
         try {
-            var elCari    = document.getElementById('vdFilterCari');
-            var elRole    = document.getElementById('vdFilterRole');
-            var elStatus  = document.getElementById('vdFilterStatus');
-            var elTanggal = document.getElementById('vdFilterTanggal');
-
-            if (elCari)    elCari.value = '';
-            if (elRole)    elRole.value = '';
-            if (elStatus)  elStatus.value = '';
-            if (elTanggal) elTanggal.value = '';
-
+            ['vdFilterCari', 'vdFilterRole', 'vdFilterStatus', 'vdFilterTanggal']
+                .forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (el) el.value = '';
+                });
             _state.page = 1;
             window.vdRenderTabel();
         } catch (e) {
@@ -21497,7 +21540,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 11] — RENDER SEMUA (orchestrator)
+    // [MODUL 11] — ORCHESTRATOR
     // ═══════════════════════════════════════════════════════════
     window.vdRenderSemua = function() {
         try {
@@ -21515,21 +21558,27 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     window.debug107c = function() {
         var info = {
             blok: '10.7.c',
-            versi: '1.0',
+            versi: '2.0',
             guard: window._blok107cDone,
+            dependency: {
+                b: !!window._blok107bDone,
+                fpvGetSemua: typeof window.fpvGetSemuaVerifikasi === 'function',
+                fpvStatistik: typeof window.fpvStatistikGlobal === 'function',
+                ambil107: typeof window.ambil107 === 'function'
+            },
             render: {
                 statistik:     typeof window.vdRenderStatistik,
                 breakdownRole: typeof window.vdRenderBreakdownRole,
                 tabel:         typeof window.vdRenderTabel,
                 semua:         typeof window.vdRenderSemua
             },
-            aksiTab: {
+            kontrol: {
                 gotoPage:        typeof window.vdGotoPage,
                 resetFilter:     typeof window.vdResetFilter,
                 filterRoleCepat: typeof window.vdFilterRoleCepat
             },
             state: _state,
-            totalRole: Object.keys(VD_ROLE_BADGE).length
+            totalRoleKonfig: Object.keys(VD_ROLE_BADGE).length
         };
         console.log('🔍 debug107c:', info);
         return info;
@@ -21538,7 +21587,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // [MODUL 13] — LOG TERPASANG
     // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK 10.7.c — Render terpasang.',
+    console.log('%c📦 BLOK 10.7.c v2 — Render terpasang.',
         'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
     console.log('   📊 Render: vdRenderStatistik, vdRenderBreakdownRole, vdRenderTabel');
     console.log('   🎛️ Kontrol: vdGotoPage, vdResetFilter, vdFilterRoleCepat');
@@ -21547,15 +21596,15 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK R 10.7.c — Render ══════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.7.c — Render v2 ═══════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 10.7.d — VERIFIKASI DOKUMEN (Aksi) ══════════════ -->
+<!-- ═══ BLOK R 10.7.d — VERIFIKASI DOKUMEN (Aksi) v2 ═══════════ -->
 <!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
-<!-- ═══ Dependency: 10.7.c + FPV + CS2 + CS7 ══════════════════ -->
-<!-- ═══ Isi: Aksi generik untuk 11 role seller: ═══════════════ -->
-<!-- ═══      Preview • Setujui • Tolak • Hapus • Refresh ══════ -->
+<!-- ═══ Dependency: 10.7.c + FPV (CRUD) + CS2 + CS7 ═══════════ -->
+<!-- ═══ Isi: Aksi generik 11 role: Preview • Setujui • Tolak • -->
+<!-- ═══      Hapus • Refresh ═════════════════════════════════ -->
 <!-- ═══ Acuan: BLOK R 10.1.d + BLOK R 11.3.d + FPV ════════════ -->
 <!-- ═══ Aturan: A1, A2, A3, A5, A7, A11, A23, A31, A32, A34 ══ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -21565,44 +21614,95 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         console.log('ℹ️ BLOK 10.7.d sudah terpasang.');
         return;
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT (A1, A2)
+    // ═══════════════════════════════════════════════════════════
+    // 1a. Cek sub-blok sebelumnya (10.7.c)
     if (!window._blok107cDone) {
-        console.warn('⚠️ 10.7.c belum terpasang. 10.7.d ditunda.');
+        console.warn('⚠️ 10.7.d ditunda — 10.7.c belum terpasang.');
         return;
     }
+
+    // 1b. Cek fungsi FPV yang WAJIB untuk aksi
+    var depsFpv = [
+        { nama: 'fpvGetVerifikasiUser', wajib: true,
+          pesan: 'untuk ambil 1 pengajuan' },
+        { nama: 'fpvGetSemuaVerifikasi', wajib: true,
+          pesan: 'untuk fallback ambil data' },
+        { nama: 'fpvHapusVerifikasi',    wajib: false,
+          pesan: 'untuk hapus (ada fallback manual)' },
+        { nama: 'fpvKirimNotifKeUser',   wajib: false,
+          pesan: 'untuk notifikasi (ada fallback csNotifTambah)' }
+    ];
+
+    var fpvHilang = depsFpv.filter(function(d) {
+        return d.wajib && typeof window[d.nama] !== 'function';
+    });
+
+    if (fpvHilang.length > 0) {
+        console.warn('⚠️ 10.7.d ditunda — fungsi FPV WAJIB belum ada:');
+        fpvHilang.forEach(function(d) {
+            console.warn('   • ' + d.nama + ' (' + d.pesan + ')');
+        });
+        return;
+    }
+
+    // 1c. Cek helper & state dari 10.7.b/c
+    var helperWajib = ['vdEsc', 'vdSetText', 'vdSetHtml', 'vdToast', 'vdState'];
+    var helperHilang = helperWajib.filter(function(n) {
+        return typeof window[n] === 'undefined';
+    });
+
+    if (helperHilang.length > 0) {
+        console.warn('⚠️ 10.7.d ditunda — helper belum lengkap:');
+        helperHilang.forEach(function(n) { console.warn('   • ' + n); });
+        return;
+    }
+
+    // 1d. Cek render orchestrator (untuk refresh)
+    if (typeof window.vdRenderSemua !== 'function') {
+        console.warn('⚠️ 10.7.d ditunda — vdRenderSemua() belum ada (10.7.c).');
+        return;
+    }
+
+    // ✓ Semua dependency OK
     window._blok107dDone = true;
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — REFERENSI HELPER (dari 10.7.b / c)
+    // [MODUL 2] — REFERENSI HELPER (dari 10.7.b/c)
     // ═══════════════════════════════════════════════════════════
     var _esc    = window.vdEsc;
-    var _set    = window.vdSetText;
     var _setH   = window.vdSetHtml;
     var _toast  = window.vdToast;
     var _state  = window.vdState;
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — KONSTANTA
+    // [MODUL 3] — KONSTANTA
     // ═══════════════════════════════════════════════════════════
-    var VD_ALASAN_MIN = 5;  // minimal karakter alasan tolak
+    var VD_ALASAN_MIN = 5;
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — HELPER INTERNAL: AMBIL DATA PENGAJUAN
+    // [MODUL 4] — HELPER INTERNAL: AMBIL PENGAJUAN
     // ═══════════════════════════════════════════════════════════
     function _ambilPengajuanByIdUser(idUser) {
         try {
             if (!idUser) return null;
 
-            // Prioritas 1: FPV (single source of truth)
+            // Prioritas 1: FPV
             if (typeof window.fpvGetVerifikasiUser === 'function') {
                 var p = window.fpvGetVerifikasiUser(idUser);
                 if (p) return p;
             }
 
-            // Prioritas 2: fallback baca via ambil107
-            var list = window.ambil107({});
-            if (!Array.isArray(list)) return null;
-            for (var i = 0; i < list.length; i++) {
-                if (list[i] && list[i].id === idUser) return list[i];
+            // Prioritas 2: via pintu ambil107
+            if (typeof window.ambil107 === 'function') {
+                var list = window.ambil107({});
+                if (Array.isArray(list)) {
+                    for (var i = 0; i < list.length; i++) {
+                        if (list[i] && list[i].id === idUser) return list[i];
+                    }
+                }
             }
             return null;
         } catch (e) {
@@ -21612,10 +21712,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — HELPER INTERNAL: UPDATE STATUS USER (GENERIK)
-    // ═══════════════════════════════════════════════════════════
-    // Update status user di 2 array global: dataLoginUser & dataAkunAktif
-    // Generik — berlaku untuk SEMUA role (11 role seller)
+    // [MODUL 5] — HELPER: UPDATE STATUS USER (GENERIK 11 ROLE)
     // ═══════════════════════════════════════════════════════════
     function _updateStatusUser(idUser, statusBaru, opts) {
         opts = opts || {};
@@ -21629,7 +21726,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             var jumlahUpdate = 0;
 
-            // ── 1. Update di dataLoginUser ──
+            // ── 1. Update dataLoginUser ──
             try {
                 var lu = (typeof window.csLoadJSON === 'function')
                     ? window.csLoadJSON('dataLoginUser', [])
@@ -21639,8 +21736,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 for (var i = 0; i < lu.length; i++) {
                     var u = lu[i];
                     if (!u) continue;
-                    var idCek = u.idUser || u.id;
-                    if (idCek !== idUser) continue;
+                    if ((u.idUser || u.id) !== idUser) continue;
 
                     u.statusVerifikasi = statusBaru;
                     u.status = statusBaru;
@@ -21648,19 +21744,14 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                     u.verifiedBy = idAdmin;
                     if (opts.catatan) u.catatanVerifikasi = opts.catatan;
                     if (opts.alasanTolak) u.alasanTolak = opts.alasanTolak;
-
                     jumlahUpdate++;
                 }
 
-                // Simpan kembali
                 if (typeof window.csSaveJSON === 'function') {
                     window.csSaveJSON('dataLoginUser', lu, { backup: false });
                 }
-                try {
-                    localStorage.setItem('dataLoginUser', JSON.stringify(lu));
-                } catch (e) {}
+                try { localStorage.setItem('dataLoginUser', JSON.stringify(lu)); } catch (e) {}
 
-                // Sync ke global
                 if (Array.isArray(window.dataLoginUser)) {
                     window.dataLoginUser.length = 0;
                     lu.forEach(function(x) { window.dataLoginUser.push(x); });
@@ -21669,20 +21760,18 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 console.warn('_updateStatusUser (loginUser) error:', e);
             }
 
-            // ── 2. Update di dataAkunAktif ──
+            // ── 2. Update dataAkunAktif ──
             try {
                 var aa = (typeof window.csLoadJSON === 'function')
                     ? window.csLoadJSON('dataAkunAktif', [])
                     : (Array.isArray(window.dataAkunAktif) ? window.dataAkunAktif : []);
                 if (!Array.isArray(aa)) aa = [];
 
-                var ditemukanDiAktif = false;
-
+                var ditemukan = false;
                 for (var j = 0; j < aa.length; j++) {
                     var a = aa[j];
                     if (!a) continue;
-                    var idCek2 = a.id || a.idUser;
-                    if (idCek2 !== idUser) continue;
+                    if ((a.id || a.idUser) !== idUser) continue;
 
                     a.statusVerifikasi = statusBaru;
                     a.status = statusBaru;
@@ -21690,19 +21779,16 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                     a.verifiedBy = idAdmin;
                     if (opts.catatan) a.catatanVerifikasi = opts.catatan;
                     if (opts.alasanTolak) a.alasanTolak = opts.alasanTolak;
-
-                    ditemukanDiAktif = true;
+                    ditemukan = true;
                     jumlahUpdate++;
                 }
 
-                // Kalau user tidak ada di dataAkunAktif → tambahkan (saat disetujui)
-                if (!ditemukanDiAktif && statusBaru === 'Aktif') {
+                // Auto-tambah ke dataAkunAktif kalau status Aktif
+                if (!ditemukan && statusBaru === 'Aktif') {
                     var src = null;
                     for (var k = 0; k < (window.dataLoginUser || []).length; k++) {
                         var uu = window.dataLoginUser[k];
-                        if (uu && (uu.idUser === idUser || uu.id === idUser)) {
-                            src = uu; break;
-                        }
+                        if (uu && ((uu.idUser || uu.id) === idUser)) { src = uu; break; }
                     }
                     if (src) {
                         aa.push({
@@ -21717,8 +21803,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                             email: src.email,
                             alamat: src.alamat,
                             alamatKtp: src.alamatKtp || src.alamat,
-                            lat: src.lat,
-                            lng: src.lng,
+                            lat: src.lat, lng: src.lng,
                             nik_ktp: src.nik_ktp || src.nikKtp,
                             status: 'Aktif',
                             statusVerifikasi: 'Aktif',
@@ -21730,15 +21815,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                     }
                 }
 
-                // Simpan kembali
                 if (typeof window.csSaveJSON === 'function') {
                     window.csSaveJSON('dataAkunAktif', aa, { backup: false });
                 }
-                try {
-                    localStorage.setItem('dataAkunAktif', JSON.stringify(aa));
-                } catch (e) {}
+                try { localStorage.setItem('dataAkunAktif', JSON.stringify(aa)); } catch (e) {}
 
-                // Sync ke global
                 if (Array.isArray(window.dataAkunAktif)) {
                     window.dataAkunAktif.length = 0;
                     aa.forEach(function(x) { window.dataAkunAktif.push(x); });
@@ -21755,29 +21836,27 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — HELPER INTERNAL: CATAT AKTIVITAS
+    // [MODUL 6] — HELPER: CATAT AKTIVITAS
     // ═══════════════════════════════════════════════════════════
     function _catatAktivitas(aksi, detail) {
         try {
-            if (typeof window.catatAktivitasGlobal === 'function') {
-                var idUserSA = (typeof window.gidIdUser === 'function')
-                    ? window.gidIdUser() : 'SA';
-                window.catatAktivitasGlobal(idUserSA, aksi, detail);
-            }
+            if (typeof window.catatAktivitasGlobal !== 'function') return;
+            var idSA = (typeof window.gidIdUser === 'function')
+                ? window.gidIdUser() : 'SA';
+            window.catatAktivitasGlobal(idSA, aksi, detail);
         } catch (e) {
             console.warn('_catatAktivitas error:', e);
         }
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — HELPER INTERNAL: KIRIM NOTIFIKASI KE USER
+    // [MODUL 7] — HELPER: KIRIM NOTIFIKASI KE USER
     // ═══════════════════════════════════════════════════════════
     function _kirimNotifKeUser(idUser, pesan, tipe, linkAksi) {
         try {
             if (typeof window.fpvKirimNotifKeUser === 'function') {
                 return window.fpvKirimNotifKeUser(idUser, pesan, tipe);
             }
-            // Fallback: pakai csNotifTambah
             if (typeof window.csNotifTambah === 'function') {
                 return window.csNotifTambah({
                     idUser: idUser,
@@ -21797,7 +21876,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — AKSI: PREVIEW DOKUMEN
+    // [MODUL 8] — AKSI: PREVIEW DOKUMEN
     // ═══════════════════════════════════════════════════════════
     window.vdPreviewDokumen = function(idUser) {
         try {
@@ -21807,21 +21886,18 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return;
             }
 
-            // Simpan ID yang sedang di-preview
             _state.previewIdUser = idUser;
 
             // ── Judul modal ──
-            var roleEsc = _esc(item.role || '-');
             var titleHTML =
                 '<i class="fas fa-eye me-2"></i>Preview: <strong>' +
                 _esc(item.nama || '-') + '</strong> ' +
-                '<span class="badge bg-secondary ms-2">' + roleEsc + '</span>';
+                '<span class="badge bg-secondary ms-2">' + _esc(item.role || '-') + '</span>';
             _setH('vdModalPreviewTitle', titleHTML);
 
             // ── Body modal ──
             var h = '';
 
-            // Info ringkas
             h += '<div class="alert alert-light border small mb-3 text-start">' +
                 '<div class="row g-2">' +
                     '<div class="col-md-6"><strong>ID Pengajuan:</strong> ' +
@@ -21832,29 +21908,27 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                         _esc(item.nama || '-') + '</div>' +
                     '<div class="col-md-6"><strong>Role:</strong> ' +
                         _esc(item.role || '-') + '</div>' +
-                    '<div class="col-md-6"><strong>Tanggal Kirim:</strong> ' +
+                    '<div class="col-md-6"><strong>Tanggal:</strong> ' +
                         _esc(item.tgl || item.createdAt || '-') + '</div>' +
                     '<div class="col-md-6"><strong>Status:</strong> ' +
                         _esc(item.status || '-') + '</div>' +
                 '</div>' +
             '</div>';
 
-            // Notifikasi kalau status bukan Menunggu
             if (item.status === 'Disetujui') {
                 h += '<div class="alert alert-success small text-start">' +
                     '<i class="fas fa-check-circle me-1"></i>' +
-                    'Pengajuan sudah <strong>disetujui</strong> pada ' +
-                    _esc(item.verifiedAt || '-') +
+                    'Sudah disetujui pada ' + _esc(item.verifiedAt || '-') +
                 '</div>';
             } else if (item.status === 'Ditolak') {
                 h += '<div class="alert alert-danger small text-start">' +
                     '<i class="fas fa-times-circle me-1"></i>' +
-                    'Pengajuan sudah <strong>ditolak</strong>.<br>' +
-                    '<strong>Alasan:</strong> ' + _esc(item.catatan || item.alasanTolak || '-') +
+                    'Sudah ditolak.<br><strong>Alasan:</strong> ' +
+                    _esc(item.catatan || item.alasanTolak || '-') +
                 '</div>';
             }
 
-            // Dokumen
+            // ── Dokumen ──
             var dokumen = item.listDokumen || [];
             if (dokumen.length === 0) {
                 h += '<p class="text-muted">Tidak ada dokumen.</p>';
@@ -21889,7 +21963,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             _setH('vdModalPreviewBody', h);
 
-            // Tampilkan modal
             if (typeof bootstrap !== 'undefined') {
                 var modal = document.getElementById('vdModalPreview');
                 if (modal) bootstrap.Modal.getOrCreateInstance(modal).show();
@@ -21901,7 +21974,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — AKSI: SETUJUI (GENERIK 11 ROLE)
+    // [MODUL 9] — AKSI: SETUJUI (GENERIK 11 ROLE)
     // ═══════════════════════════════════════════════════════════
     window.vdSetujui = function(idUser) {
         try {
@@ -21916,26 +21989,24 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return;
             }
 
-            // Konfirmasi
             var konfirmasi = confirm(
                 'Setujui pengajuan verifikasi?\n\n' +
                 '• Nama: ' + (item.nama || '-') + '\n' +
                 '• Role: ' + (item.role || '-') + '\n' +
-                '• ID: ' + (item.id || '-') + '\n\n' +
-                'Setelah disetujui, akun akan otomatis AKTIF dan bisa akses semua menu.'
+                '• ID: '   + (item.id || '-') + '\n\n' +
+                'Setelah disetujui, akun akan otomatis AKTIF.'
             );
             if (!konfirmasi) return;
 
-            // ═══ PROSES SETUJUI ═══
             var now = (typeof window.csNow === 'function')
                 ? window.csNow() : new Date().toISOString();
             var idAdmin = (typeof window.gidIdUser === 'function')
                 ? window.gidIdUser() : 'SA';
 
-            // ── 1. Update dataVerifikasiDokumen (via FPV / CS11) ──
-            var berhasilUpdateVerifikasi = false;
+            // ── 1. Update dataVerifikasiDokumen ──
+            var berhasilDok = false;
             try {
-                var listVerif = (typeof window.csLoadVerifikasi === 'function')
+                var list = (typeof window.csLoadVerifikasi === 'function')
                     ? window.csLoadVerifikasi()
                     : (function() {
                         try {
@@ -21943,26 +22014,23 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                             return s ? JSON.parse(s) : [];
                         } catch (e) { return []; }
                     })();
+                if (!Array.isArray(list)) list = [];
 
-                if (!Array.isArray(listVerif)) listVerif = [];
-
-                for (var i = 0; i < listVerif.length; i++) {
-                    var v = listVerif[i];
+                for (var i = 0; i < list.length; i++) {
+                    var v = list[i];
                     if (!v || v.id !== idUser) continue;
-
-                    v.status = 'Disetujui';
+                    v.status     = 'Disetujui';
                     v.verifiedBy = idAdmin;
                     v.verifiedAt = now;
-                    v.updatedAt = now;
-
-                    berhasilUpdateVerifikasi = true;
+                    v.updatedAt  = now;
+                    berhasilDok = true;
                     break;
                 }
 
                 if (typeof window.csSaveVerifikasi === 'function') {
-                    window.csSaveVerifikasi(listVerif);
+                    window.csSaveVerifikasi(list);
                 } else {
-                    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(listVerif));
+                    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(list));
                 }
             } catch (e) {
                 console.warn('Update verifikasi error:', e);
@@ -21973,7 +22041,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 catatan: 'Disetujui oleh ' + idAdmin
             });
 
-            // ── 3. Kirim notifikasi ──
+            // ── 3. Kirim notif ──
             _kirimNotifKeUser(
                 idUser,
                 'Akun Anda sudah diverifikasi. Sekarang bisa akses semua fitur.',
@@ -21987,7 +22055,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 'Akun ' + (item.nama || '-') + ' (' + (item.role || '-') + ') — ID: ' + idUser
             );
 
-            // ── 5. Emit event via 3 Pintu (A11) ──
+            // ── 5. Emit event via pintu ──
             try {
                 if (typeof window.kirim107 === 'function') {
                     window.kirim107(
@@ -22004,23 +22072,14 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 }
             } catch (e) {}
 
-            // ── 6. Refresh tampilan ──
+            // ── 6. Refresh + notif ──
             window.vdRefresh();
-
-            // ── 7. Notif ke SA ──
             _toast('✅ ' + (item.nama || idUser) + ' disetujui.', 'success');
 
-            // ── 8. Log detail (A5) ──
-            console.log('');
-            console.log('═══════════════════════════════════════════════');
-            console.log('✅ SETUJUI VERIFIKASI SUKSES');
-            console.log('   ID User     :', idUser);
-            console.log('   Nama        :', item.nama);
-            console.log('   Role        :', item.role);
-            console.log('   Kode Role   :', item.kodeRole || '-');
-            console.log('   Update User :', hasilUser.sukses ? 'OK' : 'GAGAL');
-            console.log('   Update Dok  :', berhasilUpdateVerifikasi ? 'OK' : 'TIDAK DITEMUKAN');
-            console.log('═══════════════════════════════════════════════');
+            console.log('✅ Setujui verifikasi:', idUser,
+                '| role:', item.role,
+                '| updateUser:', hasilUser.sukses ? 'OK' : 'GAGAL',
+                '| updateDok:', berhasilDok ? 'OK' : 'TIDAK ADA');
         } catch (e) {
             console.error('vdSetujui error:', e);
             _toast('Gagal menyetujui: ' + e.message, 'danger');
@@ -22028,7 +22087,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 9] — AKSI: TOLAK (GENERIK 11 ROLE)
+    // [MODUL 10] — AKSI: TOLAK (GENERIK 11 ROLE)
     // ═══════════════════════════════════════════════════════════
     window.vdTolak = function(idUser, alasanFromModal) {
         try {
@@ -22038,7 +22097,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return;
             }
 
-            // Ambil alasan
             var alasan = alasanFromModal;
             if (!alasan) {
                 alasan = prompt(
@@ -22047,7 +22105,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 );
             }
 
-            if (alasan === null) return; // user batal
+            if (alasan === null) return;
 
             alasan = String(alasan || '').trim();
             if (alasan.length < VD_ALASAN_MIN) {
@@ -22055,7 +22113,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return;
             }
 
-            // ═══ PROSES TOLAK ═══
             var now = (typeof window.csNow === 'function')
                 ? window.csNow() : new Date().toISOString();
             var idAdmin = (typeof window.gidIdUser === 'function')
@@ -22063,7 +22120,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             // ── 1. Update dataVerifikasiDokumen ──
             try {
-                var listVerif = (typeof window.csLoadVerifikasi === 'function')
+                var list = (typeof window.csLoadVerifikasi === 'function')
                     ? window.csLoadVerifikasi()
                     : (function() {
                         try {
@@ -22071,26 +22128,24 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                             return s ? JSON.parse(s) : [];
                         } catch (e) { return []; }
                     })();
+                if (!Array.isArray(list)) list = [];
 
-                if (!Array.isArray(listVerif)) listVerif = [];
-
-                for (var i = 0; i < listVerif.length; i++) {
-                    var v = listVerif[i];
+                for (var i = 0; i < list.length; i++) {
+                    var v = list[i];
                     if (!v || v.id !== idUser) continue;
-
-                    v.status = 'Ditolak';
+                    v.status     = 'Ditolak';
                     v.verifiedBy = idAdmin;
                     v.verifiedAt = now;
-                    v.catatan = alasan;
+                    v.catatan    = alasan;
                     v.alasanTolak = alasan;
-                    v.updatedAt = now;
+                    v.updatedAt  = now;
                     break;
                 }
 
                 if (typeof window.csSaveVerifikasi === 'function') {
-                    window.csSaveVerifikasi(listVerif);
+                    window.csSaveVerifikasi(list);
                 } else {
-                    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(listVerif));
+                    localStorage.setItem('dataVerifikasiDokumen', JSON.stringify(list));
                 }
             } catch (e) {
                 console.warn('Update verifikasi error:', e);
@@ -22102,7 +22157,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 catatan: 'Ditolak: ' + alasan
             });
 
-            // ── 3. Kirim notifikasi ──
+            // ── 3. Kirim notif ──
             _kirimNotifKeUser(
                 idUser,
                 'Pengajuan verifikasi ditolak. Alasan: ' + alasan,
@@ -22116,7 +22171,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 'Akun ' + (item.nama || '-') + ' (' + (item.role || '-') + ') — Alasan: ' + alasan
             );
 
-            // ── 5. Emit event via 3 Pintu ──
+            // ── 5. Emit event ──
             try {
                 if (typeof window.kirim107 === 'function') {
                     window.kirim107(
@@ -22145,7 +22200,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 10] — AKSI: HAPUS (delegasi FPV)
+    // [MODUL 11] — AKSI: HAPUS (delegasi FPV)
     // ═══════════════════════════════════════════════════════════
     window.vdHapus = function(idUser) {
         try {
@@ -22163,17 +22218,17 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             );
             if (!konfirmasi) return;
 
-            // ── Delegasi ke FPV ──
+            // ── Delegasi FPV (atau fallback manual) ──
             var hasil = null;
             if (typeof window.fpvHapusVerifikasi === 'function') {
                 hasil = window.fpvHapusVerifikasi(idUser);
             } else {
-                // Fallback: hapus langsung dari storage
                 try {
                     var list = (typeof window.csLoadVerifikasi === 'function')
                         ? window.csLoadVerifikasi()
                         : JSON.parse(localStorage.getItem('dataVerifikasiDokumen') || '[]');
                     if (!Array.isArray(list)) list = [];
+
                     var baru = list.filter(function(x) { return x && x.id !== idUser; });
 
                     if (typeof window.csSaveVerifikasi === 'function') {
@@ -22192,13 +22247,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return;
             }
 
-            // ── Catat aktivitas ──
             _catatAktivitas(
                 'Hapus Verifikasi Dokumen',
                 'Pengajuan ' + (item.nama || '-') + ' (' + (item.role || '-') + ') — ID: ' + idUser
             );
 
-            // ── Refresh + notif ──
             window.vdRefresh();
             _toast('✅ Pengajuan dihapus.', 'success');
 
@@ -22210,16 +22263,12 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 11] — AKSI: REFRESH
+    // [MODUL 12] — AKSI: REFRESH
     // ═══════════════════════════════════════════════════════════
     window.vdRefresh = function() {
         try {
             if (typeof window.vdRenderSemua === 'function') {
                 window.vdRenderSemua();
-            } else {
-                if (typeof window.vdRenderStatistik === 'function') window.vdRenderStatistik();
-                if (typeof window.vdRenderBreakdownRole === 'function') window.vdRenderBreakdownRole();
-                if (typeof window.vdRenderTabel === 'function') window.vdRenderTabel();
             }
         } catch (e) {
             console.error('vdRefresh error:', e);
@@ -22227,24 +22276,20 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 12] — HANDLER DARI MODAL
+    // [MODUL 13] — HANDLER DARI MODAL
     // ═══════════════════════════════════════════════════════════
     window.vdSetujuiFromModal = function() {
         try {
             var idUser = _state.previewIdUser;
             if (!idUser) return;
 
-            // Tutup modal dulu
             var modal = document.getElementById('vdModalPreview');
             if (modal && typeof bootstrap !== 'undefined') {
                 var inst = bootstrap.Modal.getInstance(modal);
                 if (inst) inst.hide();
             }
 
-            // Panggil aksi setelah modal tertutup
-            setTimeout(function() {
-                window.vdSetujui(idUser);
-            }, 300);
+            setTimeout(function() { window.vdSetujui(idUser); }, 300);
         } catch (e) {
             console.error('vdSetujuiFromModal error:', e);
         }
@@ -22255,51 +22300,44 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             var idUser = _state.previewIdUser;
             if (!idUser) return;
 
-            // Tutup modal dulu
             var modal = document.getElementById('vdModalPreview');
             if (modal && typeof bootstrap !== 'undefined') {
                 var inst = bootstrap.Modal.getInstance(modal);
                 if (inst) inst.hide();
             }
 
-            // Panggil aksi setelah modal tertutup
-            setTimeout(function() {
-                window.vdTolak(idUser);
-            }, 300);
+            setTimeout(function() { window.vdTolak(idUser); }, 300);
         } catch (e) {
             console.error('vdTolakFromModal error:', e);
         }
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 13] — DEBUG (A5)
+    // [MODUL 14] — DEBUG (A5)
     // ═══════════════════════════════════════════════════════════
     window.debug107d = function() {
         var info = {
             blok: '10.7.d',
-            versi: '1.0',
+            versi: '2.0',
             guard: window._blok107dDone,
+            dependency: {
+                c: !!window._blok107cDone,
+                fpvGetByUser:  typeof window.fpvGetVerifikasiUser === 'function',
+                fpvGetSemua:   typeof window.fpvGetSemuaVerifikasi === 'function',
+                fpvHapus:      typeof window.fpvHapusVerifikasi === 'function',
+                fpvKirimNotif: typeof window.fpvKirimNotifKeUser === 'function',
+                renderSemua:   typeof window.vdRenderSemua === 'function'
+            },
             aksi: {
-                preview:  typeof window.vdPreviewDokumen,
-                setujui:  typeof window.vdSetujui,
-                tolak:    typeof window.vdTolak,
-                hapus:    typeof window.vdHapus,
-                refresh:  typeof window.vdRefresh
+                preview: typeof window.vdPreviewDokumen,
+                setujui: typeof window.vdSetujui,
+                tolak:   typeof window.vdTolak,
+                hapus:   typeof window.vdHapus,
+                refresh: typeof window.vdRefresh
             },
             fromModal: {
                 setujui: typeof window.vdSetujuiFromModal,
                 tolak:   typeof window.vdTolakFromModal
-            },
-            helperInternal: {
-                ambilPengajuan:  typeof _ambilPengajuanByIdUser,
-                updateStatusUser: typeof _updateStatusUser,
-                catatAktivitas:   typeof _catatAktivitas,
-                kirimNotif:       typeof _kirimNotifKeUser
-            },
-            fpv: {
-                getByUser:  typeof window.fpvGetVerifikasiUser,
-                hapus:      typeof window.fpvHapusVerifikasi,
-                kirimNotif: typeof window.fpvKirimNotifKeUser
             },
             state: _state
         };
@@ -22308,25 +22346,24 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 14] — LOG TERPASANG
+    // [MODUL 15] — LOG TERPASANG
     // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK 10.7.d — Aksi terpasang (generik 11 role).',
+    console.log('%c📦 BLOK 10.7.d v2 — Aksi terpasang (generik 11 role).',
         'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
     console.log('   ⚙️ Aksi: vdPreviewDokumen, vdSetujui, vdTolak, vdHapus, vdRefresh');
     console.log('   🎛️ From modal: vdSetujuiFromModal, vdTolakFromModal');
-    console.log('   🔧 Internal: _updateStatusUser (generik), _kirimNotifKeUser');
     console.log('   🔍 Debug: debug107d()');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK R 10.7.d — Aksi ════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.7.d — Aksi v2 ═════════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 10.7.e — VERIFIKASI DOKUMEN (Handler) ═══════════ -->
+<!-- ═══ BLOK R 10.7.e — VERIFIKASI DOKUMEN (Handler) v2 ════════ -->
 <!-- ═══ Layer: L5 (Blok UI) ═══════════════════════════════════ -->
-<!-- ═══ Dependency: 10.7.d + MN + 0.1 ═════════════════════════ -->
-<!-- ═══ Isi: Menu Handler (1 baris) + Sinkron Menu Pending + ══ -->
+<!-- ═══ Dependency: 10.7.d + MN + CS7 + 0.1 ═══════════════════ -->
+<!-- ═══ Isi: Menu Handler + Sinkron Menu Pending + Export CSV + -->
 <!-- ═══      Auto-Registry 0.1 + Debug ═══════════════════════ -->
 <!-- ═══ Acuan: BLOK R 10.1.e + BLOK R 11.3.e ══════════════════ -->
 <!-- ═══ Aturan: A7, A9, A10, A14, A15, A23, A31, A32, A33, A34 -->
@@ -22337,36 +22374,56 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         console.log('ℹ️ BLOK 10.7.e sudah terpasang.');
         return;
     }
-    if (!window._blok107dDone) {
-        console.warn('⚠️ 10.7.d belum terpasang. 10.7.e ditunda.');
-        return;
-    }
-    window._blok107eDone = true;
-    window._blok107Done  = true; // Alias: 10.7 LENGKAP
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — MENU HANDLER (A10 — 1 baris delegasi)
+    // [MODUL 1] — CEK DEPENDENCY BERTINGKAT (A1, A2)
+    // ═══════════════════════════════════════════════════════════
+    // 1a. Cek sub-blok sebelumnya (10.7.d)
+    if (!window._blok107dDone) {
+        console.warn('⚠️ 10.7.e ditunda — 10.7.d belum terpasang.');
+        return;
+    }
+
+    // 1b. Cek entry point (WAJIB)
+    if (typeof window.tampilkanVerifikasiDokumen !== 'function') {
+        console.warn('⚠️ 10.7.e ditunda — tampilkanVerifikasiDokumen() belum ada.');
+        return;
+    }
+
+    // 1c. Cek dependency OPSIONAL (warning saja, tidak block)
+    var depsOpsional = [
+        { nama: 'catatAktivitasGlobal', pesan: 'CS7 — aktivitas tidak akan tercatat' },
+        { nama: 'cpTambahBlok',         pesan: '0.1.e — registry tidak akan di-update' },
+        { nama: 'cpTambahRiwayat',      pesan: '0.1.e — riwayat tidak akan dicatat' }
+    ];
+
+    depsOpsional.forEach(function(d) {
+        if (typeof window[d.nama] !== 'function') {
+            console.warn('⚠️ 10.7.e: ' + d.nama + ' belum ada — ' + d.pesan);
+        }
+    });
+
+    // ✓ Wajib OK
+    window._blok107eDone = true;
+    window._blok107Done  = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — MENU HANDLER (A10 — 1 baris delegasi)
     // ═══════════════════════════════════════════════════════════
     window.menuHandlers = window.menuHandlers || {};
 
-    // ── Handler utama: dipanggil oleh dispatcher SA ──
+    // ── Handler utama ──
     window.menuHandlers['verifikasiDokumen'] = function(opts) {
         return window.tampilkanVerifikasiDokumen(opts);
     };
 
-    // ── Alias (untuk kompatibilitas) ──
+    // ── Alias ──
     window.menuHandlers['tampilkanVerifikasiDokumen'] = function(opts) {
         return window.tampilkanVerifikasiDokumen(opts);
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — SINKRONISASI MENU PENDING (5 Menu)
-    // ═══════════════════════════════════════════════════════════
-    // Aturan: Seller dengan status Pending hanya boleh akses 5 menu.
-    // Fungsi ini memastikan FPV_KONSTANTA.AKSI_PENDING = 5 menu saja.
-    //
-    // Kalau FPV sudah benar → tidak melakukan apa-apa.
-    // Kalau FPV belum terpasang → cek AKSI_PENDING di tempat lain.
+    // [MODUL 3] — SINKRONISASI MENU PENDING (5 Menu)
     // ═══════════════════════════════════════════════════════════
     var VD_AKSI_PENDING = [
         'dashboardUtama',       // 1. Dasbor
@@ -22387,12 +22444,10 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 fpvJumlahBaru: 0
             };
 
-            // ── Cek & update FPV_KONSTANTA.AKSI_PENDING ──
             if (window.FPV_KONSTANTA && Array.isArray(window.FPV_KONSTANTA.AKSI_PENDING)) {
                 hasil.fpvAda = true;
                 hasil.fpvJumlahLama = window.FPV_KONSTANTA.AKSI_PENDING.length;
 
-                // Cek apakah sudah persis 5 menu
                 var sudahSesuai = (hasil.fpvJumlahLama === VD_AKSI_PENDING.length) &&
                     VD_AKSI_PENDING.every(function(aksi) {
                         return window.FPV_KONSTANTA.AKSI_PENDING.indexOf(aksi) !== -1;
@@ -22407,12 +22462,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 }
             }
 
-            // ── Log hanya kalau berubah (A5) ──
             if (hasil.fpvBerubah) {
                 console.log('%c📋 10.7.e: AKSI_PENDING disinkronkan → 5 menu.',
                     'background:#FFC107;color:#000;padding:2px 6px;border-radius:3px;');
                 console.log('   Sebelum: ' + hasil.fpvJumlahLama + ' item');
-                console.log('   Sesudah: 5 item (dasbor, profil, verifikasi, downloadSKU, kerjasama)');
+                console.log('   Sesudah: 5 item');
             }
 
             return hasil;
@@ -22424,15 +22478,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
     // Jalankan sinkronisasi setelah semua blok terpasang
     setTimeout(function() {
-        try { window.vdSinkronisasiMenuPending(); }
-        catch (e) {}
+        try { window.vdSinkronisasiMenuPending(); } catch (e) {}
     }, 1000);
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — DAFTAR AKSI KE SUDAH_ADA_UI_1 (A14)
-    // ═══════════════════════════════════════════════════════════
-    // Supaya placeholder handler di 9.3.2(1) tidak menimpa handler
-    // nyata yang sudah dipasang oleh blok 10.7 ini.
+    // [MODUL 4] — DAFTAR AKSI KE SUDAH_ADA_UI_1 (A14)
     // ═══════════════════════════════════════════════════════════
     try {
         if (!window._SUDAH_ADA_UI_1) window._SUDAH_ADA_UI_1 = [];
@@ -22449,11 +22499,10 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — AUTO-REGISTRY KE 0.1 (A7, A33, A34)
+    // [MODUL 5] — AUTO-REGISTRY KE 0.1 (A7, A33, A34)
     // ═══════════════════════════════════════════════════════════
     setTimeout(function() {
         try {
-            // ── Daftar blok ke CP_REGISTRY_BLOK ──
             if (typeof window.cpTambahBlok === 'function') {
                 var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
                     return b && b.kode === '10.7';
@@ -22474,12 +22523,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 }
             }
 
-            // ── Catat ke CP_RIWAYAT ──
             if (typeof window.cpTambahRiwayat === 'function') {
                 window.cpTambahRiwayat({
                     blok:       '10.7',
                     nama:       'Verifikasi Dokumen SA',
-                    keterangan: 'UI SA (a-e) — Penerima global 11 role via FPV + 3 pintu'
+                    keterangan: 'UI SA (a-e v2) — Penerima global 11 role via FPV + 3 pintu'
                 });
             }
         } catch (e) {
@@ -22488,7 +22536,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }, 500);
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — EXPORT CSV (opsional, helper tambahan)
+    // [MODUL 6] — EXPORT CSV (helper tambahan)
     // ═══════════════════════════════════════════════════════════
     window.vdExportCSV = function() {
         try {
@@ -22551,18 +22599,23 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — DEBUG (A5)
+    // [MODUL 7] — DEBUG (A5)
     // ═══════════════════════════════════════════════════════════
     window.debug107 = function() {
         var info = {
             blok:  '10.7',
-            versi: '1.0',
+            versi: '2.0',
             guards: {
                 b:    window._blok107bDone,
                 c:    window._blok107cDone,
                 d:    window._blok107dDone,
                 e:    window._blok107eDone,
                 done: window._blok107Done
+            },
+            dependency: {
+                cs7catat:  typeof window.catatAktivitasGlobal === 'function',
+                cpTambahBlok: typeof window.cpTambahBlok === 'function',
+                cpTambahRiwayat: typeof window.cpTambahRiwayat === 'function'
             },
             entry: typeof window.tampilkanVerifikasiDokumen,
             handler: {
@@ -22572,10 +22625,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             pintu: {
                 kirim:  typeof window.kirim107,
                 terima: typeof window.terima107,
-                ambil:  typeof window.ambil107,
-                skor:   (typeof window.kirim107 === 'function' ? 1 : 0) +
-                        (typeof window.terima107 === 'function' ? 1 : 0) +
-                        (typeof window.ambil107 === 'function' ? 1 : 0)
+                ambil:  typeof window.ambil107
             },
             render: {
                 statistik:     typeof window.vdRenderStatistik,
@@ -22590,28 +22640,17 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 hapus:   typeof window.vdHapus,
                 refresh: typeof window.vdRefresh
             },
-            helper: {
-                esc:     typeof window.vdEsc,
-                setText: typeof window.vdSetText,
-                setHtml: typeof window.vdSetHtml,
-                getVal:  typeof window.vdGetVal,
-                toast:   typeof window.vdToast
-            },
             sinkronisasi: {
                 menuPending: typeof window.vdSinkronisasiMenuPending,
-                aksiPendingTarget: VD_AKSI_PENDING.length,
-                fpvAda: !!(window.FPV_KONSTANTA && window.FPV_KONSTANTA.AKSI_PENDING),
+                target: VD_AKSI_PENDING.length,
                 fpvJumlah: (window.FPV_KONSTANTA && window.FPV_KONSTANTA.AKSI_PENDING)
                     ? window.FPV_KONSTANTA.AKSI_PENDING.length : 0
             },
+            export: {
+                csv: typeof window.vdExportCSV
+            },
             registri: {
                 sudahAdaUI1: (window._SUDAH_ADA_UI_1 || []).indexOf('verifikasiDokumen') !== -1
-            },
-            fpv: {
-                getSemua:   typeof window.fpvGetSemuaVerifikasi,
-                getByUser:  typeof window.fpvGetVerifikasiUser,
-                hapus:      typeof window.fpvHapusVerifikasi,
-                kirimNotif: typeof window.fpvKirimNotifKeUser
             }
         };
         console.log('🔍 debug107:', info);
@@ -22619,14 +22658,15 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — LOG TERPASANG
+    // [MODUL 8] — LOG TERPASANG
     // ═══════════════════════════════════════════════════════════
-    console.log('%c📦 BLOK 10.7.e — Handler terpasang.',
+    console.log('%c📦 BLOK 10.7.e v2 — Handler terpasang.',
         'background:#1976D2;color:#fff;padding:4px 8px;font-weight:bold;');
     console.log('   🔗 Handler: menuHandlers["verifikasiDokumen"]');
     console.log('   📋 Sinkron AKSI_PENDING → 5 menu');
+    console.log('   📤 Export CSV helper');
     console.log('');
-    console.log('%c✅ BLOK R 10.7 — VERIFIKASI DOKUMEN LENGKAP (a+b+c+d+e)',
+    console.log('%c✅ BLOK R 10.7 v2 — VERIFIKASI DOKUMEN LENGKAP (a+b+c+d+e)',
         'background:#28A745;color:#fff;padding:6px 12px;font-weight:bold;font-size:14px;');
     console.log('   🎯 Entry     : tampilkanVerifikasiDokumen()');
     console.log('   🎯 Penerima  : SEMUA role seller (11 role) via FPV');
@@ -22636,14 +22676,13 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     console.log('   ⚙️  5 Aksi    : vdPreviewDokumen, vdSetujui, vdTolak,');
     console.log('                  vdHapus, vdRefresh');
     console.log('   🔗 Handler   : menuHandlers["verifikasiDokumen"]');
-    console.log('   📋 Menu Pend : 5 menu (dashboardUtama, profil,');
-    console.log('                  pengajuanVerifikasi, downloadSKU, downloadKerjasama)');
-    console.log('   📦 Registry  : CP_REGISTRY_BLOK["10.7"] + CP_RIWAYAT');
+    console.log('   📋 Menu Pend : 5 menu');
+    console.log('   📤 Export    : vdExportCSV');
     console.log('   🔍 Debug     : debug107()');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK R 10.7.e — Handler ═════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.7.e — Handler v2 ══════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
