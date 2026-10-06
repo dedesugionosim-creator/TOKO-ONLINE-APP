@@ -36017,6 +36017,1101 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══ AKHIR BLOK TK-OFFLINE ═══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL TKASIR UNIVERSAL ════════════════════ -->
+<!-- ═══ Layer: L4 | Prefix: tkasir* | Guard: _blokTkasirUniversalDone -->
+<!-- ═══ Dependency: CS + GID + MN + TkOffline + TkOnline + Struk -->
+<!-- ═══ Pemakai: 11.6.x, 12.6.x, 13.6.x, 14.6.x, 27.6.x, 28.6.x -->
+<!-- ═══ Isi: 7 Modul, ~28 fungsi (facade kasir + shift + struk) -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A23, A31, A32 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_TKASIR_UNIVERSAL() {
+    if (window._blokTkasirUniversalDone) {
+        console.log('ℹ️ Tkasir-Universal sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency ──
+    var deps = [
+        { flag: '_coreSystem8Done',       nama: 'Core System (1)-(8)' },
+        { flag: '_blokGIDDone',           nama: 'GID — Identity' },
+        { flag: '_blokMNDone',            nama: 'MN — Menu Network' },
+        { flag: '_blokTkOfflineDone',     nama: 'TkOffline-Universal' },
+        { flag: '_blokTkOnlineDone',      nama: 'TkOnline-Universal' },
+        { flag: '_blokStrukUniversalDone',nama: 'Struk-Universal' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ Tkasir-Universal ditunda — dependency belum ada:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    window._blokTkasirUniversalDone = true;
+    window._blokTkasirUniversalVersi = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.TKASIR_KONSTANTA = window.TKASIR_KONSTANTA || {
+        VERSI: '1.0',
+        KEY_KERANJANG_PREFIX: 'r2coin_kasir_keranjang_',
+        KEY_SHIFT_PREFIX: 'r2coin_kasir_shift_',
+        KEY_SETTING_PREFIX: 'r2coin_kasir_setting_',
+        MAX_KERANJANG_ITEM: 200,
+        MAX_SHIFT_LOG: 500,
+        AUTO_SIMPAN_KERANJANG_MS: 3000,
+        TIPE_KASIR: ['TK', 'PP', 'PM', 'DST', 'GR', 'COD', 'OJ', 'JS']
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _loadJSON(key, fb) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fb);
+        try { var s = localStorage.getItem(key); return s ? JSON.parse(s) : fb; }
+        catch (e) { return fb; }
+    }
+
+    function _saveJSON(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _now() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    function _idUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
+                return window.userAktif.idUser || window.userAktif.id;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function _idOwner() {
+        try {
+            if (typeof window.gidIdOwner === 'function') return window.gidIdOwner();
+        } catch (e) {}
+        return _idUser();
+    }
+
+    function _kodeRole() {
+        try {
+            if (typeof window.gidKodeRoleUser === 'function') return window.gidKodeRoleUser();
+        } catch (e) {}
+        return null;
+    }
+
+    function _sanitasi(s) {
+        if (!s) return 'XX';
+        return String(s).replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 64);
+    }
+
+    function _genId(prefix) {
+        try {
+            if (typeof window.generateKodeUnik === 'function') {
+                return window.generateKodeUnik(prefix || 'TKS');
+            }
+        } catch (e) {}
+        var p = String(prefix || 'TKS').toUpperCase().substring(0, 6);
+        return p + '-' + Date.now().toString(36).toUpperCase() + '-' +
+               Math.random().toString(36).substring(2, 6).toUpperCase();
+    }
+
+    function _catat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal !== 'function') return;
+            window.catatAktivitasGlobal(_idUser() || 'SYSTEM', aksi, detail);
+        } catch (e) {}
+    }
+
+    function _keyKeranjang() {
+        return window.TKASIR_KONSTANTA.KEY_KERANJANG_PREFIX + _sanitasi(_idUser());
+    }
+
+    function _keyShift() {
+        return window.TKASIR_KONSTANTA.KEY_SHIFT_PREFIX + _sanitasi(_idUser());
+    }
+
+    function _keySetting() {
+        return window.TKASIR_KONSTANTA.KEY_SETTING_PREFIX + _sanitasi(_idUser());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — KASIR: INFO & IDENTITY
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirInfo = function() {
+        try {
+            var u = window.userAktif || {};
+            return {
+                idKasir: _idUser(),
+                namaKasir: u.nama || u.username || 'Kasir',
+                kodeRole: _kodeRole(),
+                roleKasir: u.role || '-',
+                idOwner: _idOwner(),
+                namaOwner: u.namaOwner || u.namaInduk || '-',
+                kodeOwner: u.kodeOwner || u.kodeInduk || '-',
+                isKasir: _kodeRole() ? _kodeRole().indexOf('KSR_') === 0 : false
+            };
+        } catch (e) {
+            return { error: e.message };
+        }
+    };
+
+    window.tkasirCekSiap = function() {
+        try {
+            var info = window.tkasirInfo();
+            var errors = [];
+            if (!info.idKasir) errors.push('Kasir belum login');
+            if (!info.idOwner) errors.push('Owner tidak terdeteksi');
+            if (!info.kodeRole) errors.push('Kode role kosong');
+            return {
+                siap: errors.length === 0,
+                errors: errors,
+                info: info
+            };
+        } catch (e) {
+            return { siap: false, errors: [e.message] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — KERANJANG KASIR (persisten)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirKeranjangAmbil = function() {
+        try {
+            var key = _keyKeranjang();
+            var data = _loadJSON(key, null);
+            if (!data || typeof data !== 'object') {
+                return {
+                    idKasir: _idUser(),
+                    items: [],
+                    pelanggan: null,
+                    diskon: 0,
+                    metodeBayar: 'tunai',
+                    catatan: '',
+                    dibuatAt: _now(),
+                    updatedAt: _now()
+                };
+            }
+            if (!Array.isArray(data.items)) data.items = [];
+            return data;
+        } catch (e) {
+            return { items: [], pelanggan: null, diskon: 0 };
+        }
+    };
+
+    window.tkasirKeranjangSimpan = function(keranjang) {
+        try {
+            if (!keranjang || typeof keranjang !== 'object') {
+                return { sukses: false, pesan: 'Keranjang tidak valid' };
+            }
+            keranjang.updatedAt = _now();
+            return _saveJSON(_keyKeranjang(), keranjang);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangReset = function() {
+        try {
+            var key = _keyKeranjang();
+            try { localStorage.removeItem(key); } catch (e) {}
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangTambahItem = function(idProduk, qty, opts) {
+        opts = opts || {};
+        try {
+            // ── Cek siap ──
+            var cek = window.tkasirCekSiap();
+            if (!cek.siap) {
+                return { sukses: false, pesan: cek.errors.join(', ') };
+            }
+
+            // ── Cek produk ──
+            var p = (typeof window.getProdukByIdGlobal === 'function')
+                ? window.getProdukByIdGlobal(idProduk) : null;
+            if (!p) return { sukses: false, pesan: 'Produk tidak ditemukan' };
+
+            var q = parseInt(qty, 10) || 1;
+            if (q <= 0) return { sukses: false, pesan: 'Qty harus > 0' };
+
+            var stok = parseInt(p.stok, 10) || 0;
+            if (q > stok) return { sukses: false, pesan: 'Stok tidak cukup (tersisa ' + stok + ')' };
+
+            // ── Ambil keranjang ──
+            var k = window.tkasirKeranjangAmbil();
+            if (k.items.length >= TKASIR_KONSTANTA.MAX_KERANJANG_ITEM) {
+                return { sukses: false, pesan: 'Keranjang penuh' };
+            }
+
+            // ── Cari item existing ──
+            var idx = -1;
+            for (var i = 0; i < k.items.length; i++) {
+                if (k.items[i].idProduk === idProduk) { idx = i; break; }
+            }
+
+            if (idx !== -1) {
+                var newQty = k.items[idx].qty + q;
+                if (newQty > stok) {
+                    return { sukses: false, pesan: 'Total melebihi stok (' + stok + ')' };
+                }
+                k.items[idx].qty = newQty;
+                k.items[idx].subtotal = (parseFloat(k.items[idx].harga) || 0) * newQty;
+            } else {
+                k.items.push({
+                    idProduk: p.id,
+                    kode: p.kode || '',
+                    nama: p.nama || '-',
+                    harga: parseFloat(p.harga) || 0,
+                    hargaGrosir: parseFloat(p.hargaGrosir) || 0,
+                    qty: q,
+                    subtotal: (parseFloat(p.harga) || 0) * q,
+                    satuan: p.satuan || 'pcs',
+                    foto: p.foto || '',
+                    barcode: p.barcode || ''
+                });
+            }
+
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+
+            return { sukses: true, keranjang: k, totalItem: k.items.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangUpdateQty = function(idProduk, qty) {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            var q = parseInt(qty, 10);
+            if (isNaN(q)) return { sukses: false, pesan: 'Qty tidak valid' };
+
+            var p = (typeof window.getProdukByIdGlobal === 'function')
+                ? window.getProdukByIdGlobal(idProduk) : null;
+            var stok = p ? (parseInt(p.stok, 10) || 0) : 0;
+
+            var idx = -1;
+            for (var i = 0; i < k.items.length; i++) {
+                if (k.items[i].idProduk === idProduk) { idx = i; break; }
+            }
+            if (idx === -1) return { sukses: false, pesan: 'Item tidak ada' };
+
+            if (q <= 0) {
+                k.items.splice(idx, 1);
+            } else {
+                if (q > stok) return { sukses: false, pesan: 'Melebihi stok' };
+                k.items[idx].qty = q;
+                k.items[idx].subtotal = (parseFloat(k.items[idx].harga) || 0) * q;
+            }
+
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangHapusItem = function(idProduk) {
+        return window.tkasirKeranjangUpdateQty(idProduk, 0);
+    };
+
+    window.tkasirKeranjangKosongkan = function() {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            k.items = [];
+            k.diskon = 0;
+            k.catatan = '';
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangHitungTotal = function(opts) {
+        opts = opts || {};
+        try {
+            var k = opts.keranjang || window.tkasirKeranjangAmbil();
+            var subtotal = 0;
+            var totalQty = 0;
+
+            (k.items || []).forEach(function(it) {
+                if (!it) return;
+                var sub = (parseFloat(it.harga) || 0) * (parseInt(it.qty, 10) || 0);
+                subtotal += sub;
+                totalQty += parseInt(it.qty, 10) || 0;
+            });
+
+            var diskon = parseFloat(k.diskon) || 0;
+            var total = Math.max(0, subtotal - diskon);
+
+            return {
+                subtotal: subtotal,
+                diskon: diskon,
+                total: total,
+                totalQty: totalQty,
+                totalItem: (k.items || []).length
+            };
+        } catch (e) {
+            return { subtotal: 0, diskon: 0, total: 0, totalQty: 0, totalItem: 0 };
+        }
+    };
+
+    window.tkasirKeranjangSetPelanggan = function(pelanggan) {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            k.pelanggan = pelanggan || null;
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, pelanggan: k.pelanggan };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangSetDiskon = function(diskon) {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            var d = parseFloat(diskon) || 0;
+            if (d < 0) d = 0;
+            k.diskon = d;
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — PELANGGAN KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirPelangganWalkIn = function(nama, hp) {
+        try {
+            var pelanggan = {
+                id: null,
+                nama: String(nama || '').trim() || 'Walk-in',
+                hp: String(hp || '').trim() || '-',
+                tipe: 'walk-in',
+                waktu: _now()
+            };
+            return window.tkasirKeranjangSetPelanggan(pelanggan);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirPelangganTerdaftar = function(idPelanggan) {
+        try {
+            if (!idPelanggan) return { sukses: false, pesan: 'ID kosong' };
+
+            var u = null;
+            if (typeof window.getUserByIdGlobal === 'function') {
+                u = window.getUserByIdGlobal(idPelanggan);
+            }
+            if (!u) return { sukses: false, pesan: 'User tidak ditemukan' };
+
+            var pelanggan = {
+                id: idPelanggan,
+                nama: u.nama || u.username || '-',
+                hp: u.hp || '-',
+                email: u.email || '',
+                tipe: 'terdaftar',
+                waktu: _now()
+            };
+            return window.tkasirKeranjangSetPelanggan(pelanggan);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirPelangganCekBlacklist = function(idPelanggan) {
+        try {
+            if (!idPelanggan) return { blacklist: false };
+            if (typeof window.blacklistCek === 'function') {
+                return window.blacklistCek(idPelanggan) || { blacklist: false };
+            }
+            return { blacklist: false };
+        } catch (e) {
+            return { blacklist: false };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — PEMBAYARAN (4 metode)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirBayarTunai = function(jumlah) {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            var total = window.tkasirKeranjangHitungTotal({ keranjang: k }).total;
+            var bayar = parseFloat(jumlah) || total;
+            if (bayar < total) {
+                return { sukses: false, pesan: 'Pembayaran kurang dari total' };
+            }
+            k.metodeBayar = 'tunai';
+            k.bayar = bayar;
+            k.kembalian = bayar - total;
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k, kembalian: k.kembalian };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirBayarCoin = function() {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            var hitung = window.tkasirKeranjangHitungTotal({ keranjang: k });
+
+            var coin = 0;
+            if (typeof window.produkHitungCoin === 'function') {
+                coin = window.produkHitungCoin(hitung.total, 'beli');
+            } else if (typeof window.hitungRpKeCoinGlobal === 'function') {
+                coin = window.hitungRpKeCoinGlobal(hitung.total, 0);
+            } else {
+                coin = Math.ceil(hitung.total / 900);
+            }
+
+            k.metodeBayar = 'coin';
+            k.bayarCoin = coin;
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k, coinDibutuhkan: coin };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirBayarKasbon = function() {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            if (!k.pelanggan || !k.pelanggan.id) {
+                return { sukses: false, pesan: 'Kasbon butuh pelanggan terdaftar' };
+            }
+            var bl = window.tkasirPelangganCekBlacklist(k.pelanggan.id);
+            if (bl.blacklist) {
+                return { sukses: false, pesan: 'Pelanggan di-blacklist' };
+            }
+            k.metodeBayar = 'kasbon';
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirBayarCampuran = function(rp, coin) {
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            var hitung = window.tkasirKeranjangHitungTotal({ keranjang: k });
+
+            var bayarRp = parseFloat(rp) || 0;
+            var bayarCoin = parseInt(coin, 10) || 0;
+            var kurs = 900;
+            if (typeof window.getSettingEkonomiGlobal === 'function') {
+                var cfg = window.getSettingEkonomiGlobal();
+                kurs = parseFloat(cfg.hargaBeli) || 900;
+            }
+            var nilaiCoin = bayarCoin * kurs;
+            if (bayarRp + nilaiCoin < hitung.total) {
+                return { sukses: false, pesan: 'Total bayar kurang' };
+            }
+
+            k.metodeBayar = 'campuran';
+            k.bayarRp = bayarRp;
+            k.bayarCoin = bayarCoin;
+            k.kembalian = (bayarRp + nilaiCoin) - hitung.total;
+            var simpan = window.tkasirKeranjangSimpan(k);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, keranjang: k };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — SELESAIKAN TRANSAKSI
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirSelesaikan = async function(opts) {
+        opts = opts || {};
+        try {
+            var k = window.tkasirKeranjangAmbil();
+            if (!k.items || k.items.length === 0) {
+                return { sukses: false, pesan: 'Keranjang kosong' };
+            }
+
+            // ── Delegasi ke TkOffline ──
+            if (typeof window.tkSelesaikan === 'function') {
+                var hasil = await window.tkSelesaikan(k, opts);
+                if (!hasil || !hasil.sukses) return hasil;
+
+                // Reset keranjang setelah sukses
+                window.tkasirKeranjangReset();
+
+                // Catat aktivitas
+                _catat('Transaksi Kasir', 'Selesai: ' + (hasil.transaksi.nomorStruk || '-'));
+
+                return hasil;
+            }
+
+            return { sukses: false, pesan: 'tkSelesaikan tidak tersedia' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirCetakStruk = function(idTransaksi, ukuran) {
+        try {
+            var info = window.tkasirInfo();
+            var idTrx = idTransaksi;
+
+            if (!idTrx) {
+                // Ambil dari transaksi terakhir
+                var list = (typeof window.tkGetRiwayat === 'function')
+                    ? window.tkGetRiwayat(info.idOwner, { limit: 1 }) : [];
+                if (list.length > 0) idTrx = list[0].id;
+            }
+
+            if (!idTrx) return { sukses: false, pesan: 'Tidak ada transaksi' };
+
+            if (typeof window.strukDariTransaksi === 'function') {
+                var dataStruk = window.strukDariTransaksi(idTrx);
+                if (!dataStruk) return { sukses: false, pesan: 'Data struk tidak ditemukan' };
+
+                if (typeof window.strukCetak === 'function') {
+                    return window.strukCetak(dataStruk, ukuran || '80mm');
+                }
+            }
+
+            return { sukses: false, pesan: 'Struk-Universal tidak lengkap' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — SHIFT KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirShiftBuka = function(opts) {
+        opts = opts || {};
+        try {
+            var info = window.tkasirInfo();
+            if (!info.idKasir) return { sukses: false, pesan: 'Kasir tidak login' };
+
+            var existing = window.tkasirShiftAmbilAktif();
+            if (existing) {
+                return { sukses: false, pesan: 'Sudah ada shift aktif', shift: existing };
+            }
+
+            var shift = {
+                id: _genId('SHIFT'),
+                idKasir: info.idKasir,
+                namaKasir: info.namaKasir,
+                idOwner: info.idOwner,
+                kodeRole: info.kodeRole,
+                saldoAwal: parseFloat(opts.saldoAwal) || 0,
+                catatanAwal: opts.catatan || '',
+                waktuBuka: _now(),
+                waktuTutup: null,
+                totalTransaksi: 0,
+                totalPenjualan: 0,
+                totalKembalian: 0,
+                status: 'aktif'
+            };
+
+            var key = _keyShift();
+            var list = _loadJSON(key, []);
+            if (!Array.isArray(list)) list = [];
+            list.unshift(shift);
+            if (list.length > TKASIR_KONSTANTA.MAX_SHIFT_LOG) {
+                list = list.slice(0, TKASIR_KONSTANTA.MAX_SHIFT_LOG);
+            }
+
+            var simpan = _saveJSON(key, list);
+            if (!simpan.sukses) return simpan;
+
+            _catat('Buka Shift Kasir', 'Saldo awal: ' + shift.saldoAwal);
+            return { sukses: true, shift: shift };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirShiftAmbilAktif = function() {
+        try {
+            var list = _loadJSON(_keyShift(), []);
+            if (!Array.isArray(list)) return null;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].status === 'aktif') return list[i];
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    window.tkasirShiftTutup = function(opts) {
+        opts = opts || {};
+        try {
+            var aktif = window.tkasirShiftAmbilAktif();
+            if (!aktif) return { sukses: false, pesan: 'Tidak ada shift aktif' };
+
+            // Hitung rekap dari transaksi selama shift
+            var totalTrx = 0, totalJual = 0, totalKembalian = 0;
+            try {
+                var info = window.tkasirInfo();
+                var list = (typeof window.tkGetRiwayat === 'function')
+                    ? window.tkGetRiwayat(info.idOwner, { limit: 500 }) : [];
+
+                var tBuka = new Date(aktif.waktuBuka).getTime();
+                list.forEach(function(t) {
+                    if (!t) return;
+                    var tTrx = new Date(t.tanggal || t.createdAt || 0).getTime();
+                    if (tTrx >= tBuka) {
+                        totalTrx++;
+                        totalJual += parseFloat(t.total) || 0;
+                        totalKembalian += parseFloat(t.kembalian) || 0;
+                    }
+                });
+            } catch (e) {}
+
+            var key = _keyShift();
+            var shifts = _loadJSON(key, []);
+            if (!Array.isArray(shifts)) shifts = [];
+
+            var idx = -1;
+            for (var i = 0; i < shifts.length; i++) {
+                if (shifts[i] && shifts[i].id === aktif.id) { idx = i; break; }
+            }
+            if (idx === -1) return { sukses: false, pesan: 'Shift tidak ditemukan' };
+
+            shifts[idx].waktuTutup = _now();
+            shifts[idx].status = 'tutup';
+            shifts[idx].totalTransaksi = totalTrx;
+            shifts[idx].totalPenjualan = totalJual;
+            shifts[idx].totalKembalian = totalKembalian;
+            shifts[idx].catatanTutup = opts.catatan || '';
+            shifts[idx].saldoAkhir = parseFloat(opts.saldoAkhir) || 0;
+
+            var simpan = _saveJSON(key, shifts);
+            if (!simpan.sukses) return simpan;
+
+            _catat('Tutup Shift Kasir',
+                'Total transaksi: ' + totalTrx + ', penjualan: ' + totalJual);
+
+            return { sukses: true, shift: shifts[idx] };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirShiftRiwayat = function(filter) {
+        filter = filter || {};
+        try {
+            var list = _loadJSON(_keyShift(), []);
+            if (!Array.isArray(list)) return [];
+
+            var idKasir = filter.idKasir || _idUser();
+            if (idKasir) {
+                list = list.filter(function(s) { return s && s.idKasir === idKasir; });
+            }
+
+            var limit = parseInt(filter.limit, 10) || 50;
+            return list.slice(0, limit);
+        } catch (e) { return []; }
+    };
+
+    window.tkasirShiftRekap = function(idShift) {
+        try {
+            var list = _loadJSON(_keyShift(), []);
+            if (!Array.isArray(list)) return null;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id === idShift) return list[i];
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — REKAP KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirRekapHariIni = function() {
+        try {
+            var info = window.tkasirInfo();
+            var hariIni = new Date().toISOString().substring(0, 10);
+
+            var list = (typeof window.tkGetRiwayat === 'function')
+                ? window.tkGetRiwayat(info.idOwner, { tanggal: hariIni, status: 'selesai' }) : [];
+
+            var totalRp = 0, totalTrx = 0;
+            var perMetode = {};
+
+            list.forEach(function(t) {
+                if (!t) return;
+                totalRp += parseFloat(t.total) || 0;
+                totalTrx++;
+                var m = t.metodeBayar || 'lainnya';
+                perMetode[m] = (perMetode[m] || 0) + (parseFloat(t.total) || 0);
+            });
+
+            return {
+                tanggal: hariIni,
+                totalTransaksi: totalTrx,
+                totalPenjualan: totalRp,
+                perMetode: perMetode,
+                idKasir: info.idKasir,
+                namaKasir: info.namaKasir
+            };
+        } catch (e) {
+            return { totalTransaksi: 0, totalPenjualan: 0 };
+        }
+    };
+
+    window.tkasirRekapShift = function(idShift) {
+        try {
+            var shift = idShift
+                ? window.tkasirShiftRekap(idShift)
+                : window.tkasirShiftAmbilAktif();
+            if (!shift) return { sukses: false, pesan: 'Shift tidak ditemukan' };
+
+            var info = window.tkasirInfo();
+            var tBuka = new Date(shift.waktuBuka).getTime();
+            var tTutup = shift.waktuTutup ? new Date(shift.waktuTutup).getTime() : Date.now();
+
+            var list = (typeof window.tkGetRiwayat === 'function')
+                ? window.tkGetRiwayat(info.idOwner, { limit: 500 }) : [];
+
+            var totalRp = 0, totalTrx = 0, totalKembalian = 0;
+            var perMetode = {};
+
+            list.forEach(function(t) {
+                if (!t) return;
+                var tTrx = new Date(t.tanggal || t.createdAt || 0).getTime();
+                if (tTrx < tBuka || tTrx > tTutup) return;
+                totalRp += parseFloat(t.total) || 0;
+                totalKembalian += parseFloat(t.kembalian) || 0;
+                totalTrx++;
+                var m = t.metodeBayar || 'lainnya';
+                perMetode[m] = (perMetode[m] || 0) + (parseFloat(t.total) || 0);
+            });
+
+            return {
+                sukses: true,
+                shift: shift,
+                totalTransaksi: totalTrx,
+                totalPenjualan: totalRp,
+                totalKembalian: totalKembalian,
+                perMetode: perMetode,
+                durasiMs: tTutup - tBuka
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — SETTING KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirSettingAmbil = function() {
+        try {
+            var s = _loadJSON(_keySetting(), null);
+            if (s && typeof s === 'object') return s;
+            return {
+                autoPrintStruk: false,
+                showKembalian: true,
+                strukUkuran: '80mm',
+                tampilFotoProduk: true,
+                sortingProduk: 'nama-asc',
+                maxItemKeranjang: TKASIR_KONSTANTA.MAX_KERANJANG_ITEM
+            };
+        } catch (e) { return {}; }
+    };
+
+    window.tkasirSettingSimpan = function(setting) {
+        try {
+            var existing = window.tkasirSettingAmbil();
+            var merged = Object.assign({}, existing, setting, { updatedAt: _now() });
+            return _saveJSON(_keySetting(), merged);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — DASHBOARD KASIR (kartu ringkasan)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirDashboard = function() {
+        try {
+            var info = window.tkasirInfo();
+            var rekap = window.tkasirRekapHariIni();
+            var shift = window.tkasirShiftAmbilAktif();
+            var keranjang = window.tkasirKeranjangAmbil();
+            var hitung = window.tkasirKeranjangHitungTotal({ keranjang: keranjang });
+
+            return {
+                info: info,
+                rekapHariIni: rekap,
+                shiftAktif: shift,
+                keranjang: {
+                    totalItem: hitung.totalItem,
+                    totalQty: hitung.totalQty,
+                    totalRp: hitung.total
+                }
+            };
+        } catch (e) {
+            return { error: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — 3 PINTU STANDAR
+    // ═══════════════════════════════════════════════════════════
+    window.kirimTkasir = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser: _idUser(),
+                    idOwner: _idOwner(),
+                    role: _kodeRole(),
+                    menu: 'transaksiKasir',
+                    blok: 'Tkasir-Universal'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _now()
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terimaTkasir = function() {
+        try { return window.mnInboxMenu('transaksiKasir'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilTkasir = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'dashboard';
+        try {
+            if (tipe === 'dashboard')      return window.tkasirDashboard();
+            if (tipe === 'info')           return window.tkasirInfo();
+            if (tipe === 'keranjang')      return window.tkasirKeranjangAmbil();
+            if (tipe === 'hitung')         return window.tkasirKeranjangHitungTotal(filter);
+            if (tipe === 'shift-aktif')    return window.tkasirShiftAmbilAktif();
+            if (tipe === 'shift-riwayat')  return window.tkasirShiftRiwayat(filter);
+            if (tipe === 'shift-rekap')    return window.tkasirShiftRekap(filter.idShift);
+            if (tipe === 'rekap-hari')     return window.tkasirRekapHariIni();
+            if (tipe === 'rekap-shift')    return window.tkasirRekapShift(filter.idShift);
+            if (tipe === 'setting')        return window.tkasirSettingAmbil();
+            return null;
+        } catch (e) { return null; }
+    };
+
+    window.cekPintuTkasir = function() {
+        return {
+            blok: 'Tkasir-Universal',
+            kirim:  typeof window.kirimTkasir === 'function',
+            terima: typeof window.terimaTkasir === 'function',
+            ambil:  typeof window.ambilTkasir === 'function'
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — ALIAS BACKWARD COMPAT
+    // ═══════════════════════════════════════════════════════════
+    try {
+        if (typeof window.kasirKeranjangAmbil !== 'function') {
+            window.kasirKeranjangAmbil = window.tkasirKeranjangAmbil;
+        }
+        if (typeof window.kasirKeranjangSimpan !== 'function') {
+            window.kasirKeranjangSimpan = window.tkasirKeranjangSimpan;
+        }
+        if (typeof window.kasirKeranjangTambah !== 'function') {
+            window.kasirKeranjangTambah = window.tkasirKeranjangTambahItem;
+        }
+        if (typeof window.kasirKeranjangHitung !== 'function') {
+            window.kasirKeranjangHitung = window.tkasirKeranjangHitungTotal;
+        }
+        if (typeof window.kasirSelesaikanTransaksi !== 'function') {
+            window.kasirSelesaikanTransaksi = window.tkasirSelesaikan;
+        }
+        if (typeof window.kasirCetakStruk !== 'function') {
+            window.kasirCetakStruk = window.tkasirCetakStruk;
+        }
+        if (typeof window.kasirShiftBuka !== 'function') {
+            window.kasirShiftBuka = window.tkasirShiftBuka;
+        }
+        if (typeof window.kasirShiftTutup !== 'function') {
+            window.kasirShiftTutup = window.tkasirShiftTutup;
+        }
+    } catch (e) {
+        console.warn('Tkasir: Gagal pasang alias:', e.message);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugTkasir = function() {
+        var info = {
+            versi: TKASIR_KONSTANTA.VERSI,
+            guard: window._blokTkasirUniversalDone,
+            konteks: window.tkasirInfo(),
+            dashboard: window.tkasirDashboard(),
+            pintu: window.cekPintuTkasir(),
+            fungsi: {
+                // Info
+                info: typeof window.tkasirInfo,
+                cekSiap: typeof window.tkasirCekSiap,
+                // Keranjang
+                keranjangAmbil: typeof window.tkasirKeranjangAmbil,
+                keranjangSimpan: typeof window.tkasirKeranjangSimpan,
+                keranjangReset: typeof window.tkasirKeranjangReset,
+                keranjangTambahItem: typeof window.tkasirKeranjangTambahItem,
+                keranjangUpdateQty: typeof window.tkasirKeranjangUpdateQty,
+                keranjangHapusItem: typeof window.tkasirKeranjangHapusItem,
+                keranjangKosongkan: typeof window.tkasirKeranjangKosongkan,
+                keranjangHitungTotal: typeof window.tkasirKeranjangHitungTotal,
+                keranjangSetPelanggan: typeof window.tkasirKeranjangSetPelanggan,
+                keranjangSetDiskon: typeof window.tkasirKeranjangSetDiskon,
+                // Pelanggan
+                pelangganWalkIn: typeof window.tkasirPelangganWalkIn,
+                pelangganTerdaftar: typeof window.tkasirPelangganTerdaftar,
+                pelangganCekBlacklist: typeof window.tkasirPelangganCekBlacklist,
+                // Bayar
+                bayarTunai: typeof window.tkasirBayarTunai,
+                bayarCoin: typeof window.tkasirBayarCoin,
+                bayarKasbon: typeof window.tkasirBayarKasbon,
+                bayarCampuran: typeof window.tkasirBayarCampuran,
+                // Selesaikan
+                selesaikan: typeof window.tkasirSelesaikan,
+                cetakStruk: typeof window.tkasirCetakStruk,
+                // Shift
+                shiftBuka: typeof window.tkasirShiftBuka,
+                shiftTutup: typeof window.tkasirShiftTutup,
+                shiftAmbilAktif: typeof window.tkasirShiftAmbilAktif,
+                shiftRiwayat: typeof window.tkasirShiftRiwayat,
+                shiftRekap: typeof window.tkasirShiftRekap,
+                // Rekap
+                rekapHariIni: typeof window.tkasirRekapHariIni,
+                rekapShift: typeof window.tkasirRekapShift,
+                // Setting
+                settingAmbil: typeof window.tkasirSettingAmbil,
+                settingSimpan: typeof window.tkasirSettingSimpan,
+                dashboard: typeof window.tkasirDashboard
+            },
+            delegasi: {
+                tkSelesaikan:     typeof window.tkSelesaikan,
+                strukDariTransaksi: typeof window.strukDariTransaksi,
+                strukCetak:       typeof window.strukCetak
+            }
+        };
+        console.log('🔍 debugTkasir:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — AUTO-REGISTRY KE 0.1
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudah = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Tkasir-Universal';
+                });
+                if (!sudah) {
+                    window.cpTambahBlok({
+                        kode: 'Tkasir-Universal',
+                        nama: 'Fungsi Global Transaksi Kasir',
+                        layer: 'L4',
+                        status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('Tkasir-Universal', { status: 'Selesai' });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('tkasir', {
+                    nama: 'Transaksi Kasir Universal',
+                    status: 'Selesai',
+                    jumlah: 28
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Tkasir-Universal',
+                    nama: 'Fungsi Global Transaksi Kasir Universal',
+                    keterangan: '28 fungsi + keranjang + shift + struk + 3 pintu + delegasi TkOffline'
+                });
+            }
+        } catch (e) {
+            console.warn('Tkasir-Universal: Gagal update catatan 0.1:', e.message);
+        }
+    }, 500);
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c✅ BLOK FUNGSI GLOBAL TKASIR UNIVERSAL terpasang.',
+        'background:#FF8C00;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 16 Modul, 28 fungsi:');
+    console.log('   ─── INFO (2) ───');
+    console.log('   • tkasirInfo(), tkasirCekSiap()');
+    console.log('   ─── KERANJANG (10) ───');
+    console.log('   • tkasirKeranjangAmbil/Simpan/Reset');
+    console.log('   • tkasirKeranjangTambahItem/UpdateQty/HapusItem/Kosongkan');
+    console.log('   • tkasirKeranjangHitungTotal/SetPelanggan/SetDiskon');
+    console.log('   ─── PELANGGAN (3) ───');
+    console.log('   • tkasirPelangganWalkIn/Terdaftar/CekBlacklist');
+    console.log('   ─── BAYAR (4) ───');
+    console.log('   • tkasirBayarTunai/Coin/Kasbon/Campuran');
+    console.log('   ─── SELESAIKAN (2) ───');
+    console.log('   • tkasirSelesaikan() → delegasi TkOffline');
+    console.log('   • tkasirCetakStruk() → delegasi Struk');
+    console.log('   ─── SHIFT (5) ───');
+    console.log('   • tkasirShiftBuka/Tutup/AmbilAktif/Riwayat/Rekap');
+    console.log('   ─── REKAP (2) ───');
+    console.log('   • tkasirRekapHariIni/RekapShift');
+    console.log('   ─── SETTING (2) ───');
+    console.log('   • tkasirSettingAmbil/Simpan');
+    console.log('   ─── DASHBOARD (1) ───');
+    console.log('   • tkasirDashboard()');
+    console.log('   ─── 3 PINTU (3) ───');
+    console.log('   • kirimTkasir, terimaTkasir, ambilTkasir');
+    console.log('');
+    console.log('   🚪 3 Pintu: kirimTkasir, terimaTkasir, ambilTkasir');
+    console.log('   📦 Storage: r2coin_kasir_keranjang_*, r2coin_kasir_shift_*');
+    console.log('   🔗 Delegasi: tkSelesaikan (TkOffline), strukCetak (Struk)');
+    console.log('   🎯 Pemakai: 11.6.x, 12.6.x, 13.6.x, 14.6.x, 27.6.x, 28.6.x');
+    console.log('   🔍 Debug: debugTkasir()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK TKASIR UNIVERSAL ════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL TRANSAKSI ONLINE ══════════════════════ -->
 <!-- ═══ Layer: L4 | Prefix: tkOnline* | Guard: _blokTkOnlineDone ═ -->
 <!-- ═══ Dependency: CS + GID + MN + Produk + Dompet + Struk ═════ -->
