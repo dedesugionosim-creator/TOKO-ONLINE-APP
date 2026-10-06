@@ -34434,6 +34434,412 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ EXTEND 1 — BLOK FUNGSI GLOBAL PRODUK UNIVERSAL (+5) ════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Dependency: Produk-Universal + SheetJS (XLSX) ═════════ -->
+<!-- ═══ Prefix: produk* ═══════════════════════════════════════ -->
+<!-- ═══ Guard: _blokProdukUniversalExt1Done (UNIK — A32) ═════ -->
+<!-- ═══ Isi: +5 fungsi (status filter, Excel export/import, ═══ -->
+<!-- ═══      approval stok dari kasir) ═══════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A6, A23, A31, A32, A33, A34 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_EXTEND_PRODUK_UNIVERSAL_1() {
+    if (window._blokProdukUniversalExt1Done) {
+        console.log('ℹ️ Extend Produk-Universal 1 sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency (A1, A2) ──
+    if (!window._blokProdukUniversalDone) {
+        console.warn('⚠️ Extend Produk-Universal 1 ditunda — blok induk belum ada.');
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blokProdukUniversalExt1Done = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 18] — KONSTANTA APPROVAL
+    // ═══════════════════════════════════════════════════════════
+    window.PRODUK_APPROVAL_KEY = 'dataProdukApproval_';
+
+    function _approvalKey(idOwner) {
+        return window.PRODUK_APPROVAL_KEY + (idOwner || 'XX');
+    }
+
+    function _approvalLoad(idOwner) {
+        var l = (typeof window.csLoadJSON === 'function')
+            ? window.csLoadJSON(_approvalKey(idOwner), [])
+            : (function() {
+                try {
+                    var s = localStorage.getItem(_approvalKey(idOwner));
+                    return s ? JSON.parse(s) : [];
+                } catch (e) { return []; }
+              })();
+        return Array.isArray(l) ? l : [];
+    }
+
+    function _approvalSave(idOwner, list) {
+        if (!Array.isArray(list)) list = [];
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(_approvalKey(idOwner), list, { backup: false });
+        }
+        try {
+            localStorage.setItem(_approvalKey(idOwner), JSON.stringify(list));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _now() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 19] — FUNGSI #1: Get Produk by Status
+    // ═══════════════════════════════════════════════════════════
+    // statusFilter: 'all' | 'publik' | 'draft' | 'dihapus' | 'aktif'
+    // ═══════════════════════════════════════════════════════════
+    window.produkGetSemuaByStatusGlobal = function(role, idOwner, statusFilter) {
+        try {
+            var list = window.getProdukByOwnerGlobal(role, idOwner);
+            if (!Array.isArray(list)) return [];
+            var filter = String(statusFilter || 'all').toLowerCase();
+
+            if (filter === 'all') return list;
+            if (filter === 'publik') {
+                return list.filter(function(p) {
+                    return p && p.isPublik === true &&
+                           p.status !== 'Dihapus';
+                });
+            }
+            if (filter === 'draft') {
+                return list.filter(function(p) {
+                    return p && p.isPublik !== true &&
+                           p.status !== 'Dihapus';
+                });
+            }
+            if (filter === 'dihapus') {
+                return list.filter(function(p) {
+                    return p && p.status === 'Dihapus';
+                });
+            }
+            if (filter === 'aktif') {
+                return list.filter(function(p) {
+                    return p && (p.status === 'Aktif' || !p.status) &&
+                           p.status !== 'Dihapus';
+                });
+            }
+            return list;
+        } catch (e) {
+            console.error('produkGetSemuaByStatusGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 20] — FUNGSI #2: Export Excel
+    // ═══════════════════════════════════════════════════════════
+    window.exportProdukExcelGlobal = function(role, idOwner) {
+        try {
+            if (typeof XLSX === 'undefined') {
+                return { sukses: false, pesan: 'SheetJS (XLSX) tidak tersedia.' };
+            }
+            var list = window.getProdukByOwnerGlobal(role, idOwner);
+            if (!Array.isArray(list) || list.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada produk untuk diexport.' };
+            }
+
+            // ── Sheet 1: Data Produk ──
+            var rows = list.map(function(p, i) {
+                return {
+                    'No': i + 1,
+                    'ID': p.id || '',
+                    'Kode': p.kode || '',
+                    'Barcode': p.barcode || '',
+                    'Nama': p.nama || '',
+                    'Kategori': p.kategori || '',
+                    'Harga': parseFloat(p.harga) || 0,
+                    'Stok': parseInt(p.stok, 10) || 0,
+                    'Satuan': p.satuan || 'pcs',
+                    'Kondisi': p.kondisi || 'Baru',
+                    'Status': p.status || 'Aktif',
+                    'Publik': p.isPublik === true ? 'Ya' : 'Tidak',
+                    'Kadaluarsa': p.kadaluarsa || '',
+                    'Terjual': parseInt(p.terjual, 10) || 0,
+                    'Dilihat': parseInt(p.dilihat, 10) || 0,
+                    'Rating': parseFloat(p.rating) || 0,
+                    'Deskripsi': p.deskripsi || '',
+                    'CreatedAt': p.createdAt || '',
+                    'UpdatedAt': p.updatedAt || ''
+                };
+            });
+
+            var ws1 = XLSX.utils.json_to_sheet(rows);
+
+            // ── Sheet 2: Info Export ──
+            var infoRows = [
+                { Field: 'Role', Value: role || '-' },
+                { Field: 'ID Owner', Value: idOwner || '-' },
+                { Field: 'Total Produk', Value: list.length },
+                { Field: 'Diexport Pada', Value: _now() },
+                { Field: 'Diexport Oleh', Value: (window.gidIdUser && window.gidIdUser()) || '-' },
+                { Field: 'Versi Excel', Value: 'v1.0 (Extend Produk-Universal)' }
+            ];
+            var ws2 = XLSX.utils.json_to_sheet(infoRows);
+
+            var wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws1, 'Data Produk');
+            XLSX.utils.book_append_sheet(wb, ws2, 'Info Export');
+
+            var roleClean = String(role || 'owner').replace(/\s+/g, '_').toLowerCase();
+            var tgl = new Date().toISOString().split('T')[0];
+            var namaFile = 'produk_' + roleClean + '_' + tgl + '.xlsx';
+
+            XLSX.writeFile(wb, namaFile);
+
+            return { sukses: true, namaFile: namaFile, total: list.length, sheets: 2 };
+        } catch (e) {
+            console.error('exportProdukExcelGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 21] — FUNGSI #3: Import Excel
+    // ═══════════════════════════════════════════════════════════
+    // opsi: { mode: 'gabung'|'replace', role, idOwner }
+    // ═══════════════════════════════════════════════════════════
+    window.importProdukExcelGlobal = function(file, opsi) {
+        return new Promise(function(resolve) {
+            try {
+                if (typeof XLSX === 'undefined') {
+                    return resolve({ sukses: false, pesan: 'SheetJS (XLSX) tidak tersedia.' });
+                }
+                if (!file) {
+                    return resolve({ sukses: false, pesan: 'File kosong.' });
+                }
+
+                opsi = opsi || {};
+                var reader = new FileReader();
+                reader.onload = function(evt) {
+                    try {
+                        var data = new Uint8Array(evt.target.result);
+                        var wb = XLSX.read(data, { type: 'array' });
+                        var wsName = wb.SheetNames[0];
+                        if (!wsName) {
+                            return resolve({ sukses: false, pesan: 'File Excel tidak punya sheet.' });
+                        }
+                        var ws = wb.Sheets[wsName];
+                        var rows = XLSX.utils.sheet_to_json(ws);
+                        if (!Array.isArray(rows) || rows.length === 0) {
+                            return resolve({ sukses: false, pesan: 'Sheet kosong / tidak ada data.' });
+                        }
+
+                        var mode = (opsi.mode === 'replace') ? 'replace' : 'gabung';
+                        var role = opsi.role || (window.userAktif && window.userAktif.role) || 'Toko';
+                        var idOwner = opsi.idOwner
+                            || (window.gidIdOwner && window.gidIdOwner());
+                        if (!idOwner) {
+                            return resolve({ sukses: false, pesan: 'ID owner tidak ditemukan.' });
+                        }
+
+                        var berhasil = 0, gagal = 0;
+                        var detailGagal = [];
+
+                        // Kalau replace → hapus dulu
+                        if (mode === 'replace') {
+                            var key = (typeof window._resolveStorageKey === 'function')
+                                ? window._resolveStorageKey(role, idOwner) : null;
+                            if (key) {
+                                try { localStorage.removeItem(key); } catch (e) {}
+                            }
+                        }
+
+                        rows.forEach(function(r, i) {
+                            try {
+                                var nama = String(r['Nama'] || r['nama'] || '').trim();
+                                var harga = parseFloat(r['Harga'] || r['harga']) || 0;
+                                if (!nama || nama.length < 3) {
+                                    gagal++;
+                                    detailGagal.push('Baris ' + (i + 2) + ': nama kosong/pendek');
+                                    return;
+                                }
+                                if (harga <= 0) {
+                                    gagal++;
+                                    detailGagal.push('Baris ' + (i + 2) + ': harga <= 0');
+                                    return;
+                                }
+
+                                var payload = {
+                                    role: role,
+                                    idOwner: idOwner,
+                                    kode: String(r['Kode'] || r['kode'] || '').trim(),
+                                    barcode: String(r['Barcode'] || r['barcode'] || '').trim(),
+                                    nama: nama,
+                                    kategori: String(r['Kategori'] || r['kategori'] || 'Lainnya'),
+                                    harga: harga,
+                                    stok: parseInt(r['Stok'] || r['stok'], 10) || 0,
+                                    satuan: String(r['Satuan'] || r['satuan'] || 'pcs'),
+                                    kondisi: String(r['Kondisi'] || r['kondisi'] || 'Baru'),
+                                    status: String(r['Status'] || r['status'] || 'Aktif'),
+                                    isPublik: (r['Publik'] === 'Ya' || r['isPublik'] === true ||
+                                              r['is_publik'] === 'Ya'),
+                                    kadaluarsa: r['Kadaluarsa'] || r['kadaluarsa'] || null,
+                                    deskripsi: r['Deskripsi'] || r['deskripsi'] || ''
+                                };
+                                var res = window.tambahProdukGlobal(payload);
+                                if (res && res.sukses) berhasil++;
+                                else {
+                                    gagal++;
+                                    detailGagal.push('Baris ' + (i + 2) + ': ' +
+                                        ((res && res.pesan) || 'gagal'));
+                                }
+                            } catch (err) {
+                                gagal++;
+                                detailGagal.push('Baris ' + (i + 2) + ': ' + err.message);
+                            }
+                        });
+
+                        resolve({
+                            sukses: true,
+                            berhasil: berhasil,
+                            gagal: gagal,
+                            total: rows.length,
+                            mode: mode,
+                            detailGagal: detailGagal.slice(0, 10)
+                        });
+                    } catch (err) {
+                        resolve({ sukses: false, pesan: 'Gagal parse Excel: ' + err.message });
+                    }
+                };
+                reader.onerror = function() {
+                    resolve({ sukses: false, pesan: 'Gagal baca file.' });
+                };
+                reader.readAsArrayBuffer(file);
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 22] — FUNGSI #4: Get Produk Menunggu Approval
+    // ═══════════════════════════════════════════════════════════
+    window.produkGetMenungguApprovalGlobal = function(role, idOwner) {
+        try {
+            var list = _approvalLoad(idOwner);
+            return list.filter(function(a) {
+                return a && a.status === 'menunggu';
+            });
+        } catch (e) {
+            console.error('produkGetMenungguApprovalGlobal error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 23] — FUNGSI #5: Approve Update Stok
+    // ═══════════════════════════════════════════════════════════
+    // Kasir mengirim stok fisik → owner approve → apply ke produk
+    // ═══════════════════════════════════════════════════════════
+    window.produkApproveUpdateGlobal = function(idProduk, stokFisik, idApprove) {
+        try {
+            if (!idProduk) return { sukses: false, pesan: 'ID produk kosong.' };
+
+            // ── Apply ke produk ──
+            var hasil = window.updateStokProdukGlobal(idProduk, stokFisik);
+            if (!hasil || !hasil.sukses) {
+                return { sukses: false, pesan: (hasil && hasil.pesan) || 'Gagal update stok.' };
+            }
+
+            // ── Update entry approval ──
+            var idOwner = (window.gidIdOwner && window.gidIdOwner()) || null;
+            var list = _approvalLoad(idOwner);
+            var idUser = idApprove || (window.gidIdUser && window.gidIdUser());
+            list.forEach(function(a) {
+                if (a && a.idProduk === idProduk && a.status === 'menunggu') {
+                    a.status = 'disetujui';
+                    a.approvedAt = _now();
+                    a.approvedBy = idUser;
+                }
+            });
+            _approvalSave(idOwner, list);
+
+            // ── Catat aktivitas (A7, A34) ──
+            try {
+                if (typeof window.catatAktivitasGlobal === 'function') {
+                    window.catatAktivitasGlobal(idUser, 'Approve Update Stok',
+                        'Produk ' + idProduk + ' → stok ' + stokFisik);
+                }
+            } catch (e) {}
+
+            return { sukses: true, stok: stokFisik };
+        } catch (e) {
+            console.error('produkApproveUpdateGlobal error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 24] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugProdukExt1 = function() {
+        return {
+            blok: 'Extend-1 Produk-Universal',
+            versi: '1.0',
+            guard: window._blokProdukUniversalExt1Done,
+            fungsiBaru: {
+                produkGetSemuaByStatusGlobal: typeof window.produkGetSemuaByStatusGlobal,
+                exportProdukExcelGlobal:      typeof window.exportProdukExcelGlobal,
+                importProdukExcelGlobal:      typeof window.importProdukExcelGlobal,
+                produkGetMenungguApprovalGlobal: typeof window.produkGetMenungguApprovalGlobal,
+                produkApproveUpdateGlobal:    typeof window.produkApproveUpdateGlobal
+            },
+            library: { xlsx: typeof XLSX }
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 25] — AUTO-REGISTRY (A33, A34)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('produk', {
+                    nama: 'Manajemen Produk Universal (+Extend 1)',
+                    status: 'Selesai',
+                    jumlah: 38
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Produk-Universal',
+                    nama: 'Extend Produk-Universal 1 (+5)',
+                    keterangan: 'Status filter + Export/Import Excel + Approval stok dari kasir'
+                });
+            }
+        } catch (e) {
+            console.warn('Extend Produk: Gagal update 0.1:', e.message);
+        }
+    }, 500);
+
+    console.log('%c✅ Extend Produk-Universal 1 terpasang (+5 fungsi).',
+        'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 1. produkGetSemuaByStatusGlobal(role, idOwner, statusFilter)');
+    console.log('   📦 2. exportProdukExcelGlobal(role, idOwner)');
+    console.log('   📦 3. importProdukExcelGlobal(file, opsi)');
+    console.log('   📦 4. produkGetMenungguApprovalGlobal(role, idOwner)');
+    console.log('   📦 5. produkApproveUpdateGlobal(idProduk, stokFisik, idApprove)');
+    console.log('   🔍 Debug: debugProdukExt1()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR EXTEND 1 — PRODUK UNIVERSAL (+5) ════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ EXTEND 2 — BLOK FUNGSI GLOBAL STOK OPNAME (+5) ════════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
 <!-- ═══ Dependency: StokOpname-Universal + Produk-Universal ══ -->
@@ -34756,6 +35162,276 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR EXTEND 2 — STOK OPNAME (+5) ═════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ EXTEND 3 — BLOK FUNGSI GLOBAL REKAP UNIVERSAL (+3) ════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Dependency: Rekap-Universal + (Modal-Universal opsional) -->
+<!-- ═══ Prefix: rekap* ═══════════════════════════════════════ -->
+<!-- ═══ Guard: _blokRekapExt1Done (UNIK — A32) ═══════════════ -->
+<!-- ═══ Isi: +3 fungsi (rekap modal, HPP, gabungan total) ════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A6, A23, A31, A32, A33, A34 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_EXTEND_REKAP_UNIVERSAL_1() {
+    if (window._blokRekapExt1Done) {
+        console.log('ℹ️ Extend Rekap 1 sudah terpasang.');
+        return;
+    }
+    if (!window._blokRekapDone) {
+        console.warn('⚠️ Extend Rekap 1 ditunda — blok induk belum ada.');
+        return;
+    }
+    window._blokRekapExt1Done = true;
+
+    function _idOwner() {
+        try {
+            if (typeof window.gidIdOwner === 'function') return window.gidIdOwner();
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+        } catch (e) {}
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — FUNGSI #1: Rekap Modal Detail
+    // ═══════════════════════════════════════════════════════════
+    // Kalau Modal-Universal belum ada → return total 0
+    // ═══════════════════════════════════════════════════════════
+    window.rekapModalDetail = function(idOwner, periode) {
+        try {
+            idOwner = idOwner || _idOwner();
+            periode = periode || 'bulanan';
+
+            if (typeof window.modalGetPeriode !== 'function') {
+                return {
+                    totalModal: 0,
+                    totalModalTeks: 'Rp 0',
+                    jumlahEntry: 0,
+                    items: [],
+                    _catatan: 'Modal-Universal belum terpasang (fallback 0)'
+                };
+            }
+
+            var list = window.modalGetPeriode(idOwner, periode) || [];
+            if (!Array.isArray(list)) list = [];
+
+            var totalModal = 0;
+            var perTanggal = {};
+            var jumlahItem = 0;
+
+            list.forEach(function(m) {
+                if (!m) return;
+                var t = parseFloat(m.total) || 0;
+                totalModal += t;
+                var tgl = String(m.tanggal || '').substring(0, 10);
+                if (tgl) perTanggal[tgl] = (perTanggal[tgl] || 0) + t;
+                jumlahItem += (Array.isArray(m.items) ? m.items.length : 0);
+            });
+
+            return {
+                idOwner: idOwner,
+                periode: periode,
+                totalModal: totalModal,
+                totalModalTeks: window.csFormatRp
+                    ? window.csFormatRp(totalModal)
+                    : 'Rp ' + totalModal.toLocaleString('id-ID'),
+                jumlahEntry: list.length,
+                jumlahItem: jumlahItem,
+                perTanggal: perTanggal,
+                items: list.slice(0, 100)
+            };
+        } catch (e) {
+            console.error('rekapModalDetail error:', e);
+            return { totalModal: 0, totalModalTeks: 'Rp 0', jumlahEntry: 0, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — FUNGSI #2: Rekap HPP (COGS)
+    // ═══════════════════════════════════════════════════════════
+    // HPP = Harga Pokok Penjualan
+    // Dihitung dari: modal belanja ÷ total produk terjual
+    // ═══════════════════════════════════════════════════════════
+    window.rekapHPP = function(idOwner, periode) {
+        try {
+            idOwner = idOwner || _idOwner();
+            periode = periode || 'bulanan';
+
+            var modalData = window.rekapModalDetail(idOwner, periode);
+            var totalModal = modalData.totalModal || 0;
+
+            // Ambil total qty terjual dari Rekap-Universal
+            var qtyTerjual = 0;
+            try {
+                if (typeof window.rekapProdukTerjual === 'function') {
+                    var terjual = window.rekapProdukTerjual(idOwner, { periode: periode }) || [];
+                    terjual.forEach(function(p) { qtyTerjual += parseInt(p.qty, 10) || 0; });
+                }
+            } catch (e) {}
+
+            var hppPerUnit = qtyTerjual > 0 ? Math.round(totalModal / qtyTerjual) : 0;
+
+            return {
+                idOwner: idOwner,
+                periode: periode,
+                totalModal: totalModal,
+                totalModalTeks: modalData.totalModalTeks,
+                qtyTerjual: qtyTerjual,
+                hppPerUnit: hppPerUnit,
+                hppPerUnitTeks: window.csFormatRp
+                    ? window.csFormatRp(hppPerUnit)
+                    : 'Rp ' + hppPerUnit.toLocaleString('id-ID')
+            };
+        } catch (e) {
+            console.error('rekapHPP error:', e);
+            return { totalModal: 0, qtyTerjual: 0, hppPerUnit: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — FUNGSI #3: Rekap Total Penjualan Gabungan
+    // ═══════════════════════════════════════════════════════════
+    // Gabungan: produk terjual + penjualan kasir + modal + keuntungan
+    // ═══════════════════════════════════════════════════════════
+    window.rekapTotalPenjualanGabungan = function(idOwner, periode) {
+        try {
+            idOwner = idOwner || _idOwner();
+            periode = periode || 'bulanan';
+
+            // ── Penjualan pemilik ──
+            var penjualan = { totalRp: 0, jumlahTransaksi: 0 };
+            try {
+                if (typeof window.rekapPenjualanPemilik === 'function') {
+                    penjualan = window.rekapPenjualanPemilik(idOwner, periode) || penjualan;
+                }
+            } catch (e) {}
+
+            // ── Keuntungan ──
+            var keuntungan = { keuntungan: 0, margin: 0 };
+            try {
+                if (typeof window.rekapKeuntungan === 'function') {
+                    keuntungan = window.rekapKeuntungan(idOwner, periode) || keuntungan;
+                }
+            } catch (e) {}
+
+            // ── Modal detail ──
+            var modal = window.rekapModalDetail(idOwner, periode);
+
+            // ── HPP ──
+            var hpp = window.rekapHPP(idOwner, periode);
+
+            // ── Total qty terjual ──
+            var totalQtyTerjual = 0;
+            var jumlahProdukUnik = 0;
+            try {
+                if (typeof window.rekapProdukTerjual === 'function') {
+                    var arr = window.rekapProdukTerjual(idOwner, { periode: periode }) || [];
+                    jumlahProdukUnik = arr.length;
+                    arr.forEach(function(p) { totalQtyTerjual += parseInt(p.qty, 10) || 0; });
+                }
+            } catch (e) {}
+
+            // ── Kasir breakdown ──
+            var kasirCount = 0;
+            try {
+                if (typeof window.rekapPenjualanKasir === 'function') {
+                    var k = window.rekapPenjualanKasir(idOwner, { periode: periode }) || [];
+                    kasirCount = k.length;
+                }
+            } catch (e) {}
+
+            var _rp = function(n) {
+                return window.csFormatRp
+                    ? window.csFormatRp(n)
+                    : 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+            };
+
+            return {
+                idOwner: idOwner,
+                periode: periode,
+                // Penjualan
+                totalPenjualan: penjualan.totalRp || 0,
+                totalPenjualanTeks: _rp(penjualan.totalRp || 0),
+                jumlahTransaksi: penjualan.jumlahTransaksi || 0,
+                // Modal
+                totalModal: modal.totalModal || 0,
+                totalModalTeks: modal.totalModalTeks,
+                jumlahEntryModal: modal.jumlahEntry || 0,
+                // Keuntungan
+                keuntungan: keuntungan.keuntungan || 0,
+                keuntunganTeks: _rp(keuntungan.keuntungan || 0),
+                margin: keuntungan.margin || 0,
+                // HPP
+                hppPerUnit: hpp.hppPerUnit || 0,
+                hppPerUnitTeks: hpp.hppPerUnitTeks,
+                // Produk
+                totalQtyTerjual: totalQtyTerjual,
+                jumlahProdukUnik: jumlahProdukUnik,
+                // Kasir
+                jumlahKasirAktif: kasirCount
+            };
+        } catch (e) {
+            console.error('rekapTotalPenjualanGabungan error:', e);
+            return { totalPenjualan: 0, totalModal: 0, keuntungan: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugRekapExt1 = function() {
+        return {
+            blok: 'Extend-1 Rekap-Universal',
+            versi: '1.0',
+            guard: window._blokRekapExt1Done,
+            fungsiBaru: {
+                rekapModalDetail:              typeof window.rekapModalDetail,
+                rekapHPP:                      typeof window.rekapHPP,
+                rekapTotalPenjualanGabungan:   typeof window.rekapTotalPenjualanGabungan
+            },
+            dependency: {
+                modalUniversal: typeof window.modalGetPeriode === 'function'
+                    ? 'TERPASANG' : 'BELUM (fallback 0)'
+            }
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — AUTO-REGISTRY (A33, A34)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('rekap', {
+                    nama: 'Rekap Universal (+Extend 1)',
+                    status: 'Selesai',
+                    jumlah: 31
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Rekap-Universal',
+                    nama: 'Extend Rekap 1 (+3)',
+                    keterangan: 'Rekap modal detail + HPP + total penjualan gabungan'
+                });
+            }
+        } catch (e) {
+            console.warn('Extend Rekap: Gagal update 0.1:', e.message);
+        }
+    }, 500);
+
+    console.log('%c✅ Extend Rekap 1 terpasang (+3 fungsi).',
+        'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 1. rekapModalDetail(idOwner, periode)');
+    console.log('   📦 2. rekapHPP(idOwner, periode)');
+    console.log('   📦 3. rekapTotalPenjualanGabungan(idOwner, periode)');
+    console.log('   ⚠️  rekapModalDetail & rekapHPP fallback ke 0 kalau Modal-Universal belum ada');
+    console.log('   🔍 Debug: debugRekapExt1()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR EXTEND 3 — REKAP UNIVERSAL (+3) ═════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
