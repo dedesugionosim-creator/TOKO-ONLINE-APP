@@ -32761,6 +32761,1489 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══ AKHIR BLOK PRINTER UNIVERSAL ═══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL TRANSAKSI KASIR (L4) ══════════════════ -->
+<!-- ═══ Layer      : L4 (Fungsi Global Domain) ══════════════════ -->
+<!-- ═══ Prefix     : tkasir* ═════════════════════════════════════ -->
+<!-- ═══ Guard      : _blokTkasirDone (UNIK — A32) ═══════════════ -->
+<!-- ═══ Versi      : 1.0 (universal 15 role) ════════════════════ -->
+<!-- ═══ Cakupan    : 10 Seller + 5 Kasir ════════════════════════ -->
+<!-- ═══ Dependency : CS8 + GID + MN + Produk-Universal + ═══════ -->
+<!-- ═══              TkOffline-Universal + (opsional: TkOnline, ═ -->
+<!-- ═══              Kasbon, Struk, Printer, Dompet-Universal, ═ -->
+<!-- ═══              Dompet-User, Ekonomi, Pengecualian) ═══════ -->
+<!-- ═══ Isi        : 14 modul, ~48 fungsi, 3 pintu standar ═════ -->
+<!-- ═══ Aturan     : A1, A2, A3, A5, A11, A12, A13, A18, A21, ═ -->
+<!-- ═══              A23, A25, A31, A32, A33, A34, A35 ════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_TRANSAKSI_KASIR() {
+    if (window._blokTkasirDone) {
+        console.log('ℹ️ BLOK TRANSAKSI KASIR sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency WAJIB ──
+    var depsWajib = [
+        { flag: '_coreSystem8Done',         nama: 'Core System (8)' },
+        { flag: '_blokGIDDone',             nama: 'GID — Identity' },
+        { flag: '_blokMNDone',              nama: 'MN — Menu Network' },
+        { flag: '_blokProdukUniversalDone', nama: 'Produk-Universal' },
+        { flag: '_blokTkOfflineDone',       nama: 'TkOffline-Universal' }
+    ];
+    var missWajib = depsWajib.filter(function(d) { return !window[d.flag]; });
+    if (missWajib.length > 0) {
+        console.warn('⚠️ Tkasir-Universal ditunda — dependency WAJIB belum ada:');
+        missWajib.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // ── Cek dependency OPSIONAL (warning saja, blok tetap mount) ──
+    var depsOpsional = [
+        { flag: '_blokTkOnlineDone',         nama: 'TkOnline-Universal' },
+        { flag: '_blokStrukUniversalDone',   nama: 'Struk-Universal' },
+        { flag: '_blokKasbonUniversalDone',  nama: 'Kasbon-Universal' },
+        { flag: '_blokPrinterUniversalDone', nama: 'Printer-Universal' },
+        { flag: '_blokDompetUniversalDone',  nama: 'Dompet-Universal' },
+        { flag: '_blokDompetUserDone',       nama: 'Dompet-User' },
+        { flag: '_blokEkonomiUniversalDone', nama: 'Ekonomi-Universal' },
+        { flag: '_blokPengecualianDone',     nama: 'Pengecualian-Universal' }
+    ];
+    depsOpsional.forEach(function(d) {
+        if (!window[d.flag]) {
+            console.warn('⚠️ Tkasir-Universal: ' + d.nama +
+                ' belum ada — fitur terkait akan fallback.');
+        }
+    });
+
+    // ✓ Guard unik (A32)
+    window._blokTkasirDone   = true;
+    window._blokTkasirVersi  = '1.0';
+    window._blokTkasirScope  = 15; // 10 seller + 5 kasir
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.TKASIR_KONSTANTA = window.TKASIR_KONSTANTA || {
+        VERSI: '1.0',
+        KEY_PREFIX_SESI: 'dataSesiKasir_',
+        STATUS_SESI_VALID: ['buka', 'tutup', 'auto-tutup'],
+        MODE_VALID: ['offline', 'online'],
+        MAX_SESI_PER_OWNER: 1000,
+        IDLE_AUTO_TUTUP_JAM: 12,
+        QUICK_AMOUNT: [0, 5000, 10000, 20000, 50000, 100000]
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — CONFIG 15 ROLE (10 Seller + 5 Kasir)
+    // ═══════════════════════════════════════════════════════════
+    // kodeOwner → kode role seller induk
+    // tipeOwner : 'seller' (owner transaksi sendiri)
+    //           | 'kasir'  (sub-user, transaksi untuk owner)
+    // kodeKasir : kode kasir yang valid untuk seller ini (null = tidak punya kasir)
+    // namaRole  : nama role untuk cari produk di PRODUK_STORAGE_MAP
+    // ═══════════════════════════════════════════════════════════
+    window.TKASIR_CONFIG = window.TKASIR_CONFIG || {
+
+        // ═══════════════════════════════════════════════════════
+        // 10 SELLER
+        // ═══════════════════════════════════════════════════════
+        'TK': {
+            kodeOwner: 'TK', tipeOwner: 'seller', kodeKasir: 'KSR_TK',
+            namaRole: 'Toko', label: 'Toko',
+            ikon: 'fas fa-store', warna: '#FF8C00'
+        },
+        'PP': {
+            kodeOwner: 'PP', tipeOwner: 'seller', kodeKasir: 'KSR_PP',
+            namaRole: 'Pedagang Pasar', label: 'Pedagang Pasar',
+            ikon: 'fas fa-store-alt', warna: '#28A745'
+        },
+        'PM': {
+            kodeOwner: 'PM', tipeOwner: 'seller', kodeKasir: 'KSR_PM',
+            namaRole: 'Pedagang Makanan', label: 'Pedagang Makanan',
+            ikon: 'fas fa-utensils', warna: '#FFC107'
+        },
+        'COD': {
+            kodeOwner: 'COD', tipeOwner: 'seller', kodeKasir: null,
+            namaRole: 'COD Seller', label: 'COD Seller',
+            ikon: 'fas fa-truck-loading', warna: '#E91E63'
+        },
+        'OJ': {
+            kodeOwner: 'OJ', tipeOwner: 'seller', kodeKasir: null,
+            namaRole: 'Ojek', label: 'Ojek',
+            ikon: 'fas fa-motorcycle', warna: '#DC3545'
+        },
+        'GR': {
+            kodeOwner: 'GR', tipeOwner: 'seller', kodeKasir: 'KSR_GR',
+            namaRole: 'Grosir', label: 'Grosir',
+            ikon: 'fas fa-boxes', warna: '#17A2B8'
+        },
+        'DST': {
+            kodeOwner: 'DST', tipeOwner: 'seller', kodeKasir: 'KSR_DST',
+            namaRole: 'Distributor', label: 'Distributor',
+            ikon: 'fas fa-warehouse', warna: '#6F42C1'
+        },
+        'JS': {
+            kodeOwner: 'JS', tipeOwner: 'seller', kodeKasir: null,
+            namaRole: 'Jasa', label: 'Jasa',
+            ikon: 'fas fa-tools', warna: '#20C997'
+        },
+        'DP': {
+            kodeOwner: 'DP', tipeOwner: 'seller', kodeKasir: null,
+            namaRole: 'Developer Properti', label: 'Developer Properti',
+            ikon: 'fas fa-building', warna: '#795548'
+        },
+        'DLR': {
+            kodeOwner: 'DLR', tipeOwner: 'seller', kodeKasir: null,
+            namaRole: 'Dealer dan Showroom', label: 'Dealer & Showroom',
+            ikon: 'fas fa-car', warna: '#607D8B'
+        },
+        'FIN': {
+            kodeOwner: 'FIN', tipeOwner: 'seller', kodeKasir: null,
+            namaRole: 'Finance Multifinance', label: 'Finance Multifinance',
+            ikon: 'fas fa-hand-holding-usd', warna: '#4CAF50'
+        },
+
+        // ═══════════════════════════════════════════════════════
+        // 5 KASIR (sub-user)
+        // ═══════════════════════════════════════════════════════
+        'KSR_TK': {
+            kodeOwner: 'TK', tipeOwner: 'kasir', kodeKasir: 'KSR_TK',
+            namaRole: 'Toko', label: 'Kasir Toko',
+            ikon: 'fas fa-cash-register', warna: '#FF8C00'
+        },
+        'KSR_PP': {
+            kodeOwner: 'PP', tipeOwner: 'kasir', kodeKasir: 'KSR_PP',
+            namaRole: 'Pedagang Pasar', label: 'Kasir Pedagang Pasar',
+            ikon: 'fas fa-cash-register', warna: '#28A745'
+        },
+        'KSR_PM': {
+            kodeOwner: 'PM', tipeOwner: 'kasir', kodeKasir: 'KSR_PM',
+            namaRole: 'Pedagang Makanan', label: 'Kasir Pedagang Makanan',
+            ikon: 'fas fa-cash-register', warna: '#FFC107'
+        },
+        'KSR_DST': {
+            kodeOwner: 'DST', tipeOwner: 'kasir', kodeKasir: 'KSR_DST',
+            namaRole: 'Distributor', label: 'Kasir Distributor',
+            ikon: 'fas fa-cash-register', warna: '#6F42C1'
+        },
+        'KSR_GR': {
+            kodeOwner: 'GR', tipeOwner: 'kasir', kodeKasir: 'KSR_GR',
+            namaRole: 'Grosir', label: 'Kasir Grosir',
+            ikon: 'fas fa-cash-register', warna: '#17A2B8'
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _tkNow() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    function _tkLoadJSON(key, fb) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fb);
+        try {
+            var s = localStorage.getItem(key);
+            return s ? JSON.parse(s) : fb;
+        } catch (e) { return fb; }
+    }
+
+    function _tkSaveJSON(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _tkIdUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+            if (typeof window.getIdUserAktif === 'function') return window.getIdUserAktif();
+        } catch (e) {}
+        return null;
+    }
+
+    function _tkNamaUser() {
+        try {
+            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
+                return window.userAktif.nama || window.userAktif.username || '-';
+            }
+        } catch (e) {}
+        return '-';
+    }
+
+    function _tkGenId(prefix) {
+        try {
+            if (typeof window.generateKodeUnik === 'function') {
+                return window.generateKodeUnik(prefix || 'SESI');
+            }
+        } catch (e) {}
+        var p = (prefix || 'SESI').toUpperCase().substring(0, 6);
+        return p + '-' + Date.now().toString(36).toUpperCase() + '-' +
+               Math.random().toString(36).substring(2, 6).toUpperCase();
+    }
+
+    function _tkSanitasi(s) {
+        return String(s == null ? '' : s)
+            .replace(/[^A-Za-z0-9\-_]/g, '')
+            .substring(0, 60);
+    }
+
+    function _tkCatat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal !== 'function') return;
+            window.catatAktivitasGlobal(_tkIdUser() || 'SYSTEM', aksi, detail);
+        } catch (e) {}
+    }
+
+    function _tkRoleLabel(kode) {
+        var c = window.TKASIR_CONFIG[kode];
+        return c ? c.label : kode;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — ⭐ KONTEKS RESOLVER (KUNCI MULTI-ROLE) ⭐
+    // ═══════════════════════════════════════════════════════════
+    // Menentukan: siapa owner transaksi, siapa kasir, produk mana
+    // yang dibaca, atas nama siapa struk dicetak.
+    //
+    // Untuk SELLER (TK/PP/PM/COD/GR/DST/JS/DP/DLR/FIN):
+    //   - idOwner = idUser (dirinya sendiri)
+    //   - idKasir = idUser (transaksi sendiri)
+    //   - namaOwner = profil.namaToko / namaLengkap
+    //
+    // Untuk KASIR (KSR_TK/KSR_PP/KSR_PM/KSR_DST/KSR_GR):
+    //   - idOwner = user.idOwner (owner parent)
+    //   - idKasir = idUser (kasir sendiri)
+    //   - namaOwner = nama owner parent
+    //
+    // Return: {
+    //   kodeRole, tipe, kodeOwner, namaRole,
+    //   idUser, idOwner, idKasir,
+    //   namaKasir, namaOwner,
+    //   storageKeyProduk, config
+    // } | null
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirResolveKonteks = function() {
+        try {
+            var u = (typeof window.userAktif !== 'undefined' && window.userAktif)
+                ? window.userAktif : null;
+            if (!u) return null;
+
+            var kodeRole = u.kodeRole;
+            if (!kodeRole) {
+                // Fallback: derive dari role nama
+                if (typeof window.gidKodeRoleUser === 'function') {
+                    kodeRole = window.gidKodeRoleUser();
+                }
+            }
+            if (!kodeRole) return null;
+
+            var cfg = window.TKASIR_CONFIG[kodeRole];
+            if (!cfg) return null;
+
+            var idUser = u.idUser || u.id;
+            if (!idUser) return null;
+
+            // ── SELLER: idOwner = idUser ──
+            if (cfg.tipeOwner === 'seller') {
+                var profil = _tkLoadJSON('profil_' + idUser, {}) || {};
+                return {
+                    kodeRole:  kodeRole,
+                    tipe:      'seller',
+                    kodeOwner: cfg.kodeOwner,
+                    namaRole:  cfg.namaRole,
+                    idUser:    idUser,
+                    idOwner:   idUser,
+                    idKasir:   idUser,
+                    namaKasir: u.nama || u.username || '-',
+                    namaOwner: profil.namaToko
+                               || profil.namaUsaha
+                               || u.namaToko
+                               || u.nama
+                               || u.username
+                               || '-',
+                    storageKeyProduk: 'dataProduk' +
+                        (cfg.kodeOwner === 'TK'  ? 'Toko' :
+                         cfg.kodeOwner === 'PP'  ? 'PP' :
+                         cfg.kodeOwner === 'PM'  ? 'PM' :
+                         cfg.kodeOwner === 'COD' ? 'COD' :
+                         cfg.kodeOwner === 'OJ'  ? 'OJ' :
+                         cfg.kodeOwner === 'GR'  ? 'Grosir' :
+                         cfg.kodeOwner === 'DST' ? 'Distributor' :
+                         cfg.kodeOwner === 'JS'  ? 'Jasa' :
+                         cfg.kodeOwner === 'DP'  ? 'DP' :
+                         cfg.kodeOwner === 'DLR' ? 'DLR' :
+                         cfg.kodeOwner === 'FIN' ? 'FIN' : 'Toko')
+                        + '_' + idUser,
+                    config: cfg
+                };
+            }
+
+            // ── KASIR: idOwner = owner parent ──
+            if (cfg.tipeOwner === 'kasir') {
+                var idOwner = u.idOwner || u.ownerId;
+                if (!idOwner) {
+                    console.warn('[Tkasir] Kasir tidak punya idOwner:', kodeRole);
+                    return null;
+                }
+                var profilOwner = _tkLoadJSON('profil_' + idOwner, {}) || {};
+                return {
+                    kodeRole:  kodeRole,
+                    tipe:      'kasir',
+                    kodeOwner: cfg.kodeOwner,
+                    namaRole:  cfg.namaRole,
+                    idUser:    idUser,
+                    idOwner:   idOwner,
+                    idKasir:   idUser,
+                    namaKasir: u.nama || u.username || '-',
+                    namaOwner: profilOwner.namaToko
+                               || profilOwner.namaUsaha
+                               || u.namaToko
+                               || u.namaOwner
+                               || '-',
+                    storageKeyProduk: 'dataProduk' +
+                        (cfg.kodeOwner === 'TK'  ? 'Toko' :
+                         cfg.kodeOwner === 'PP'  ? 'PP' :
+                         cfg.kodeOwner === 'PM'  ? 'PM' :
+                         cfg.kodeOwner === 'GR'  ? 'Grosir' :
+                         cfg.kodeOwner === 'DST' ? 'Distributor' : 'Toko')
+                        + '_' + idOwner,
+                    config: cfg
+                };
+            }
+
+            return null;
+        } catch (e) {
+            console.error('tkasirResolveKonteks error:', e);
+            return null;
+        }
+    };
+
+    window.tkasirGetConfigRole = function(kodeRole) {
+        return window.TKASIR_CONFIG[kodeRole] || null;
+    };
+
+    window.tkasirDaftarRoleDidukung = function() {
+        return Object.keys(window.TKASIR_CONFIG);
+    };
+
+    window.tkasirCekBisaTransaksi = function() {
+        var ctx = window.tkasirResolveKonteks();
+        if (!ctx) {
+            return { bisa: false, alasan: 'Role tidak didukung untuk transaksi kasir.' };
+        }
+        // Cek sesi aktif
+        var sesi = window.tkasirGetSesiAktif();
+        if (!sesi) {
+            return { bisa: false, alasan: 'Belum ada sesi aktif. Buka sesi dulu.',
+                     butuhSesi: true, konteks: ctx };
+        }
+        return { bisa: true, konteks: ctx, sesi: sesi };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — SESI KASIR / SHIFT (8 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    function _tkKeySesi(idOwner) {
+        return window.TKASIR_KONSTANTA.KEY_PREFIX_SESI +
+               _tkSanitasi(idOwner || 'XX');
+    }
+
+    function _tkLoadSesi(idOwner) {
+        var l = _tkLoadJSON(_tkKeySesi(idOwner), []);
+        return Array.isArray(l) ? l : [];
+    }
+
+    function _tkSaveSesi(idOwner, list) {
+        if (!Array.isArray(list)) list = [];
+        if (list.length > window.TKASIR_KONSTANTA.MAX_SESI_PER_OWNER) {
+            list = list.slice(-window.TKASIR_KONSTANTA.MAX_SESI_PER_OWNER);
+        }
+        return _tkSaveJSON(_tkKeySesi(idOwner), list);
+    }
+
+    // ── tkasirBukaSesi(opts) ──
+    window.tkasirBukaSesi = function(opts) {
+        opts = opts || {};
+        try {
+            var ctx = opts.konteks || window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+
+            // Cek sesi aktif yang belum ditutup
+            var existing = window.tkasirGetSesiAktif();
+            if (existing) {
+                return {
+                    sukses: false,
+                    pesan: 'Masih ada sesi aktif: ' + existing.id,
+                    sesiAktif: existing
+                };
+            }
+
+            var kasAwal = parseFloat(opts.kasAwal) || 0;
+            if (kasAwal < 0) kasAwal = 0;
+
+            var now = _tkNow();
+            var sesi = {
+                id: _tkGenId('SESI'),
+                idOwner: ctx.idOwner,
+                idKasir: ctx.idKasir,
+                kodeOwner: ctx.kodeOwner,
+                kodeKasir: ctx.kodeRole,
+                namaOwner: ctx.namaOwner,
+                namaKasir: ctx.namaKasir,
+                tipe: ctx.tipe,
+                mode: opts.mode || 'offline',       // 'offline' | 'online'
+                kasAwal: kasAwal,
+                kasAkhir: null,
+                selisihKas: null,
+                totalTransaksi: 0,
+                totalPenjualan: 0,
+                totalRupiah: 0,
+                totalCoin: 0,
+                status: 'buka',
+                catatanBuka: String(opts.catatanBuka || '').substring(0, 200),
+                catatanTutup: '',
+                waktuBuka: now,
+                waktuTutup: null,
+                createdAt: now,
+                updatedAt: now
+            };
+
+            var list = _tkLoadSesi(ctx.idOwner);
+            list.push(sesi);
+            var simpan = _tkSaveSesi(ctx.idOwner, list);
+            if (!simpan.sukses) return simpan;
+
+            _tkCatat('Buka Sesi Kasir',
+                'ID: ' + sesi.id + ' • Kas Awal: Rp ' + kasAwal.toLocaleString('id-ID'));
+
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:sesi-kasir-dibuka', {
+                    detail: { sesi: sesi }
+                }));
+            } catch (e) {}
+
+            return { sukses: true, sesi: sesi };
+        } catch (e) {
+            console.error('tkasirBukaSesi error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── tkasirTutupSesi(idSesi, kasAkhir, catatanTutup) ──
+    window.tkasirTutupSesi = function(idSesi, kasAkhir, catatanTutup) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+
+            var list = _tkLoadSesi(ctx.idOwner);
+            var idx = -1;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id === idSesi) { idx = i; break; }
+            }
+            if (idx === -1) return { sukses: false, pesan: 'Sesi tidak ditemukan.' };
+
+            var sesi = list[idx];
+            if (sesi.status !== 'buka') {
+                return { sukses: false, pesan: 'Sesi sudah ditutup.' };
+            }
+
+            // Kasir hanya bisa menutup sesinya sendiri
+            if (ctx.tipe === 'kasir' && sesi.idKasir !== ctx.idKasir) {
+                return { sukses: false, pesan: 'Bukan sesi Anda.' };
+            }
+
+            var kasAkhirNum = parseFloat(kasAkhir) || 0;
+            var kasSistem = (parseFloat(sesi.kasAwal) || 0) +
+                            (parseFloat(sesi.totalRupiah) || 0);
+
+            sesi.kasAkhir = kasAkhirNum;
+            sesi.selisihKas = kasAkhirNum - kasSistem;
+            sesi.catatanTutup = String(catatanTutup || '').substring(0, 200);
+            sesi.status = 'tutup';
+            sesi.waktuTutup = _tkNow();
+            sesi.updatedAt = sesi.waktuTutup;
+
+            list[idx] = sesi;
+            var simpan = _tkSaveSesi(ctx.idOwner, list);
+            if (!simpan.sukses) return simpan;
+
+            _tkCatat('Tutup Sesi Kasir',
+                'ID: ' + sesi.id + ' • Selisih: Rp ' +
+                sesi.selisihKas.toLocaleString('id-ID'));
+
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:sesi-kasir-ditutup', {
+                    detail: { sesi: sesi }
+                }));
+            } catch (e) {}
+
+            return { sukses: true, sesi: sesi };
+        } catch (e) {
+            console.error('tkasirTutupSesi error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── tkasirGetSesiAktif() ──
+    window.tkasirGetSesiAktif = function() {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return null;
+
+            var list = _tkLoadSesi(ctx.idOwner);
+            // Cari sesi buka untuk kasir saat ini
+            for (var i = list.length - 1; i >= 0; i--) {
+                var s = list[i];
+                if (!s) continue;
+                if (s.status !== 'buka') continue;
+                if (s.idKasir !== ctx.idKasir) continue;
+                return s;
+            }
+            return null;
+        } catch (e) {
+            console.error('tkasirGetSesiAktif error:', e);
+            return null;
+        }
+    };
+
+    // ── tkasirGetSesiById(idSesi) ──
+    window.tkasirGetSesiById = function(idSesi) {
+        try {
+            if (!idSesi) return null;
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return null;
+            var list = _tkLoadSesi(ctx.idOwner);
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id === idSesi) return list[i];
+            }
+            return null;
+        } catch (e) {
+            console.error('tkasirGetSesiById error:', e);
+            return null;
+        }
+    };
+
+    // ── tkasirGetSemuaSesi(filter) ──
+    window.tkasirGetSemuaSesi = function(filter) {
+        filter = filter || {};
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return [];
+
+            var list = _tkLoadSesi(ctx.idOwner);
+
+            // Seller lihat semua sesi di tokonya
+            // Kasir lihat sesinya sendiri saja
+            if (ctx.tipe === 'kasir') {
+                list = list.filter(function(s) {
+                    return s && s.idKasir === ctx.idKasir;
+                });
+            }
+
+            if (filter.status) {
+                list = list.filter(function(s) { return s && s.status === filter.status; });
+            }
+            if (filter.dariTanggal) {
+                var t0 = new Date(filter.dariTanggal).getTime();
+                list = list.filter(function(s) {
+                    return s && new Date(s.waktuBuka || 0).getTime() >= t0;
+                });
+            }
+            if (filter.sampaiTanggal) {
+                var t1 = new Date(filter.sampaiTanggal).getTime() + 86400000;
+                list = list.filter(function(s) {
+                    return s && new Date(s.waktuBuka || 0).getTime() <= t1;
+                });
+            }
+
+            list.sort(function(a, b) {
+                return new Date(b.waktuBuka || 0) - new Date(a.waktuBuka || 0);
+            });
+
+            var limit = parseInt(filter.limit, 10) || 0;
+            if (limit > 0) list = list.slice(0, limit);
+
+            return list;
+        } catch (e) {
+            console.error('tkasirGetSemuaSesi error:', e);
+            return [];
+        }
+    };
+
+    // ── tkasirHitungSelisihKas(idSesi) ──
+    window.tkasirHitungSelisihKas = function(idSesi) {
+        try {
+            var sesi = window.tkasirGetSesiById(idSesi);
+            if (!sesi) return { sukses: false, pesan: 'Sesi tidak ditemukan.' };
+
+            var kasAwal = parseFloat(sesi.kasAwal) || 0;
+            var totalRupiah = parseFloat(sesi.totalRupiah) || 0;
+            var seharusnya = kasAwal + totalRupiah;
+            var aktual = parseFloat(sesi.kasAkhir) || 0;
+
+            return {
+                sukses: true,
+                kasAwal: kasAwal,
+                totalRupiah: totalRupiah,
+                seharusnya: seharusnya,
+                aktual: aktual,
+                selisih: aktual - seharusnya
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── tkasirAutoTutupSesi(idleJam) ──
+    window.tkasirAutoTutupSesi = function(idleJam) {
+        try {
+            var jam = parseFloat(idleJam) ||
+                      window.TKASIR_KONSTANTA.IDLE_AUTO_TUTUP_JAM;
+            var batasMs = jam * 60 * 60 * 1000;
+
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+
+            var list = _tkLoadSesi(ctx.idOwner);
+            var now = Date.now();
+            var jumlahTutup = 0;
+
+            list.forEach(function(s) {
+                if (!s || s.status !== 'buka') return;
+                var terakhir = new Date(s.updatedAt || s.waktuBuka || 0).getTime();
+                if (now - terakhir >= batasMs) {
+                    s.status = 'auto-tutup';
+                    s.catatanTutup = 'Auto-tutup setelah idle ' + jam + ' jam';
+                    s.waktuTutup = _tkNow();
+                    s.updatedAt = s.waktuTutup;
+                    jumlahTutup++;
+                }
+            });
+
+            if (jumlahTutup > 0) _tkSaveSesi(ctx.idOwner, list);
+
+            return { sukses: true, jumlahTutup: jumlahTutup };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── tkasirHapusSesi(idSesi) ──
+    window.tkasirHapusSesi = function(idSesi) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+            var list = _tkLoadSesi(ctx.idOwner);
+            var sebelum = list.length;
+            list = list.filter(function(s) { return s && s.id !== idSesi; });
+            if (list.length === sebelum) {
+                return { sukses: false, pesan: 'Sesi tidak ditemukan.' };
+            }
+            var simpan = _tkSaveSesi(ctx.idOwner, list);
+            if (!simpan.sukses) return simpan;
+            return { sukses: true, dihapus: 1 };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── _tkasirUpdateSesiSetelahTrx(idOwner, idSesi, trx) ──
+    // Helper internal: dipanggil setelah transaksi sukses
+    function _tkasirUpdateSesiSetelahTrx(idOwner, idSesi, trx) {
+        try {
+            var list = _tkLoadSesi(idOwner);
+            var idx = -1;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i] && list[i].id === idSesi) { idx = i; break; }
+            }
+            if (idx === -1) return;
+
+            var s = list[idx];
+            var totalTrx = parseFloat(trx.total) || 0;
+            var coinTrx  = parseFloat(trx.bayarCoin) || 0;
+            var metode   = trx.metodeBayar || 'tunai';
+
+            s.totalTransaksi = (parseInt(s.totalTransaksi, 10) || 0) + 1;
+            s.totalPenjualan = (parseFloat(s.totalPenjualan) || 0) + 1;
+            if (metode === 'coin') {
+                s.totalCoin = (parseFloat(s.totalCoin) || 0) + coinTrx;
+            } else {
+                s.totalRupiah = (parseFloat(s.totalRupiah) || 0) + totalTrx;
+            }
+            s.updatedAt = _tkNow();
+
+            list[idx] = s;
+            _tkSaveSesi(idOwner, list);
+        } catch (e) {
+            console.warn('_tkasirUpdateSesiSetelahTrx error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — KERANJANG (6 fungsi, delegasi TkOffline)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirKeranjangBuat = function(opts) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+            if (typeof window.tkKeranjangBuat !== 'function') {
+                return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+            }
+            opts = Object.assign({}, opts || {}, { idOwner: ctx.idOwner });
+            // Sisipkan metadata konteks ke keranjang
+            var hasil = window.tkKeranjangBuat(opts);
+            if (hasil && hasil.sukses && hasil.keranjang) {
+                hasil.keranjang.idKasir = ctx.idKasir;
+                hasil.keranjang.namaKasir = ctx.namaKasir;
+                hasil.keranjang.kodeOwner = ctx.kodeOwner;
+                hasil.keranjang.kodeKasir = ctx.kodeRole;
+                hasil.keranjang.namaOwner = ctx.namaOwner;
+                hasil.keranjang.mode = opts.mode || 'offline';
+                var sesi = window.tkasirGetSesiAktif();
+                if (sesi) hasil.keranjang.idSesi = sesi.id;
+            }
+            return hasil;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKeranjangTambah = function(k, idProduk, qty) {
+        if (typeof window.tkKeranjangTambah !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkKeranjangTambah(k, idProduk, qty);
+    };
+
+    window.tkasirKeranjangUpdateQty = function(k, idProduk, qty) {
+        if (typeof window.tkKeranjangUpdateQty !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkKeranjangUpdateQty(k, idProduk, qty);
+    };
+
+    window.tkasirKeranjangHapus = function(k, idProduk) {
+        if (typeof window.tkKeranjangHapus !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkKeranjangHapus(k, idProduk);
+    };
+
+    window.tkasirKeranjangKosongkan = function(k) {
+        if (typeof window.tkKeranjangKosongkan !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkKeranjangKosongkan(k);
+    };
+
+    window.tkasirKeranjangHitungTotal = function(k) {
+        if (typeof window.tkKeranjangHitungTotal !== 'function') {
+            return { subtotal: 0, diskon: 0, total: 0 };
+        }
+        return window.tkKeranjangHitungTotal(k);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — PELANGGAN (3 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirPelangganSet = function(k, idPelanggan) {
+        if (typeof window.tkPelangganSet !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkPelangganSet(k, idPelanggan);
+    };
+
+    window.tkasirPelangganWalkIn = function(k, nama, hp) {
+        if (typeof window.tkPelangganWalkIn !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkPelangganWalkIn(k, nama, hp);
+    };
+
+    window.tkasirPelangganCekBlacklist = function(idPelanggan) {
+        if (typeof window.tkPelangganCekBlacklist !== 'function') {
+            return { blacklist: false };
+        }
+        return window.tkPelangganCekBlacklist(idPelanggan);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — PEMBAYARAN (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirBayarRp = function(k, jumlah, opts) {
+        if (typeof window.tkBayarRp !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkBayarRp(k, jumlah, opts);
+    };
+
+    // ⭐ Bayar Coin: cek minimal belanja + saldo pelanggan
+    window.tkasirBayarCoin = function(k, opts) {
+        opts = opts || {};
+        try {
+            var total = (k && k.subtotal ? k.subtotal : 0) -
+                        (k && k.diskon ? k.diskon : 0);
+
+            // Cek minimal belanja (R2Coin berlaku di mode online)
+            var cekMin = window.tkasirCekMinimalBelanja(total,
+                k && k.pelanggan ? k.pelanggan.id : null);
+            if (!cekMin.boleh) {
+                return { sukses: false, pesan: cekMin.alasan, validasi: 'minimalBelanja' };
+            }
+
+            // Cek saldo coin pelanggan
+            var idPelanggan = k && k.pelanggan ? k.pelanggan.id : null;
+            if (idPelanggan) {
+                var coinButuh = window.tkasirKonversiRpKeCoin(total);
+                var saldoCoin = window.tkasirGetSaldoCoinPelanggan(idPelanggan);
+                if (saldoCoin < coinButuh) {
+                    return {
+                        sukses: false,
+                        pesan: 'Saldo coin pelanggan tidak cukup. ' +
+                               'Butuh: ' + coinButuh + ' • Saldo: ' + saldoCoin,
+                        validasi: 'saldoCoin'
+                    };
+                }
+            }
+
+            if (typeof window.tkBayarCoin !== 'function') {
+                return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+            }
+            return window.tkBayarCoin(k, opts);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirBayarKasbon = function(k, opts) {
+        if (typeof window.tkBayarKasbon !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkBayarKasbon(k, opts);
+    };
+
+    window.tkasirBayarCampuran = function(k, opts) {
+        if (typeof window.tkBayarCampuran !== 'function') {
+            return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+        }
+        return window.tkBayarCampuran(k, opts);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — SELESAIKAN & CETAK (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirSelesaikan = async function(k, opts) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+
+            var sesi = window.tkasirGetSesiAktif();
+            if (!sesi) {
+                return { sukses: false, pesan: 'Buka sesi dulu.', butuhSesi: true };
+            }
+
+            if (typeof window.tkSelesaikan !== 'function') {
+                return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+            }
+
+            // Sisipkan konteks ke opts
+            opts = Object.assign({}, opts || {}, {
+                idOwner: ctx.idOwner,
+                idKasir: ctx.idKasir,
+                namaKasir: ctx.namaKasir,
+                kodeOwner: ctx.kodeOwner,
+                kodeKasir: ctx.kodeRole,
+                namaOwner: ctx.namaOwner,
+                idSesi: sesi.id,
+                mode: k.mode || 'offline'
+            });
+
+            var hasil = await window.tkSelesaikan(k, opts);
+
+            // Update sesi setelah sukses
+            if (hasil && hasil.sukses && hasil.transaksi) {
+                _tkasirUpdateSesiSetelahTrx(ctx.idOwner, sesi.id, hasil.transaksi);
+                try {
+                    window.dispatchEvent(new CustomEvent('r2coin:trx-kasir-selesai', {
+                        detail: { transaksi: hasil.transaksi, sesi: sesi }
+                    }));
+                } catch (e) {}
+            }
+            return hasil;
+        } catch (e) {
+            console.error('tkasirSelesaikan error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirCetakStruk = function(idTrx, ukuran) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+            if (typeof window.tkCetakStruk !== 'function') {
+                return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+            }
+            return window.tkCetakStruk(idTrx, ctx.idOwner, ukuran);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirKirimStrukChat = function(idTrx) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { sukses: false, pesan: 'Konteks tidak valid.' };
+            if (typeof window.tkKirimStrukChat !== 'function') {
+                return { sukses: false, pesan: 'TkOffline tidak tersedia.' };
+            }
+            return window.tkKirimStrukChat(idTrx, ctx.idOwner);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirPrintLabel = function(idProduk) {
+        try {
+            if (typeof window.printerPrintLabel === 'function') {
+                return window.printerPrintLabel(idProduk);
+            }
+            if (typeof window.barcodePrintLabel === 'function') {
+                return window.barcodePrintLabel(idProduk);
+            }
+            return { sukses: false, pesan: 'Fungsi print label tidak tersedia.' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — CEK EKONOMI & R2COIN (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── tkasirCekMinimalBelanja(total, idPelanggan) ──
+    // Return: { boleh, minimal, dikecualikan, alasan }
+    window.tkasirCekMinimalBelanja = function(total, idPelanggan) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return { boleh: true, minimal: 0, alasan: '' };
+
+            // Mode offline → minimal tidak berlaku
+            var aktifMode = (window.tkasirState && window.tkasirState.mode) || 'offline';
+            if (aktifMode === 'offline') {
+                return { boleh: true, minimal: 0, dikecualikan: false,
+                         alasan: 'Mode offline — minimal belanja tidak berlaku.' };
+            }
+
+            // Cek setting ekonomi
+            var minimal = 0;
+            if (typeof window.getSettingEkonomiGlobal === 'function') {
+                var cfg = window.getSettingEkonomiGlobal();
+                minimal = parseFloat(cfg.minimalBelanja) || 0;
+            }
+            if (minimal <= 0) {
+                return { boleh: true, minimal: 0, dikecualikan: false };
+            }
+
+            var totalNum = parseFloat(total) || 0;
+            if (totalNum >= minimal) {
+                return { boleh: true, minimal: minimal, dikecualikan: false };
+            }
+
+            // Cek pengecualian
+            if (typeof window.pengecualianCek === 'function') {
+                try {
+                    var pen = window.pengecualianCek(
+                        ctx.idOwner, totalNum, ctx.namaRole, idPelanggan
+                    );
+                    if (pen && pen.dikecualikan) {
+                        return {
+                            boleh: true, minimal: minimal,
+                            dikecualikan: true,
+                            alasan: pen.reason || 'Dikecualikan.'
+                        };
+                    }
+                } catch (e) {}
+            }
+
+            return {
+                boleh: false, minimal: minimal, dikecualikan: false,
+                alasan: 'Total belanja Rp ' + totalNum.toLocaleString('id-ID') +
+                        ' < minimal Rp ' + minimal.toLocaleString('id-ID') + '.'
+            };
+        } catch (e) {
+            return { boleh: true, minimal: 0, alasan: e.message };
+        }
+    };
+
+    window.tkasirCekPengecualian = function(total, idPelanggan) {
+        var ctx = window.tkasirResolveKonteks();
+        if (!ctx) return { dikecualikan: false };
+        if (typeof window.pengecualianCek === 'function') {
+            return window.pengecualianCek(ctx.idOwner, total, ctx.namaRole, idPelanggan);
+        }
+        return { dikecualikan: false };
+    };
+
+    window.tkasirGetSaldoCoinPelanggan = function(idUser) {
+        try {
+            if (!idUser) return 0;
+            if (typeof window.dompetGetSaldo === 'function') {
+                return parseFloat(window.dompetGetSaldo(idUser)) || 0;
+            }
+            return 0;
+        } catch (e) { return 0; }
+    };
+
+    window.tkasirKonversiRpKeCoin = function(rp) {
+        try {
+            if (typeof window.hitungRpKeCoinGlobal === 'function') {
+                return window.hitungRpKeCoinGlobal(rp, 0);
+            }
+            return Math.ceil((parseFloat(rp) || 0) / 1000);
+        } catch (e) { return 0; }
+    };
+
+    window.tkasirKonversiCoinKeRp = function(coin) {
+        try {
+            if (typeof window.hitungCoinKeRpGlobal === 'function') {
+                return window.hitungCoinKeRpGlobal(coin);
+            }
+            return (parseInt(coin, 10) || 0) * 900;
+        } catch (e) { return 0; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — STATISTIK & REKAP SESI (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirStatistikSesi = function(idSesi) {
+        try {
+            var sesi = window.tkasirGetSesiById(idSesi);
+            if (!sesi) return { sukses: false, pesan: 'Sesi tidak ditemukan.' };
+
+            var transaksi = [];
+            try {
+                if (typeof window.tkGetRiwayat === 'function') {
+                    transaksi = window.tkGetRiwayat(sesi.idOwner, {}) || [];
+                }
+            } catch (e) {}
+
+            // Filter transaksi milik sesi ini
+            transaksi = transaksi.filter(function(t) {
+                return t && t.idSesi === sesi.id;
+            });
+
+            var totalRp = 0, totalCoin = 0, totalItem = 0;
+            transaksi.forEach(function(t) {
+                totalRp += parseFloat(t.total) || 0;
+                totalCoin += parseFloat(t.bayarCoin) || 0;
+                (t.items || []).forEach(function(it) {
+                    totalItem += parseInt(it.qty, 10) || 0;
+                });
+            });
+
+            return {
+                sukses: true,
+                sesi: sesi,
+                transaksi: transaksi,
+                jumlahTransaksi: transaksi.length,
+                totalRp: totalRp,
+                totalCoin: totalCoin,
+                totalItem: totalItem,
+                selisihKas: sesi.selisihKas
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.tkasirRekapShift = function(idKasir, tanggal) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return [];
+
+            var tglFilter = tanggal || _tkNow().split('T')[0];
+            var list = _tkLoadSesi(ctx.idOwner);
+
+            return list.filter(function(s) {
+                if (!s) return false;
+                if (idKasir && s.idKasir !== idKasir) return false;
+                var tgl = String(s.waktuBuka || '').split('T')[0];
+                return tgl === tglFilter;
+            });
+        } catch (e) {
+            return [];
+        }
+    };
+
+    window.tkasirProdukTerjualSesi = function(idSesi) {
+        try {
+            var stat = window.tkasirStatistikSesi(idSesi);
+            if (!stat.sukses) return [];
+
+            var perProduk = {};
+            stat.transaksi.forEach(function(t) {
+                (t.items || []).forEach(function(it) {
+                    if (!it || !it.idProduk) return;
+                    var k = it.idProduk;
+                    if (!perProduk[k]) perProduk[k] = {
+                        idProduk: k, nama: it.nama || '-', qty: 0, totalRp: 0
+                    };
+                    perProduk[k].qty += parseInt(it.qty, 10) || 0;
+                    perProduk[k].totalRp += (parseFloat(it.harga) || 0) *
+                                            (parseInt(it.qty, 10) || 0);
+                });
+            });
+
+            var arr = Object.keys(perProduk).map(function(k) { return perProduk[k]; });
+            arr.sort(function(a, b) { return b.qty - a.qty; });
+            return arr;
+        } catch (e) {
+            return [];
+        }
+    };
+
+    window.tkasirTotalTransaksiSesi = function(idSesi) {
+        var stat = window.tkasirStatistikSesi(idSesi);
+        return {
+            jumlah: stat.jumlahTransaksi || 0,
+            totalRp: stat.totalRp || 0,
+            totalCoin: stat.totalCoin || 0,
+            totalItem: stat.totalItem || 0
+        };
+    };
+
+    window.tkasirGetTrxById = function(idTrx) {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return null;
+            if (typeof window.tkGetById === 'function') {
+                return window.tkGetById(idTrx, ctx.idOwner);
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — HELPER UI-READY (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.tkasirGetProdukGrid = function(filter) {
+        filter = filter || {};
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return [];
+
+            if (typeof window.produkGetSemuaByStatusGlobal !== 'function') return [];
+
+            var status = filter.status || 'all';
+            var list = window.produkGetSemuaByStatusGlobal(
+                ctx.namaRole, ctx.idOwner, status
+            );
+            if (!Array.isArray(list)) return [];
+
+            // Filter cari
+            if (filter.cari) {
+                var c = String(filter.cari).toLowerCase().trim();
+                list = list.filter(function(p) {
+                    var s = ((p.nama || '') + ' ' + (p.kode || '') + ' ' +
+                             (p.barcode || '')).toLowerCase();
+                    return s.indexOf(c) !== -1;
+                });
+            }
+            if (filter.kategori) {
+                list = list.filter(function(p) { return p.kategori === filter.kategori; });
+            }
+            if (filter.hanyaTersedia === true) {
+                list = list.filter(function(p) { return (parseInt(p.stok, 10) || 0) > 0; });
+            }
+
+            return list;
+        } catch (e) {
+            console.error('tkasirGetProdukGrid error:', e);
+            return [];
+        }
+    };
+
+    window.tkasirGetKategoriGrid = function() {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return [];
+            if (typeof window.getKategoriProdukByOwnerGlobal === 'function') {
+                return window.getKategoriProdukByOwnerGlobal(ctx.namaRole, ctx.idOwner) || [];
+            }
+            return [];
+        } catch (e) { return []; }
+    };
+
+    window.tkasirGetQuickAmounts = function() {
+        return window.TKASIR_KONSTANTA.QUICK_AMOUNT.slice();
+    };
+
+    window.tkasirGetModeAktif = function() {
+        try {
+            if (window.tkasirState && window.tkasirState.mode) {
+                return window.tkasirState.mode;
+            }
+            var sesi = window.tkasirGetSesiAktif();
+            return sesi ? (sesi.mode || 'offline') : 'offline';
+        } catch (e) { return 'offline'; }
+    };
+
+    window.tkasirGetInfoOwner = function() {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return null;
+            return {
+                idOwner: ctx.idOwner,
+                kodeOwner: ctx.kodeOwner,
+                namaOwner: ctx.namaOwner,
+                namaRole: ctx.namaRole,
+                tipe: ctx.tipe,
+                idKasir: ctx.idKasir,
+                namaKasir: ctx.namaKasir,
+                labelRole: _tkRoleLabel(ctx.kodeRole)
+            };
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimTkasir = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:  _tkIdUser(),
+                    idOwner: (window.tkasirResolveKonteks() || {}).idOwner || null,
+                    role:    (typeof window.gidKodeRoleUser === 'function')
+                             ? window.gidKodeRoleUser() : null,
+                    menu:    'transaksiKasir',
+                    blok:    'Tkasir-Universal'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _tkNow()
+            });
+        } catch (e) {
+            console.error('[Tkasir] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terimaTkasir = function() {
+        try { return window.mnInboxMenu('transaksiKasir'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilTkasir = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'all';
+            if (tipe === 'all')          return window.tkasirGetSemuaSesi(filter);
+            if (tipe === 'sesi-aktif')   return window.tkasirGetSesiAktif();
+            if (tipe === 'sesi-by-id')   return window.tkasirGetSesiById(filter.idSesi);
+            if (tipe === 'produk-grid')  return window.tkasirGetProdukGrid(filter);
+            if (tipe === 'kategori')     return window.tkasirGetKategoriGrid();
+            if (tipe === 'konteks')      return window.tkasirResolveKonteks();
+            if (tipe === 'info-owner')   return window.tkasirGetInfoOwner();
+            if (tipe === 'statistik-sesi') return window.tkasirStatistikSesi(filter.idSesi);
+        } catch (e) {
+            console.error('[Tkasir] ambil error:', e);
+        }
+        return null;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugTkasir = function() {
+        var ctx = null;
+        try { ctx = window.tkasirResolveKonteks(); } catch (e) {}
+
+        var info = {
+            blok: 'Tkasir-Universal',
+            versi: window._blokTkasirVersi,
+            guard: window._blokTkasirDone,
+            scope: window._blokTkasirScope + ' role (10 seller + 5 kasir)',
+            konteks: ctx ? {
+                kodeRole: ctx.kodeRole,
+                tipe: ctx.tipe,
+                kodeOwner: ctx.kodeOwner,
+                namaRole: ctx.namaRole,
+                idOwner: ctx.idOwner,
+                idKasir: ctx.idKasir,
+                namaOwner: ctx.namaOwner,
+                namaKasir: ctx.namaKasir
+            } : null,
+            sesiAktif: window.tkasirGetSesiAktif() ? 'ada' : 'tidak ada',
+
+            modul4_Konteks: {
+                resolve:       typeof window.tkasirResolveKonteks,
+                getConfigRole: typeof window.tkasirGetConfigRole,
+                daftarRole:    typeof window.tkasirDaftarRoleDidukung,
+                cekBisa:       typeof window.tkasirCekBisaTransaksi
+            },
+            modul5_Sesi: {
+                buka:        typeof window.tkasirBukaSesi,
+                tutup:       typeof window.tkasirTutupSesi,
+                getAktif:    typeof window.tkasirGetSesiAktif,
+                getById:     typeof window.tkasirGetSesiById,
+                getAll:      typeof window.tkasirGetSemuaSesi,
+                selisihKas:  typeof window.tkasirHitungSelisihKas,
+                autoTutup:   typeof window.tkasirAutoTutupSesi,
+                hapus:       typeof window.tkasirHapusSesi
+            },
+            modul6_Keranjang: {
+                buat:      typeof window.tkasirKeranjangBuat,
+                tambah:    typeof window.tkasirKeranjangTambah,
+                updateQty: typeof window.tkasirKeranjangUpdateQty,
+                hapus:     typeof window.tkasirKeranjangHapus,
+                kosongkan: typeof window.tkasirKeranjangKosongkan,
+                hitung:    typeof window.tkasirKeranjangHitungTotal
+            },
+            modul7_Pelanggan: {
+                set:          typeof window.tkasirPelangganSet,
+                walkIn:       typeof window.tkasirPelangganWalkIn,
+                cekBlacklist: typeof window.tkasirPelangganCekBlacklist
+            },
+            modul8_Pembayaran: {
+                rp:       typeof window.tkasirBayarRp,
+                coin:     typeof window.tkasirBayarCoin,
+                kasbon:   typeof window.tkasirBayarKasbon,
+                campuran: typeof window.tkasirBayarCampuran
+            },
+            modul9_Selesaikan: {
+                selesaikan:    typeof window.tkasirSelesaikan,
+                cetakStruk:    typeof window.tkasirCetakStruk,
+                kirimStruk:    typeof window.tkasirKirimStrukChat,
+                printLabel:    typeof window.tkasirPrintLabel
+            },
+            modul10_Ekonomi: {
+                cekMinimal:      typeof window.tkasirCekMinimalBelanja,
+                cekPengecualian: typeof window.tkasirCekPengecualian,
+                saldoCoin:       typeof window.tkasirGetSaldoCoinPelanggan,
+                rpKeCoin:        typeof window.tkasirKonversiRpKeCoin,
+                coinKeRp:        typeof window.tkasirKonversiCoinKeRp
+            },
+            modul11_Statistik: {
+                statistikSesi:      typeof window.tkasirStatistikSesi,
+                rekapShift:         typeof window.tkasirRekapShift,
+                produkTerjualSesi:  typeof window.tkasirProdukTerjualSesi,
+                totalTransaksiSesi: typeof window.tkasirTotalTransaksiSesi,
+                getTrxById:         typeof window.tkasirGetTrxById
+            },
+            modul12_UIReady: {
+                produkGrid:   typeof window.tkasirGetProdukGrid,
+                kategoriGrid: typeof window.tkasirGetKategoriGrid,
+                quickAmounts: typeof window.tkasirGetQuickAmounts,
+                modeAktif:    typeof window.tkasirGetModeAktif,
+                infoOwner:    typeof window.tkasirGetInfoOwner
+            },
+            pintu: {
+                kirim:  typeof window.kirimTkasir,
+                terima: typeof window.terimaTkasir,
+                ambil:  typeof window.ambilTkasir
+            },
+            totalRoleConfig: Object.keys(window.TKASIR_CONFIG).length
+        };
+        console.log('🔍 debugTkasir:', info);
+        return info;
+    };
+
+    window.getRingkasanTkasir = function() {
+        try {
+            var ctx = window.tkasirResolveKonteks();
+            if (!ctx) return 'Tkasir: belum ada konteks user';
+            var sesi = window.tkasirGetSesiAktif();
+            return 'Tkasir [' + ctx.kodeRole + '] — ' +
+                   'Owner: ' + ctx.idOwner +
+                   ' | Sesi: ' + (sesi ? sesi.id : 'belum dibuka');
+        } catch (e) {
+            return 'Tkasir: error — ' + e.message;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — AUTO-REGISTRY KE 0.1 (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudah = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Tkasir-Universal';
+                });
+                if (!sudah) {
+                    window.cpTambahBlok({
+                        kode: 'Tkasir-Universal',
+                        nama: 'Fungsi Global Transaksi Kasir',
+                        layer: 'L4',
+                        status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('tkasir', {
+                    nama: 'Transaksi Kasir Universal',
+                    status: 'Selesai',
+                    jumlah: 48
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Tkasir-Universal',
+                    nama: 'Fungsi Global Transaksi Kasir',
+                    keterangan: '48 fungsi + 14 modul + 3 pintu — universal 15 role ' +
+                                '(10 seller + 5 kasir)'
+                });
+            }
+        } catch (e) {
+            console.warn('Tkasir-Universal: Gagal update catatan 0.1:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c✅ BLOK FUNGSI GLOBAL TRANSAKSI KASIR (L4) terpasang.',
+        'background:#FF8C00;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🌐 Universal 15 role:');
+    console.log('      • 10 Seller: TK, PP, PM, COD, GR, DST, JS, DP, DLR, FIN');
+    console.log('      • 5 Kasir:   KSR_TK, KSR_PP, KSR_PM, KSR_DST, KSR_GR');
+    console.log('   📦 14 modul:');
+    console.log('      1.  Konstanta & Config 15 Role');
+    console.log('      2.  TKASIR_CONFIG');
+    console.log('      3.  Helper Internal');
+    console.log('      4.  ⭐ tkasirResolveKonteks() — KUNCI multi-role');
+    console.log('      5.  Sesi Kasir / Shift (8 fungsi)');
+    console.log('      6.  Keranjang (6 — delegasi TkOffline)');
+    console.log('      7.  Pelanggan (3 — delegasi TkOffline)');
+    console.log('      8.  Pembayaran (4 — +validasi ekonomi)');
+    console.log('      9.  Selesaikan & Cetak (4)');
+    console.log('      10. Ekonomi & R2Coin (5)');
+    console.log('      11. Statistik Sesi (5)');
+    console.log('      12. Helper UI-Ready (5)');
+    console.log('      13. 3 Pintu Standar');
+    console.log('      14. Debug + Registry');
+    console.log('');
+    console.log('   🚪 3 Pintu: kirimTkasir, terimaTkasir, ambilTkasir');
+    console.log('   🎯 Konteks: seller → idOwner=idUser | kasir → idOwner=parent');
+    console.log('   💾 Storage: dataSesiKasir_<idOwner>');
+    console.log('   🔍 Debug: debugTkasir()');
+    console.log('   📖 Ringkasan: getRingkasanTkasir()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL TRANSAKSI KASIR (L4) ═══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL KASBON UNIVERSAL ════════════════════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ═══════════════════════ -->
 <!-- ═══ Dependency: CS + GID + MN + Struk + Dompet ════════════ -->
