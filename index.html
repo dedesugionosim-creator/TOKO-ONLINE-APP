@@ -32151,6 +32151,546 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL BARCODE UNIVERSAL ═══════════════════ -->
+<!-- ═══ Layer: L4 | Prefix: barcode* | Guard: _blokBarcodeUniversalDone -->
+<!-- ═══ Dependency: CS + GID + MN + html5-qrcode + qrcodejs + JsBarcode -->
+<!-- ═══ Pemakai: Produk-Global, 11.5.h, Produk-Extended ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_BARCODE_UNIVERSAL() {
+    if (window._blokBarcodeUniversalDone) {
+        console.log('ℹ️ Barcode-Universal sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency ──
+    var deps = [
+        { flag: '_coreSystem8Done', nama: 'Core System (1)-(8)' },
+        { flag: '_blokGIDDone',     nama: 'GID — Identity' },
+        { flag: '_blokMNDone',      nama: 'MN — Menu Network' }
+    ];
+    var missing = deps.filter(function(d) { return !window[d.flag]; });
+    if (missing.length > 0) {
+        console.warn('⚠️ Barcode-Universal ditunda — dependency belum ada:');
+        missing.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    window._blokBarcodeUniversalDone = true;
+    window._blokBarcodeUniversalVersi = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.BARCODE_KONSTANTA = window.BARCODE_KONSTANTA || {
+        VERSI: '1.0',
+        PREFIX_DEFAULT: 'BC',
+        MAX_KODE: 100,
+        FORMAT_1D_VALID: ['EAN13', 'CODE128', 'CODE39', 'UPC', 'ITF14'],
+        FORMAT_1D_DEFAULT: 'CODE128',
+        QR_SIZE_DEFAULT: 250,
+        QR_ERROR_LEVEL: 'M'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _loadJSON(key, fb) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fb);
+        try { var s = localStorage.getItem(key); return s ? JSON.parse(s) : fb; }
+        catch (e) { return fb; }
+    }
+
+    function _saveJSON(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _now() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow() : new Date().toISOString();
+    }
+
+    function _idUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+        } catch (e) {}
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — GENERATE KODE BARCODE
+    // ═══════════════════════════════════════════════════════════
+    window.barcodeGenerateKode = function(prefix) {
+        try {
+            var p = String(prefix || BARCODE_KONSTANTA.PREFIX_DEFAULT)
+                .toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 6);
+            var ts = Date.now().toString(36).toUpperCase();
+            var rnd = Math.random().toString(36).substring(2, 6).toUpperCase();
+            return p + '-' + ts + '-' + rnd;
+        } catch (e) {
+            return 'BC-' + Date.now().toString(36).toUpperCase();
+        }
+    };
+
+    window.barcodeGenerateEAN13 = function() {
+        try {
+            // Generate 12 digit random, hitung check digit
+            var digits = '';
+            for (var i = 0; i < 12; i++) {
+                digits += Math.floor(Math.random() * 10);
+            }
+            var sum = 0;
+            for (var j = 0; j < 12; j++) {
+                sum += parseInt(digits[j], 10) * (j % 2 === 0 ? 1 : 3);
+            }
+            var check = (10 - (sum % 10)) % 10;
+            return digits + check;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — SIMPAN / AMBIL BARCODE PRODUK
+    // ═══════════════════════════════════════════════════════════
+    window.barcodeSimpanKeProduk = function(idProduk, barcode) {
+        try {
+            if (!idProduk || !barcode) {
+                return { sukses: false, pesan: 'ID/barcode kosong' };
+            }
+            if (typeof window.updateProdukGlobal === 'function') {
+                return window.updateProdukGlobal(idProduk, { barcode: barcode });
+            }
+            return { sukses: false, pesan: 'updateProdukGlobal tidak ada' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.barcodeAmbilDariProduk = function(idProduk) {
+        try {
+            if (!idProduk) return null;
+            if (typeof window.getProdukByIdGlobal === 'function') {
+                var p = window.getProdukByIdGlobal(idProduk);
+                return p ? (p.barcode || null) : null;
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — CEK DUPLIKAT BARCODE
+    // ═══════════════════════════════════════════════════════════
+    window.barcodeCekDuplikat = function(barcode, excludeId) {
+        try {
+            if (!barcode) return null;
+            var target = String(barcode).trim();
+            var roles = (window.PRODUK_STORAGE_MAP) || {
+                'Toko': 'dataProdukToko',
+                'Pedagang Pasar': 'dataProdukPP',
+                'Pedagang Makanan': 'dataProdukPM',
+                'COD Seller': 'dataProdukCOD',
+                'Grosir': 'dataProdukGrosir',
+                'Distributor': 'dataProdukDistributor',
+                'Jasa': 'dataProdukJasa'
+            };
+            var roleNames = Object.keys(roles);
+            for (var r = 0; r < roleNames.length; r++) {
+                var prefix = roles[roleNames[r]] + '_';
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (!k || k.indexOf(prefix) !== 0) continue;
+                    var list = _loadJSON(k, []);
+                    if (!Array.isArray(list)) continue;
+                    for (var j = 0; j < list.length; j++) {
+                        var p = list[j];
+                        if (!p) continue;
+                        if (excludeId && p.id === excludeId) continue;
+                        if (String(p.barcode || '').trim() === target) {
+                            return {
+                                idProduk: p.id,
+                                nama: p.nama,
+                                idOwner: p.idOwner
+                            };
+                        }
+                    }
+                }
+            }
+            return null;
+        } catch (e) {
+            console.error('barcodeCekDuplikat error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — GENERATE QR CODE (via qrcodejs)
+    // ═══════════════════════════════════════════════════════════
+    window.barcodeGenerateQR = function(kode, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve) {
+            try {
+                if (!kode) return resolve({ sukses: false, pesan: 'Kode kosong' });
+                if (typeof QRCode === 'undefined') {
+                    return resolve({ sukses: false, pesan: 'qrcodejs tidak tersedia' });
+                }
+
+                var size = parseInt(opts.size, 10) || BARCODE_KONSTANTA.QR_SIZE_DEFAULT;
+                var level = opts.level || BARCODE_KONSTANTA.QR_ERROR_LEVEL;
+
+                var container = document.createElement('div');
+                container.style.cssText = 'position:fixed;left:-9999px;top:0;';
+                document.body.appendChild(container);
+
+                new QRCode(container, {
+                    text: String(kode),
+                    width: size,
+                    height: size,
+                    colorDark: opts.colorDark || '#000000',
+                    colorLight: opts.colorLight || '#ffffff',
+                    correctLevel: QRCode.CorrectLevel[level] || QRCode.CorrectLevel.M
+                });
+
+                setTimeout(function() {
+                    try {
+                        var canvas = container.querySelector('canvas');
+                        var img = container.querySelector('img');
+                        var dataUrl = '';
+                        if (canvas) {
+                            dataUrl = canvas.toDataURL('image/png');
+                        } else if (img && img.src) {
+                            dataUrl = img.src;
+                        }
+                        document.body.removeChild(container);
+
+                        if (dataUrl) {
+                            resolve({ sukses: true, dataUrl: dataUrl, kode: kode });
+                        } else {
+                            resolve({ sukses: false, pesan: 'Gagal render QR' });
+                        }
+                    } catch (e) {
+                        if (container.parentNode) container.parentNode.removeChild(container);
+                        resolve({ sukses: false, pesan: e.message });
+                    }
+                }, 150);
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — GENERATE BARCODE 1D (via JsBarcode)
+    // ═══════════════════════════════════════════════════════════
+    window.barcodeGenerate1D = function(kode, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve) {
+            try {
+                if (!kode) return resolve({ sukses: false, pesan: 'Kode kosong' });
+                if (typeof JsBarcode === 'undefined') {
+                    return resolve({ sukses: false, pesan: 'JsBarcode tidak tersedia' });
+                }
+
+                var format = opts.format || BARCODE_KONSTANTA.FORMAT_1D_DEFAULT;
+                if (BARCODE_KONSTANTA.FORMAT_1D_VALID.indexOf(format) === -1) {
+                    format = BARCODE_KONSTANTA.FORMAT_1D_DEFAULT;
+                }
+
+                var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.style.cssText = 'position:fixed;left:-9999px;top:0;';
+                document.body.appendChild(svg);
+
+                try {
+                    JsBarcode(svg, String(kode), {
+                        format: format,
+                        width: opts.width || 2,
+                        height: opts.height || 60,
+                        displayValue: opts.displayValue !== false,
+                        fontSize: opts.fontSize || 14,
+                        margin: opts.margin || 8
+                    });
+
+                    var svgData = new XMLSerializer().serializeToString(svg);
+                    var dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+
+                    document.body.removeChild(svg);
+                    resolve({ sukses: true, dataUrl: dataUrl, format: format, kode: kode });
+                } catch (err) {
+                    document.body.removeChild(svg);
+                    resolve({ sukses: false, pesan: 'Format tidak cocok: ' + err.message });
+                }
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — SCAN BARCODE / QR (via html5-qrcode)
+    // ═══════════════════════════════════════════════════════════
+    var _scannerAktif = null;
+
+    window.barcodeScanQR = function(containerId, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve) {
+            try {
+                if (typeof Html5Qrcode === 'undefined') {
+                    return resolve({ sukses: false, pesan: 'html5-qrcode tidak tersedia' });
+                }
+                var el = document.getElementById(containerId);
+                if (!el) return resolve({ sukses: false, pesan: 'Container tidak ditemukan' });
+
+                if (_scannerAktif) {
+                    try { _scannerAktif.stop(); } catch (e) {}
+                    _scannerAktif = null;
+                }
+
+                var scanner = new Html5Qrcode(containerId);
+                _scannerAktif = scanner;
+
+                scanner.start(
+                    { facingMode: 'environment' },
+                    { fps: 10, qrbox: opts.qrbox || 250 },
+                    function(decodedText) {
+                        try { scanner.stop(); } catch (e) {}
+                        _scannerAktif = null;
+                        resolve({ sukses: true, hasil: decodedText });
+                    },
+                    function(err) { /* per-frame ignore */ }
+                ).catch(function(err) {
+                    _scannerAktif = null;
+                    resolve({ sukses: false, pesan: err.message || 'Gagal start kamera' });
+                });
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    window.barcodeScanStop = function() {
+        try {
+            if (_scannerAktif) {
+                _scannerAktif.stop().catch(function() {});
+                _scannerAktif = null;
+                return true;
+            }
+            return false;
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — CETAK LABEL (1 produk & massal)
+    // ═══════════════════════════════════════════════════════════
+    window.barcodePrintLabel = function(idProduk, opts) {
+        opts = opts || {};
+        try {
+            var p = (typeof window.getProdukByIdGlobal === 'function')
+                ? window.getProdukByIdGlobal(idProduk) : null;
+            if (!p) return { sukses: false, pesan: 'Produk tidak ditemukan' };
+
+            var kode = p.barcode || p.kode;
+            if (!kode) return { sukses: false, pesan: 'Produk tidak punya barcode' };
+
+            var win = window.open('', '_blank', 'width=500,height=400');
+            if (!win) return { sukses: false, pesan: 'Popup diblokir' };
+
+            win.document.write(
+                '<html><head><title>Label ' + kode + '</title>' +
+                '<style>body{font-family:Arial;padding:20px;text-align:center;}' +
+                '.label{border:1px solid #ccc;padding:10px;display:inline-block;min-width:200px;}' +
+                '.nama{font-weight:bold;font-size:13px;margin:6px 0;}' +
+                '.harga{font-size:14px;color:#28A745;font-weight:bold;}' +
+                'svg{max-width:100%;}</style></head><body>' +
+                '<div class="label"><div class="nama">' + (p.nama || '-') + '</div>' +
+                '<svg id="bc"></svg>' +
+                '<div class="harga">Rp ' + ((parseFloat(p.harga) || 0).toLocaleString('id-ID')) + '</div>' +
+                '</div>' +
+                '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"><\/script>' +
+                '<script>setTimeout(function(){' +
+                'try{JsBarcode("#bc","' + kode + '",{format:"CODE128",width:2,height:60,fontSize:14});}' +
+                'catch(e){document.getElementById("bc").outerHTML="<em>Error barcode</em>";}' +
+                'setTimeout(function(){window.print();},400);},300);<\/script>' +
+                '</body></html>'
+            );
+            win.document.close();
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.barcodePrintLabelMassal = function(ids, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(ids) || ids.length === 0) {
+                return { sukses: false, pesan: 'Array ID kosong' };
+            }
+            if (ids.length > 100) {
+                return { sukses: false, pesan: 'Maksimal 100 label' };
+            }
+
+            var list = [];
+            ids.forEach(function(id) {
+                var p = (typeof window.getProdukByIdGlobal === 'function')
+                    ? window.getProdukByIdGlobal(id) : null;
+                if (p && (p.barcode || p.kode)) list.push(p);
+            });
+
+            if (list.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada produk dengan barcode' };
+            }
+
+            var win = window.open('', '_blank', 'width=800,height=600');
+            if (!win) return { sukses: false, pesan: 'Popup diblokir' };
+
+            var html = '<html><head><title>Label Massal</title>' +
+                '<style>body{font-family:Arial;padding:10px;}' +
+                '.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}' +
+                '.label{border:1px dashed #999;padding:8px;text-align:center;page-break-inside:avoid;}' +
+                '.nama{font-weight:bold;font-size:11px;margin:3px 0;}' +
+                '.harga{font-size:11px;color:#28A745;}' +
+                'svg{max-width:100%;height:auto;}</style></head><body>' +
+                '<div class="grid">';
+
+            list.forEach(function(p, i) {
+                var kode = p.barcode || p.kode;
+                html += '<div class="label">' +
+                    '<div class="nama">' + (p.nama || '-') + '</div>' +
+                    '<svg class="bc-' + i + '"></svg>' +
+                    '<div class="harga">Rp ' + ((parseFloat(p.harga) || 0).toLocaleString('id-ID')) + '</div>' +
+                    '</div>';
+            });
+            html += '</div>' +
+                '<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"><\/script>' +
+                '<script>setTimeout(function(){';
+
+            list.forEach(function(p, i) {
+                var kode = (p.barcode || p.kode).replace(/"/g, '\\"');
+                html += 'try{JsBarcode(".bc-' + i + '","' + kode + '",{format:"CODE128",width:1.5,height:45,fontSize:12});}catch(e){}\n';
+            });
+
+            html += 'setTimeout(function(){window.print();},600);},400);<\/script>' +
+                '</body></html>';
+
+            win.document.write(html);
+            win.document.close();
+
+            return { sukses: true, total: list.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — 3 PINTU STANDAR
+    // ═══════════════════════════════════════════════════════════
+    window.kirimBarcode = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser: _idUser(),
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu: 'barcode', blok: 'Barcode-Universal'
+                },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: _now()
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terimaBarcode = function() {
+        try { return window.mnInboxMenu('barcode'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilBarcode = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'kode-baru';
+        try {
+            if (tipe === 'kode-baru')      return window.barcodeGenerateKode(filter.prefix);
+            if (tipe === 'ean13')          return window.barcodeGenerateEAN13();
+            if (tipe === 'dari-produk')    return window.barcodeAmbilDariProduk(filter.idProduk);
+            if (tipe === 'cek-duplikat')   return window.barcodeCekDuplikat(filter.barcode, filter.excludeId);
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugBarcode = function() {
+        var info = {
+            versi: BARCODE_KONSTANTA.VERSI,
+            guard: window._blokBarcodeUniversalDone,
+            library: {
+                qrcodejs:    typeof QRCode,
+                jsbarcode:   typeof JsBarcode,
+                html5qrcode: typeof Html5Qrcode
+            },
+            fungsi: {
+                generateKode:      typeof window.barcodeGenerateKode,
+                generateEAN13:     typeof window.barcodeGenerateEAN13,
+                simpanKeProduk:    typeof window.barcodeSimpanKeProduk,
+                ambilDariProduk:   typeof window.barcodeAmbilDariProduk,
+                cekDuplikat:       typeof window.barcodeCekDuplikat,
+                generateQR:        typeof window.barcodeGenerateQR,
+                generate1D:        typeof window.barcodeGenerate1D,
+                scanQR:            typeof window.barcodeScanQR,
+                scanStop:          typeof window.barcodeScanStop,
+                printLabel:        typeof window.barcodePrintLabel,
+                printLabelMassal:  typeof window.barcodePrintLabelMassal
+            },
+            pintu: {
+                kirim: typeof window.kirimBarcode,
+                terima: typeof window.terimaBarcode,
+                ambil: typeof window.ambilBarcode
+            }
+        };
+        console.log('🔍 debugBarcode:', info);
+        return info;
+    };
+
+    // ── Auto registry ──
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudah = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Barcode-Universal';
+                });
+                if (!sudah) {
+                    window.cpTambahBlok({
+                        kode: 'Barcode-Universal',
+                        nama: 'Fungsi Global Barcode & QR',
+                        layer: 'L4', status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('barcode', {
+                    nama: 'Fungsi Global Barcode', status: 'Selesai', jumlah: 15
+                });
+            }
+        } catch (e) {}
+    }, 500);
+
+    console.log('%c✅ BLOK FUNGSI GLOBAL BARCODE UNIVERSAL terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📦 11 fungsi: generate, scan, cetak, simpan, cek duplikat');
+    console.log('   🔍 Debug: debugBarcode()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK BARCODE UNIVERSAL ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL KASBON UNIVERSAL ════════════════════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ═══════════════════════ -->
 <!-- ═══ Dependency: CS + GID + MN + Struk + Dompet ════════════ -->
