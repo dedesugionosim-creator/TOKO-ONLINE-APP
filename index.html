@@ -1827,8 +1827,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         {tanggal:'2026-10-05',blok:'9.3.2(0)',nama:'Load Menu Navigasi v4',keterangan:'Sinkron AKSI_PENDING dengan FPV — 11 role seller — cek 2 sumber status'},
         {tanggal:'2026-10-05',blok:'9.3.2(2)',nama:'Tampilkan Menu Seller + Placeholder',keterangan:'8 perintah tampilkan + dispatcher downloadSKU + placeholder otomatis'},
         {tanggal:'2026-10-05',blok:'SKU-Universal',nama:'Fungsi Global SKU Universal',keterangan:'12 fungsi + 11 config role + 3 pintu standar'},
-        {tanggal:'2026-10-05',blok:'10.7',nama:'Verifikasi Dokumen SA',keterangan:'UI SA (a-e v2) — Penerima global 11 role via FPV + 3 pintu'},
-        {tanggal:'2026-10-05',blok:'11.3',nama:'Pengajuan Verifikasi Toko',keterangan:'UI Toko (a-e) — via FPV + 3 pintu + 4 render + aksi async'},
         {tanggal:'2026-10-05',blok:'11.4',nama:'Download Form SKU/SKD Toko',keterangan:'UI Toko (a-e) — via SKU Universal + 3 pintu + 4 render + 3 aksi'},
         {tanggal:'2026-10-05',blok:'0.1.c',nama:'Registry Blok v4 (Revisi Total)',keterangan:'+5 blok baru (SKU-Universal, 10.7, 11.3, 11.4, 9.3.2(2)) — total 65 blok'},
         {tanggal:'2026-10-05',blok:'0.1.a',nama:'Data Aturan & Lapisan v3-FIXED',keterangan:'4 helper dilengkapi: cpStatistikLapisan, cpCariLapisanByPrefix, cpCariAturan, cpCariAturanByKategori'},
@@ -2546,25 +2544,67 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 0.1.f — AUTO-SYNC REGISTRY (v1) ═════════════════ -->
+<!-- ═══ BLOK R 0.1.f — AUTO-SYNC REGISTRY (v2) ═════════════════ -->
 <!-- ═══ Layer: L6 (Living Document) ═══════════════════════════ -->
 <!-- ═══ Dependency: 0.1.a + 0.1.b + 0.1.c + 0.1.d + 0.1.e ════ -->
-<!-- ═══ Isi: Auto-sync CP_REGISTRY_FUNGSI dari CP_LAPISAN[L4] ═ -->
-<!-- ═══      Auto-catat blok baru ke CP_RIWAYAT ═══════════════ -->
+<!-- ═══ Isi: Auto-dedupe + Auto-sync CP_REGISTRY_FUNGSI + ═════ -->
+<!-- ═══      Auto-catat CP_RIWAYAT (idempotent) ══════════════ -->
 <!-- ═══ Aturan: A7, A23, A31, A32, A33, A34, A35 ══════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_0_1_F_AUTO_SYNC() {
-    if (window._blok01fDoneV1) {
-        console.log('ℹ️ BLOK 0.1.f v1 sudah terpasang.');
+(function BLOK_0_1_F_AUTO_SYNC_V2() {
+    if (window._blok01fDoneV2) {
+        console.log('ℹ️ BLOK 0.1.f v2 sudah terpasang.');
         return;
     }
     if (!window._blok01eDone) {
-        console.warn('⚠️ 0.1.e belum terpasang. 0.1.f ditunda.');
+        console.warn('⚠️ 0.1.e belum terpasang. 0.1.f v2 ditunda.');
         return;
     }
-    window._blok01fDoneV1 = true;
+    window._blok01fDoneV2 = true;
     window._blok01fDone   = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 0] — DEDUPE CP_RIWAYAT (jalankan sebelum sync)
+    // ═══════════════════════════════════════════════════════════
+    // Hapus entry dengan signature sama (blok|nama|keterangan).
+    // Ini menyelesaikan duplikat yang sudah terlanjur ada.
+    // ═══════════════════════════════════════════════════════════
+    window.cpDedupeRiwayat = function() {
+        try {
+            var riwayat = window.CP_RIWAYAT || [];
+            var seen = {};
+            var bersih = [];
+            var dihapus = [];
+
+            riwayat.forEach(function(r) {
+                if (!r) return;
+                var sig = (r.blok || '') + '|' +
+                          (r.nama || '') + '|' +
+                          (r.keterangan || '');
+                if (seen[sig]) {
+                    dihapus.push({ blok: r.blok, nama: r.nama });
+                    return;
+                }
+                seen[sig] = true;
+                bersih.push(r);
+            });
+
+            if (dihapus.length > 0) {
+                window.CP_RIWAYAT.length = 0;
+                bersih.forEach(function(r) { window.CP_RIWAYAT.push(r); });
+            }
+
+            return {
+                sukses: true,
+                dihapus: dihapus.length,
+                detail: dihapus,
+                total: window.CP_RIWAYAT.length
+            };
+        } catch (e) {
+            return { sukses: false, dihapus: 0, pesan: e.message };
+        }
+    };
 
     // ═══════════════════════════════════════════════════════════
     // [MODUL 1] — SYNC CP_REGISTRY_FUNGSI dari CP_LAPISAN[L4]
@@ -2583,7 +2623,8 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 .map(function(s) { return s.trim().replace(/\*$/, ''); })
                 .filter(function(s) { return s !== ''; });
 
-            var dom = window.CP_REGISTRY_FUNGSI = window.CP_REGISTRY_FUNGSI || {};
+            var dom = window.CP_REGISTRY_FUNGSI =
+                window.CP_REGISTRY_FUNGSI || {};
             var ditambah = 0;
             var baru = [];
 
@@ -2632,7 +2673,8 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 if (kodeRiwayat[b.kode]) return;
 
                 riwayat.push({
-                    tanggal:    b.tanggal || new Date().toISOString().substring(0, 10),
+                    tanggal:    b.tanggal ||
+                                new Date().toISOString().substring(0, 10),
                     blok:       b.kode,
                     nama:       b.nama || '-',
                     keterangan: 'Auto-catat — layer ' + (b.layer || '-')
@@ -2654,23 +2696,45 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — AUTO-RUN (saat blok ini load)
+    // [MODUL 3] — AUTO-RUN (dedupe → sync → dedupe)
     // ═══════════════════════════════════════════════════════════
     setTimeout(function() {
         try {
-            var rFungsi  = window.cpSyncRegistryFungsi();
-            var rRiwayat = window.cpSyncRegistryRiwayat();
+            // ── STEP 1: Dedupe dulu ──
+            var rDedup1 = window.cpDedupeRiwayat();
+            if (rDedup1.dihapus > 0) {
+                console.log('%c🧹 0.1.f dedup CP_RIWAYAT: -' +
+                    rDedup1.dihapus + ' (sisa ' + rDedup1.total + ')',
+                    'background:#DC3545;color:#fff;padding:2px 6px;' +
+                    'border-radius:3px;');
+            }
 
+            // ── STEP 2: Sync registry fungsi ──
+            var rFungsi = window.cpSyncRegistryFungsi();
             if (rFungsi.sukses && rFungsi.ditambah > 0) {
                 console.log('%c🔄 0.1.f Auto-sync CP_REGISTRY_FUNGSI +' +
                     rFungsi.ditambah,
-                    'background:#17A2B8;color:#fff;padding:2px 6px;border-radius:3px;');
+                    'background:#17A2B8;color:#fff;padding:2px 6px;' +
+                    'border-radius:3px;');
                 console.log('   Baru:', rFungsi.baru.join(', '));
             }
+
+            // ── STEP 3: Sync riwayat ──
+            var rRiwayat = window.cpSyncRegistryRiwayat();
             if (rRiwayat.sukses && rRiwayat.ditambah > 0) {
                 console.log('%c🔄 0.1.f Auto-catat CP_RIWAYAT +' +
                     rRiwayat.ditambah,
-                    'background:#17A2B8;color:#fff;padding:2px 6px;border-radius:3px;');
+                    'background:#17A2B8;color:#fff;padding:2px 6px;' +
+                    'border-radius:3px;');
+            }
+
+            // ── STEP 4: Dedupe lagi (jaga-jaga) ──
+            var rDedup2 = window.cpDedupeRiwayat();
+            if (rDedup2.dihapus > 0) {
+                console.log('%c🧹 0.1.f post-sync dedup: -' +
+                    rDedup2.dihapus,
+                    'background:#DC3545;color:#fff;padding:2px 6px;' +
+                    'border-radius:3px;');
             }
         } catch (e) {
             console.warn('0.1.f auto-run error:', e.message);
@@ -2681,38 +2745,57 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // [MODUL 4] — DEBUG (A5)
     // ═══════════════════════════════════════════════════════════
     window.debug01f = function() {
+        var riwayat = window.CP_RIWAYAT || [];
+        var sig = {};
+        var dup = 0;
+        riwayat.forEach(function(r) {
+            if (!r) return;
+            var s = (r.blok || '') + '|' + (r.nama || '') + '|' +
+                    (r.keterangan || '');
+            if (sig[s]) dup++;
+            else sig[s] = true;
+        });
+
         var info = {
             blok: '0.1.f',
-            versi: '1.0',
-            guard: window._blok01fDoneV1,
+            versi: '2.0',
+            guard: window._blok01fDoneV2,
             sync: {
-                totalBlok:    (window.CP_REGISTRY_BLOK  || []).length,
-                totalRiwayat: (window.CP_RIWAYAT        || []).length,
-                totalDomain:  Object.keys(window.CP_REGISTRY_FUNGSI || {}).length
+                totalBlok:     (window.CP_REGISTRY_BLOK || []).length,
+                totalRiwayat:  riwayat.length,
+                totalDomain:   Object.keys(
+                    window.CP_REGISTRY_FUNGSI || {}).length
             },
-            status: {
-                fungsiSyncAktif:   typeof window.cpSyncRegistryFungsi === 'function',
-                riwayatSyncAktif:  typeof window.cpSyncRegistryRiwayat === 'function'
+            cekDuplikat: {
+                exact: dup,
+                status: dup === 0 ? '✅ BERSIH' : '⚠️ ' + dup + ' dup'
+            },
+            helperAktif: {
+                dedupe:  typeof window.cpDedupeRiwayat === 'function',
+                sync:    typeof window.cpSyncRegistryFungsi === 'function',
+                catat:   typeof window.cpSyncRegistryRiwayat === 'function'
             }
         };
-        console.log('🔍 debug01f:', info);
+        console.log('🔍 debug01f v2:', info);
         return info;
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — LOG TERPASANG
+    // [MODUL 5] — LOG
     // ═══════════════════════════════════════════════════════════
-    console.log('%c✅ BLOK 0.1.f — AUTO-SYNC terpasang.',
+    console.log('%c✅ BLOK 0.1.f v2 — AUTO-SYNC + DEDUPE terpasang.',
         'background:#FF8C00;color:#fff;padding:3px 8px;font-weight:bold;');
-    console.log('   🔄 Auto-sync: CP_REGISTRY_FUNGSI ← CP_LAPISAN[L4]');
-    console.log('   🔄 Auto-catat: CP_RIWAYAT ← CP_REGISTRY_BLOK');
+    console.log('   🧹 Auto-dedupe CP_RIWAYAT (sebelum + sesudah sync)');
+    console.log('   🔄 Auto-sync CP_REGISTRY_FUNGSI ← CP_LAPISAN[L4]');
+    console.log('   🔄 Auto-catat CP_RIWAYAT ← CP_REGISTRY_BLOK');
     console.log('   🔍 Debug: debug01f()');
-    console.log('   📖 Manual: cpSyncRegistryFungsi(), cpSyncRegistryRiwayat()');
+    console.log('   📖 Manual:');
+    console.log('      cpDedupeRiwayat()       — dedupe manual');
+    console.log('      cpSyncRegistryFungsi()  — sync prefix');
+    console.log('      cpSyncRegistryRiwayat() — sync riwayat');
 })();
 </script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK R 0.1.f — AUTO-SYNC REGISTRY ═══════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 0.1.f v2 — AUTO-SYNC + DEDUPE ═══════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL CORE SYSTEM ═════════ -->
