@@ -35654,6 +35654,251 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL REKAP UNIVERSAL (STUB MINIMAL) ══════ -->
+<!-- ═══ Layer: L4 · Dependency: Produk + TkOffline + TkOnline ══ -->
+<!-- ═══ Isi: 4 fungsi inti rekap — penjualan, kasir, terjual, ══ -->
+<!-- ═══      keuntungan ═══════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_REKAP_UNIVERSAL() {
+    if (window._blokRekapDone) {
+        console.log('ℹ️ BLOK REKAP UNIVERSAL sudah terpasang.');
+        return;
+    }
+    if (!window._coreSystem8Done || !window._blokGIDDone) {
+        console.warn('⚠️ Rekap-Universal ditunda — Core/GID belum ada.');
+        return;
+    }
+    window._blokRekapDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _hitungCutoff(periode) {
+        var now = new Date();
+        if (periode === 'harian')   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        if (periode === 'mingguan') return new Date(now.getTime() - 7 * 86400000);
+        if (periode === 'bulanan')  return new Date(now.getFullYear(), now.getMonth(), 1);
+        if (periode === 'tahunan')  return new Date(now.getFullYear(), 0, 1);
+        return new Date(0);
+    }
+
+    function _rp(n) {
+        if (typeof window.csFormatRp === 'function') return window.csFormatRp(n);
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — REKAP PENJUALAN PEMILIK (transaksi offline+online)
+    // ═══════════════════════════════════════════════════════════
+    window.rekapPenjualanPemilik = function(idOwner, periode) {
+        try {
+            idOwner = idOwner || (window.gidIdOwner ? window.gidIdOwner() : null);
+            periode = periode || 'bulanan';
+            var cutoff = _hitungCutoff(periode);
+            var total = 0, count = 0;
+
+            // Offline (TkOffline)
+            try {
+                if (typeof window.tkGetRiwayat === 'function') {
+                    var list = window.tkGetRiwayat(idOwner, { status: 'selesai' }) || [];
+                    list.forEach(function(t) {
+                        if (!t || !t.tanggal) return;
+                        if (new Date(t.tanggal) < cutoff) return;
+                        total += parseFloat(t.total) || 0;
+                        count++;
+                    });
+                }
+            } catch (e) {}
+
+            // Online (TkOnline)
+            try {
+                if (typeof window.toOrderGetAll === 'function') {
+                    var listO = window.toOrderGetAll({ idSeller: idOwner }) || [];
+                    listO.forEach(function(o) {
+                        if (!o || o.status === 'dibatalkan') return;
+                        if (new Date(o.createdAt || 0) < cutoff) return;
+                        total += parseFloat(o.total) || 0;
+                        count++;
+                    });
+                }
+            } catch (e) {}
+
+            return {
+                totalRp: total,
+                totalRpTeks: _rp(total),
+                jumlahTransaksi: count
+            };
+        } catch (e) {
+            return { totalRp: 0, totalRpTeks: 'Rp 0', jumlahTransaksi: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — REKAP PENJUALAN KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.rekapPenjualanKasir = function(idOwner, opts) {
+        opts = opts || {};
+        try {
+            idOwner = idOwner || (window.gidIdOwner ? window.gidIdOwner() : null);
+            var periode = opts.periode || 'bulanan';
+            var cutoff = _hitungCutoff(periode);
+            var perKasir = {};
+
+            // Ambil semua sesi kasir dari Tkasir
+            if (typeof window.tkasirGetSemuaSesi === 'function') {
+                var sesi = window.tkasirGetSemuaSesi({ limit: 500 }) || [];
+                sesi.forEach(function(s) {
+                    if (!s || !s.idKasir) return;
+                    var tgl = new Date(s.waktuBuka || 0);
+                    if (tgl < cutoff) return;
+                    var k = s.idKasir;
+                    if (!perKasir[k]) {
+                        perKasir[k] = {
+                            idKasir: k,
+                            nama: s.namaKasir || k,
+                            jumlahTransaksi: 0,
+                            totalRp: 0
+                        };
+                    }
+                    perKasir[k].jumlahTransaksi += parseInt(s.totalTransaksi, 10) || 0;
+                    perKasir[k].totalRp += parseFloat(s.totalRupiah) || 0;
+                });
+            }
+
+            var arr = Object.keys(perKasir).map(function(k) { return perKasir[k]; });
+            arr.sort(function(a, b) { return b.totalRp - a.totalRp; });
+            return arr;
+        } catch (e) {
+            console.error('rekapPenjualanKasir error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — REKAP PRODUK TERJUAL
+    // ═══════════════════════════════════════════════════════════
+    window.rekapProdukTerjual = function(idOwner, opts) {
+        opts = opts || {};
+        try {
+            idOwner = idOwner || (window.gidIdOwner ? window.gidIdOwner() : null);
+            var periode = opts.periode || 'bulanan';
+            var cutoff = _hitungCutoff(periode);
+            var perProduk = {};
+
+            // Offline
+            try {
+                if (typeof window.tkGetRiwayat === 'function') {
+                    var list = window.tkGetRiwayat(idOwner, { status: 'selesai' }) || [];
+                    list.forEach(function(t) {
+                        if (!t || new Date(t.tanggal || 0) < cutoff) return;
+                        (t.items || []).forEach(function(it) {
+                            if (!it) return;
+                            var k = it.idProduk || it.nama;
+                            if (!perProduk[k]) perProduk[k] = { nama: it.nama || '-', qty: 0, totalRp: 0 };
+                            perProduk[k].qty += parseInt(it.qty, 10) || 0;
+                            perProduk[k].totalRp += (parseFloat(it.harga) || 0) * (parseInt(it.qty, 10) || 0);
+                        });
+                    });
+                }
+            } catch (e) {}
+
+            // Online
+            try {
+                if (typeof window.toOrderGetAll === 'function') {
+                    var listO = window.toOrderGetAll({ idSeller: idOwner, limit: 5000 }) || [];
+                    listO.forEach(function(o) {
+                        if (!o || o.status === 'dibatalkan') return;
+                        if (new Date(o.createdAt || 0) < cutoff) return;
+                        (o.items || []).forEach(function(it) {
+                            if (!it) return;
+                            var k = it.idProduk || it.nama;
+                            if (!perProduk[k]) perProduk[k] = { nama: it.nama || '-', qty: 0, totalRp: 0 };
+                            perProduk[k].qty += parseInt(it.qty, 10) || 0;
+                            perProduk[k].totalRp += (parseFloat(it.harga) || 0) * (parseInt(it.qty, 10) || 0);
+                        });
+                    });
+                }
+            } catch (e) {}
+
+            var arr = Object.keys(perProduk).map(function(k) {
+                return Object.assign({ idProduk: k }, perProduk[k]);
+            });
+            arr.sort(function(a, b) { return b.qty - a.qty; });
+            return arr;
+        } catch (e) {
+            console.error('rekapProdukTerjual error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — REKAP KEUNTUNGAN
+    // ═══════════════════════════════════════════════════════════
+    window.rekapKeuntungan = function(idOwner, periode) {
+        try {
+            var penjualan = window.rekapPenjualanPemilik(idOwner, periode) || { totalRp: 0 };
+            var totalPenjualan = penjualan.totalRp || 0;
+
+            // Coba ambil modal
+            var modal = 0;
+            try {
+                if (typeof window.modalStatistik === 'function') {
+                    var ms = window.modalStatistik(idOwner, periode) || {};
+                    modal = parseFloat(ms.totalNominal) || 0;
+                }
+            } catch (e) {}
+
+            var keuntungan = totalPenjualan - modal;
+            var margin = totalPenjualan > 0
+                ? Math.round((keuntungan / totalPenjualan) * 10000) / 100
+                : 0;
+
+            return {
+                totalPenjualan: totalPenjualan,
+                totalPenjualanTeks: _rp(totalPenjualan),
+                totalModal: modal,
+                totalModalTeks: _rp(modal),
+                keuntungan: keuntungan,
+                keuntunganTeks: _rp(keuntungan),
+                margin: margin,
+                detail: []
+            };
+        } catch (e) {
+            return {
+                totalPenjualan: 0, totalPenjualanTeks: 'Rp 0',
+                totalModal: 0, totalModalTeks: 'Rp 0',
+                keuntungan: 0, keuntunganTeks: 'Rp 0',
+                margin: 0, detail: []
+            };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugRekap = function() {
+        return {
+            versi: '1.0-stub',
+            guard: window._blokRekapDone,
+            fungsi: {
+                penjualanPemilik: typeof window.rekapPenjualanPemilik,
+                penjualanKasir:   typeof window.rekapPenjualanKasir,
+                produkTerjual:    typeof window.rekapProdukTerjual,
+                keuntungan:       typeof window.rekapKeuntungan
+            }
+        };
+    };
+
+    console.log('%c✅ BLOK REKAP UNIVERSAL (stub) terpasang.', 
+        'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📊 4 fungsi: penjualanPemilik, penjualanKasir, produkTerjual, keuntungan');
+    console.log('   🔍 Debug: debugRekap()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK REKAP UNIVERSAL (stub) ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ EXTEND 3 — BLOK FUNGSI GLOBAL REKAP UNIVERSAL (+3) ════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
 <!-- ═══ Dependency: Rekap-Universal + (Modal-Universal opsional) -->
@@ -43062,7 +43307,7 @@ window._blokTkOfflineDone = true;
     var missing = deps.filter(function(d) { return !window[d.flag]; });
         // ⭐ FIX: Deferred — biarkan UI terpasang
 			if (missing.length > 0) {
-			console.warn('⚠️ 10.47.b: dependency L4 belum ada — mode deferred.');
+			console.warn('⚠️ 10.41.b: Rekening-Universal (L4) belum ada — mode deferred.');
 			missing.forEach(function(d) { console.warn('   • ' + d.nama); });
 		}
 
