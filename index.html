@@ -14325,19 +14325,19 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             ikon:  'fas fa-box',
             warna: '#FF8C00',
             prefixKey: [
-			'dataProdukToko_',
-			'dataProdukPP_',
-			'dataProdukPM_',
-			'dataProdukCOD_',
-			'dataProdukGrosir_',
-			'dataProdukDistributor_',
-			'dataProdukJasa_',
-			'dataProdukDP_',
-			'dataProdukDLR_',
-			'dataProdukFIN_',
-			'dataProdukKDMP_',
-			'dataProdukOJ_'
-		],
+                'dataProdukToko_',
+                'dataProdukPP_',
+                'dataProdukPM_',
+                'dataProdukCOD_',
+                'dataProdukGrosir_',
+                'dataProdukDistributor_',
+                'dataProdukJasa_',
+                'dataProdukDP_',
+                'dataProdukDLR_',
+                'dataProdukFIN_',
+                'dataProdukKDMP_',
+                'dataProdukOJ_'
+            ],
             // Field kepemilikan
             fieldOwner:   'idOwner',
             fieldParent:  'kategori',    // parent = kategori
@@ -15528,6 +15528,2715 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK OM2 (4) — AKSI & API ═══════════════════════ -->
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT EXTENDED ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTORPHAN (1) — FOUNDATION ════════════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Prefix: autor* · Guard: _blokAutorphanDoneV1 ══════════ -->
+<!-- ═══ Dependency: OM + OM2 + MD + PSM + GID + CS ════════════ -->
+<!-- ═══ Isi: Konstanta, Konfigurasi, Helper internal ══════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A18, A19, A23, A31, A32 ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_AUTORPHAN_1_FOUNDATION() {
+    if (window._blokAutorphanDoneV1) {
+        console.log('ℹ️ BLOK AUTORPHAN (1) — Foundation sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency ──
+    var deps = [
+        { flag: '_blokOMDone',   nama: 'OM' },
+        { flag: '_om2Done',      nama: 'OM2 (Extended)' },
+        { flag: '_blokMDDone',   nama: 'MD (Media)' },
+        { flag: '_blokGIDDone',  nama: 'GID' }
+    ];
+    var miss = deps.filter(function(d) { return !window[d.flag]; });
+    if (miss.length > 0) {
+        console.warn('⚠️ AUTORPHAN (1) ditunda — dependency belum ada:');
+        miss.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blokAutorphanDoneV1 = true;
+    window._blokAutorphanDone   = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    window.AUTOR_KONSTANTA = window.AUTOR_KONSTANTA || {
+        VERSI: '1.0',
+        PREFIX: 'autor',
+        GUARD: '_blokAutorphanDoneV1',
+
+        // ── Scheduler ──
+        INTERVAL_JAM: 24,           // default 24 jam
+        INTERVAL_MS: 24 * 60 * 60 * 1000,
+        AUTO_START: true,           // mulai otomatis saat load
+        DELAY_START_MS: 30000,      // delay 30 detik saat load
+
+        // ── Grace period (hari) ──
+        GRACE_KANDIDAT: 7,
+        GRACE_SEMU: 30,
+        GRACE_SEJATI: 0,            // langsung hapus
+
+        // ── Mode ──
+        MODE_AUTO_HAPUS: true,      // tanpa approval
+        MODE_DRY_RUN: false,        // set true untuk test
+
+        // ── Batasan ──
+        MAX_HAPUS_PER_RUN: 1000,    // maksimum hapus per eksekusi
+        LOG_MAX_ENTRY: 200,         // max log tersimpan
+
+        // ── Storage keys ──
+        KEY_LOG:        'r2coin_autor_log',
+        KEY_LAST_RUN:   'r2coin_autor_last_run',
+        KEY_STATISTIK:  'r2coin_autor_stat',
+        KEY_CONFIG:     'r2coin_autor_config',
+
+        // ── Kategori media yang dilindungi ──
+        KATEGORI_MEDIA_PROTECTED: [
+            'profil', 'avatar_hf', 'verifikasi',
+            'struk', 'dokumentasi'
+        ],
+
+        // ── Event trigger ──
+        EVENT_TRIGGER: [
+            'r2coin:produk-deleted',
+            'r2coin:akun-deleted',
+            'r2coin:order-deleted',
+            'r2coin:trx-deleted',
+            'r2coin:kasir-deleted',
+            'r2coin:kategori-deleted',
+            'r2coin:wilayah-deleted',
+            'r2coin:rekening-deleted',
+            'r2coin:media-deleted'
+        ],
+
+        // ── Anti-spam trigger ──
+        TRIGGER_DEBOUNCE_MS: 3000,  // 3 detik debounce per event
+        _triggerTimers: {}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — KONFIGURASI ENTITAS YANG DI-SCAN
+    // ═══════════════════════════════════════════════════════════
+    // Format: { kategori, label, ikon, warna, sumber, prioritas }
+    //   sumber: 'OM' | 'OM2' | 'BOTH'
+    // ═══════════════════════════════════════════════════════════
+    window.AUTOR_ENTITAS = window.AUTOR_ENTITAS || {
+        produk: {
+            label: 'Produk',
+            ikon: 'fas fa-box',
+            warna: '#FF8C00',
+            sumber: 'BOTH',
+            prioritas: 1
+        },
+        transaksi: {
+            label: 'Transaksi',
+            ikon: 'fas fa-exchange-alt',
+            warna: '#17A2B8',
+            sumber: 'BOTH',
+            prioritas: 1
+        },
+        order: {
+            label: 'Order',
+            ikon: 'fas fa-shopping-cart',
+            warna: '#28A745',
+            sumber: 'BOTH',
+            prioritas: 2
+        },
+        media: {
+            label: 'Media',
+            ikon: 'fas fa-file',
+            warna: '#6F42C1',
+            sumber: 'OM',
+            prioritas: 1
+        },
+        kategori: {
+            label: 'Kategori',
+            ikon: 'fas fa-tags',
+            warna: '#6C757D',
+            sumber: 'AUTOR',
+            prioritas: 3
+        },
+        wilayah: {
+            label: 'Wilayah',
+            ikon: 'fas fa-map-marked-alt',
+            warna: '#20C997',
+            sumber: 'AUTOR',
+            prioritas: 3
+        },
+        kasir: {
+            label: 'Kasir',
+            ikon: 'fas fa-cash-register',
+            warna: '#198754',
+            sumber: 'AUTOR',
+            prioritas: 2
+        }
+    };
+
+    // ── Helper ──
+    window.autorGetEntitasConfig = function(kategori) {
+        if (!kategori) return null;
+        return window.AUTOR_ENTITAS[kategori] || null;
+    };
+
+    window.autorGetAllEntitas = function() {
+        return Object.keys(window.AUTOR_ENTITAS).map(function(k) {
+            return Object.assign({ kategori: k }, window.AUTOR_ENTITAS[k]);
+        });
+    };
+
+    window.autorGetEntitasBySumber = function(sumber) {
+        if (!sumber) return [];
+        return Object.keys(window.AUTOR_ENTITAS)
+            .filter(function(k) {
+                var cfg = window.AUTOR_ENTITAS[k];
+                return cfg.sumber === sumber || cfg.sumber === 'BOTH';
+            })
+            .map(function(k) {
+                return Object.assign({ kategori: k }, window.AUTOR_ENTITAS[k]);
+            });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — HELPER INTERNAL (Private)
+    // ═══════════════════════════════════════════════════════════
+    function _loadJSON(key, fb) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fb);
+        try {
+            var s = localStorage.getItem(key);
+            return s ? JSON.parse(s) : fb;
+        } catch (e) { return fb; }
+    }
+
+    function _saveJSON(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _now() {
+        if (typeof window.csNow === 'function') return window.csNow();
+        return new Date().toISOString();
+    }
+
+    function _idUser() {
+        try {
+            if (typeof window.gidIdUser === 'function') return window.gidIdUser();
+        } catch (e) {}
+        return 'SYSTEM_AUTORPHAN';
+    }
+
+    function _catat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal === 'function') {
+                window.catatAktivitasGlobal(_idUser(), aksi, detail);
+            }
+        } catch (e) {}
+    }
+
+    // ── Export helper ke window (untuk blok berikutnya) ──
+    window.autorHelper = window.autorHelper || {
+        loadJSON: _loadJSON,
+        saveJSON: _saveJSON,
+        now:      _now,
+        idUser:   _idUser,
+        catat:    _catat
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — KONFIGURASI PERSISTEN (user-configurable)
+    // ═══════════════════════════════════════════════════════════
+    window.autorAmbilConfig = function() {
+        try {
+            var saved = _loadJSON(window.AUTOR_KONSTANTA.KEY_CONFIG, null);
+            if (saved && typeof saved === 'object') {
+                return {
+                    intervalJam:   saved.intervalJam   || window.AUTOR_KONSTANTA.INTERVAL_JAM,
+                    autoStart:     saved.autoStart     !== false,
+                    autoHapus:     saved.autoHapus     !== false,
+                    dryRun:        saved.dryRun        === true,
+                    maxPerRun:     saved.maxPerRun     || window.AUTOR_KONSTANTA.MAX_HAPUS_PER_RUN,
+                    entitasAktif:  Array.isArray(saved.entitasAktif)
+                        ? saved.entitasAktif
+                        : Object.keys(window.AUTOR_ENTITAS)
+                };
+            }
+        } catch (e) {}
+        return {
+            intervalJam:  window.AUTOR_KONSTANTA.INTERVAL_JAM,
+            autoStart:    window.AUTOR_KONSTANTA.AUTO_START,
+            autoHapus:    window.AUTOR_KONSTANTA.MODE_AUTO_HAPUS,
+            dryRun:       window.AUTOR_KONSTANTA.MODE_DRY_RUN,
+            maxPerRun:    window.AUTOR_KONSTANTA.MAX_HAPUS_PER_RUN,
+            entitasAktif: Object.keys(window.AUTOR_ENTITAS)
+        };
+    };
+
+    window.autorSimpanConfig = function(cfg) {
+        try {
+            if (!cfg || typeof cfg !== 'object') {
+                return { sukses: false, pesan: 'Config tidak valid' };
+            }
+            var current = window.autorAmbilConfig();
+            var merged = Object.assign({}, current, cfg);
+            return _saveJSON(window.AUTOR_KONSTANTA.KEY_CONFIG, merged);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — HELPER: FORMAT, VALIDASI
+    // ═══════════════════════════════════════════════════════════
+    window.autorEsc = function(s) {
+        if (typeof window.mppEscHtml === 'function') return window.mppEscHtml(s);
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.autorFormatSize = function(bytes) {
+        if (typeof window.mdFormatSize === 'function') return window.mdFormatSize(bytes);
+        var b = parseInt(bytes, 10) || 0;
+        if (b < 1024) return b + ' B';
+        if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+        return (b / 1024 / 1024).toFixed(2) + ' MB';
+    };
+
+    window.autorFormatTanggal = function(iso) {
+        if (!iso) return '-';
+        try {
+            return new Date(iso).toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', year: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+        } catch (e) { return '-'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — CEK KESIAPAN MODUL
+    // ═══════════════════════════════════════════════════════════
+    window.autorCekKesiapan = function() {
+        var siap = {
+            foundation: true,
+            om:  typeof window.omScanSemua === 'function' &&
+                 typeof window.omHapusTingkat1 === 'function',
+            om2: typeof window.om2ScanSemua === 'function' &&
+                 typeof window.om2HapusTingkat1 === 'function',
+            md:  typeof window.mdAmbilSemuaMedia === 'function',
+            psm: typeof window.psmAmbil === 'function',
+            gid: typeof window.gidIdUser === 'function',
+            cs:  typeof window.catAktivitasGlobal === 'function' ||
+                 typeof window.catatAktivitasGlobal === 'function'
+        };
+
+        // ── Status kesiapan global ──
+        var modulSiap = ['foundation', 'om', 'om2', 'md'];
+        var ok = modulSiap.every(function(k) { return siap[k]; });
+
+        return {
+            siap: ok,
+            detail: siap,
+            modulInti: modulSiap.length,
+            modulOK: modulSiap.filter(function(k) { return siap[k]; }).length
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugAutor1 = function() {
+        var kesiapan = window.autorCekKesiapan();
+        var info = {
+            blok: 'AUTORPHAN (1)',
+            versi: window.AUTOR_KONSTANTA.VERSI,
+            guard: window._blokAutorphanDoneV1,
+            totalEntitas: Object.keys(window.AUTOR_ENTITAS).length,
+            entitasBySumber: {
+                OM:   window.autorGetEntitasBySumber('OM').length,
+                OM2:  window.autorGetEntitasBySumber('OM2').length,
+                BOTH: window.autorGetEntitasBySumber('BOTH').length,
+                AUTOR: window.autorGetEntitasBySumber('AUTOR').length
+            },
+            interval: window.AUTOR_KONSTANTA.INTERVAL_JAM + ' jam',
+            autoHapus: window.AUTOR_KONSTANTA.MODE_AUTO_HAPUS,
+            dryRun: window.AUTOR_KONSTANTA.MODE_DRY_RUN,
+            kesiapan: kesiapan,
+            config: window.autorAmbilConfig()
+        };
+        console.log('🔍 debugAutor1:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c📦 BLOK AUTORPHAN (1) — FOUNDATION terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   📊 Entitas: ' + Object.keys(window.AUTOR_ENTITAS).length);
+    console.log('   ⏱️  Interval: ' + window.AUTOR_KONSTANTA.INTERVAL_JAM + ' jam');
+    console.log('   ⚙️  Auto hapus: ' + window.AUTOR_KONSTANTA.MODE_AUTO_HAPUS);
+    console.log('   🔍 Debug: debugAutor1()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTORPHAN (1) — FOUNDATION ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTORPHAN (2) — DETECTOR ══════════════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Prefix: autor* · Guard: _blokAutorphan2Done ═══════════ -->
+<!-- ═══ Dependency: AUTORPHAN (1) + OM + OM2 + MD + PSM + GID ═ -->
+<!-- ═══ Isi: 10 fungsi deteksi orphan multi-entitas ═══════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A23, A31, A32 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_AUTORPHAN_2_DETECTOR() {
+    if (window._blokAutorphan2Done) {
+        console.log('ℹ️ BLOK AUTORPHAN (2) — Detector sudah terpasang.');
+        return;
+    }
+    if (!window._blokAutorphanDoneV1) {
+        console.warn('⚠️ AUTORPHAN (2) ditunda — Foundation belum ada.');
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blokAutorphan2Done = true;
+
+    // ── Helper delegate ──
+    var H = window.autorHelper;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — DETEKSI MEDIA ORPHAN (delegasi OM)
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiMediaOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof window.omScanSemua !== 'function') {
+                return { sukses: false, pesan: 'OM tidak tersedia', items: [] };
+            }
+
+            var scan = window.omScanSemua();
+
+            // Konversi ke format unified
+            var items = [];
+            ['protected', 'sejati', 'semu', 'kandidat', 'valid'].forEach(function(tingkat) {
+                var list = scan[tingkat] || [];
+                list.forEach(function(m) {
+                    items.push({
+                        tipe: 'media',
+                        tingkat: tingkat,
+                        id: m.id,
+                        nama: m.nama || '-',
+                        kategori: m.kategori || 'umum',
+                        idOwner: m.idOwner || null,
+                        size: m.size || 0,
+                        sizeTeks: m.sizeTeks || window.autorFormatSize(m.size),
+                        umurHari: m._umurHari != null ? m._umurHari : 0,
+                        alasan: m._alasan || '-',
+                        raw: m
+                    });
+                });
+            });
+
+            // Filter by opts
+            if (opts.hanyaHapus) {
+                items = items.filter(function(x) {
+                    return x.tingkat === 'sejati' || x.tingkat === 'semu';
+                });
+            }
+
+            return {
+                sukses: true,
+                tipe: 'media',
+                items: items,
+                total: items.length,
+                statistik: {
+                    protected: (scan.protected || []).length,
+                    sejati:    (scan.sejati || []).length,
+                    semu:      (scan.semu || []).length,
+                    kandidat:  (scan.kandidat || []).length,
+                    valid:     (scan.valid || []).length
+                }
+            };
+        } catch (e) {
+            console.error('autorDeteksiMediaOrphan error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — DETEKSI DATA ORPHAN (delegasi OM2)
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiDataOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof window.om2ScanSemua !== 'function') {
+                return { sukses: false, pesan: 'OM2 tidak tersedia', items: [] };
+            }
+
+            var hasil = window.om2ScanSemua();
+
+            // Konversi ke unified format
+            var items = [];
+            ['produk', 'transaksi', 'order'].forEach(function(entitas) {
+                var r = hasil[entitas];
+                if (!r || !Array.isArray(r.items)) return;
+
+                r.items.forEach(function(it) {
+                    var klas = typeof window.om2Klasifikasi === 'function'
+                        ? window.om2Klasifikasi(it) : { tingkat: it.tingkat, nama: 'unknown' };
+
+                    items.push({
+                        tipe: entitas,
+                        tingkat: klas.nama || 'unknown',
+                        level: klas.tingkat,
+                        id: it.idItem || '-',
+                        nama: it.nama || '-',
+                        keyStorage: it.keyStorage,
+                        idOwner: it.idOwner || null,
+                        idParent: it.idParent || null,
+                        umurHari: klas.umurHari || 0,
+                        alasan: klas.alasan || it.alasan || '-',
+                        raw: it
+                    });
+                });
+            });
+
+            // Filter by opts
+            if (opts.hanyaHapus) {
+                items = items.filter(function(x) {
+                    return x.level === 1 || x.level === 2;
+                });
+            }
+            if (opts.kategori) {
+                items = items.filter(function(x) { return x.tipe === opts.kategori; });
+            }
+
+            return {
+                sukses: true,
+                tipe: 'data',
+                items: items,
+                total: items.length,
+                statistik: {
+                    produk:    { total: hasil.produk ? hasil.produk.items.length : 0 },
+                    transaksi: { total: hasil.transaksi ? hasil.transaksi.items.length : 0 },
+                    order:     { total: hasil.order ? hasil.order.items.length : 0 }
+                }
+            };
+        } catch (e) {
+            console.error('autorDeteksiDataOrphan error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — DETEKSI KATEGORI KOSONG (baru)
+    // ═══════════════════════════════════════════════════════════
+    // Kategori yang tidak dipakai oleh produk manapun
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiKategoriKosong = function() {
+        try {
+            var list = H.loadJSON('dataKategoriProduk', []);
+            if (!Array.isArray(list) || list.length === 0) {
+                return { sukses: true, items: [], total: 0 };
+            }
+
+            // Kumpulkan semua kategori yang dipakai produk
+            var dipakai = {};
+            var prefixes = (window.OM2_ENTITAS && window.OM2_ENTITAS.produk)
+                ? window.OM2_ENTITAS.produk.prefixKey : [];
+
+            prefixes.forEach(function(prefix) {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var key = localStorage.key(i);
+                    if (!key || key.indexOf(prefix) !== 0) continue;
+                    var produkList = H.loadJSON(key, []);
+                    if (!Array.isArray(produkList)) continue;
+                    produkList.forEach(function(p) {
+                        if (p && p.kategori && p.status !== 'Dihapus') {
+                            dipakai[p.kategori] = true;
+                        }
+                    });
+                }
+            });
+
+            // Cari kategori yang tidak dipakai
+            var kosong = list.filter(function(k) {
+                if (!k || !k.nama) return false;
+                return !dipakai[k.nama];
+            }).map(function(k) {
+                return {
+                    tipe: 'kategori',
+                    id: k.id || k.nama,
+                    nama: k.nama,
+                    alasan: 'Tidak dipakai produk manapun',
+                    raw: k
+                };
+            });
+
+            return {
+                sukses: true,
+                tipe: 'kategori',
+                items: kosong,
+                total: kosong.length
+            };
+        } catch (e) {
+            console.error('autorDeteksiKategoriKosong error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — DETEKSI WILAYAH KOSONG (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiWilayahKosong = function() {
+        try {
+            var list = H.loadJSON('dataWilayah', []);
+            if (!Array.isArray(list) || list.length === 0) {
+                return { sukses: true, items: [], total: 0 };
+            }
+
+            // Kumpulkan wilayah yang dipakai user
+            var dipakai = {};
+            var users = H.loadJSON('dataAkunAktif', []);
+            if (Array.isArray(users)) {
+                users.forEach(function(u) {
+                    if (u && u.wilayah) dipakai[u.wilayah] = true;
+                });
+            }
+
+            var kosong = list.filter(function(w) {
+                if (!w) return false;
+                var key = w.id || w.nama;
+                return !dipakai[key] && !dipakai[w.nama];
+            }).map(function(w) {
+                return {
+                    tipe: 'wilayah',
+                    id: w.id || w.nama,
+                    nama: w.nama || '-',
+                    alasan: 'Tidak ada akun terdaftar',
+                    raw: w
+                };
+            });
+
+            return {
+                sukses: true,
+                tipe: 'wilayah',
+                items: kosong,
+                total: kosong.length
+            };
+        } catch (e) {
+            console.error('autorDeteksiWilayahKosong error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — DETEKSI ORDER STALE (baru)
+    // ═══════════════════════════════════════════════════════════
+    // Order pending > 30 hari (default) — tidak selesai
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiOrderStale = function(opts) {
+        opts = opts || {};
+        var maxHari = opts.maxHari || 30;
+        try {
+            var semuaOrder = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var key = localStorage.key(i);
+                if (!key || (key.indexOf('dataOrder_') !== 0 &&
+                             key.indexOf('dataPesanan_') !== 0)) continue;
+                var list = H.loadJSON(key, []);
+                if (!Array.isArray(list)) continue;
+                list.forEach(function(o) {
+                    if (o) {
+                        o._keyStorage = key;
+                        semuaOrder.push(o);
+                    }
+                });
+            }
+
+            var now = Date.now();
+            var stale = semuaOrder.filter(function(o) {
+                if (!o.tanggal && !o.createdAt) return false;
+                var status = (o.status || '').toLowerCase();
+                var isPending = status === 'pending' ||
+                    status === 'menunggu' ||
+                    status === 'belum bayar' ||
+                    status === '';
+                if (!isPending) return false;
+
+                var tgl = new Date(o.tanggal || o.createdAt).getTime();
+                if (isNaN(tgl)) return false;
+                var umurHari = Math.floor((now - tgl) / (1000 * 60 * 60 * 24));
+                return umurHari >= maxHari;
+            }).map(function(o) {
+                var tgl = new Date(o.tanggal || o.createdAt).getTime();
+                var umurHari = Math.floor((now - tgl) / (1000 * 60 * 60 * 24));
+                return {
+                    tipe: 'order-stale',
+                    id: o.id || o.kode || '-',
+                    nama: 'Order ' + (o.id || o.kode || '-'),
+                    idOwner: o.idToko || o.idSeller || null,
+                    umurHari: umurHari,
+                    alasan: 'Pending > ' + maxHari + ' hari',
+                    keyStorage: o._keyStorage,
+                    raw: o
+                };
+            });
+
+            return {
+                sukses: true,
+                tipe: 'order-stale',
+                items: stale,
+                total: stale.length,
+                maxHari: maxHari
+            };
+        } catch (e) {
+            console.error('autorDeteksiOrderStale error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — DETEKSI KASIR ORPHAN (baru)
+    // ═══════════════════════════════════════════════════════════
+    // Kasir yang owner-nya sudah tidak ada
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiKasirOrphan = function() {
+        try {
+            var validOwners = {};
+            var users = H.loadJSON('dataLoginUser', []);
+            if (Array.isArray(users)) {
+                users.forEach(function(u) {
+                    if (u && u.idUser) validOwners[u.idUser] = true;
+                });
+            }
+
+            var orphan = [];
+            var kasir = window.dataKasir || [];
+            if (!Array.isArray(kasir)) kasir = [];
+
+            kasir.forEach(function(k) {
+                if (!k) return;
+                var idOwner = k.idOwner || k.idInduk;
+                if (!idOwner) {
+                    orphan.push({
+                        tipe: 'kasir',
+                        id: k.idUser || k.id,
+                        nama: k.nama || '-',
+                        idOwner: null,
+                        alasan: 'Tanpa owner',
+                        raw: k
+                    });
+                    return;
+                }
+                if (!validOwners[idOwner]) {
+                    orphan.push({
+                        tipe: 'kasir',
+                        id: k.idUser || k.id,
+                        nama: k.nama || '-',
+                        idOwner: idOwner,
+                        alasan: 'Owner tidak ada: ' + idOwner,
+                        raw: k
+                    });
+                }
+            });
+
+            return {
+                sukses: true,
+                tipe: 'kasir',
+                items: orphan,
+                total: orphan.length
+            };
+        } catch (e) {
+            console.error('autorDeteksiKasirOrphan error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — DETEKSI CHAT STALE (baru)
+    // ═══════════════════════════════════════════════════════════
+    // Chat > 90 hari tidak aktif
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiChatStale = function(opts) {
+        opts = opts || {};
+        var maxHari = opts.maxHari || 90;
+        try {
+            var chat = window.dataChat || [];
+            if (!Array.isArray(chat)) chat = [];
+
+            var now = Date.now();
+            var stale = chat.filter(function(c) {
+                if (!c) return false;
+                var tgl = new Date(c.waktu || c.createdAt || 0).getTime();
+                if (isNaN(tgl)) return false;
+                return (now - tgl) / (1000 * 60 * 60 * 24) >= maxHari;
+            }).map(function(c) {
+                var tgl = new Date(c.waktu || c.createdAt).getTime();
+                return {
+                    tipe: 'chat',
+                    id: c.id || '-',
+                    nama: 'Chat ' + (c.id || '-'),
+                    idOwner: c.idUser || null,
+                    umurHari: Math.floor((now - tgl) / (1000 * 60 * 60 * 24)),
+                    alasan: 'Tidak aktif > ' + maxHari + ' hari',
+                    raw: c
+                };
+            });
+
+            return {
+                sukses: true,
+                tipe: 'chat',
+                items: stale,
+                total: stale.length,
+                maxHari: maxHari
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — DETEKSI WISHLIST/CART ORPHAN (baru)
+    // ═══════════════════════════════════════════════════════════
+    // Item cart/wishlist customer yang produknya sudah dihapus
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiCartOrphan = function() {
+        try {
+            if (typeof window.mdAmbilSemuaMedia !== 'function') {
+                // Fallback: cek produk valid
+            }
+
+            // Kumpulkan ID produk valid
+            var produkValid = {};
+            var prefixes = (window.OM2_ENTITAS && window.OM2_ENTITAS.produk)
+                ? window.OM2_ENTITAS.produk.prefixKey : [];
+
+            prefixes.forEach(function(prefix) {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var key = localStorage.key(i);
+                    if (!key || key.indexOf(prefix) !== 0) continue;
+                    var list = H.loadJSON(key, []);
+                    if (!Array.isArray(list)) continue;
+                    list.forEach(function(p) {
+                        if (p && p.id && p.status !== 'Dihapus') {
+                            produkValid[p.id] = true;
+                        }
+                    });
+                }
+            });
+
+            // Scan cart & wishlist
+            var orphan = [];
+            for (var j = 0; j < localStorage.length; j++) {
+                var k = localStorage.key(j);
+                if (!k || (k.indexOf('mpp_cart_') !== 0 &&
+                          k.indexOf('mpp_wishlist_') !== 0 &&
+                          k.indexOf('mpp_koleksi_') !== 0 &&
+                          k.indexOf('mpp_histori_') !== 0)) continue;
+
+                var items = H.loadJSON(k, []);
+                if (!Array.isArray(items)) continue;
+
+                var tipeCart = k.indexOf('mpp_cart_') === 0 ? 'cart'
+                    : k.indexOf('mpp_wishlist_') === 0 ? 'wishlist'
+                    : k.indexOf('mpp_koleksi_') === 0 ? 'koleksi'
+                    : 'histori';
+
+                items.forEach(function(it) {
+                    if (!it) return;
+                    var idProduk = it.idProduk || it.id || null;
+                    if (!idProduk) return;
+                    if (!produkValid[idProduk]) {
+                        orphan.push({
+                            tipe: tipeCart,
+                            id: it.idCartItem || idProduk,
+                            nama: it.nama || ('Produk ' + idProduk),
+                            idProduk: idProduk,
+                            keyStorage: k,
+                            alasan: 'Produk tidak ada',
+                            raw: it
+                        });
+                    }
+                });
+            }
+
+            return {
+                sukses: true,
+                tipe: 'cart',
+                items: orphan,
+                total: orphan.length
+            };
+        } catch (e) {
+            console.error('autorDeteksiCartOrphan error:', e);
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — DETEKSI SEMUA (Orkestrator)
+    // ═══════════════════════════════════════════════════════════
+    window.autorDeteksiSemua = function(opts) {
+        opts = opts || {};
+        var t0 = Date.now();
+        try {
+            var config = window.autorAmbilConfig();
+            var entitas = opts.entitas || config.entitasAktif || Object.keys(window.AUTOR_ENTITAS);
+
+            var hasil = {
+                sukses: true,
+                tipe: 'semua',
+                waktu: H.now(),
+                elapsedMs: 0,
+                entitas: entitas,
+                items: [],
+                perEntitas: {},
+                total: 0,
+                totalHapus: 0,
+                statistik: {}
+            };
+
+            // Detector map
+            var detectors = {
+                produk:    function() { return window.autorDeteksiDataOrphan({ kategori: 'produk' }); },
+                transaksi: function() { return window.autorDeteksiDataOrphan({ kategori: 'transaksi' }); },
+                order:     function() { return window.autorDeteksiDataOrphan({ kategori: 'order' }); },
+                media:     function() { return window.autorDeteksiMediaOrphan(); },
+                kategori:  function() { return window.autorDeteksiKategoriKosong(); },
+                wilayah:   function() { return window.autorDeteksiWilayahKosong(); },
+                kasir:     function() { return window.autorDeteksiKasirOrphan(); }
+            };
+
+            entitas.forEach(function(kat) {
+                if (!detectors[kat]) return;
+                var r = detectors[kat]();
+                if (!r || !r.sukses) return;
+
+                hasil.perEntitas[kat] = {
+                    total: r.total || 0,
+                    items: r.items || []
+                };
+
+                // Merge ke items utama
+                (r.items || []).forEach(function(it) {
+                    it.entitas = kat;
+                    hasil.items.push(it);
+                });
+            });
+
+            // Tambahan: order stale & chat stale & cart orphan
+            if (entitas.indexOf('order') !== -1 || entitas.indexOf('transaksi') !== -1) {
+                var stale = window.autorDeteksiOrderStale({ maxHari: 30 });
+                if (stale.sukses && stale.total > 0) {
+                    hasil.perEntitas['order-stale'] = { total: stale.total, items: stale.items };
+                    stale.items.forEach(function(it) {
+                        it.entitas = 'order-stale';
+                        hasil.items.push(it);
+                    });
+                }
+            }
+
+            if (opts.includeChat !== false) {
+                var chatStale = window.autorDeteksiChatStale({ maxHari: 90 });
+                if (chatStale.sukses && chatStale.total > 0) {
+                    hasil.perEntitas['chat-stale'] = { total: chatStale.total, items: chatStale.items };
+                    chatStale.items.forEach(function(it) {
+                        it.entitas = 'chat-stale';
+                        hasil.items.push(it);
+                    });
+                }
+            }
+
+            if (opts.includeCart !== false) {
+                var cartOrphan = window.autorDeteksiCartOrphan();
+                if (cartOrphan.sukses && cartOrphan.total > 0) {
+                    hasil.perEntitas['cart-orphan'] = { total: cartOrphan.total, items: cartOrphan.items };
+                    cartOrphan.items.forEach(function(it) {
+                        it.entitas = 'cart-orphan';
+                        hasil.items.push(it);
+                    });
+                }
+            }
+
+            // Total
+            hasil.total = hasil.items.length;
+
+            // Statistik: hitung yang bisa dihapus (level 1 & 2)
+            hasil.totalHapus = hasil.items.filter(function(x) {
+                return x.tingkat === 'orphan-sejati' ||
+                       x.tingkat === 'orphan-semu' ||
+                       x.level === 1 || x.level === 2 ||
+                       x.tipe === 'kategori' ||
+                       x.tipe === 'wilayah' ||
+                       x.tipe === 'kasir' ||
+                       x.tipe === 'order-stale' ||
+                       x.tipe === 'chat' ||
+                       x.tipe === 'cart' ||
+                       x.tipe === 'wishlist' ||
+                       x.tipe === 'koleksi' ||
+                       x.tipe === 'histori';
+            }).length;
+
+            hasil.elapsedMs = Date.now() - t0;
+
+            return hasil;
+        } catch (e) {
+            console.error('autorDeteksiSemua error:', e);
+            return { sukses: false, pesan: e.message, items: [], total: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — RINGKASAN STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.autorStatistikDeteksi = function() {
+        try {
+            var hasil = window.autorDeteksiSemua();
+
+            var stat = {
+                waktu: hasil.waktu,
+                elapsedMs: hasil.elapsedMs,
+                totalItems: hasil.total,
+                totalHapus: hasil.totalHapus,
+                perEntitas: {}
+            };
+
+            Object.keys(hasil.perEntitas).forEach(function(kat) {
+                stat.perEntitas[kat] = hasil.perEntitas[kat].total;
+            });
+
+            return stat;
+        } catch (e) {
+            return { totalItems: 0, totalHapus: 0, perEntitas: {} };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugAutor2 = function() {
+        var info = {
+            blok: 'AUTORPHAN (2)',
+            guard: window._blokAutorphan2Done,
+            detector: {
+                media:          typeof window.autorDeteksiMediaOrphan,
+                data:           typeof window.autorDeteksiDataOrphan,
+                kategoriKosong: typeof window.autorDeteksiKategoriKosong,
+                wilayahKosong:  typeof window.autorDeteksiWilayahKosong,
+                orderStale:     typeof window.autorDeteksiOrderStale,
+                kasirOrphan:    typeof window.autorDeteksiKasirOrphan,
+                chatStale:      typeof window.autorDeteksiChatStale,
+                cartOrphan:     typeof window.autorDeteksiCartOrphan,
+                semua:          typeof window.autorDeteksiSemua,
+                statistik:      typeof window.autorStatistikDeteksi
+            }
+        };
+        console.log('🔍 debugAutor2:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c📦 BLOK AUTORPHAN (2) — DETECTOR terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🔍 10 Fungsi deteksi:');
+    console.log('      • autorDeteksiMediaOrphan      (delegate OM)');
+    console.log('      • autorDeteksiDataOrphan       (delegate OM2)');
+    console.log('      • autorDeteksiKategoriKosong   (baru)');
+    console.log('      • autorDeteksiWilayahKosong    (baru)');
+    console.log('      • autorDeteksiOrderStale       (baru)');
+    console.log('      • autorDeteksiKasirOrphan      (baru)');
+    console.log('      • autorDeteksiChatStale        (baru)');
+    console.log('      • autorDeteksiCartOrphan       (baru)');
+    console.log('      • autorDeteksiSemua            (orkestrator)');
+    console.log('      • autorStatistikDeteksi        (statistik)');
+    console.log('   🔍 Debug: debugAutor2()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTORPHAN (2) — DETECTOR ═══════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTORPHAN (3) — AKSI (EKSEKUTOR) ═════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Prefix: autor* · Guard: _blokAutorphan3Done ═══════════ -->
+<!-- ═══ Dependency: AUTORPHAN (1)+(2) + OM + OM2 + MD + CS ════ -->
+<!-- ═══ Isi: 12 fungsi aksi hapus orphan multi-entitas ════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A7, A23, A31, A32, A34 ════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_AUTORPHAN_3_AKSI() {
+    if (window._blokAutorphan3Done) {
+        console.log('ℹ️ BLOK AUTORPHAN (3) — Aksi sudah terpasang.');
+        return;
+    }
+    if (!window._blokAutorphan2Done) {
+        console.warn('⚠️ AUTORPHAN (3) ditunda — Detector belum ada.');
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blokAutorphan3Done = true;
+
+    var H = window.autorHelper;
+    var K = window.AUTOR_KONSTANTA;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — HELPER: HAPUS ITEM DARI STORAGE
+    // ═══════════════════════════════════════════════════════════
+    function _hapusItemDariStorage(keyStorage, idItem, idField) {
+        idField = idField || 'id';
+        try {
+            var list = H.loadJSON(keyStorage, []);
+            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
+
+            var before = list.length;
+            var filtered = list.filter(function(x) {
+                if (!x) return false;
+                var xid = x[idField] || x.id || x.kode || '-';
+                return xid !== idItem;
+            });
+
+            if (filtered.length === before) {
+                return { sukses: false, pesan: 'Item tidak ditemukan' };
+            }
+
+            // Hapus key kalau array kosong
+            if (filtered.length === 0) {
+                try { localStorage.removeItem(keyStorage); } catch (e) {}
+            } else {
+                H.saveJSON(keyStorage, filtered);
+            }
+
+            return { sukses: true, dihapus: before - filtered.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — AKSI: HAPUS MEDIA ORPHAN (delegate OM)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusMediaOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof window.omHapusTingkat1 !== 'function') {
+                return { sukses: false, pesan: 'OM tidak tersedia', berhasil: 0 };
+            }
+
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            // Deteksi dulu
+            var deteksi = window.autorDeteksiMediaOrphan({ hanyaHapus: true });
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada media orphan' };
+            }
+
+            // Limit
+            var max = opts.max || config.maxPerRun || 1000;
+            var kandidat = deteksi.items.slice(0, max);
+
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            // Eksekusi via OM (tingkat 1 + 2)
+            var hasil = { sukses: true, berhasil: 0, gagal: 0 };
+            var r1 = window.omHapusTingkat1();
+            hasil.berhasil += (r1.berhasil || 0);
+            hasil.gagal += (r1.gagal || 0);
+
+            var r2 = window.omHapusTingkat2();
+            hasil.berhasil += (r2.berhasil || 0);
+            hasil.gagal += (r2.gagal || 0);
+
+            return hasil;
+        } catch (e) {
+            console.error('autorHapusMediaOrphan error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — AKSI: HAPUS DATA ORPHAN (delegate OM2)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusDataOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof window.om2HapusTingkat1 !== 'function') {
+                return { sukses: false, pesan: 'OM2 tidak tersedia', berhasil: 0 };
+            }
+
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiDataOrphan({ hanyaHapus: true });
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada data orphan' };
+            }
+
+            var max = opts.max || config.maxPerRun || 1000;
+            var kandidat = deteksi.items.slice(0, max);
+
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            var hasil = { sukses: true, berhasil: 0, gagal: 0 };
+            var r1 = window.om2HapusTingkat1();
+            hasil.berhasil += (r1.berhasil || 0);
+            hasil.gagal += (r1.gagal || 0);
+
+            var r2 = window.om2HapusTingkat2();
+            hasil.berhasil += (r2.berhasil || 0);
+            hasil.gagal += (r2.gagal || 0);
+
+            return hasil;
+        } catch (e) {
+            console.error('autorHapusDataOrphan error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — AKSI: HAPUS KATEGORI KOSONG (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusKategoriKosong = function(opts) {
+        opts = opts || {};
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiKategoriKosong();
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada kategori kosong' };
+            }
+
+            var kandidat = deteksi.items;
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            // Hapus dari dataKategoriProduk
+            var list = H.loadJSON('dataKategoriProduk', []);
+            if (!Array.isArray(list)) return { sukses: true, berhasil: 0 };
+
+            var idHapus = {};
+            kandidat.forEach(function(k) {
+                idHapus[k.id || k.nama] = true;
+            });
+
+            var before = list.length;
+            var filtered = list.filter(function(k) {
+                if (!k) return false;
+                var key = k.id || k.nama;
+                return !idHapus[key];
+            });
+
+            H.saveJSON('dataKategoriProduk', filtered);
+
+            return {
+                sukses: true,
+                berhasil: before - filtered.length,
+                gagal: 0
+            };
+        } catch (e) {
+            console.error('autorHapusKategoriKosong error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — AKSI: HAPUS WILAYAH KOSONG (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusWilayahKosong = function(opts) {
+        opts = opts || {};
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiWilayahKosong();
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada wilayah kosong' };
+            }
+
+            var kandidat = deteksi.items;
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            var list = H.loadJSON('dataWilayah', []);
+            if (!Array.isArray(list)) return { sukses: true, berhasil: 0 };
+
+            var idHapus = {};
+            kandidat.forEach(function(w) {
+                idHapus[w.id || w.nama] = true;
+            });
+
+            var before = list.length;
+            var filtered = list.filter(function(w) {
+                if (!w) return false;
+                var key = w.id || w.nama;
+                return !idHapus[key];
+            });
+
+            H.saveJSON('dataWilayah', filtered);
+
+            return {
+                sukses: true,
+                berhasil: before - filtered.length,
+                gagal: 0
+            };
+        } catch (e) {
+            console.error('autorHapusWilayahKosong error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — AKSI: HAPUS ORDER STALE (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusOrderStale = function(opts) {
+        opts = opts || {};
+        var maxHari = opts.maxHari || 30;
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiOrderStale({ maxHari: maxHari });
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada order stale' };
+            }
+
+            var kandidat = deteksi.items;
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            var berhasil = 0, gagal = 0;
+            kandidat.forEach(function(it) {
+                var h = _hapusItemDariStorage(it.keyStorage, it.id, 'id');
+                if (h.sukses) berhasil++;
+                else gagal++;
+            });
+
+            return { sukses: true, berhasil: berhasil, gagal: gagal };
+        } catch (e) {
+            console.error('autorHapusOrderStale error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — AKSI: HAPUS KASIR ORPHAN (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusKasirOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiKasirOrphan();
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada kasir orphan' };
+            }
+
+            var kandidat = deteksi.items;
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            // Hapus dari dataKasir
+            var list = window.dataKasir || [];
+            if (!Array.isArray(list)) list = H.loadJSON('dataKasir', []);
+
+            var idHapus = {};
+            kandidat.forEach(function(k) { idHapus[k.id] = true; });
+
+            var before = list.length;
+            var filtered = list.filter(function(k) {
+                if (!k) return false;
+                return !idHapus[k.idUser || k.id];
+            });
+
+            H.saveJSON('dataKasir', filtered);
+            try {
+                if (Array.isArray(window.dataKasir)) {
+                    window.dataKasir.length = 0;
+                    filtered.forEach(function(x) { window.dataKasir.push(x); });
+                }
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                berhasil: before - filtered.length,
+                gagal: 0
+            };
+        } catch (e) {
+            console.error('autorHapusKasirOrphan error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — AKSI: HAPUS CHAT STALE (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusChatStale = function(opts) {
+        opts = opts || {};
+        var maxHari = opts.maxHari || 90;
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiChatStale({ maxHari: maxHari });
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada chat stale' };
+            }
+
+            var kandidat = deteksi.items;
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            var list = window.dataChat || [];
+            if (!Array.isArray(list)) list = H.loadJSON('dataChat', []);
+
+            var idHapus = {};
+            kandidat.forEach(function(c) { idHapus[c.id] = true; });
+
+            var before = list.length;
+            var filtered = list.filter(function(c) {
+                if (!c) return false;
+                return !idHapus[c.id];
+            });
+
+            H.saveJSON('dataChat', filtered);
+            try {
+                if (Array.isArray(window.dataChat)) {
+                    window.dataChat.length = 0;
+                    filtered.forEach(function(x) { window.dataChat.push(x); });
+                }
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                berhasil: before - filtered.length,
+                gagal: 0
+            };
+        } catch (e) {
+            console.error('autorHapusChatStale error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — AKSI: HAPUS CART/WISHLIST ORPHAN (baru)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusCartOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var deteksi = window.autorDeteksiCartOrphan();
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada cart orphan' };
+            }
+
+            var kandidat = deteksi.items;
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            // Group by keyStorage untuk efisiensi
+            var perKey = {};
+            kandidat.forEach(function(c) {
+                if (!perKey[c.keyStorage]) perKey[c.keyStorage] = [];
+                perKey[c.keyStorage].push(c);
+            });
+
+            var berhasil = 0, gagal = 0;
+            Object.keys(perKey).forEach(function(key) {
+                var list = H.loadJSON(key, []);
+                if (!Array.isArray(list)) { gagal += perKey[key].length; return; }
+
+                var idHapus = {};
+                perKey[key].forEach(function(x) {
+                    idHapus[x.id] = true;
+                    idHapus[x.idProduk] = true;
+                });
+
+                var before = list.length;
+                var filtered = list.filter(function(x) {
+                    if (!x) return false;
+                    var id = x.idCartItem || x.id || x.idProduk;
+                    return !idHapus[id];
+                });
+
+                if (filtered.length === 0) {
+                    try { localStorage.removeItem(key); } catch (e) {}
+                } else {
+                    H.saveJSON(key, filtered);
+                }
+
+                berhasil += (before - filtered.length);
+            });
+
+            return { sukses: true, berhasil: berhasil, gagal: gagal };
+        } catch (e) {
+            console.error('autorHapusCartOrphan error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — AKSI: HAPUS PER ENTITAS (Dispatcher)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusPerEntitas = function(entitas, opts) {
+        opts = opts || {};
+        try {
+            var map = {
+                'media':       window.autorHapusMediaOrphan,
+                'produk':      window.autorHapusDataOrphan,
+                'transaksi':   window.autorHapusDataOrphan,
+                'order':       window.autorHapusDataOrphan,
+                'kategori':    window.autorHapusKategoriKosong,
+                'wilayah':     window.autorHapusWilayahKosong,
+                'kasir':       window.autorHapusKasirOrphan,
+                'chat':        window.autorHapusChatStale,
+                'cart':        window.autorHapusCartOrphan,
+                'order-stale': window.autorHapusOrderStale
+            };
+
+            var fn = map[entitas];
+            if (!fn) {
+                return { sukses: false, pesan: 'Entitas tidak dikenal: ' + entitas };
+            }
+
+            return fn(opts);
+        } catch (e) {
+            console.error('autorHapusPerEntitas error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — AKSI: AUTO HAPUS SEMUA (Orkestrator Utama)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusSemua = function(opts) {
+        opts = opts || {};
+        var t0 = Date.now();
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+            var entitas = opts.entitas || config.entitasAktif || Object.keys(window.AUTOR_ENTITAS);
+
+            var hasil = {
+                sukses: true,
+                waktu: H.now(),
+                dryRun: dryRun,
+                entitas: entitas,
+                perEntitas: {},
+                totalBerhasil: 0,
+                totalGagal: 0,
+                elapsedMs: 0
+            };
+
+            entitas.forEach(function(kat) {
+                try {
+                    var r = window.autorHapusPerEntitas(kat, opts);
+                    hasil.perEntitas[kat] = {
+                        berhasil: r.berhasil || 0,
+                        gagal: r.gagal || 0,
+                        dryRun: r.dryRun === true,
+                        akanDihapus: r.akanDihapus || 0,
+                        pesan: r.pesan || null
+                    };
+                    hasil.totalBerhasil += (r.berhasil || 0);
+                    hasil.totalGagal += (r.gagal || 0);
+                } catch (e) {
+                    hasil.perEntitas[kat] = { error: e.message };
+                }
+            });
+
+            // Tambahan: order-stale & chat & cart
+            if (opts.includeStale !== false) {
+                try {
+                    var rs = window.autorHapusOrderStale({ maxHari: 30, dryRun: dryRun });
+                    hasil.perEntitas['order-stale'] = rs;
+                    hasil.totalBerhasil += (rs.berhasil || 0);
+                } catch (e) {}
+
+                try {
+                    var rc = window.autorHapusChatStale({ maxHari: 90, dryRun: dryRun });
+                    hasil.perEntitas['chat-stale'] = rc;
+                    hasil.totalBerhasil += (rc.berhasil || 0);
+                } catch (e) {}
+
+                try {
+                    var rt = window.autorHapusCartOrphan({ dryRun: dryRun });
+                    hasil.perEntitas['cart-orphan'] = rt;
+                    hasil.totalBerhasil += (rt.berhasil || 0);
+                } catch (e) {}
+            }
+
+            hasil.elapsedMs = Date.now() - t0;
+
+            // Catat aktivitas (kalau bukan dry run & ada yang dihapus)
+            if (!dryRun && hasil.totalBerhasil > 0) {
+                H.catat('Auto-Hapus Orphan',
+                    'Total: ' + hasil.totalBerhasil + ' | Elapsed: ' + hasil.elapsedMs + 'ms');
+            }
+
+            return hasil;
+        } catch (e) {
+            console.error('autorHapusSemua error:', e);
+            return { sukses: false, pesan: e.message, totalBerhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — AKSI: HAPUS PER OWNER (spesifik)
+    // ═══════════════════════════════════════════════════════════
+    window.autorHapusPerOwner = function(idOwner, opts) {
+        opts = opts || {};
+        if (!idOwner) return { sukses: false, pesan: 'idOwner kosong' };
+
+        try {
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            var hasil = { sukses: true, idOwner: idOwner, berhasil: 0 };
+
+            // Deteksi media milik owner
+            var media = window.autorDeteksiMediaOrphan();
+            var mediaOwner = (media.items || []).filter(function(x) {
+                return x.idOwner === idOwner &&
+                       (x.tingkat === 'sejati' || x.tingkat === 'semu');
+            });
+
+            if (!dryRun && mediaOwner.length > 0) {
+                var ids = mediaOwner.map(function(x) { return x.id; });
+                var h = window.mdHapusBatch(ids, { bypass: true });
+                hasil.berhasil += (h.berhasil || 0);
+            } else if (dryRun) {
+                hasil.akanDihapus = mediaOwner.length;
+            }
+
+            // Deteksi data milik owner
+            var data = window.autorDeteksiDataOrphan();
+            var dataOwner = (data.items || []).filter(function(x) {
+                return x.idOwner === idOwner && (x.level === 1 || x.level === 2);
+            });
+
+            if (!dryRun && dataOwner.length > 0) {
+                dataOwner.forEach(function(it) {
+                    var h = _hapusItemDariStorage(it.keyStorage, it.id, 'id');
+                    if (h.sukses) hasil.berhasil++;
+                });
+            } else if (dryRun) {
+                hasil.akanDihapus = (hasil.akanDihapus || 0) + dataOwner.length;
+            }
+
+            return hasil;
+        } catch (e) {
+            console.error('autorHapusPerOwner error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — PREVIEW (tanpa hapus)
+    // ═══════════════════════════════════════════════════════════
+    window.autorPreviewHapus = function(opts) {
+        opts = opts || {};
+        try {
+            var hasil = window.autorHapusSemua(Object.assign({}, opts, { dryRun: true }));
+            return hasil;
+        } catch (e) {
+            console.error('autorPreviewHapus error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugAutor3 = function() {
+        var info = {
+            blok: 'AUTORPHAN (3)',
+            guard: window._blokAutorphan3Done,
+            aksi: {
+                mediaOrphan:    typeof window.autorHapusMediaOrphan,
+                dataOrphan:     typeof window.autorHapusDataOrphan,
+                kategoriKosong: typeof window.autorHapusKategoriKosong,
+                wilayahKosong:  typeof window.autorHapusWilayahKosong,
+                orderStale:     typeof window.autorHapusOrderStale,
+                kasirOrphan:    typeof window.autorHapusKasirOrphan,
+                chatStale:      typeof window.autorHapusChatStale,
+                cartOrphan:     typeof window.autorHapusCartOrphan,
+                perEntitas:     typeof window.autorHapusPerEntitas,
+                semua:          typeof window.autorHapusSemua,
+                perOwner:       typeof window.autorHapusPerOwner,
+                preview:        typeof window.autorPreviewHapus
+            }
+        };
+        console.log('🔍 debugAutor3:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c📦 BLOK AUTORPHAN (3) — AKSI terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   ⚙️  12 Fungsi aksi:');
+    console.log('      • autorHapusMediaOrphan       (delegate OM)');
+    console.log('      • autorHapusDataOrphan        (delegate OM2)');
+    console.log('      • autorHapusKategoriKosong    (baru)');
+    console.log('      • autorHapusWilayahKosong     (baru)');
+    console.log('      • autorHapusOrderStale        (baru)');
+    console.log('      • autorHapusKasirOrphan       (baru)');
+    console.log('      • autorHapusChatStale         (baru)');
+    console.log('      • autorHapusCartOrphan        (baru)');
+    console.log('      • autorHapusPerEntitas        (dispatcher)');
+    console.log('      • autorHapusSemua             (orkestrator)');
+    console.log('      • autorHapusPerOwner          (per owner)');
+    console.log('      • autorPreviewHapus           (dry run)');
+    console.log('   🔍 Debug: debugAutor3()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTORPHAN (3) — AKSI ═══════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTORPHAN (4) — SCHEDULER & LOG ═══════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Prefix: autor* · Guard: _blokAutorphan4Done ═══════════ -->
+<!-- ═══ Dependency: AUTORPHAN (1)+(2)+(3) ═════════════════════ -->
+<!-- ═══ Isi: 12 fungsi scheduler + log + statistik ════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A7, A23, A31, A32, A34 ════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_AUTORPHAN_4_SCHEDULER_LOG() {
+    if (window._blokAutorphan4Done) {
+        console.log('ℹ️ BLOK AUTORPHAN (4) — Scheduler & Log sudah terpasang.');
+        return;
+    }
+    if (!window._blokAutorphan3Done) {
+        console.warn('⚠️ AUTORPHAN (4) ditunda — Aksi belum ada.');
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blokAutorphan4Done = true;
+
+    var H = window.autorHelper;
+    var K = window.AUTOR_KONSTANTA;
+
+    // ── Timer internal ──
+    var _schedulerTimer = null;
+    var _startupTimer = null;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — LOG: SIMPAN / BACA / HAPUS
+    // ═══════════════════════════════════════════════════════════
+    function _loadLog() {
+        try {
+            var data = H.loadJSON(K.KEY_LOG, { items: [] });
+            if (!data || typeof data !== 'object') return { items: [] };
+            if (!Array.isArray(data.items)) data.items = [];
+            return data;
+        } catch (e) { return { items: [] }; }
+    }
+
+    function _saveLog(data) {
+        try {
+            if (!data || typeof data !== 'object') data = { items: [] };
+            if (!Array.isArray(data.items)) data.items = [];
+            if (data.items.length > K.LOG_MAX_ENTRY) {
+                data.items = data.items.slice(0, K.LOG_MAX_ENTRY);
+            }
+            data.meta = data.meta || {};
+            data.meta.total = data.items.length;
+            data.meta.updatedAt = H.now();
+            return H.saveJSON(K.KEY_LOG, data);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    window.autorTambahLog = function(entry) {
+        try {
+            if (!entry || typeof entry !== 'object') {
+                return { sukses: false, pesan: 'Entry tidak valid' };
+            }
+
+            var log = _loadLog();
+            log.items.unshift({
+                id: 'ALOG-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                tipe: entry.tipe || 'auto',                     // 'auto' | 'manual' | 'preview'
+                trigger: entry.trigger || null,                 // event name
+                dryRun: entry.dryRun === true,
+                totalBerhasil: entry.totalBerhasil || 0,
+                totalGagal: entry.totalGagal || 0,
+                elapsedMs: entry.elapsedMs || 0,
+                perEntitas: entry.perEntitas || {},
+                idUser: H.idUser(),
+                waktu: H.now()
+            });
+
+            return _saveLog(log);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorAmbilLog = function(opts) {
+        opts = opts || {};
+        try {
+            var log = _loadLog();
+            var items = log.items;
+
+            if (opts.tipe) {
+                items = items.filter(function(x) { return x.tipe === opts.tipe; });
+            }
+            if (opts.trigger) {
+                items = items.filter(function(x) { return x.trigger === opts.trigger; });
+            }
+            if (opts.dariTanggal) {
+                var t0 = new Date(opts.dariTanggal).getTime();
+                items = items.filter(function(x) {
+                    return new Date(x.waktu).getTime() >= t0;
+                });
+            }
+
+            var limit = parseInt(opts.limit, 10) || 50;
+            return items.slice(0, limit);
+        } catch (e) {
+            console.error('autorAmbilLog error:', e);
+            return [];
+        }
+    };
+
+    window.autorBersihkanLog = function() {
+        try {
+            return _saveLog({ items: [] });
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorHapusLog = function(id) {
+        try {
+            var log = _loadLog();
+            log.items = log.items.filter(function(x) { return x.id !== id; });
+            return _saveLog(log);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — LAST RUN & STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.autorAmbilLastRun = function() {
+        try {
+            return H.loadJSON(K.KEY_LAST_RUN, null);
+        } catch (e) { return null; }
+    };
+
+    window.autorSimpanLastRun = function(data) {
+        try {
+            if (!data || typeof data !== 'object') return { sukses: false };
+            var paket = Object.assign({}, data, {
+                waktu: H.now(),
+                idUser: H.idUser()
+            });
+            return H.saveJSON(K.KEY_LAST_RUN, paket);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorAmbilStatistik = function() {
+        try {
+            var stat = H.loadJSON(K.KEY_STATISTIK, {
+                totalRun: 0,
+                totalBerhasil: 0,
+                totalGagal: 0,
+                runTerakhir: null,
+                perEntitas: {}
+            });
+            return stat;
+        } catch (e) {
+            return { totalRun: 0, totalBerhasil: 0, totalGagal: 0, perEntitas: {} };
+        }
+    };
+
+    function _updateStatistik(hasil) {
+        try {
+            var stat = window.autorAmbilStatistik();
+            stat.totalRun = (stat.totalRun || 0) + 1;
+            stat.totalBerhasil = (stat.totalBerhasil || 0) + (hasil.totalBerhasil || 0);
+            stat.totalGagal = (stat.totalGagal || 0) + (hasil.totalGagal || 0);
+            stat.runTerakhir = H.now();
+
+            // Per entitas
+            stat.perEntitas = stat.perEntitas || {};
+            Object.keys(hasil.perEntitas || {}).forEach(function(kat) {
+                if (!stat.perEntitas[kat]) {
+                    stat.perEntitas[kat] = { berhasil: 0, gagal: 0 };
+                }
+                var r = hasil.perEntitas[kat];
+                stat.perEntitas[kat].berhasil += (r.berhasil || 0);
+                stat.perEntitas[kat].gagal += (r.gagal || 0);
+            });
+
+            return H.saveJSON(K.KEY_STATISTIK, stat);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — EKSEKUSI RUN (1 siklus auto-hapus)
+    // ═══════════════════════════════════════════════════════════
+    window.autorJalankanSekarang = function(opts) {
+        opts = opts || {};
+        var t0 = Date.now();
+        try {
+            var config = window.autorAmbilConfig();
+            var tipe = opts.tipe || 'auto';  // 'auto' | 'manual'
+
+            // Kalau dryRun dari config → langsung preview, tidak eksekusi
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            // Jalankan orkestrator
+            var hasil = window.autorHapusSemua({
+                dryRun: dryRun,
+                entitas: opts.entitas,
+                includeStale: opts.includeStale !== false
+            });
+
+            // Kalau bukan dry run → simpan hasil
+            if (!dryRun && hasil.sukses) {
+                // Simpan lastRun
+                window.autorSimpanLastRun({
+                    totalBerhasil: hasil.totalBerhasil,
+                    totalGagal: hasil.totalGagal,
+                    elapsedMs: hasil.elapsedMs,
+                    perEntitas: hasil.perEntitas
+                });
+
+                // Update statistik
+                _updateStatistik(hasil);
+
+                // Simpan log
+                window.autorTambahLog({
+                    tipe: tipe,
+                    dryRun: false,
+                    totalBerhasil: hasil.totalBerhasil,
+                    totalGagal: hasil.totalGagal,
+                    elapsedMs: hasil.elapsedMs,
+                    perEntitas: hasil.perEntitas
+                });
+            }
+
+            // Console log ringkas
+            if (hasil.totalBerhasil > 0 || dryRun) {
+                console.log('%c🔁 AUTOR ' + (dryRun ? '[DRY RUN]' : '') +
+                    ' | Berhasil: ' + hasil.totalBerhasil +
+                    ' | Gagal: ' + hasil.totalGagal +
+                    ' | ' + (Date.now() - t0) + 'ms',
+                    'background:' + (dryRun ? '#FFC107' : '#28A745') +
+                    ';color:' + (dryRun ? '#000' : '#fff') +
+                    ';padding:3px 8px;font-weight:bold;');
+            }
+
+            return hasil;
+        } catch (e) {
+            console.error('autorJalankanSekarang error:', e);
+            return { sukses: false, pesan: e.message, totalBerhasil: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — SCHEDULER (24 jam)
+    // ═══════════════════════════════════════════════════════════
+    window.autorJadwalMulai = function(intervalJam) {
+        try {
+            intervalJam = parseInt(intervalJam, 10) ||
+                window.autorAmbilConfig().intervalJam ||
+                K.INTERVAL_JAM;
+
+            var intervalMs = intervalJam * 60 * 60 * 1000;
+
+            // Stop dulu kalau ada
+            if (_schedulerTimer) {
+                clearInterval(_schedulerTimer);
+                _schedulerTimer = null;
+            }
+
+            // Mulai scheduler
+            _schedulerTimer = setInterval(function() {
+                try {
+                    console.log('⏰ AUTOR: scheduler berjalan (interval ' +
+                        intervalJam + ' jam)');
+                    window.autorJalankanSekarang({ tipe: 'auto' });
+                } catch (e) {
+                    console.error('AUTOR scheduler error:', e);
+                }
+            }, intervalMs);
+
+            console.log('%c✅ AUTOR scheduler dimulai',
+                'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
+            console.log('   Interval: ' + intervalJam + ' jam');
+            console.log('   Berikut: ' +
+                new Date(Date.now() + intervalMs).toLocaleString('id-ID'));
+
+            return {
+                sukses: true,
+                intervalJam: intervalJam,
+                intervalMs: intervalMs,
+                berikut: new Date(Date.now() + intervalMs).toISOString()
+            };
+        } catch (e) {
+            console.error('autorJadwalMulai error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorJadwalStop = function() {
+        try {
+            if (_schedulerTimer) {
+                clearInterval(_schedulerTimer);
+                _schedulerTimer = null;
+                console.log('%c⏹️ AUTOR scheduler dihentikan',
+                    'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
+                return { sukses: true, aktif: false };
+            }
+            return { sukses: true, aktif: false, pesan: 'Scheduler tidak aktif' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorJadwalStatus = function() {
+        try {
+            var aktif = _schedulerTimer !== null;
+            var config = window.autorAmbilConfig();
+            var last = window.autorAmbilLastRun();
+
+            return {
+                aktif: aktif,
+                intervalJam: config.intervalJam,
+                autoStart: config.autoStart,
+                dryRun: config.dryRun,
+                lastRun: last ? last.waktu : null,
+                nextRun: aktif
+                    ? new Date(Date.now() + (config.intervalJam * 60 * 60 * 1000)).toISOString()
+                    : null
+            };
+        } catch (e) {
+            return { aktif: false, error: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — AUTO-START (delay 30 detik saat load)
+    // ═══════════════════════════════════════════════════════════
+    function _autoStart() {
+        try {
+            var config = window.autorAmbilConfig();
+            if (!config.autoStart) {
+                console.log('ℹ️ AUTOR: auto-start dimatikan oleh config');
+                return;
+            }
+
+            // Delay 30 detik (biar UI stabil dulu)
+            _startupTimer = setTimeout(function() {
+                console.log('🚀 AUTOR: auto-start (delay 30s selesai)');
+
+                // Mulai scheduler
+                window.autorJadwalMulai(config.intervalJam);
+
+                // Run pertama (kalau last run > interval, langsung eksekusi)
+                var last = window.autorAmbilLastRun();
+                var intervalMs = config.intervalJam * 60 * 60 * 1000;
+                var perluRun = true;
+
+                if (last && last.waktu) {
+                    var selisih = Date.now() - new Date(last.waktu).getTime();
+                    perluRun = selisih >= intervalMs;
+                }
+
+                if (perluRun) {
+                    console.log('▶️ AUTOR: run pertama (belum pernah / sudah waktunya)');
+                    window.autorJalankanSekarang({ tipe: 'auto' });
+                } else {
+                    var sisa = intervalMs - (Date.now() - new Date(last.waktu).getTime());
+                    console.log('⏳ AUTOR: skip run, tunggu ' +
+                        Math.round(sisa / 60000) + ' menit lagi');
+                }
+            }, K.DELAY_START_MS);
+
+        } catch (e) {
+            console.warn('AUTOR auto-start error:', e.message);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — CLEAR SEMUA (reset total)
+    // ═══════════════════════════════════════════════════════════
+    window.autorResetSemua = function() {
+        try {
+            // Stop scheduler
+            window.autorJadwalStop();
+
+            // Hapus storage
+            try { localStorage.removeItem(K.KEY_LOG); } catch (e) {}
+            try { localStorage.removeItem(K.KEY_LAST_RUN); } catch (e) {}
+            try { localStorage.removeItem(K.KEY_STATISTIK); } catch (e) {}
+
+            console.log('%c🧹 AUTOR: semua data direset',
+                'background:#FF8C00;color:#fff;padding:4px 8px;font-weight:bold;');
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — TOGGLE CONFIG (ON/OFF dari UI)
+    // ═══════════════════════════════════════════════════════════
+    window.autorToggleAktif = function(aktif) {
+        try {
+            var config = window.autorAmbilConfig();
+            var baru = Object.assign({}, config, { autoStart: aktif });
+            window.autorSimpanConfig(baru);
+
+            if (aktif) {
+                window.autorJadwalMulai(config.intervalJam);
+            } else {
+                window.autorJadwalStop();
+            }
+
+            return { sukses: true, aktif: aktif };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorToggleDryRun = function(dryRun) {
+        try {
+            var config = window.autorAmbilConfig();
+            var baru = Object.assign({}, config, { dryRun: dryRun });
+            window.autorSimpanConfig(baru);
+            return { sukses: true, dryRun: dryRun };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorUbahInterval = function(jam) {
+        try {
+            var intervalJam = parseInt(jam, 10);
+            if (isNaN(intervalJam) || intervalJam < 1) {
+                return { sukses: false, pesan: 'Interval tidak valid' };
+            }
+
+            var config = window.autorAmbilConfig();
+            var baru = Object.assign({}, config, { intervalJam: intervalJam });
+            window.autorSimpanConfig(baru);
+
+            // Restart scheduler kalau aktif
+            if (_schedulerTimer) {
+                window.autorJadwalMulai(intervalJam);
+            }
+
+            return { sukses: true, intervalJam: intervalJam };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — STATISTIK LENGKAP (untuk UI)
+    // ═══════════════════════════════════════════════════════════
+    window.autorStatistikLengkap = function() {
+        try {
+            var stat = window.autorAmbilStatistik();
+            var last = window.autorAmbilLastRun();
+            var status = window.autorJadwalStatus();
+            var log = window.autorAmbilLog({ limit: 5 });
+
+            return {
+                ringkasan: {
+                    totalRun: stat.totalRun || 0,
+                    totalBerhasil: stat.totalBerhasil || 0,
+                    totalGagal: stat.totalGagal || 0,
+                    runTerakhir: stat.runTerakhir
+                },
+                scheduler: status,
+                lastRun: last,
+                perEntitas: stat.perEntitas || {},
+                logTerbaru: log
+            };
+        } catch (e) {
+            console.error('autorStatistikLengkap error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugAutor4 = function() {
+        var status = window.autorJadwalStatus();
+        var stat = window.autorAmbilStatistik();
+        var info = {
+            blok: 'AUTORPHAN (4)',
+            guard: window._blokAutorphan4Done,
+            scheduler: status,
+            statistik: {
+                totalRun: stat.totalRun || 0,
+                totalBerhasil: stat.totalBerhasil || 0,
+                totalGagal: stat.totalGagal || 0
+            },
+            logTotal: window.autorAmbilLog({ limit: 9999 }).length,
+            fungsi: {
+                autorTambahLog:      typeof window.autorTambahLog,
+                autorAmbilLog:       typeof window.autorAmbilLog,
+                autorBersihkanLog:   typeof window.autorBersihkanLog,
+                autorHapusLog:       typeof window.autorHapusLog,
+                autorAmbilLastRun:   typeof window.autorAmbilLastRun,
+                autorSimpanLastRun:  typeof window.autorSimpanLastRun,
+                autorAmbilStatistik: typeof window.autorAmbilStatistik,
+                autorJalankanSekarang: typeof window.autorJalankanSekarang,
+                autorJadwalMulai:    typeof window.autorJadwalMulai,
+                autorJadwalStop:     typeof window.autorJadwalStop,
+                autorJadwalStatus:   typeof window.autorJadwalStatus,
+                autorResetSemua:     typeof window.autorResetSemua,
+                autorToggleAktif:    typeof window.autorToggleAktif,
+                autorToggleDryRun:   typeof window.autorToggleDryRun,
+                autorUbahInterval:   typeof window.autorUbahInterval,
+                autorStatistikLengkap: typeof window.autorStatistikLengkap
+            }
+        };
+        console.log('🔍 debugAutor4:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — AUTO-START TRIGGER
+    // ═══════════════════════════════════════════════════════════
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _autoStart);
+    } else {
+        _autoStart();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c📦 BLOK AUTORPHAN (4) — SCHEDULER & LOG terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   ⏱️  Scheduler: auto-start delay 30s, interval 24 jam');
+    console.log('   📋 16 Fungsi:');
+    console.log('      • autorTambahLog, autorAmbilLog, autorBersihkanLog, autorHapusLog');
+    console.log('      • autorAmbilLastRun, autorSimpanLastRun, autorAmbilStatistik');
+    console.log('      • autorJalankanSekarang');
+    console.log('      • autorJadwalMulai, autorJadwalStop, autorJadwalStatus');
+    console.log('      • autorResetSemua, autorToggleAktif, autorToggleDryRun');
+    console.log('      • autorUbahInterval, autorStatistikLengkap');
+    console.log('   🔍 Debug: debugAutor4()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTORPHAN (4) — SCHEDULER & LOG ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK AUTORPHAN (5) — EVENT LISTENER + API ══════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain) ══════════════════════ -->
+<!-- ═══ Prefix: autor* · Guard: _blokAutorphan5Done ═══════════ -->
+<!-- ═══ Dependency: AUTORPHAN (1)+(2)+(3)+(4) ═════════════════ -->
+<!-- ═══ Isi: 9 event listener + 6 API publik ══════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A12, A13, A23, A31, A32 ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_AUTORPHAN_5_EVENT_API() {
+    if (window._blokAutorphan5Done) {
+        console.log('ℹ️ BLOK AUTORPHAN (5) — Event + API sudah terpasang.');
+        return;
+    }
+    if (!window._blokAutorphan4Done) {
+        console.warn('⚠️ AUTORPHAN (5) ditunda — Scheduler & Log belum ada.');
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blokAutorphan5Done = true;
+    window._blokAutorphanDone  = true; // alias: AUTORPHAN LENGKAP
+
+    var H = window.autorHelper;
+    var K = window.AUTOR_KONSTANTA;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — HELPER: DEBOUNCE PER EVENT
+    // ═══════════════════════════════════════════════════════════
+    function _debounce(namaEvent, fn) {
+        try {
+            if (!K._triggerTimers) K._triggerTimers = {};
+            if (K._triggerTimers[namaEvent]) {
+                clearTimeout(K._triggerTimers[namaEvent]);
+            }
+            K._triggerTimers[namaEvent] = setTimeout(function() {
+                try { fn(); } catch (e) {
+                    console.error('AUTOR trigger error [' + namaEvent + ']:', e);
+                }
+                delete K._triggerTimers[namaEvent];
+            }, K.TRIGGER_DEBOUNCE_MS);
+        } catch (e) {
+            console.error('AUTOR debounce error:', e);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER: HANDLER GENERIC
+    // ═══════════════════════════════════════════════════════════
+    function _buatHandler(namaEvent, entitas, mode) {
+        // mode: 'lengkap' (semua) | 'cepat' (khusus 1 entitas)
+        return function(ev) {
+            try {
+                var detail = (ev && ev.detail) || {};
+                console.log('🔔 AUTOR trigger: ' + namaEvent, detail);
+
+                _debounce(namaEvent, function() {
+                    var config = window.autorAmbilConfig();
+                    if (!config.autoStart) {
+                        console.log('⏸️ AUTOR: auto-start OFF — skip');
+                        return;
+                    }
+
+                    if (mode === 'cepat' && entitas) {
+                        // Khusus 1 entitas → lebih cepat
+                        var hasil = window.autorHapusPerEntitas(entitas, {});
+                        if (hasil && hasil.berhasil > 0) {
+                            window.autorTambahLog({
+                                tipe: 'event',
+                                trigger: namaEvent,
+                                totalBerhasil: hasil.berhasil,
+                                totalGagal: hasil.gagal || 0,
+                                elapsedMs: 0,
+                                perEntitas: (function() {
+                                    var o = {};
+                                    o[entitas] = hasil;
+                                    return o;
+                                })()
+                            });
+                            console.log('✅ AUTOR: ' + hasil.berhasil + ' item dihapus (' +
+                                namaEvent + ')');
+                        }
+                    } else {
+                        // Mode lengkap: run orkestrator
+                        var hasil2 = window.autorJalankanSekarang({
+                            tipe: 'event',
+                            trigger: namaEvent
+                        });
+                    }
+                });
+            } catch (e) {
+                console.error('AUTOR handler error [' + namaEvent + ']:', e);
+            }
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — DAFTAR EVENT LISTENER (9 event)
+    // ═══════════════════════════════════════════════════════════
+    // Format: { event, entitas, mode }
+    //   mode: 'cepat' = langsung hapus entitas terkait (cepat)
+    //         'lengkap' = run full orkestrator (lebih lama)
+    // ═══════════════════════════════════════════════════════════
+    var EVENT_LIST = [
+        { event: 'r2coin:produk-deleted',   entitas: 'produk',    mode: 'cepat' },
+        { event: 'r2coin:akun-deleted',     entitas: null,        mode: 'lengkap' },
+        { event: 'r2coin:order-deleted',    entitas: 'order',     mode: 'cepat' },
+        { event: 'r2coin:trx-deleted',      entitas: 'transaksi', mode: 'cepat' },
+        { event: 'r2coin:kasir-deleted',    entitas: 'kasir',     mode: 'cepat' },
+        { event: 'r2coin:kategori-deleted', entitas: 'kategori',  mode: 'cepat' },
+        { event: 'r2coin:wilayah-deleted',  entitas: 'wilayah',   mode: 'cepat' },
+        { event: 'r2coin:rekening-deleted', entitas: null,        mode: 'lengkap' },
+        { event: 'r2coin:media-deleted',    entitas: 'media',     mode: 'cepat' }
+    ];
+
+    // ── Simpan referensi handler (untuk cleanup) ──
+    var _registeredHandlers = [];
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — REGISTRASI LISTENER
+    // ═══════════════════════════════════════════════════════════
+    window.autorDaftarkanListener = function() {
+        try {
+            // Cleanup dulu kalau sudah ada
+            window.autorLepasListener();
+
+            EVENT_LIST.forEach(function(item) {
+                var handler = _buatHandler(item.event, item.entitas, item.mode);
+                window.addEventListener(item.event, handler);
+                _registeredHandlers.push({
+                    event: item.event,
+                    handler: handler
+                });
+            });
+
+            console.log('%c✅ AUTOR: ' + EVENT_LIST.length + ' listener terpasang',
+                'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
+            return { sukses: true, total: EVENT_LIST.length };
+        } catch (e) {
+            console.error('autorDaftarkanListener error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorLepasListener = function() {
+        try {
+            var total = _registeredHandlers.length;
+            _registeredHandlers.forEach(function(item) {
+                window.removeEventListener(item.event, item.handler);
+            });
+            _registeredHandlers = [];
+            return { sukses: true, dilepas: total };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.autorCekListener = function() {
+        return {
+            total: _registeredHandlers.length,
+            daftar: _registeredHandlers.map(function(x) {
+                return x.event;
+            })
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — API PUBLIK (6 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── API 1: Scan sekarang (deteksi saja) ──
+    window.autorApiScan = function(opts) {
+        opts = opts || {};
+        try {
+            if (opts.tipe === 'media')    return window.autorDeteksiMediaOrphan(opts);
+            if (opts.tipe === 'data')     return window.autorDeteksiDataOrphan(opts);
+            if (opts.tipe === 'kategori') return window.autorDeteksiKategoriKosong(opts);
+            if (opts.tipe === 'wilayah')  return window.autorDeteksiWilayahKosong(opts);
+            if (opts.tipe === 'kasir')    return window.autorDeteksiKasirOrphan(opts);
+            if (opts.tipe === 'chat')     return window.autorDeteksiChatStale(opts);
+            if (opts.tipe === 'cart')     return window.autorDeteksiCartOrphan(opts);
+            if (opts.tipe === 'order-stale') return window.autorDeteksiOrderStale(opts);
+            return window.autorDeteksiSemua(opts);
+        } catch (e) {
+            return { sukses: false, pesan: e.message, items: [] };
+        }
+    };
+
+    // ── API 2: Preview (dry run, tidak hapus) ──
+    window.autorApiPreview = function(opts) {
+        opts = opts || {};
+        try {
+            return window.autorPreviewHapus(opts);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── API 3: Jalankan sekarang (auto hapus) ──
+    window.autorApiRun = function(opts) {
+        opts = opts || {};
+        try {
+            return window.autorJalankanSekarang(Object.assign({}, opts, {
+                tipe: opts.tipe || 'manual'
+            }));
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── API 4: Hapus spesifik owner ──
+    window.autorApiHapusOwner = function(idOwner, opts) {
+        return window.autorHapusPerOwner(idOwner, opts || {});
+    };
+
+    // ── API 5: Statistik lengkap ──
+    window.autorApiStatistik = function() {
+        return window.autorStatistikLengkap();
+    };
+
+    // ── API 6: Config (get/set) ──
+    window.autorApiConfig = function(update) {
+        try {
+            if (update && typeof update === 'object') {
+                // Set config
+                var hasil = window.autorSimpanConfig(update);
+                // Auto restart scheduler kalau interval berubah
+                if (update.intervalJam) {
+                    window.autorUbahInterval(update.intervalJam);
+                }
+                // Auto toggle aktif
+                if (update.autoStart !== undefined) {
+                    window.autorToggleAktif(update.autoStart);
+                }
+                return { sukses: true, config: window.autorAmbilConfig(), update: hasil };
+            }
+            // Get config
+            return window.autorAmbilConfig();
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimAutor = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:  H.idUser(),
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role:    window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:    'autorphan',
+                    blok:    'AUTORPHAN'
+                },
+                ke: ke,
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: H.now()
+            });
+        } catch (e) {
+            console.error('[AUTOR] kirim error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terimaAutor = function() {
+        try { return window.mnInboxMenu('autorphan'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilAutor = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'status';
+            if (tipe === 'status')  return window.autorJadwalStatus();
+            if (tipe === 'stat')    return window.autorAmbilStatistik();
+            if (tipe === 'log')     return window.autorAmbilLog(filter);
+            if (tipe === 'config')  return window.autorAmbilConfig();
+            if (tipe === 'lastrun') return window.autorAmbilLastRun();
+            return null;
+        } catch (e) {
+            return null;
+        }
+    };
+
+    window.cekPintuAutor = function() {
+        return {
+            blok: 'AUTORPHAN',
+            kirim:  typeof window.kirimAutor === 'function',
+            terima: typeof window.terimaAutor === 'function',
+            ambil:  typeof window.ambilAutor === 'function'
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — EMIT EVENT AUTOR (untuk blok lain listen)
+    // ═══════════════════════════════════════════════════════════
+    function _emitAutorEvent(namaEvent, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(namaEvent, {
+                detail: detail || {}
+            }));
+        } catch (e) {}
+    }
+
+    // Patch autorJalankanSekarang untuk emit event setelah selesai
+    var _origRun = window.autorJalankanSekarang;
+    window.autorJalankanSekarang = function(opts) {
+        var hasil = _origRun(opts);
+        try {
+            _emitAutorEvent('r2coin:autor-selesai', {
+                totalBerhasil: hasil.totalBerhasil,
+                totalGagal: hasil.totalGagal,
+                dryRun: hasil.dryRun === true,
+                waktu: H.now()
+            });
+        } catch (e) {}
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — AUTO-REGISTRY 0.1
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'AUTORPHAN';
+                });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'AUTORPHAN',
+                        nama: 'Auto Orphan Cleanup',
+                        layer: 'L4',
+                        status: 'Selesai'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('autor', {
+                    nama: 'Auto Orphan Cleanup',
+                    status: 'Selesai',
+                    jumlah: 46
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'AUTORPHAN',
+                    nama: 'Auto Orphan Cleanup (5 blok)',
+                    keterangan: 'Foundation + Detector + Aksi + Scheduler + Event API'
+                });
+            }
+        } catch (e) { console.warn('AUTOR registry:', e.message); }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debugAutor5 = function() {
+        var listener = window.autorCekListener();
+        var pintu = window.cekPintuAutor();
+        var info = {
+            blok: 'AUTORPHAN (5)',
+            versi: window.AUTOR_KONSTANTA.VERSI,
+            guard: window._blokAutorphan5Done,
+            listener: listener,
+            api: {
+                autorApiScan:       typeof window.autorApiScan,
+                autorApiPreview:    typeof window.autorApiPreview,
+                autorApiRun:        typeof window.autorApiRun,
+                autorApiHapusOwner: typeof window.autorApiHapusOwner,
+                autorApiStatistik:  typeof window.autorApiStatistik,
+                autorApiConfig:     typeof window.autorApiConfig
+            },
+            pintu: pintu,
+            config: window.autorAmbilConfig(),
+            scheduler: window.autorJadwalStatus()
+        };
+        console.log('🔍 debugAutor5:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — AUTO-REGISTER LISTENER
+    // ═══════════════════════════════════════════════════════════
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', window.autorDaftarkanListener);
+    } else {
+        setTimeout(window.autorDaftarkanListener, 100);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c📦 BLOK AUTORPHAN (5) — EVENT + API terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   🔔 9 Event listener:');
+    EVENT_LIST.forEach(function(e) {
+        console.log('      • ' + e.event + ' → ' + (e.mode || 'lengkap') +
+            (e.entitas ? ' (' + e.entitas + ')' : ''));
+    });
+    console.log('   🌐 6 API publik:');
+    console.log('      • autorApiScan(opts)       — deteksi');
+    console.log('      • autorApiPreview(opts)    — preview');
+    console.log('      • autorApiRun(opts)        — jalankan');
+    console.log('      • autorApiHapusOwner(id)   — per owner');
+    console.log('      • autorApiStatistik()      — statistik');
+    console.log('      • autorApiConfig(update?)  — config');
+    console.log('   🚪 3 Pintu: kirimAutor, terimaAutor, ambilAutor');
+    console.log('   🔍 Debug: debugAutor5()');
+
+    console.log('');
+    console.log('%c✅ BLOK AUTORPHAN LENGKAP (1+2+3+4+5)',
+        'background:#28A745;color:#fff;padding:6px 12px;font-weight:bold;font-size:14px;');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK AUTORPHAN (5) — EVENT + API ════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -28705,6 +31414,281 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 <!-- ═══ Isi: 9 sub-seksi [10.38.1]-[10.38.9] + 8 modal ════════ -->
 <!-- ═══ Aturan: A3, A29, A30 ══════════════════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<template id="penyimpananMediaContainer">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- [10.38.1] HEADER & NAVIGASI -->
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-hdd me-2"></i>Penyimpanan Media
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Kelola semua file media dari seluruh platform (SA)
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-light btn-sm" onclick="mdReload()" title="Muat ulang data">
+                    <i class="fas fa-sync-alt me-1"></i>Refresh
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="mdBukaExport()">
+                    <i class="fas fa-file-export me-1"></i>Export
+                </button>
+                <button class="btn btn-outline-warning btn-sm" onclick="mdBukaBersihkan()">
+                    <i class="fas fa-broom me-1"></i>Bersihkan Orphan
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i>Kembali
+                </button>
+            </div>
+        </div>
+
+        <!-- [10.38.2] STATISTIK UTAMA (4 KARTU) -->
+        <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-file fa-2x mb-2" style="color:#FF8C00;"></i>
+                        <h4 class="fw-bold mb-0" id="mdStatTotalFile">0</h4>
+                        <small class="text-muted">Total File</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-database fa-2x mb-2 text-primary"></i>
+                        <h4 class="fw-bold mb-0" id="mdStatTotalSize">0 B</h4>
+                        <small class="text-muted">Total Size</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-users fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="mdStatTotalOwner">0</h4>
+                        <small class="text-muted">Total Owner</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-tachometer-alt fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="mdStatQuota">0%</h4>
+                        <small class="text-muted">Kuota Terpakai</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [10.38.3] BREAKDOWN KATEGORI -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <strong class="small">
+                    <i class="fas fa-folder-tree me-1"></i>Breakdown per Kategori
+                    <small class="text-muted ms-2">Klik untuk filter</small>
+                </strong>
+                <div class="d-flex gap-2 align-items-center">
+                    <button class="btn btn-sm btn-link text-decoration-none p-0"
+                            onclick="mdToggleBreakdown()" title="Sembunyikan/tampilkan">
+                        <i class="fas fa-chevron-up" id="mdBreakdownToggleIcon"></i>
+                    </button>
+                    <span class="badge bg-secondary" id="mdKatTotal">0 kategori</span>
+                </div>
+            </div>
+            <div class="card-body py-2" id="mdBreakdownWrap">
+                <div id="mdKatBreakdown" class="row g-2"></div>
+            </div>
+        </div>
+
+        <!-- [10.38.4] TOOLBAR FILTER & SORT -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body py-2">
+                <div class="row g-2 align-items-center">
+                    <div class="col-md-4 col-12">
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text"><i class="fas fa-search"></i></span>
+                            <input type="text" id="mdCari" class="form-control"
+                                   placeholder="Cari nama file, ID, owner..."
+                                   oninput="mdApplyFilterDebounced()">
+                            <button class="btn btn-outline-secondary" type="button"
+                                    onclick="document.getElementById('mdCari').value='';mdApplyFilter();">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <select id="mdFilterKategori" class="form-select form-select-sm"
+                                onchange="mdApplyFilter()">
+                            <option value="">Semua Kategori</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <select id="mdFilterOwner" class="form-select form-select-sm"
+                                onchange="mdApplyFilter()">
+                            <option value="">Semua Owner</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <select id="mdSortBy" class="form-select form-select-sm"
+                                onchange="mdApplyFilter()">
+                            <option value="dibuatAt-desc">📅 Terbaru</option>
+                            <option value="dibuatAt-asc">📅 Terlama</option>
+                            <option value="nama-asc">🔤 Nama A-Z</option>
+                            <option value="nama-desc">🔤 Nama Z-A</option>
+                            <option value="size-desc">💾 Size Terbesar</option>
+                            <option value="size-asc">💾 Size Terkecil</option>
+                            <option value="kategori-asc">📁 Kategori A-Z</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 col-6">
+                        <select id="mdFilterMime" class="form-select form-select-sm"
+                                onchange="mdApplyFilter()">
+                            <option value="">Semua Tipe</option>
+                            <option value="image">🖼️ Gambar</option>
+                            <option value="video">🎬 Video</option>
+                            <option value="pdf">📄 PDF</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- BULK ACTION BAR -->
+                <div id="mdBulkBar" class="mt-2 p-2 rounded d-none"
+                     style="background:#FFF3E0;border:1px solid #FF8C00;">
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <i class="fas fa-check-square text-warning"></i>
+                        <strong class="small">
+                            <span id="mdBulkCount">0</span> file dipilih
+                        </strong>
+                        <div class="ms-auto d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-secondary"
+                                    onclick="mdBulkClearSelection()">
+                                <i class="fas fa-times me-1"></i>Batal
+                            </button>
+                            <button class="btn btn-sm btn-outline-info"
+                                    onclick="mdBulkDownload()">
+                                <i class="fas fa-download me-1"></i>Download
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger"
+                                    onclick="mdBulkHapus()">
+                                <i class="fas fa-trash me-1"></i>Hapus
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [10.38.5] INFO BAR + VIEW SWITCHER -->
+        <div class="mb-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <small class="text-white-50">
+                <i class="fas fa-info-circle me-1"></i>
+                <span id="mdInfo">0 file</span>
+            </small>
+            <div class="d-flex gap-2 align-items-center">
+                <div class="btn-group btn-group-sm">
+                    <input type="radio" class="btn-check" name="mdView" id="mdViewGrid"
+                           onchange="mdSetView('grid')">
+                    <label class="btn btn-outline-light" for="mdViewGrid" title="Grid View">
+                        <i class="fas fa-th"></i>
+                    </label>
+                    <input type="radio" class="btn-check" name="mdView" id="mdViewTable"
+                           checked onchange="mdSetView('table')">
+                    <label class="btn btn-outline-light" for="mdViewTable" title="Table View">
+                        <i class="fas fa-list"></i>
+                    </label>
+                </div>
+                <button class="btn btn-sm btn-outline-light" onclick="mdToggleSelectAll()"
+                        title="Pilih semua di halaman ini">
+                    <i class="fas fa-check-double me-1"></i>
+                    <span id="mdSelectAllLabel">Pilih Semua</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- [10.38.6] TABLE VIEW -->
+        <div id="mdTableWrap" class="card border-0 shadow-sm">
+            <div class="card-body p-2">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:40px;">
+                                    <input type="checkbox" class="form-check-input"
+                                           id="mdCheckAll" onchange="mdToggleSelectAll(this.checked)">
+                                </th>
+                                <th style="width:40px;">#</th>
+                                <th style="width:60px;">Preview</th>
+                                <th>Nama File</th>
+                                <th>Kategori</th>
+                                <th>Owner</th>
+                                <th class="text-end">Size</th>
+                                <th class="text-center">Storage</th>
+                                <th>Tanggal</th>
+                                <th style="width:200px;" class="text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mdTbody"></tbody>
+                        <tfoot class="table-warning fw-bold">
+                            <tr>
+                                <td colspan="6" class="text-end">
+                                    <i class="fas fa-calculator me-1"></i>TOTAL SIZE:
+                                </td>
+                                <td class="text-end" id="mdFooterTotal">0 B</td>
+                                <td colspan="3"></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- [10.38.7] GRID VIEW -->
+        <div id="mdGridWrap" class="row g-3" style="display:none;"></div>
+
+        <!-- [10.38.8] EMPTY STATE + PAGINATION -->
+        <div id="mdEmpty" class="text-center py-5" style="display:none;">
+            <i class="fas fa-hdd fa-3x text-white-50 mb-3 d-block opacity-25"></i>
+            <h5 class="text-white">Belum Ada Media</h5>
+            <p class="text-white-50 small">Media akan muncul di sini setelah user mengunggah.</p>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mt-3 flex-wrap gap-2">
+            <small class="text-white-50" id="mdPagInfo"></small>
+            <ul class="pagination pagination-sm mb-0" id="mdPag"></ul>
+        </div>
+
+        <!-- [10.38.9] QUICK STATS FOOTER -->
+        <div class="card border-0 shadow-sm mt-3">
+            <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 small">
+                    <div class="d-flex gap-3 flex-wrap">
+                        <span class="text-muted">
+                            <i class="fas fa-hashtag me-1"></i>
+                            Total: <strong id="mdQuickTotal">0</strong>
+                        </span>
+                        <span class="text-muted">
+                            <i class="fas fa-eye me-1"></i>
+                            Ditampilkan: <strong id="mdQuickShown">0</strong>
+                        </span>
+                        <span class="text-muted">
+                            <i class="fas fa-database me-1"></i>
+                            Size Halaman: <strong id="mdQuickSize">0 B</strong>
+                        </span>
+                    </div>
+                    <div class="text-muted">
+                        <i class="fas fa-clock me-1"></i>
+                        Update: <span id="mdQuickLastUpdate">-</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</template>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- MODAL 1 — PREVIEW MEDIA                                        -->
@@ -28768,7 +31752,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- MODAL 3 — BERSIHKAN ORPHAN (5 Tingkat)                         -->
+<!-- MODAL 3 — BERSIHKAN ORPHAN                                     -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal fade" id="mdModalBersihkan" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
@@ -28793,7 +31777,6 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
                     <p class="small text-muted mb-0">Menganalisis...</p>
                 </div>
                 <div id="mdBersihkanStat" style="display:none;">
-                    <!-- Tingkat 0: PROTECTED -->
                     <div class="card border-0 shadow-sm mb-2" style="border-left:4px solid #28A745 !important;">
                         <div class="card-body py-2">
                             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -28809,7 +31792,6 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
                             </div>
                         </div>
                     </div>
-                    <!-- Tingkat 1: SEJATI -->
                     <div class="card border-0 shadow-sm mb-2" style="border-left:4px solid #DC3545 !important;">
                         <div class="card-body py-2">
                             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -28826,7 +31808,6 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
                             </div>
                         </div>
                     </div>
-                    <!-- Tingkat 2: SEMU -->
                     <div class="card border-0 shadow-sm mb-2" style="border-left:4px solid #FFC107 !important;">
                         <div class="card-body py-2">
                             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -28843,7 +31824,6 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
                             </div>
                         </div>
                     </div>
-                    <!-- Tingkat 3: KANDIDAT -->
                     <div class="card border-0 shadow-sm mb-2" style="border-left:4px solid #17A2B8 !important;">
                         <div class="card-body py-2">
                             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -28860,7 +31840,6 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
                             </div>
                         </div>
                     </div>
-                    <!-- Tingkat 4: VALID -->
                     <div class="card border-0 shadow-sm mb-3" style="border-left:4px solid #6C757D !important;">
                         <div class="card-body py-2">
                             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -28876,7 +31855,6 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
                             </div>
                         </div>
                     </div>
-                    <!-- Preview -->
                     <div class="card border-0 shadow-sm mb-2">
                         <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center">
                             <strong class="small"><i class="fas fa-eye me-1"></i>Preview yang Akan Dihapus</strong>
@@ -28947,7 +31925,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- MODAL 5 — RIWAYAT BERSIHKAN                                    -->
+<!-- MODAL 5 — RIWAYAT                                              -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal fade" id="omModalRiwayat" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
@@ -28970,7 +31948,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- MODAL 6 — SARAN PERBAIKAN                                      -->
+<!-- MODAL 6 — SARAN                                                -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal fade" id="omModalSaran" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
@@ -28990,7 +31968,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- MODAL 7 — EXPORT MEDIA                                         -->
+<!-- MODAL 7 — EXPORT                                               -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal fade" id="mdModalExport" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
@@ -29037,7 +32015,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- MODAL 8 — REFERENSI MEDIA                                      -->
+<!-- MODAL 8 — REFERENSI                                            -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="modal fade" id="mdModalReferensi" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
@@ -30409,6 +33387,1280 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 })();
 </script>
 <!-- ═══ AKHIR BLOK R 10.38.e v3 ═══════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.82.a v3 — ORPHAN EXTENDED (HTML) ═════════════ -->
+<!-- ═══ Layer: L5 · Dependency: TIDAK ADA (murni HTML) ════════ -->
+<!-- ═══ Isi: 5 sub-seksi [10.82.1]-[10.82.5] + 1 modal ════════ -->
+<!-- ═══ Aturan: A3, A29, A30 ══════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<template id="orphanExtendedContainer">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- [10.82.1] HEADER & NAVIGASI -->
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-broom me-2"></i>Orphan Extended
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-robot me-1"></i>
+                    Auto-Hapus Orphan + Monitoring (OM + OM2 + AUTORPHAN)
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-light btn-sm" onclick="opxReload()">
+                    <i class="fas fa-sync-alt me-1"></i>Refresh
+                </button>
+                <button class="btn btn-outline-info btn-sm" onclick="opxScanSekarang()">
+                    <i class="fas fa-search me-1"></i>Scan Manual
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-arrow-left me-1"></i>Kembali
+                </button>
+            </div>
+        </div>
+
+        <!-- [10.82.2] STATISTIK UTAMA (4 KARTU) -->
+        <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-exclamation-triangle fa-2x mb-2 text-danger"></i>
+                        <h4 class="fw-bold mb-0" id="opxStatTotalOrphan">0</h4>
+                        <small class="text-muted">Total Orphan</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-database fa-2x mb-2 text-warning"></i>
+                        <h4 class="fw-bold mb-0" id="opxStatTotalSize">0 B</h4>
+                        <small class="text-muted">Potensi Hemat</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-check-circle fa-2x mb-2 text-success"></i>
+                        <h4 class="fw-bold mb-0" id="opxStatTotalBerhasil">0</h4>
+                        <small class="text-muted">Total Dibersihkan</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body py-3 text-center">
+                        <i class="fas fa-clock fa-2x mb-2 text-info"></i>
+                        <h4 class="fw-bold mb-0" id="opxStatLastRun">-</h4>
+                        <small class="text-muted">Run Terakhir</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [10.82.3] 🆕 PANEL AUTORPHAN (Kontrol Auto-Hapus) -->
+        <div class="card border-0 shadow-sm mb-3"
+             style="border-left:4px solid #6F42C1 !important;">
+            <div class="card-header text-white d-flex justify-content-between align-items-center"
+                 style="background:#6F42C1;">
+                <div>
+                    <i class="fas fa-robot me-2"></i>
+                    <strong>Auto Orphan Cleanup</strong>
+                    <span class="badge bg-light text-dark ms-2" id="opxAutorStatusBadge">
+                        Memuat...
+                    </span>
+                </div>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="opxAutorToggle"
+                           style="cursor:pointer;"
+                           onchange="opxToggleAutor(this.checked)">
+                    <label class="form-check-label text-white small" for="opxAutorToggle">
+                        Aktifkan
+                    </label>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <!-- Kolom 1: Info Scheduler -->
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <h6 class="fw-bold small mb-2">
+                                <i class="fas fa-clock me-1 text-primary"></i>Scheduler
+                            </h6>
+                            <table class="table table-sm table-borderless mb-0 small">
+                                <tr>
+                                    <td class="text-muted">Status</td>
+                                    <td><span id="opxAutorSchedStatus">-</span></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Interval</td>
+                                    <td><span id="opxAutorSchedInterval">-</span></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Next Run</td>
+                                    <td><span id="opxAutorSchedNext">-</span></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Mode</td>
+                                    <td><span id="opxAutorSchedMode">-</span></td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Kolom 2: Info Statistik -->
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <h6 class="fw-bold small mb-2">
+                                <i class="fas fa-chart-line me-1 text-success"></i>Statistik
+                            </h6>
+                            <table class="table table-sm table-borderless mb-0 small">
+                                <tr>
+                                    <td class="text-muted">Total Run</td>
+                                    <td><strong id="opxAutorStatRun">0</strong></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Berhasil</td>
+                                    <td><strong class="text-success" id="opxAutorStatBerhasil">0</strong></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Gagal</td>
+                                    <td><strong class="text-danger" id="opxAutorStatGagal">0</strong></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Trigger Event</td>
+                                    <td><strong id="opxAutorStatTrigger">0</strong></td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Kolom 3: Aksi Cepat -->
+                    <div class="col-md-4">
+                        <div class="border rounded p-3 h-100">
+                            <h6 class="fw-bold small mb-2">
+                                <i class="fas fa-bolt me-1 text-warning"></i>Aksi Cepat
+                            </h6>
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-sm btn-outline-info"
+                                        onclick="opxAutorPreview()">
+                                    <i class="fas fa-eye me-1"></i>Preview
+                                    <small class="text-muted d-block">(dry run)</small>
+                                </button>
+                                <button class="btn btn-sm btn-outline-warning"
+                                        onclick="opxAutorRunSekarang()">
+                                    <i class="fas fa-play me-1"></i>Jalankan Sekarang
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        onclick="opxBukaModalConfig()">
+                                    <i class="fas fa-cog me-1"></i>Konfigurasi
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Konfigurasi Ringkas -->
+                <div class="mt-3 p-2 rounded" style="background:#F3E5F5;">
+                    <div class="row g-2 align-items-center">
+                        <div class="col-md-3 col-6">
+                            <label class="small fw-bold">Interval</label>
+                            <select id="opxAutorInterval" class="form-select form-select-sm"
+                                    onchange="opxUbahInterval(this.value)">
+                                <option value="6">6 jam</option>
+                                <option value="12">12 jam</option>
+                                <option value="24" selected>24 jam</option>
+                                <option value="48">48 jam</option>
+                                <option value="72">72 jam</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="small fw-bold">Mode</label>
+                            <select id="opxAutorMode" class="form-select form-select-sm"
+                                    onchange="opxToggleDryRun(this.value === 'dry')">
+                                <option value="normal">Auto Hapus</option>
+                                <option value="dry">Dry Run</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="small fw-bold">Listener Aktif</label>
+                            <div class="form-control form-control-sm bg-light">
+                                <i class="fas fa-bell text-success me-1"></i>
+                                <span id="opxAutorListenerCount">0</span> event
+                            </div>
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="small fw-bold">Uji Event</label>
+                            <button class="btn btn-sm btn-outline-primary w-100"
+                                    onclick="opxTestTrigger()">
+                                <i class="fas fa-flask me-1"></i>Simulasi
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- [10.82.4] TABEL ORPHAN (data scan) -->
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <strong class="small">
+                    <i class="fas fa-list me-1"></i>Daftar Orphan Terdeteksi
+                </strong>
+                <div class="d-flex gap-2 flex-wrap">
+                    <select id="opxFilterTipe" class="form-select form-select-sm"
+                            style="width:150px;" onchange="opxRenderTabel()">
+                        <option value="">Semua Tipe</option>
+                        <option value="media">📄 Media</option>
+                        <option value="produk">📦 Produk</option>
+                        <option value="transaksi">💰 Transaksi</option>
+                        <option value="order">🛒 Order</option>
+                        <option value="kategori">🏷️ Kategori</option>
+                        <option value="wilayah">📍 Wilayah</option>
+                        <option value="kasir">👤 Kasir</option>
+                        <option value="chat">💬 Chat</option>
+                        <option value="cart">🛍️ Cart</option>
+                    </select>
+                    <select id="opxFilterTingkat" class="form-select form-select-sm"
+                            style="width:150px;" onchange="opxRenderTabel()">
+                        <option value="">Semua Tingkat</option>
+                        <option value="sejati">🔴 Orphan Sejati</option>
+                        <option value="semu">🟡 Orphan Semu</option>
+                        <option value="kandidat">🔵 Kandidat</option>
+                    </select>
+                    <span class="badge bg-secondary" id="opxTotalItem">0</span>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height:400px;overflow-y:auto;">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th style="width:40px;">#</th>
+                                <th>Tipe</th>
+                                <th>Tingkat</th>
+                                <th>Nama</th>
+                                <th>Owner</th>
+                                <th>Alasan</th>
+                                <th style="width:120px;" class="text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="opxTbody">
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-4">
+                                    Klik <strong>Scan Manual</strong> untuk memulai deteksi.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- [10.82.5] LOG AUTORPHAN -->
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <strong class="small">
+                    <i class="fas fa-history me-1"></i>Log Auto-Hapus
+                </strong>
+                <div class="d-flex gap-2">
+                    <span class="badge bg-secondary" id="opxTotalLog">0</span>
+                    <button class="btn btn-sm btn-outline-danger"
+                            onclick="opxBersihkanLog()" title="Hapus semua log">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-2" id="opxLogBody" style="max-height:300px;overflow-y:auto;">
+                <p class="text-muted small mb-0 text-center py-3">Belum ada log.</p>
+            </div>
+        </div>
+
+    </div>
+</template>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MODAL KONFIGURASI AUTORPHAN                                    -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="opxModalConfig" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#6F42C1;">
+                <h5 class="modal-title">
+                    <i class="fas fa-cog me-2"></i>Konfigurasi Auto Orphan
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="fw-bold small">Interval Run</label>
+                    <select id="opxCfgInterval" class="form-select">
+                        <option value="6">6 jam sekali</option>
+                        <option value="12">12 jam sekali</option>
+                        <option value="24">24 jam sekali (default)</option>
+                        <option value="48">48 jam sekali</option>
+                        <option value="72">72 jam sekali</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Mode Hapus</label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio"
+                               name="opxCfgMode" id="opxCfgModeNormal" value="normal">
+                        <label class="form-check-label small" for="opxCfgModeNormal">
+                            <strong>Auto Hapus</strong> — langsung hapus
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio"
+                               name="opxCfgMode" id="opxCfgModeDry" value="dry">
+                        <label class="form-check-label small" for="opxCfgModeDry">
+                            <strong>Dry Run</strong> — hanya simulasi
+                        </label>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Maksimum Hapus per Run</label>
+                    <input type="number" id="opxCfgMax" class="form-control"
+                           min="10" max="10000" step="10">
+                </div>
+                <div class="alert alert-info small py-2 mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Perubahan akan diterapkan setelah klik Simpan.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                <button class="btn text-white" style="background:#6F42C1;"
+                        onclick="opxSimpanConfig()">
+                    <i class="fas fa-save me-1"></i>Simpan
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══ AKHIR BLOK R 10.82.a v3 ═══════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.82.b v3 — ORPHAN EXTENDED (Entry) ═══════════ -->
+<!-- ═══ Layer: L5 · Dependency: 10.82.a + OM + OM2 + AUTOR ═══ -->
+<!-- ═══ Aturan: A1-A3, A5, A11-A13, A23, A31, A32 ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_82_B_ENTRY_V3() {
+    if (window._blok1082bDoneV3) {
+        console.log('ℹ️ BLOK 10.82.b v3 sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency ──
+    var deps = [
+        { flag: '_coreSystem8Done',      nama: 'Core System (8)' },
+        { flag: '_blokGIDDone',          nama: 'GID' },
+        { flag: '_blokMNDone',           nama: 'MN' },
+        { flag: '_blokOMDone',           nama: 'OM' },
+        { flag: '_om2Done',              nama: 'OM2' },
+        { flag: '_blokAutorphanDone',    nama: 'AUTORPHAN' }
+    ];
+    var miss = deps.filter(function(d) { return !window[d.flag]; });
+    if (miss.length > 0) {
+        console.warn('⚠️ 10.82.b v3 ditunda — dependency belum ada:');
+        miss.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // ✓ Guard unik (A32)
+    window._blok1082bDoneV3 = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.b.1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.OPX_KONSTANTA = window.OPX_KONSTANTA || {
+        VERSI: '3.0',
+        BLOK: '10.82',
+        MENU: 'tampilkanOrphanExtended',
+        TPL_CACHE_KEY: '_tplOrphanExtended_v3'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.b.2] — STATE
+    // ═══════════════════════════════════════════════════════════
+    window.opxState = window.opxState || {
+        allItems: [],
+        filtered: [],
+        lastScan: null,
+        mounted: false
+    };
+    var S = window.opxState;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.b.3] — HELPER
+    // ═══════════════════════════════════════════════════════════
+    window.opxEsc = function(s) {
+        if (typeof window.mppEscHtml === 'function') return window.mppEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.opxToast = function(m, t) {
+        if (typeof window.mppToast === 'function') return window.mppToast(m, t || 'info');
+        console.log('[opx]', m);
+    };
+
+    window.opxShell = function() {
+        try {
+            if (!window._tplOrphanExtended_v3) {
+                var tpl = document.getElementById('orphanExtendedContainer');
+                if (!tpl) return '<div class="p-4">Template 10.82 tidak ditemukan.</div>';
+                window._tplOrphanExtended_v3 = tpl.innerHTML;
+            }
+            return window._tplOrphanExtended_v3;
+        } catch (e) {
+            return '<div class="p-4">Error: ' + e.message + '</div>';
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.b.4] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirim1082 = function(tipe, ke, data, idRef) {
+        try {
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:  window.gidIdUser ? window.gidIdUser() : null,
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    role:    window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:    'orphanExtended',
+                    blok:    '10.82'
+                },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: (window.csNow ? window.csNow() : new Date().toISOString())
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terima1082 = function() {
+        try { return window.mnInboxMenu('orphanExtended'); }
+        catch (e) { return []; }
+    };
+
+    window.ambil1082 = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'all';
+            if (tipe === 'all')     return window.opxState.allItems;
+            if (tipe === 'autor')   return window.autorApiStatistik();
+            if (tipe === 'config')  return window.autorApiConfig();
+            return null;
+        } catch (e) { return null; }
+    };
+
+    window.cekPintu1082 = function() {
+        return {
+            blok: '10.82',
+            kirim:  typeof window.kirim1082 === 'function',
+            terima: typeof window.terima1082 === 'function',
+            ambil:  typeof window.ambil1082 === 'function'
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.b.5] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanOrphanExtended = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            S.mounted = true;
+            konten.innerHTML = window.opxShell();
+
+            setTimeout(function() {
+                if (typeof window.opxRenderSemua === 'function') window.opxRenderSemua();
+                console.log('✅ BLOK 10.82 v3 — Orphan Extended rendered');
+            }, 100);
+
+            return true;
+        } catch (e) {
+            console.error('tampilkanOrphanExtended error:', e);
+            return false;
+        }
+    };
+
+    window.bukaOrphanExtended = window.tampilkanOrphanExtended;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.b.6] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1082bV3 = function() {
+        return {
+            blok: '10.82.b',
+            versi: window.OPX_KONSTANTA.VERSI,
+            guard: window._blok1082bDoneV3,
+            entry: typeof window.tampilkanOrphanExtended,
+            pintu: window.cekPintu1082()
+        };
+    };
+
+    console.log('%c📦 BLOK 10.82.b v3 — Entry + 3 Pintu terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.82.b v3 ═══════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.82.c v3 — ORPHAN EXTENDED (Render) ══════════ -->
+<!-- ═══ Layer: L5 · Dependency: 10.82.b ═══════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A23, A31, A32 ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_82_C_RENDER_V3() {
+    if (window._blok1082cDoneV3) {
+        console.log('ℹ️ BLOK 10.82.c v3 sudah terpasang.');
+        return;
+    }
+    if (!window._blok1082bDoneV3) {
+        console.warn('⚠️ 10.82.c v3 ditunda — 10.82.b v3 belum ada.');
+        return;
+    }
+    window._blok1082cDoneV3 = true;
+
+    var S = window.opxState;
+    var _esc = window.opxEsc;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.c.1] — RENDER SEMUA (Orchestrator)
+    // ═══════════════════════════════════════════════════════════
+    window.opxRenderSemua = function() {
+        try {
+            window.opxRenderStatistik();
+            window.opxRenderAutor();
+            window.opxRenderTabel();
+            window.opxRenderLog();
+        } catch (e) { console.error('opxRenderSemua error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.c.2] — RENDER STATISTIK UTAMA
+    // ═══════════════════════════════════════════════════════════
+    window.opxRenderStatistik = function() {
+        try {
+            var stat = window.autorAmbilStatistik();
+            var last = window.autorAmbilLastRun();
+
+            // Total orphan (dari S.allItems)
+            var totalOrphan = (S.allItems || []).filter(function(x) {
+                return x.tingkat === 'orphan-sejati' ||
+                       x.tingkat === 'orphan-semu' ||
+                       x.level === 1 || x.level === 2;
+            }).length;
+
+            window.opxSetText('opxStatTotalOrphan', totalOrphan);
+            window.opxSetText('opxStatTotalBerhasil', stat.totalBerhasil || 0);
+
+            // Potensi hemat (kalau ada data scan)
+            var size = 0;
+            (S.allItems || []).forEach(function(x) {
+                size += parseInt(x.size || 0, 10);
+            });
+            window.opxSetText('opxStatTotalSize',
+                typeof window.mdFormatSize === 'function' ? window.mdFormatSize(size) : size + ' B');
+
+            // Last run
+            window.opxSetText('opxStatLastRun', last && last.waktu
+                ? new Date(last.waktu).toLocaleString('id-ID', {
+                    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+                  })
+                : 'Belum ada');
+        } catch (e) { console.error('opxRenderStatistik error:', e); }
+    };
+
+    window.opxSetText = function(id, v) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = (v == null ? '' : String(v));
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.c.3] — RENDER PANEL AUTOR
+    // ═══════════════════════════════════════════════════════════
+    window.opxRenderAutor = function() {
+        try {
+            var status = window.autorJadwalStatus();
+            var stat = window.autorAmbilStatistik();
+            var config = window.autorAmbilConfig();
+            var listener = window.autorCekListener();
+
+            // Toggle
+            var toggle = document.getElementById('opxAutorToggle');
+            if (toggle) toggle.checked = status.aktif === true;
+
+            // Badge
+            var badge = document.getElementById('opxAutorStatusBadge');
+            if (badge) {
+                if (status.aktif) {
+                    badge.className = 'badge bg-success ms-2';
+                    badge.textContent = '● AKTIF';
+                } else {
+                    badge.className = 'badge bg-secondary ms-2';
+                    badge.textContent = '○ NONAKTIF';
+                }
+            }
+
+            // Scheduler info
+            window.opxSetText('opxAutorSchedStatus', status.aktif ? 'Berjalan' : 'Berhenti');
+            window.opxSetText('opxAutorSchedInterval', (status.intervalJam || 24) + ' jam');
+            window.opxSetText('opxAutorSchedNext', status.nextRun
+                ? new Date(status.nextRun).toLocaleString('id-ID', {
+                    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+                  })
+                : '-');
+            window.opxSetText('opxAutorSchedMode', config.dryRun ? 'Dry Run' : 'Auto Hapus');
+
+            // Statistik
+            window.opxSetText('opxAutorStatRun', stat.totalRun || 0);
+            window.opxSetText('opxAutorStatBerhasil', stat.totalBerhasil || 0);
+            window.opxSetText('opxAutorStatGagal', stat.totalGagal || 0);
+
+            // Hitung trigger count dari log
+            var log = window.autorAmbilLog({ limit: 9999 });
+            var triggerCount = log.filter(function(x) {
+                return x.tipe === 'event';
+            }).length;
+            window.opxSetText('opxAutorStatTrigger', triggerCount);
+
+            // Listener count
+            window.opxSetText('opxAutorListenerCount', listener.total || 0);
+
+            // Config inputs
+            var intervalSel = document.getElementById('opxAutorInterval');
+            if (intervalSel) intervalSel.value = String(config.intervalJam || 24);
+
+            var modeSel = document.getElementById('opxAutorMode');
+            if (modeSel) modeSel.value = config.dryRun ? 'dry' : 'normal';
+
+        } catch (e) { console.error('opxRenderAutor error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.c.4] — RENDER TABEL ORPHAN
+    // ═══════════════════════════════════════════════════════════
+    window.opxRenderTabel = function() {
+        var tbody = document.getElementById('opxTbody');
+        if (!tbody) return;
+
+        try {
+            var filterTipe = (document.getElementById('opxFilterTipe') || {}).value || '';
+            var filterTingkat = (document.getElementById('opxFilterTingkat') || {}).value || '';
+
+            var list = (S.allItems || []).filter(function(x) {
+                if (filterTipe && x.entitas !== filterTipe && x.tipe !== filterTipe) return false;
+                if (filterTingkat) {
+                    if (x.tingkat === 'orphan-sejati' && filterTingkat !== 'sejati') return false;
+                    if (x.tingkat === 'orphan-semu' && filterTingkat !== 'semu') return false;
+                    if (x.tingkat === 'kandidat' && filterTingkat !== 'kandidat') return false;
+                }
+                return true;
+            });
+
+            window.opxSetText('opxTotalItem', list.length);
+
+            if (list.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">' +
+                    'Tidak ada data. Klik <strong>Scan Manual</strong> untuk memulai.</td></tr>';
+                return;
+            }
+
+            var h = '';
+            list.slice(0, 200).forEach(function(x, i) {
+                var tipe = x.entitas || x.tipe || '-';
+                var tingkat = x.tingkat || 'unknown';
+                var tingkatCls = 'bg-secondary';
+                var tingkatLabel = tingkat;
+                if (tingkat === 'orphan-sejati') { tingkatCls = 'bg-danger'; tingkatLabel = '🔴 Sejati'; }
+                else if (tingkat === 'orphan-semu') { tingkatCls = 'bg-warning text-dark'; tingkatLabel = '🟡 Semu'; }
+                else if (tingkat === 'kandidat') { tingkatCls = 'bg-info'; tingkatLabel = '🔵 Kandidat'; }
+
+                h += '<tr>' +
+                    '<td class="text-muted small">' + (i + 1) + '</td>' +
+                    '<td><span class="badge bg-light text-dark">' + _esc(tipe) + '</span></td>' +
+                    '<td><span class="badge ' + tingkatCls + '">' + _esc(tingkatLabel) + '</span></td>' +
+                    '<td><strong>' + _esc(x.nama || '-') + '</strong></td>' +
+                    '<td><small>' + _esc(x.idOwner || '-') + '</small></td>' +
+                    '<td><small class="text-muted">' + _esc(x.alasan || '-') + '</small></td>' +
+                    '<td class="text-center">' +
+                        '<button class="btn btn-sm btn-outline-danger" ' +
+                                'onclick="opxHapusItem(\'' + _esc(String(x.id)) + '\',\'' + _esc(tipe) + '\')">' +
+                            '<i class="fas fa-trash"></i></button>' +
+                    '</td></tr>';
+            });
+            tbody.innerHTML = h;
+        } catch (e) { console.error('opxRenderTabel error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.c.5] — RENDER LOG
+    // ═══════════════════════════════════════════════════════════
+    window.opxRenderLog = function() {
+        var body = document.getElementById('opxLogBody');
+        if (!body) return;
+
+        try {
+            var log = window.autorAmbilLog({ limit: 20 });
+            window.opxSetText('opxTotalLog', log.length);
+
+            if (log.length === 0) {
+                body.innerHTML = '<p class="text-muted small mb-0 text-center py-3">Belum ada log.</p>';
+                return;
+            }
+
+            var h = '<div class="list-group list-group-flush">';
+            log.forEach(function(l) {
+                var tgl = '-';
+                try {
+                    tgl = new Date(l.waktu).toLocaleString('id-ID', {
+                        day: '2-digit', month: 'short',
+                        hour: '2-digit', minute: '2-digit'
+                    });
+                } catch (e) {}
+
+                var tipeCls = 'bg-secondary';
+                if (l.tipe === 'auto') tipeCls = 'bg-primary';
+                else if (l.tipe === 'manual') tipeCls = 'bg-info';
+                else if (l.tipe === 'event') tipeCls = 'bg-warning text-dark';
+                else if (l.tipe === 'preview') tipeCls = 'bg-light text-dark';
+
+                h += '<div class="list-group-item px-2 py-2">' +
+                    '<div class="d-flex justify-content-between align-items-center flex-wrap gap-1">' +
+                        '<div>' +
+                            '<span class="badge ' + tipeCls + ' me-1">' + _esc(l.tipe) + '</span>' +
+                            (l.trigger ? '<code class="small me-2">' + _esc(l.trigger) + '</code>' : '') +
+                            '<strong class="text-success">' + (l.totalBerhasil || 0) + ' berhasil</strong>' +
+                            (l.totalGagal > 0 ? ' <span class="text-danger">' + l.totalGagal + ' gagal</span>' : '') +
+                            (l.dryRun ? ' <span class="badge bg-light text-dark">DRY RUN</span>' : '') +
+                        '</div>' +
+                        '<small class="text-muted">' + _esc(tgl) + '</small>' +
+                    '</div>' +
+                '</div>';
+            });
+            h += '</div>';
+            body.innerHTML = h;
+        } catch (e) { console.error('opxRenderLog error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.c.6] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1082cV3 = function() {
+        return {
+            blok: '10.82.c',
+            guard: window._blok1082cDoneV3,
+            render: {
+                semua:      typeof window.opxRenderSemua,
+                statistik:  typeof window.opxRenderStatistik,
+                autor:      typeof window.opxRenderAutor,
+                tabel:      typeof window.opxRenderTabel,
+                log:        typeof window.opxRenderLog
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.82.c v3 — Render terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.82.c v3 ═══════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.82.d v3 — ORPHAN EXTENDED (Aksi) ════════════ -->
+<!-- ═══ Layer: L5 · Dependency: 10.82.c + AUTOR + OM + OM2 ════ -->
+<!-- ═══ Aturan: A1-A3, A5, A7, A11, A23, A31, A32, A34 ════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_82_D_AKSI_V3() {
+    if (window._blok1082dDoneV3) {
+        console.log('ℹ️ BLOK 10.82.d v3 sudah terpasang.');
+        return;
+    }
+    if (!window._blok1082cDoneV3) {
+        console.warn('⚠️ 10.82.d v3 ditunda — 10.82.c v3 belum ada.');
+        return;
+    }
+    window._blok1082dDoneV3 = true;
+
+    var S = window.opxState;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.1] — RELOAD & SCAN
+    // ═══════════════════════════════════════════════════════════
+    window.opxReload = function() {
+        try {
+            window.opxRenderSemua();
+            window.opxToast('Data di-refresh', 'success');
+        } catch (e) {
+            window.opxToast('Error: ' + e.message, 'danger');
+        }
+    };
+
+    window.opxScanSekarang = function() {
+        try {
+            if (typeof window.autorApiScan !== 'function') {
+                window.opxToast('AUTORPHAN tidak tersedia', 'danger');
+                return;
+            }
+
+            window.opxToast('Memindai orphan...', 'info');
+
+            setTimeout(function() {
+                var hasil = window.autorApiScan({ includeChat: true, includeCart: true });
+
+                S.allItems = hasil.items || [];
+                S.lastScan = new Date().toISOString();
+
+                window.opxRenderStatistik();
+                window.opxRenderTabel();
+
+                window.opxToast('✅ Ditemukan ' + S.allItems.length + ' orphan',
+                    S.allItems.length > 0 ? 'warning' : 'success');
+            }, 100);
+        } catch (e) {
+            console.error('opxScanSekarang error:', e);
+            window.opxToast('Error: ' + e.message, 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.2] — HAPUS ITEM SATUAN (dari tabel)
+    // ═══════════════════════════════════════════════════════════
+    window.opxHapusItem = function(id, tipe) {
+        if (!id) return;
+        if (!confirm('Hapus item ini?\n\nID: ' + id + '\nTipe: ' + (tipe || '-'))) return;
+
+        try {
+            var hasil = { sukses: false, pesan: 'Tipe tidak dikenal' };
+
+            // Media → MD hapus
+            if (tipe === 'media') {
+                if (typeof window.mdHapus === 'function') {
+                    hasil = window.mdHapus(id, { bypass: true });
+                }
+            }
+            // Data entitas → hapus manual
+            else if (tipe === 'produk' || tipe === 'transaksi' || tipe === 'order' ||
+                     tipe === 'kasir' || tipe === 'kategori' || tipe === 'wilayah' ||
+                     tipe === 'chat' || tipe === 'cart') {
+                hasil = window.autorHapusPerEntitas(tipe, {});
+            }
+
+            if (hasil && hasil.sukses !== false) {
+                window.opxToast('✅ Item dihapus', 'success');
+                window.opxScanSekarang();  // scan ulang
+            } else {
+                window.opxToast('Gagal: ' + ((hasil && hasil.pesan) || 'unknown'), 'danger');
+            }
+        } catch (e) {
+            console.error('opxHapusItem error:', e);
+            window.opxToast('Error: ' + e.message, 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.3] — TOGGLE AKTIF AUTOR
+    // ═══════════════════════════════════════════════════════════
+    window.opxToggleAutor = function(aktif) {
+        try {
+            if (typeof window.autorToggleAktif !== 'function') {
+                window.opxToast('AUTORPHAN tidak tersedia', 'danger');
+                return;
+            }
+
+            var hasil = window.autorToggleAktif(aktif);
+            if (hasil.sukses) {
+                window.opxToast(aktif ? '✅ Auto Orphan AKTIF' : '⏹️ Auto Orphan NONAKTIF',
+                    aktif ? 'success' : 'info');
+                window.opxRenderAutor();
+            }
+        } catch (e) {
+            console.error('opxToggleAutor error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.4] — PREVIEW (dry run)
+    // ═══════════════════════════════════════════════════════════
+    window.opxAutorPreview = function() {
+        try {
+            if (typeof window.autorApiPreview !== 'function') {
+                window.opxToast('AUTORPHAN tidak tersedia', 'danger');
+                return;
+            }
+
+            var hasil = window.autorApiPreview();
+            var total = hasil.totalBerhasil || 0;
+
+            if (total === 0) {
+                window.opxToast('Tidak ada orphan untuk dihapus', 'success');
+                return;
+            }
+
+            alert('📊 PREVIEW AUTO-HAPUS\n\n' +
+                'Total item yang AKAN dihapus: ' + total + '\n\n' +
+                'Klik OK untuk melihat detail di console.');
+
+            console.log('🔍 PREVIEW AUTOR:', hasil);
+            window.opxToast('Preview: ' + total + ' item (detail di console)', 'info');
+        } catch (e) {
+            console.error('opxAutorPreview error:', e);
+            window.opxToast('Error: ' + e.message, 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.5] — JALANKAN SEKARANG
+    // ═══════════════════════════════════════════════════════════
+    window.opxAutorRunSekarang = function() {
+        try {
+            if (typeof window.autorApiRun !== 'function') {
+                window.opxToast('AUTORPHAN tidak tersedia', 'danger');
+                return;
+            }
+
+            var config = window.autorAmbilConfig();
+            if (config.dryRun) {
+                if (!confirm('⚠️ Mode DRY RUN aktif — hanya simulasi.\n\nLanjutkan?')) return;
+            } else {
+                if (!confirm('⚠️ AUTO HAPUS akan dijalankan sekarang.\n\n' +
+                            'Item orphan akan DIHAPUS PERMANEN.\n\nLanjutkan?')) return;
+            }
+
+            window.opxToast('Menjalankan...', 'info');
+
+            setTimeout(function() {
+                var hasil = window.autorApiRun({ tipe: 'manual' });
+                var total = hasil.totalBerhasil || 0;
+
+                window.opxToast('✅ Selesai: ' + total + ' item diproses', 'success');
+                window.opxRenderSemua();
+            }, 100);
+        } catch (e) {
+            console.error('opxAutorRunSekarang error:', e);
+            window.opxToast('Error: ' + e.message, 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.6] — UBAH INTERVAL
+    // ═══════════════════════════════════════════════════════════
+    window.opxUbahInterval = function(jam) {
+        try {
+            if (typeof window.autorUbahInterval !== 'function') return;
+
+            var hasil = window.autorUbahInterval(parseInt(jam, 10));
+            if (hasil.sukses) {
+                window.opxToast('✅ Interval: ' + jam + ' jam', 'success');
+                window.opxRenderAutor();
+            }
+        } catch (e) {
+            console.error('opxUbahInterval error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.7] — TOGGLE DRY RUN
+    // ═══════════════════════════════════════════════════════════
+    window.opxToggleDryRun = function(dryRun) {
+        try {
+            if (typeof window.autorToggleDryRun !== 'function') return;
+
+            var hasil = window.autorToggleDryRun(dryRun);
+            if (hasil.sukses) {
+                window.opxToast(dryRun ? '🔍 Mode DRY RUN' : '⚙️ Mode AUTO HAPUS',
+                    'info');
+                window.opxRenderAutor();
+            }
+        } catch (e) {
+            console.error('opxToggleDryRun error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.8] — BUKA MODAL CONFIG
+    // ═══════════════════════════════════════════════════════════
+    window.opxBukaModalConfig = function() {
+        try {
+            var config = window.autorAmbilConfig();
+
+            var elInterval = document.getElementById('opxCfgInterval');
+            if (elInterval) elInterval.value = String(config.intervalJam || 24);
+
+            var elMax = document.getElementById('opxCfgMax');
+            if (elMax) elMax.value = config.maxPerRun || 1000;
+
+            var radioNormal = document.getElementById('opxCfgModeNormal');
+            var radioDry = document.getElementById('opxCfgModeDry');
+            if (radioNormal) radioNormal.checked = config.dryRun !== true;
+            if (radioDry) radioDry.checked = config.dryRun === true;
+
+            if (typeof bootstrap !== 'undefined') {
+                bootstrap.Modal.getOrCreateInstance(
+                    document.getElementById('opxModalConfig')
+                ).show();
+            }
+        } catch (e) { console.error('opxBukaModalConfig error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.9] — SIMPAN CONFIG
+    // ═══════════════════════════════════════════════════════════
+    window.opxSimpanConfig = function() {
+        try {
+            var interval = parseInt((document.getElementById('opxCfgInterval') || {}).value, 10) || 24;
+            var max = parseInt((document.getElementById('opxCfgMax') || {}).value, 10) || 1000;
+            var modeNormal = (document.getElementById('opxCfgModeNormal') || {}).checked === true;
+            var modeDry = (document.getElementById('opxCfgModeDry') || {}).checked === true;
+
+            var update = {
+                intervalJam: interval,
+                maxPerRun: max,
+                dryRun: modeDry === true
+            };
+
+            var hasil = window.autorApiConfig(update);
+            if (hasil.sukses) {
+                window.opxToast('✅ Konfigurasi disimpan', 'success');
+                var m = bootstrap.Modal.getInstance(document.getElementById('opxModalConfig'));
+                if (m) m.hide();
+                window.opxRenderAutor();
+            } else {
+                window.opxToast('Gagal: ' + (hasil.pesan || 'unknown'), 'danger');
+            }
+        } catch (e) {
+            console.error('opxSimpanConfig error:', e);
+            window.opxToast('Error: ' + e.message, 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.10] — BERSIHKAN LOG
+    // ═══════════════════════════════════════════════════════════
+    window.opxBersihkanLog = function() {
+        if (!confirm('Hapus semua log auto-hapus?')) return;
+        try {
+            window.autorBersihkanLog();
+            window.opxRenderLog();
+            window.opxToast('✅ Log dibersihkan', 'success');
+        } catch (e) {
+            console.error('opxBersihkanLog error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.11] — TEST TRIGGER EVENT
+    // ═══════════════════════════════════════════════════════════
+    window.opxTestTrigger = function() {
+        try {
+            var event = prompt(
+                'Pilih event untuk disimulasikan:\n\n' +
+                '1. r2coin:produk-deleted\n' +
+                '2. r2coin:order-deleted\n' +
+                '3. r2coin:media-deleted\n' +
+                '4. r2coin:kasir-deleted\n' +
+                '5. r2coin:kategori-deleted\n\n' +
+                'Ketik angka 1-5:',
+                '1'
+            );
+
+            var map = {
+                '1': 'r2coin:produk-deleted',
+                '2': 'r2coin:order-deleted',
+                '3': 'r2coin:media-deleted',
+                '4': 'r2coin:kasir-deleted',
+                '5': 'r2coin:kategori-deleted'
+            };
+
+            var namaEvent = map[event];
+            if (!namaEvent) {
+                window.opxToast('Event tidak valid', 'warning');
+                return;
+            }
+
+            window.dispatchEvent(new CustomEvent(namaEvent, {
+                detail: { test: true, waktu: new Date().toISOString() }
+            }));
+
+            window.opxToast('🧪 Event dikirim: ' + namaEvent + ' (tunggu 3s)', 'info');
+        } catch (e) {
+            console.error('opxTestTrigger error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.d.12] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1082dV3 = function() {
+        return {
+            blok: '10.82.d',
+            guard: window._blok1082dDoneV3,
+            aksi: {
+                reload:          typeof window.opxReload,
+                scan:            typeof window.opxScanSekarang,
+                hapusItem:       typeof window.opxHapusItem,
+                toggleAutor:     typeof window.opxToggleAutor,
+                autorPreview:    typeof window.opxAutorPreview,
+                autorRun:        typeof window.opxAutorRunSekarang,
+                ubahInterval:    typeof window.opxUbahInterval,
+                toggleDryRun:    typeof window.opxToggleDryRun,
+                bukaModalConfig: typeof window.opxBukaModalConfig,
+                simpanConfig:    typeof window.opxSimpanConfig,
+                bersihkanLog:    typeof window.opxBersihkanLog,
+                testTrigger:     typeof window.opxTestTrigger
+            }
+        };
+    };
+
+    console.log('%c📦 BLOK 10.82.d v3 — Aksi terpasang.',
+        'background:#6F42C1;color:#fff;padding:4px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.82.d v3 ═══════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.82.e v3 — ORPHAN EXTENDED (Handler) ═════════ -->
+<!-- ═══ Layer: L5 · Dependency: 10.82.d + 0.1 ════════════════ -->
+<!-- ═══ Aturan: A7, A9, A10, A14, A15, A23, A31, A32, A33, A34 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_82_E_HANDLER_V3() {
+    if (window._blok1082eDoneV3) {
+        console.log('ℹ️ BLOK 10.82.e v3 sudah terpasang.');
+        return;
+    }
+    if (!window._blok1082dDoneV3) {
+        console.warn('⚠️ 10.82.e v3 ditunda — 10.82.d v3 belum ada.');
+        return;
+    }
+    if (typeof window.tampilkanOrphanExtended !== 'function') {
+        console.warn('⚠️ 10.82.e v3 ditunda — tampilkanOrphanExtended() belum ada.');
+        return;
+    }
+
+    window._blok1082eDoneV3 = true;
+    window._blok1082DoneV3  = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.e.1] — MENU HANDLER (3 alias)
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+
+    window.menuHandlers['tampilkanOrphanExtended'] = function(opts) {
+        return window.tampilkanOrphanExtended(opts);
+    };
+    window.menuHandlers['orphanExtended'] = function(opts) {
+        return window.tampilkanOrphanExtended(opts);
+    };
+    window.menuHandlers['tampilkanOrphan'] = function(opts) {
+        return window.tampilkanOrphanExtended(opts);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.e.2] — WHITELIST A14
+    // ═══════════════════════════════════════════════════════════
+    try {
+        if (!window._SUDAH_ADA_UI_1) window._SUDAH_ADA_UI_1 = [];
+        ['tampilkanOrphanExtended', 'orphanExtended'].forEach(function(a) {
+            if (window._SUDAH_ADA_UI_1.indexOf(a) === -1) {
+                window._SUDAH_ADA_UI_1.push(a);
+            }
+        });
+    } catch (e) {}
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.e.3] — AUTO-REGISTRY 0.1
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === '10.82';
+                });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: '10.82', nama: 'Orphan Extended (v3)',
+                        layer: 'L5', status: 'Selesai'
+                    });
+                } else if (window.cpUpdateBlok) {
+                    window.cpUpdateBlok('10.82', { status: 'Selesai' });
+                }
+            }
+            if (window.cpUpdateFungsi) {
+                window.cpUpdateFungsi('opx', {
+                    nama: 'Orphan Extended UI (L5)',
+                    status: 'Selesai', jumlah: 24
+                });
+            }
+            if (window.cpTambahRiwayat) {
+                window.cpTambahRiwayat({
+                    blok: '10.82',
+                    nama: 'Orphan Extended (Rebuild v3)',
+                    keterangan: 'Integrasi AUTORPHAN + monitoring orphan + panel kontrol'
+                });
+            }
+        } catch (e) { console.warn('10.82.e registry:', e.message); }
+    }, 500);
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.82.e.4] — DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.debug1082V3 = function() {
+        var info = {
+            blok: '10.82',
+            versi: window.OPX_KONSTANTA.VERSI,
+            guards: {
+                b: window._blok1082bDoneV3,
+                c: window._blok1082cDoneV3,
+                d: window._blok1082dDoneV3,
+                e: window._blok1082eDoneV3
+            },
+            entry: typeof window.tampilkanOrphanExtended,
+            handler: {
+                utama: typeof window.menuHandlers['tampilkanOrphanExtended'],
+                alias1: typeof window.menuHandlers['orphanExtended'],
+                alias2: typeof window.menuHandlers['tampilkanOrphan']
+            },
+            pintu: window.cekPintu1082()
+        };
+        console.log('🔍 debug1082V3:', info);
+        return info;
+    };
+
+    console.log('%c✅ BLOK R 10.82 v3 — ORPHAN EXTENDED LENGKAP (a+b+c+d+e)',
+        'background:#28A745;color:#fff;padding:6px 12px;font-weight:bold;font-size:14px;');
+    console.log('   🎯 Entry     : tampilkanOrphanExtended()');
+    console.log('   🔗 Handler   : 3 alias (tampilkanOrphanExtended, orphanExtended, tampilkanOrphan)');
+    console.log('   🚪 3 Pintu   : kirim1082, terima1082, ambil1082');
+    console.log('   📊 Fitur Baru:');
+    console.log('      • Panel kontrol AUTO ORPHAN (toggle + config)');
+    console.log('      • Scheduler info (interval, next run, mode)');
+    console.log('      • Statistik auto-cleanup');
+    console.log('      • Tabel orphan (filter tipe + tingkat)');
+    console.log('      • Log auto-hapus (riwayat 20 terbaru)');
+    console.log('      • Test trigger event');
+    console.log('   🔍 Debug     : debug1082V3()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.82.e v3 ═══════════════════════════════ -->
 
 <!-- ===== BLOK R 9.1 BOOTSTRAP ===== -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
