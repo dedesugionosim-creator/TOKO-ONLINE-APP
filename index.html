@@ -14697,25 +14697,1027 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FUNGSI GLOBAL MEDIA (MD) — BATCH 2 v2.0 ══════════ -->
-<!-- ═══ Tambahan fungsi untuk SA (Penyimpanan Media) ══════════ -->
-<!-- ═══ Revisi: support IndexedDB + async + scan orphan ═══════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL MEDIA (MD) ══════════════════════════ -->
+<!-- ═══ Dependency: Core System (CS) + Identity (GID) ═════════ -->
+<!-- ═══ Satu pintu semua media — foto, dokumen, video, gift ═══ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_FUNGSI_GLOBAL_MEDIA_BATCH2_V2() {
-    if (window._blokMDB2DoneV2) {
-        console.log('ℹ️ BLOK FUNGSI GLOBAL MEDIA (Batch 2) v2.0 sudah terpasang.');
+(function BLOK_FUNGSI_GLOBAL_MEDIA() {
+    if (window._blokMDDone) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL MEDIA sudah terpasang.');
         return;
     }
-    if (!window._blokMDDoneV2) {
-        console.warn('⚠️ BLOK MD v2.0 belum terpasang. Batch 2 ditunda.');
+    if (!window._blokGIDDone) {
+        console.warn('⚠️ BLOK GID belum terpasang. BLOK MD ditunda.');
         return;
     }
-    window._blokMDB2DoneV2 = true;
-    window._blokMDB2Done   = true; // alias
+    window._blokMDDone = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA & KONFIGURASI
+    // ═══════════════════════════════════════════════════════════
+    window.MD_KONSTANTA = window.MD_KONSTANTA || {
+        KEY_INDEX: 'r2coin_media_index',
+        KEY_META:  'r2coin_media_meta',
+        KEY_PREFIX_DATA:  'md_data_',
+        KEY_PREFIX_THUMB: 'md_thumb_',
+        MAX_TOTAL_SIZE: 100 * 1024 * 1024,    // 100 MB total per user
+        MAX_PER_FILE:   5 * 1024 * 1024,      // 5 MB per file
+        STORAGE_LOCAL_LIMIT: 500 * 1024,      // < 500 KB → localStorage
+        THUMB_SIZE: 200,
+        DEDUP: true,
+        CATAT_REFERENSI: true
+    };
+
+    // ── Kategori media dengan profil kompres masing-masing ──
+    window.MD_KATEGORI = window.MD_KATEGORI || {
+        // 10 kategori umum
+        produk:      { prefix: 'md_produk_',   maxW: 800,  maxH: 800,  q: 85, fmt: 'webp' },
+        etalase:     { prefix: 'md_etalase_',  maxW: 1200, maxH: 400,  q: 85, fmt: 'webp' },
+        verifikasi:  { prefix: 'md_verif_',    maxW: 1600, maxH: 1600, q: 90, fmt: 'jpg'  },
+        profil:      { prefix: 'md_profil_',   maxW: 400,  maxH: 400,  q: 90, fmt: 'webp' },
+        chat:        { prefix: 'md_chat_',     maxW: 600,  maxH: 600,  q: 80, fmt: 'webp' },
+        banner:      { prefix: 'md_banner_',   maxW: 1920, maxH: 500,  q: 85, fmt: 'webp' },
+        dokumentasi: { prefix: 'md_dok_',      maxW: 0,    maxH: 0,    q: 100, fmt: 'asli' },
+        struk:       { prefix: 'md_struk_',    maxW: 1200, maxH: 1600, q: 90, fmt: 'jpg'  },
+        laporan:     { prefix: 'md_laporan_',  maxW: 0,    maxH: 0,    q: 100, fmt: 'asli' },
+        umum:        { prefix: 'md_umum_',     maxW: 1200, maxH: 1200, q: 85, fmt: 'webp' },
+        // 4 kategori Hello Friends
+        post_hf:     { prefix: 'md_hf_post_',  maxW: 1080, maxH: 1920, q: 80, fmt: 'webp' },
+        live_hf:     { prefix: 'md_hf_live_',  maxW: 1280, maxH: 720,  q: 85, fmt: 'webp' },
+        gift_hf:     { prefix: 'md_hf_gift_',  maxW: 200,  maxH: 200,  q: 90, fmt: 'webp' },
+        avatar_hf:   { prefix: 'md_hf_av_',    maxW: 400,  maxH: 400,  q: 90, fmt: 'webp' }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — UTILITAS DASAR
+    // ═══════════════════════════════════════════════════════════
+    function _esc(s) { return window.mppEscHtml(s); }
+
+    function _fmtSize(bytes) {
+        try {
+            bytes = parseInt(bytes, 10) || 0;
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+        } catch (e) { return '0 B'; }
+    }
+
+    function _randStr(len) {
+        var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        var s = '';
+        for (var i = 0; i < len; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
+        return s;
+    }
+
+    function _hashB64(b64) {
+        try {
+            if (!b64) return '';
+            var s = String(b64);
+            var h = 5381;
+            var step = Math.max(1, Math.floor(s.length / 5000));
+            for (var i = 0; i < s.length; i += step) {
+                h = ((h << 5) + h) + s.charCodeAt(i);
+                h = h & h;
+            }
+            return Math.abs(h).toString(36);
+        } catch (e) { return ''; }
+    }
+
+    window.mdFormatSize = _fmtSize;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — INDEX & STORAGE HELPERS
+    // ═══════════════════════════════════════════════════════════
+    function _loadIndex() {
+        try {
+            var data = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
+            if (!data || typeof data !== 'object') {
+                return { items: {}, meta: {} };
+            }
+            if (!data.items || typeof data.items !== 'object') data.items = {};
+            if (!data.meta) data.meta = {};
+            return data;
+        } catch (e) { return { items: {}, meta: {} }; }
+    }
+
+    function _saveIndex(data) {
+        try {
+            if (!data || typeof data !== 'object') data = { items: {}, meta: {} };
+            if (!data.items) data.items = {};
+            data.meta = data.meta || {};
+            data.meta.total = Object.keys(data.items).length;
+            data.meta.updatedAt = window.mppNow();
+
+            // Hitung total size
+            var total = 0;
+            Object.keys(data.items).forEach(function(k) {
+                total += parseInt(data.items[k].size, 10) || 0;
+            });
+            data.meta.totalSize = total;
+
+            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, data);
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — VALIDASI MEDIA
+    // ═══════════════════════════════════════════════════════════
+    window.mdCekFormat = function(file) {
+        try {
+            if (!file) return null;
+            if (typeof file === 'string') {
+                var s = file;
+                if (s.indexOf('data:image/') === 0) return 'image';
+                if (s.indexOf('data:video/') === 0) return 'video';
+                if (s.indexOf('data:application/pdf') === 0) return 'pdf';
+                if (s.indexOf('http') === 0) return 'url';
+                return 'unknown';
+            }
+            if (file.type) {
+                if (file.type.indexOf('image/') === 0) return 'image';
+                if (file.type.indexOf('video/') === 0) return 'video';
+                if (file.type.indexOf('application/pdf') === 0) return 'pdf';
+            }
+            return 'unknown';
+        } catch (e) { return null; }
+    };
+
+    window.mdCekSize = function(file, maxKB) {
+        try {
+            if (!file) return { valid: false, size: 0 };
+            maxKB = parseInt(maxKB, 10) || (window.MD_KONSTANTA.MAX_PER_FILE / 1024);
+            var size = file.size || 0;
+            var kb = size / 1024;
+            return { valid: kb <= maxKB, size: size, sizeKB: Math.round(kb), max: maxKB };
+        } catch (e) { return { valid: false, size: 0 }; }
+    };
+
+    window.mdCekDimensi = function(file) {
+        return new Promise(function(resolve) {
+            try {
+                var img = new Image();
+                var url = URL.createObjectURL(file);
+                img.onload = function() {
+                    URL.revokeObjectURL(url);
+                    resolve({ w: img.width, h: img.height });
+                };
+                img.onerror = function() {
+                    URL.revokeObjectURL(url);
+                    resolve({ w: 0, h: 0 });
+                };
+                img.src = url;
+            } catch (e) { resolve({ w: 0, h: 0 }); }
+        });
+    };
+
+    window.mdValidasi = function(input, opts) {
+        opts = opts || {};
+        try {
+            if (!input) return { valid: false, errors: ['Input kosong'] };
+            var errors = [];
+            var format = window.mdCekFormat(input);
+
+            if (!format || format === 'unknown') {
+                errors.push('Format tidak dikenal');
+            }
+
+            // Cek size (kalau file)
+            if (input.size) {
+                var cek = window.mdCekSize(input, opts.maxKB);
+                if (!cek.valid) {
+                    errors.push('Ukuran melebihi batas (' + cek.sizeKB + ' KB > ' + cek.max + ' KB)');
+                }
+            }
+
+            // Cek kategori
+            if (opts.kategori && !window.MD_KATEGORI[opts.kategori]) {
+                errors.push('Kategori tidak valid: ' + opts.kategori);
+            }
+
+            return { valid: errors.length === 0, errors: errors, format: format };
+        } catch (e) {
+            return { valid: false, errors: [e.message] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — PROSES MEDIA (KOMPRES & RESIZE)
+    // ═══════════════════════════════════════════════════════════
+    window.mdKompres = function(file, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve, reject) {
+            try {
+                if (!file || !file.type) {
+                    return reject(new Error('File tidak valid'));
+                }
+                if (file.type.indexOf('image/') !== 0) {
+                    // Bukan gambar — tidak dikompres
+                    var reader = new FileReader();
+                    reader.onload = function(e) {
+                        resolve({ sukses: true, base64: e.target.result, size: file.size });
+                    };
+                    reader.onerror = reject;
+                    reader.readAsDataURL(file);
+                    return;
+                }
+
+                var maxW = opts.maxW || 1200;
+                var maxH = opts.maxH || 1200;
+                var quality = (opts.quality || 85) / 100;
+                var fmt = opts.format || 'webp';
+
+                var img = new Image();
+                var url = URL.createObjectURL(file);
+                img.onload = function() {
+                    try {
+                        var w = img.width, h = img.height;
+                        if (maxW > 0 && w > maxW) { h = h * (maxW / w); w = maxW; }
+                        if (maxH > 0 && h > maxH) { w = w * (maxH / h); h = maxH; }
+
+                        var canvas = document.createElement('canvas');
+                        canvas.width = Math.round(w);
+                        canvas.height = Math.round(h);
+                        var ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+
+                        var mime = 'image/webp';
+                        if (fmt === 'jpg' || fmt === 'jpeg') mime = 'image/jpeg';
+                        else if (fmt === 'png') mime = 'image/png';
+
+                        var dataUrl = canvas.toDataURL(mime, quality);
+                        URL.revokeObjectURL(url);
+
+                        resolve({
+                            sukses: true,
+                            base64: dataUrl,
+                            dimensi: { w: Math.round(w), h: Math.round(h) },
+                            size: Math.round(dataUrl.length * 0.75)
+                        });
+                    } catch (e) {
+                        URL.revokeObjectURL(url);
+                        reject(e);
+                    }
+                };
+                img.onerror = function() {
+                    URL.revokeObjectURL(url);
+                    reject(new Error('Gagal load gambar'));
+                };
+                img.src = url;
+            } catch (e) { reject(e); }
+        });
+    };
+
+    window.mdBuatThumbnail = function(file, size) {
+        size = parseInt(size, 10) || window.MD_KONSTANTA.THUMB_SIZE;
+        return window.mdKompres(file, {
+            maxW: size, maxH: size, quality: 80, format: 'webp'
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — GENERATE ID & PILIH STORAGE
+    // ═══════════════════════════════════════════════════════════
+    window.mdBuatIdMedia = function(kategori) {
+        try {
+            var kat = (kategori || 'umum').toUpperCase().substring(0, 4);
+            var kode = window.gidKodeToko() || 'XXX';
+            kode = String(kode).replace(/[^A-Z0-9\-]/gi, '').substring(0, 20);
+            var ts = Date.now().toString(36).toUpperCase();
+            var rnd = _randStr(4);
+            return 'MD-' + kat + '-' + kode + '-' + ts + '-' + rnd;
+        } catch (e) {
+            return 'MD-' + Date.now();
+        }
+    };
+
+    window.mdPilihStorage = function(size) {
+        try {
+            var s = parseInt(size, 10) || 0;
+            if (s < window.MD_KONSTANTA.STORAGE_LOCAL_LIMIT) return 'local';
+            return 'indexeddb';
+        } catch (e) { return 'local'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — CEK DUPLIKAT
+    // ═══════════════════════════════════════════════════════════
+    window.mdCekDuplikat = function(hash, idOwner) {
+        try {
+            if (!hash) return null;
+            var index = _loadIndex();
+            var keys = Object.keys(index.items);
+            for (var i = 0; i < keys.length; i++) {
+                var item = index.items[keys[i]];
+                if (item.hash === hash) {
+                    if (!idOwner || item.idOwner === idOwner) return item;
+                }
+            }
+            return null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — SIMPAN MEDIA (CORE)
+    // ═══════════════════════════════════════════════════════════
+    // opts: { kategori, idOwner, idUser, nama, tags, referensi, kompres, thumbnail }
+    // ═══════════════════════════════════════════════════════════
+    window.mdSimpan = function(input, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve) {
+            try {
+                // ── Validasi input ──
+                var cek = window.mdValidasi(input, opts);
+                if (!cek.valid) {
+                    return resolve({ sukses: false, pesan: 'Validasi gagal', errors: cek.errors });
+                }
+
+                var kategori = opts.kategori || 'umum';
+                var kat = window.MD_KATEGORI[kategori];
+                if (!kat) {
+                    return resolve({ sukses: false, pesan: 'Kategori tidak valid: ' + kategori });
+                }
+
+                var idUser = opts.idUser || window.gidIdUser();
+                var idOwner = opts.idOwner || window.gidIdOwner();
+                var kodeRole = window.gidKodeRoleUser();
+
+                if (!idUser) return resolve({ sukses: false, pesan: 'Harus login' });
+                if (!idOwner) return resolve({ sukses: false, pesan: 'Tidak ada konteks owner' });
+
+                // ── Kalau input string (base64/url) ──
+                if (typeof input === 'string') {
+                    return _simpanDariString(input, {
+                        kategori, kat, idUser, idOwner, kodeRole,
+                        opts: opts, input: input
+                    }, resolve);
+                }
+
+                // ── Kalau input File / Blob ──
+                if (input instanceof File || input instanceof Blob) {
+                    return _simpanDariFile(input, {
+                        kategori, kat, idUser, idOwner, kodeRole,
+                        opts: opts, input: input
+                    }, resolve);
+                }
+
+                return resolve({ sukses: false, pesan: 'Tipe input tidak didukung' });
+            } catch (e) {
+                console.error('mdSimpan error:', e);
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    // ── Helper simpan dari File ──
+    function _simpanDariFile(file, ctx, resolve) {
+        try {
+            var kat = ctx.kat;
+            var kompres = ctx.opts.kompres !== false;
+
+            var proses = kompres
+                ? window.mdKompres(file, {
+                    maxW: kat.maxW, maxH: kat.maxH,
+                    quality: kat.q, format: kat.fmt
+                })
+                : new Promise(function(res) {
+                    var reader = new FileReader();
+                    reader.onload = function(e) {
+                        res({ sukses: true, base64: e.target.result, size: file.size });
+                    };
+                    reader.onerror = function() { res({ sukses: false }); };
+                    reader.readAsDataURL(file);
+                });
+
+            proses.then(function(hasil) {
+                if (!hasil.sukses) {
+                    return resolve({ sukses: false, pesan: 'Gagal proses file' });
+                }
+                _simpanBase64(hasil.base64, {
+                    kategori: ctx.kategori,
+                    kat: kat,
+                    idUser: ctx.idUser,
+                    idOwner: ctx.idOwner,
+                    kodeRole: ctx.kodeRole,
+                    nama: file.name || (ctx.kategori + '.webp'),
+                    size: hasil.size || file.size,
+                    dimensi: hasil.dimensi || null,
+                    mime: file.type || 'image/webp',
+                    opts: ctx.opts
+                }, resolve);
+            }).catch(function(e) {
+                resolve({ sukses: false, pesan: e.message });
+            });
+        } catch (e) {
+            resolve({ sukses: false, pesan: e.message });
+        }
+    }
+
+    // ── Helper simpan dari String (base64/url) ──
+    function _simpanDariString(str, ctx, resolve) {
+        try {
+            var isUrl = str.indexOf('http') === 0;
+            if (isUrl) {
+                // Download jadi base64 (async)
+                fetch(str).then(function(r) { return r.blob(); })
+                .then(function(blob) {
+                    _simpanDariFile(blob, ctx, resolve);
+                }).catch(function(e) {
+                    resolve({ sukses: false, pesan: 'Gagal download URL: ' + e.message });
+                });
+                return;
+            }
+
+            // Anggap base64
+            var size = Math.round(str.length * 0.75);
+            _simpanBase64(str, {
+                kategori: ctx.kategori,
+                kat: ctx.kat,
+                idUser: ctx.idUser,
+                idOwner: ctx.idOwner,
+                kodeRole: ctx.kodeRole,
+                nama: ctx.opts.nama || (ctx.kategori + '.webp'),
+                size: size,
+                dimensi: null,
+                mime: str.indexOf('data:image/') === 0
+                    ? str.substring(5, str.indexOf(';'))
+                    : 'application/octet-stream',
+                opts: ctx.opts
+            }, resolve);
+        } catch (e) {
+            resolve({ sukses: false, pesan: e.message });
+        }
+    }
+
+    // ── Simpan base64 ke storage + index ──
+    function _simpanBase64(base64, info, resolve) {
+        try {
+            // Hitung hash untuk dedup
+            var hash = _hashB64(base64);
+
+            // Cek duplikat
+            if (window.MD_KONSTANTA.DEDUP) {
+                var dupe = window.mdCekDuplikat(hash, info.idOwner);
+                if (dupe) {
+                    return resolve({
+                        sukses: true,
+                        duplikat: true,
+                        id: dupe.id,
+                        url: base64,
+                        metadata: dupe,
+                        pesan: 'Media sudah ada, pakai yang existing'
+                    });
+                }
+            }
+
+            // Generate ID
+            var idMedia = window.mdBuatIdMedia(info.kategori);
+
+            // Pilih storage
+            var storage = window.mdPilihStorage(info.size);
+            var storageKey = window.MD_KONSTANTA.KEY_PREFIX_DATA + idMedia;
+
+            // Simpan base64
+            var saveHasil;
+            if (storage === 'local') {
+                saveHasil = window.mppSaveJSON(storageKey, base64);
+            } else {
+                // IndexedDB — untuk sekarang fallback ke localStorage dulu
+                // TODO: implementasi IndexedDB
+                saveHasil = window.mppSaveJSON(storageKey, base64);
+                storage = 'local'; // fallback
+            }
+
+            if (!saveHasil.sukses) {
+                return resolve({
+                    sukses: false,
+                    pesan: 'Gagal simpan: ' + (saveHasil.pesan || 'storage error')
+                });
+            }
+
+            // Simpan metadata ke index
+            var now = window.mppNow();
+            var item = {
+                id: idMedia,
+                hash: hash,
+                nama: info.nama || (info.kategori + '.bin'),
+                kategori: info.kategori,
+                folder: info.kat.prefix + info.idOwner,
+                idOwner: info.idOwner,
+                idUser: info.idUser,
+                kodeRole: info.kodeRole,
+                mime: info.mime || 'application/octet-stream',
+                size: info.size || 0,
+                sizeKB: Math.round((info.size || 0) / 1024),
+                dimensi: info.dimensi || null,
+                storage: storage,
+                storageKey: storageKey,
+                thumbKey: null,
+                referensi: info.opts.referensi
+                    ? [info.opts.referensi]
+                    : [],
+                tags: Array.isArray(info.opts.tags) ? info.opts.tags : [],
+                dibuatAt: now,
+                updatedAt: now
+            };
+
+            var index = _loadIndex();
+            index.items[idMedia] = item;
+            var saveIndex = _saveIndex(index);
+
+            if (!saveIndex.sukses) {
+                // Rollback: hapus base64
+                try { window.mppRemoveJSON(storageKey); } catch (e) {}
+                return resolve({
+                    sukses: false,
+                    pesan: 'Gagal simpan index: ' + saveIndex.pesan
+                });
+            }
+
+            // Emit event
+            try {
+                window.mppEmitEvent('r2coin:media-baru', {
+                    id: idMedia, kategori: info.kategori, idOwner: info.idOwner
+                });
+            } catch (e) {}
+
+            resolve({
+                sukses: true,
+                id: idMedia,
+                url: base64,
+                metadata: item
+            });
+        } catch (e) {
+            console.error('_simpanBase64 error:', e);
+            resolve({ sukses: false, pesan: e.message });
+        }
+    }
+
+    // ── Public wrapper ──
+    window.mdSimpanDariBase64 = function(b64, opts) {
+        return window.mdSimpan(b64, opts);
+    };
+    window.mdSimpanDariUrl = function(url, opts) {
+        return window.mdSimpan(url, opts);
+    };
+    window.mdSimpanDariBlob = function(blob, opts) {
+        return window.mdSimpan(blob, opts);
+    };
+
+    // ── Batch ──
+    window.mdSimpanBatch = function(list, opts) {
+        var promises = (list || []).map(function(input) {
+            return window.mdSimpan(input, opts);
+        });
+        return Promise.all(promises);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — AMBIL MEDIA
+    // ═══════════════════════════════════════════════════════════
+    window.mdAmbil = function(idMedia) {
+        try {
+            var index = _loadIndex();
+            var item = index.items[idMedia];
+            if (!item) return null;
+
+            var data = window.mppLoadJSON(item.storageKey, null);
+            return Object.assign({}, item, { base64: data });
+        } catch (e) {
+            console.error('mdAmbil error:', e);
+            return null;
+        }
+    };
+
+    window.mdAmbilUrl = function(idMedia) {
+        try {
+            var item = window.mdAmbil(idMedia);
+            return item ? item.base64 : null;
+        } catch (e) { return null; }
+    };
+
+    window.mdAmbilThumb = function(idMedia) {
+        try {
+            var index = _loadIndex();
+            var item = index.items[idMedia];
+            if (!item || !item.thumbKey) return window.mdAmbilUrl(idMedia);
+            var thumb = window.mppLoadJSON(item.thumbKey, null);
+            return thumb || window.mdAmbilUrl(idMedia);
+        } catch (e) { return null; }
+    };
+
+    window.mdAmbilBatch = function(arrayId) {
+        try {
+            return (arrayId || []).map(function(id) {
+                return window.mdAmbil(id);
+            }).filter(function(x) { return !!x; });
+        } catch (e) { return []; }
+    };
+
+    window.mdAmbilByKategori = function(kategori) {
+        try {
+            var index = _loadIndex();
+            var hasil = [];
+            Object.keys(index.items).forEach(function(k) {
+                if (index.items[k].kategori === kategori) hasil.push(index.items[k]);
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.mdAmbilByOwner = function(idOwner) {
+        try {
+            var index = _loadIndex();
+            var hasil = [];
+            Object.keys(index.items).forEach(function(k) {
+                if (index.items[k].idOwner === idOwner) hasil.push(index.items[k]);
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.mdAmbilByFolder = function(folder) {
+        try {
+            var index = _loadIndex();
+            var hasil = [];
+            Object.keys(index.items).forEach(function(k) {
+                if (index.items[k].folder === folder) hasil.push(index.items[k]);
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — HAPUS MEDIA
+    // ═══════════════════════════════════════════════════════════
+    window.mdHapus = function(idMedia, opts) {
+        opts = opts || {};
+        try {
+            if (!idMedia) return { sukses: false, pesan: 'ID kosong' };
+
+            var index = _loadIndex();
+            var item = index.items[idMedia];
+            if (!item) return { sukses: false, pesan: 'Media tidak ditemukan' };
+
+            // Validasi kepemilikan (kecuali bypass)
+            if (opts.bypass !== true) {
+                var idOwnerSaya = window.gidIdOwner();
+                if (item.idOwner !== idOwnerSaya && !window.gidIsSuperAdmin()) {
+                    return { sukses: false, pesan: 'Bukan milik Anda' };
+                }
+            }
+
+            // Hapus data dari storage
+            try { window.mppRemoveJSON(item.storageKey); } catch (e) {}
+            if (item.thumbKey) {
+                try { window.mppRemoveJSON(item.thumbKey); } catch (e) {}
+            }
+
+            // Hapus dari index
+            delete index.items[idMedia];
+            var save = _saveIndex(index);
+
+            if (save.sukses) {
+                try {
+                    window.mppEmitEvent('r2coin:media-dihapus', {
+                        id: idMedia, kategori: item.kategori
+                    });
+                } catch (e) {}
+            }
+
+            return { sukses: true, item: item };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.mdHapusBatch = function(arrayId, opts) {
+        try {
+            var hasil = { berhasil: 0, gagal: 0 };
+            (arrayId || []).forEach(function(id) {
+                var r = window.mdHapus(id, opts);
+                if (r.sukses) hasil.berhasil++;
+                else hasil.gagal++;
+            });
+            return Object.assign({ sukses: true }, hasil);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.mdHapusByKategori = function(kategori, opts) {
+        try {
+            var list = window.mdAmbilByKategori(kategori);
+            return window.mdHapusBatch(list.map(function(x) { return x.id; }), opts);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.mdHapusByOwner = function(idOwner, opts) {
+        try {
+            var list = window.mdAmbilByOwner(idOwner);
+            return window.mdHapusBatch(list.map(function(x) { return x.id; }), opts);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.mdBersihkanOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            var index = _loadIndex();
+            var hapusList = [];
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                // Orphan = tidak ada referensi / idOwner kosong
+                if (!item.idOwner) { hapusList.push(k); return; }
+                if (window.MD_KONSTANTA.CATAT_REFERENSI &&
+                    Array.isArray(item.referensi) &&
+                    item.referensi.length === 0 &&
+                    opts.force === true) {
+                    hapusList.push(k);
+                }
+            });
+            return window.mdHapusBatch(hapusList, { bypass: true });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — STATISTIK & MONITORING
+    // ═══════════════════════════════════════════════════════════
+    window.mdStatistikSaya = function() {
+        try {
+            var idOwner = window.gidIdOwner();
+            if (!idOwner) return { total: 0, totalSize: 0 };
+            var list = window.mdAmbilByOwner(idOwner);
+            var totalSize = 0;
+            var perKategori = {};
+            list.forEach(function(x) {
+                totalSize += parseInt(x.size, 10) || 0;
+                var k = x.kategori || 'umum';
+                if (!perKategori[k]) perKategori[k] = { jumlah: 0, size: 0 };
+                perKategori[k].jumlah++;
+                perKategori[k].size += parseInt(x.size, 10) || 0;
+            });
+            return {
+                total: list.length,
+                totalSize: totalSize,
+                totalSizeTeks: _fmtSize(totalSize),
+                perKategori: perKategori
+            };
+        } catch (e) { return { total: 0, totalSize: 0 }; }
+    };
+
+    window.mdStatistikPerKategori = function() {
+        try {
+            var index = _loadIndex();
+            var hasil = {};
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                var kat = item.kategori || 'umum';
+                if (!hasil[kat]) hasil[kat] = { jumlah: 0, size: 0 };
+                hasil[kat].jumlah++;
+                hasil[kat].size += parseInt(item.size, 10) || 0;
+            });
+            // Format size
+            Object.keys(hasil).forEach(function(k) {
+                hasil[k].sizeTeks = _fmtSize(hasil[k].size);
+            });
+            return hasil;
+        } catch (e) { return {}; }
+    };
+
+    window.mdStatistikPerOwner = function() {
+        try {
+            var index = _loadIndex();
+            var hasil = {};
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                var owner = item.idOwner || 'unknown';
+                if (!hasil[owner]) hasil[owner] = { jumlah: 0, size: 0 };
+                hasil[owner].jumlah++;
+                hasil[owner].size += parseInt(item.size, 10) || 0;
+            });
+            return hasil;
+        } catch (e) { return {}; }
+    };
+
+    window.mdCekQuota = function() {
+        try {
+            var stat = window.mdStatistikSaya();
+            var max = window.MD_KONSTANTA.MAX_TOTAL_SIZE;
+            var persen = max > 0 ? Math.round((stat.totalSize / max) * 100) : 0;
+            return {
+                totalSize: stat.totalSize,
+                totalSizeTeks: _fmtSize(stat.totalSize),
+                maxSize: max,
+                maxSizeTeks: _fmtSize(max),
+                persen: persen,
+                hampirPenuh: persen >= 80
+            };
+        } catch (e) { return { persen: 0 }; }
+    };
+
+    window.mdLargestMedia = function(limit) {
+        limit = parseInt(limit, 10) || 10;
+        try {
+            var index = _loadIndex();
+            var list = Object.keys(index.items).map(function(k) {
+                return index.items[k];
+            });
+            list.sort(function(a, b) {
+                return (parseInt(b.size, 10) || 0) - (parseInt(a.size, 10) || 0);
+            });
+            return list.slice(0, limit);
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — EXPORT & BACKUP
+    // ═══════════════════════════════════════════════════════════
+    window.mdExportSaya = function() {
+        try {
+            var idOwner = window.gidIdOwner();
+            if (!idOwner) return { sukses: false, pesan: 'Tidak ada owner' };
+            var list = window.mdAmbilByOwner(idOwner);
+            var paket = {
+                _meta: {
+                    versi: '1.0',
+                    tipe: 'md-media-export',
+                    idOwner: idOwner,
+                    timestamp: window.mppNow(),
+                    total: list.length
+                },
+                data: list.map(function(x) {
+                    return Object.assign({}, x, {
+                        base64: window.mdAmbilUrl(x.id)
+                    });
+                })
+            };
+            return { sukses: true, paket: paket, json: JSON.stringify(paket) };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.mdImportData = function(json) {
+        try {
+            var parsed = typeof json === 'string' ? JSON.parse(json) : json;
+            if (!parsed || !Array.isArray(parsed.data)) {
+                return { sukses: false, pesan: 'Format tidak valid' };
+            }
+            var index = _loadIndex();
+            var berhasil = 0, gagal = 0;
+            var now = window.mppNow();
+            parsed.data.forEach(function(item) {
+                if (!item || !item.id || !item.base64) { gagal++; return; }
+                var save = window.mppSaveJSON(item.storageKey || (window.MD_KONSTANTA.KEY_PREFIX_DATA + item.id), item.base64);
+                if (save.sukses) {
+                    index.items[item.id] = Object.assign({}, item, { updatedAt: now });
+                    berhasil++;
+                } else { gagal++; }
+            });
+            _saveIndex(index);
+            return { sukses: true, berhasil: berhasil, gagal: gagal };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — AUDIT & DEBUG
+    // ═══════════════════════════════════════════════════════════
+    window.mdAuditMedia = function() {
+        try {
+            var index = _loadIndex();
+            var totalItem = Object.keys(index.items).length;
+            var tanpaData = 0, tanpaOwner = 0, tanpaReferensi = 0;
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                if (!item.idOwner) tanpaOwner++;
+                var data = window.mppLoadJSON(item.storageKey, null);
+                if (!data) tanpaData++;
+                if (Array.isArray(item.referensi) && item.referensi.length === 0) {
+                    tanpaReferensi++;
+                }
+            });
+            return {
+                totalItem: totalItem,
+                tanpaData: tanpaData,
+                tanpaOwner: tanpaOwner,
+                tanpaReferensi: tanpaReferensi
+            };
+        } catch (e) { return { totalItem: 0 }; }
+    };
+
+    window.mdScanOrphan = function() {
+        try {
+            var index = _loadIndex();
+            var hasil = [];
+            Object.keys(index.items).forEach(function(k) {
+                var item = index.items[k];
+                if (!item.idOwner) hasil.push({ id: k, alasan: 'tanpa owner' });
+                else if (!window.mppLoadJSON(item.storageKey, null)) {
+                    hasil.push({ id: k, alasan: 'data hilang' });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.debugMD = function() {
+        try {
+            var info = {
+                versi: '1.0',
+                konfigurasi: {
+                    maxTotalSize: _fmtSize(window.MD_KONSTANTA.MAX_TOTAL_SIZE),
+                    maxPerFile: _fmtSize(window.MD_KONSTANTA.MAX_PER_FILE),
+                    storageLocalLimit: _fmtSize(window.MD_KONSTANTA.STORAGE_LOCAL_LIMIT),
+                    dedup: window.MD_KONSTANTA.DEDUP,
+                    catatReferensi: window.MD_KONSTANTA.CATAT_REFERENSI
+                },
+                kategori: Object.keys(window.MD_KATEGORI),
+                totalKategori: Object.keys(window.MD_KATEGORI).length,
+                userAktif: {
+                    idOwner: window.gidIdOwner(),
+                    idUser: window.gidIdUser(),
+                    kodeRole: window.gidKodeRoleUser()
+                },
+                statistik: window.mdStatistikSaya(),
+                quota: window.mdCekQuota(),
+                audit: window.mdAuditMedia(),
+                fungsi: {
+                    simpan: typeof window.mdSimpan,
+                    ambil: typeof window.mdAmbil,
+                    ambilUrl: typeof window.mdAmbilUrl,
+                    hapus: typeof window.mdHapus,
+                    statistik: typeof window.mdStatistikSaya,
+                    audit: typeof window.mdAuditMedia
+                }
+            };
+            console.log('🔍 debugMD:', info);
+            return info;
+        } catch (e) {
+            console.error('debugMD error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG
+    // ═══════════════════════════════════════════════════════════
+    console.log('✅ BLOK FUNGSI GLOBAL MEDIA (MD) terpasang.');
+    console.log('   📦 Modul (13):');
+    console.log('   1.  Konstanta & Konfigurasi (14 kategori media)');
+    console.log('   2.  Utilitas Dasar (format size, hash, random)');
+    console.log('   3.  Index & Storage Helpers');
+    console.log('   4.  Validasi Media (format, size, dimensi)');
+    console.log('   5.  Proses Media (kompres, resize, thumbnail)');
+    console.log('   6.  Generate ID & Pilih Storage');
+    console.log('   7.  Cek Duplikat (dedup)');
+    console.log('   8.  ⭐ Simpan Media (CORE) — mdSimpan');
+    console.log('   9.  Ambil Media — mdAmbil, mdAmbilUrl, mdAmbilByOwner');
+    console.log('   10. Hapus Media — mdHapus, mdBersihkanOrphan');
+    console.log('   11. Statistik & Monitoring — mdStatistikSaya, mdCekQuota');
+    console.log('   12. Export & Backup — mdExportSaya, mdImportData');
+    console.log('   13. Audit & Debug — mdAuditMedia, debugMD()');
+    console.log('   🎯 14 kategori: produk, etalase, verifikasi, profil, chat,');
+    console.log('      banner, dokumentasi, struk, laporan, umum,');
+    console.log('      post_hf, live_hf, gift_hf, avatar_hf');
+    console.log('   🎯 Semua media tersimpan di index → muncul di menu Penyimpanan Media');
+    console.log('   🎯 Debug: debugMD()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL MEDIA (MD) ═══════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL MEDIA (MD) — BATCH 2 ════════════════ -->
+<!-- ═══ Tambahan 8 fungsi untuk SA (Penyimpanan Media) ════════ -->
+<!-- ═══ Paste SETELAH BLOK MD BATCH 1 ═════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_MEDIA_BATCH2() {
+    if (window._blokMDB2Done) {
+        console.log('ℹ️ BLOK FUNGSI GLOBAL MEDIA (Batch 2) sudah terpasang.');
+        return;
+    }
+    if (!window._blokMDDone) {
+        console.warn('⚠️ BLOK MD Batch 1 belum terpasang. Batch 2 ditunda.');
+        return;
+    }
+    window._blokMDB2Done = true;
 
     // ═══════════════════════════════════════════════════════════
     // [MODUL 14] — AMBIL SEMUA MEDIA (UNTUK SA)
+    // ═══════════════════════════════════════════════════════════
+    // opts: {
+    //   sortBy: 'dibuatAt' | 'nama' | 'size' | 'kategori',
+    //   sortDir: 'asc' | 'desc',
+    //   limit: number,
+    //   kategori: string,
+    //   idOwner: string,
+    //   kodeRole: string
+    // }
     // ═══════════════════════════════════════════════════════════
     window.mdAmbilSemuaMedia = function(opts) {
         opts = opts || {};
@@ -14728,14 +15730,17 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 var item = index.items[k];
                 if (!item) return;
 
+                // Filter kategori
                 if (opts.kategori && item.kategori !== opts.kategori) return;
+                // Filter owner
                 if (opts.idOwner && item.idOwner !== opts.idOwner) return;
+                // Filter role
                 if (opts.kodeRole && item.kodeRole !== opts.kodeRole) return;
-                if (opts.storage && item.storage !== opts.storage) return;
 
                 list.push(Object.assign({}, item));
             });
 
+            // Sort
             var sortBy = opts.sortBy || 'dibuatAt';
             var sortDir = (opts.sortDir === 'asc') ? 'asc' : 'desc';
             var factor = (sortDir === 'asc') ? 1 : -1;
@@ -14755,10 +15760,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                         va = String(a.kategori || '').toLowerCase();
                         vb = String(b.kategori || '').toLowerCase();
                         return va.localeCompare(vb, 'id') * factor;
-                    case 'storage':
-                        va = String(a.storage || 'local').toLowerCase();
-                        vb = String(b.storage || 'local').toLowerCase();
-                        return va.localeCompare(vb, 'id') * factor;
                     case 'dibuatAt':
                     default:
                         va = new Date(a.dibuatAt || 0).getTime();
@@ -14768,6 +15769,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return factor * (va - vb);
             });
 
+            // Limit
             var limit = parseInt(opts.limit, 10) || 0;
             if (limit > 0) list = list.slice(0, limit);
 
@@ -14779,7 +15781,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 15] — STATISTIK GLOBAL
+    // [MODUL 15] — STATISTIK GLOBAL (SEMUA OWNER)
     // ═══════════════════════════════════════════════════════════
     window.mdStatistikGlobal = function() {
         try {
@@ -14788,9 +15790,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return {
                     totalFile: 0, totalSize: 0, totalSizeTeks: '0 B',
                     totalOwner: 0, totalKategori: 0,
-                    totalLocal: 0, totalIdb: 0,
-                    sizeLocal: 0, sizeLocalTeks: '0 B',
-                    sizeIdb: 0, sizeIdbTeks: '0 B',
                     maxSize: window.MD_KONSTANTA.MAX_TOTAL_SIZE,
                     maxSizeTeks: window.mdFormatSize(window.MD_KONSTANTA.MAX_TOTAL_SIZE),
                     persen: 0, hampirPenuh: false
@@ -14799,8 +15798,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             var totalFile = 0;
             var totalSize = 0;
-            var totalLocal = 0, totalIdb = 0;
-            var sizeLocal = 0, sizeIdb = 0;
             var ownerSet = {};
             var kategoriSet = {};
 
@@ -14808,17 +15805,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 var item = index.items[k];
                 if (!item) return;
                 totalFile++;
-                var sz = parseInt(item.size, 10) || 0;
-                totalSize += sz;
-
-                if (item.storage === 'indexeddb') {
-                    totalIdb++;
-                    sizeIdb += sz;
-                } else {
-                    totalLocal++;
-                    sizeLocal += sz;
-                }
-
+                totalSize += parseInt(item.size, 10) || 0;
                 if (item.idOwner) ownerSet[item.idOwner] = true;
                 if (item.kategori) kategoriSet[item.kategori] = true;
             });
@@ -14832,12 +15819,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 totalSizeTeks: window.mdFormatSize(totalSize),
                 totalOwner: Object.keys(ownerSet).length,
                 totalKategori: Object.keys(kategoriSet).length,
-                totalLocal: totalLocal,
-                totalIdb: totalIdb,
-                sizeLocal: sizeLocal,
-                sizeLocalTeks: window.mdFormatSize(sizeLocal),
-                sizeIdb: sizeIdb,
-                sizeIdbTeks: window.mdFormatSize(sizeIdb),
                 maxSize: max,
                 maxSizeTeks: window.mdFormatSize(max),
                 persen: persen,
@@ -14858,17 +15839,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             return {
                 bytes: stat.totalSize,
                 teks: stat.totalSizeTeks,
-                persen: stat.persen,
-                local: {
-                    bytes: stat.sizeLocal,
-                    teks: stat.sizeLocalTeks,
-                    jumlah: stat.totalLocal
-                },
-                indexeddb: {
-                    bytes: stat.sizeIdb,
-                    teks: stat.sizeIdbTeks,
-                    jumlah: stat.totalIdb
-                }
+                persen: stat.persen
             };
         } catch (e) {
             return { bytes: 0, teks: '0 B', persen: 0 };
@@ -14888,7 +15859,9 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             if (!item) return [];
 
             return Array.isArray(item.referensi) ? item.referensi : [];
-        } catch (e) { return []; }
+        } catch (e) {
+            return [];
+        }
     };
 
     window.mdTambahReferensi = function(idMedia, referensi) {
@@ -14908,6 +15881,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             if (!Array.isArray(item.referensi)) item.referensi = [];
 
+            // Cek duplikat referensi
             var sudahAda = item.referensi.some(function(r) {
                 return r.blok === referensi.blok &&
                        r.field === referensi.field &&
@@ -14955,93 +15929,100 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 18] — EXPORT SEMUA (UNTUK SA)
+    // [MODUL 18] — EXPORT SEMUA MEDIA (UNTUK SA)
+    // ═══════════════════════════════════════════════════════════
+    // opts: {
+    //   scope: 'all' | 'kategori' | 'owner',
+    //   kategori: string,
+    //   idOwner: string,
+    //   includeBase64: true  (default true)
+    // }
     // ═══════════════════════════════════════════════════════════
     window.mdExportSemua = function(opts) {
         opts = opts || {};
-        return new Promise(function(resolve) {
-            try {
-                var scope = opts.scope || 'all';
-                var list = [];
+        try {
+            var scope = opts.scope || 'all';
+            var list = [];
 
-                if (scope === 'all') {
-                    list = window.mdAmbilSemuaMedia({});
-                } else if (scope === 'kategori' && opts.kategori) {
-                    list = window.mdAmbilSemuaMedia({ kategori: opts.kategori });
-                } else if (scope === 'owner' && opts.idOwner) {
-                    list = window.mdAmbilSemuaMedia({ idOwner: opts.idOwner });
-                } else if (scope === 'storage' && opts.storage) {
-                    list = window.mdAmbilSemuaMedia({ storage: opts.storage });
-                }
-
-                if (list.length === 0) {
-                    return resolve({ sukses: false, pesan: 'Tidak ada media' });
-                }
-
-                var includeBase64 = opts.includeBase64 !== false;
-                var promises = list.map(function(x) {
-                    if (!includeBase64) {
-                        return Promise.resolve(Object.assign({}, x));
-                    }
-                    return window.mdAmbilUrlAsync(x.id).then(function(url) {
-                        return Object.assign({}, x, { base64: url });
-                    });
-                });
-
-                Promise.all(promises).then(function(data) {
-                    var paket = {
-                        _meta: {
-                            versi: '2.0',
-                            tipe: 'md-export-sa',
-                            scope: scope,
-                            kategori: opts.kategori || null,
-                            idOwner: opts.idOwner || null,
-                            storage: opts.storage || null,
-                            timestamp: window.mppNow(),
-                            total: data.length,
-                            includeBase64: includeBase64
-                        },
-                        data: data
-                    };
-                    resolve({
-                        sukses: true,
-                        paket: paket,
-                        json: JSON.stringify(paket),
-                        total: data.length
-                    });
-                });
-            } catch (e) {
-                console.error('mdExportSemua error:', e);
-                resolve({ sukses: false, pesan: e.message });
+            if (scope === 'all') {
+                list = window.mdAmbilSemuaMedia({});
+            } else if (scope === 'kategori' && opts.kategori) {
+                list = window.mdAmbilSemuaMedia({ kategori: opts.kategori });
+            } else if (scope === 'owner' && opts.idOwner) {
+                list = window.mdAmbilSemuaMedia({ idOwner: opts.idOwner });
             }
-        });
+
+            if (list.length === 0) {
+                return { sukses: false, pesan: 'Tidak ada media' };
+            }
+
+            var includeBase64 = opts.includeBase64 !== false;
+            var data = list.map(function(x) {
+                var item = Object.assign({}, x);
+                if (includeBase64) {
+                    item.base64 = window.mdAmbilUrl(x.id);
+                }
+                return item;
+            });
+
+            var paket = {
+                _meta: {
+                    versi: '1.0',
+                    tipe: 'md-export-sa',
+                    scope: scope,
+                    kategori: opts.kategori || null,
+                    idOwner: opts.idOwner || null,
+                    timestamp: window.mppNow(),
+                    total: data.length,
+                    includeBase64: includeBase64
+                },
+                data: data
+            };
+
+            return {
+                sukses: true,
+                paket: paket,
+                json: JSON.stringify(paket),
+                total: data.length
+            };
+        } catch (e) {
+            console.error('mdExportSemua error:', e);
+            return { sukses: false, pesan: e.message };
+        }
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 19] — DOWNLOAD MEDIA (ASYNC)
+    // [MODUL 19] — DOWNLOAD MEDIA (HELPER)
     // ═══════════════════════════════════════════════════════════
     window.mdDownloadMedia = function(idMedia, namaFile) {
-        return window.mdAmbilAsync(idMedia).then(function(item) {
+        try {
+            if (!idMedia) return { sukses: false, pesan: 'ID kosong' };
+
+            var item = window.mdAmbil(idMedia);
             if (!item || !item.base64) {
                 return { sukses: false, pesan: 'Media tidak tersedia' };
             }
-            try {
-                var nama = namaFile || item.nama || ('media-' + idMedia);
-                var a = document.createElement('a');
-                a.href = item.base64;
-                a.download = nama;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                return { sukses: true, namaFile: nama };
-            } catch (e) {
-                return { sukses: false, pesan: e.message };
-            }
-        });
+
+            var nama = namaFile || item.nama || ('media-' + idMedia);
+
+            var a = document.createElement('a');
+            a.href = item.base64;
+            a.download = nama;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            return { sukses: true, namaFile: nama };
+        } catch (e) {
+            console.error('mdDownloadMedia error:', e);
+            return { sukses: false, pesan: e.message };
+        }
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 20] — FILTER MEDIA
+    // [MODUL 20] — FILTER MEDIA (REUSABLE)
+    // ═══════════════════════════════════════════════════════════
+    // opts: { cari, kategori, idOwner, kodeRole, mime }
     // ═══════════════════════════════════════════════════════════
     window.mdFilterMedia = function(list, opts) {
         opts = opts || {};
@@ -15053,7 +16034,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             var idOwner = opts.idOwner || '';
             var kodeRole = opts.kodeRole || '';
             var mime = opts.mime || '';
-            var storage = opts.storage || '';
 
             return list.filter(function(x) {
                 if (!x) return false;
@@ -15066,7 +16046,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 if (idOwner && x.idOwner !== idOwner) return false;
                 if (kodeRole && x.kodeRole !== kodeRole) return false;
                 if (mime && (x.mime || '').indexOf(mime) === -1) return false;
-                if (storage && x.storage !== storage) return false;
 
                 return true;
             });
@@ -15132,17 +16111,17 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 23] — BERSIHKAN SEMUA MEDIA OWNER (ASYNC)
+    // [MODUL 23] — BERSIHKAN SEMUA MEDIA OWNER
     // ═══════════════════════════════════════════════════════════
     window.mdHapusSemuaOwner = function(idOwner, opts) {
         opts = opts || {};
         try {
-            if (!idOwner) return Promise.resolve({ sukses: false, pesan: 'ID owner kosong' });
+            if (!idOwner) return { sukses: false, pesan: 'ID owner kosong' };
             var list = window.mdAmbilByOwner(idOwner);
             var ids = list.map(function(x) { return x.id; });
-            return window.mdHapusBatchAsync(ids, { bypass: true });
+            return window.mdHapusBatch(ids, { bypass: true });
         } catch (e) {
-            return Promise.resolve({ sukses: false, pesan: e.message });
+            return { sukses: false, pesan: e.message };
         }
     };
 
@@ -15173,6 +16152,9 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // [MODUL 26] — CARI MEDIA BY REFERENSI
     // ═══════════════════════════════════════════════════════════
+    // Cari media yang dipakai oleh blok/produk tertentu
+    // opts: { blok, field, idProduk }
+    // ═══════════════════════════════════════════════════════════
     window.mdCariByReferensi = function(opts) {
         opts = opts || {};
         try {
@@ -15190,7 +16172,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 27] — BERSIHKAN MEDIA TANPA REFERENSI
+    // [MODUL 27] — BERSIHKAN MEDIA TANPA REFERENSI (opsional)
     // ═══════════════════════════════════════════════════════════
     window.mdHapusTanpaReferensi = function(opts) {
         opts = opts || {};
@@ -15200,18 +16182,13 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return !Array.isArray(x.referensi) || x.referensi.length === 0;
             }).map(function(x) { return x.id; });
 
-            if (ids.length === 0) {
-                return Promise.resolve({ sukses: true, berhasil: 0 });
-            }
+            if (ids.length === 0) return { sukses: true, berhasil: 0 };
             if (opts.dryRun === true) {
-                return Promise.resolve({
-                    sukses: true, dryRun: true,
-                    akanDihapus: ids.length, ids: ids
-                });
+                return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
             }
-            return window.mdHapusBatchAsync(ids, { bypass: true });
+            return window.mdHapusBatch(ids, { bypass: true });
         } catch (e) {
-            return Promise.resolve({ sukses: false, pesan: e.message });
+            return { sukses: false, pesan: e.message };
         }
     };
 
@@ -15240,57 +16217,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 29] — SYNC INDEX DENGAN IDB (BARU) ⭐
-    // ═══════════════════════════════════════════════════════════
-    window.mdSyncIndexDenganIdb = function() {
-        return window.mdIdbHitungKeys().then(function(idbKeys) {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) {
-                index = { items: {}, meta: {} };
-            }
-
-            var existingKeys = {};
-            Object.keys(index.items).forEach(function(id) {
-                var item = index.items[id];
-                if (item.storageKey) existingKeys[item.storageKey] = id;
-            });
-
-            var idbKeySet = {};
-            (idbKeys || []).forEach(function(k) { idbKeySet[k] = true; });
-
-            var hilangDariIdb = [];
-            var baruDariIdb = [];
-
-            // Cek: item di index tapi tidak ada di IDB
-            Object.keys(index.items).forEach(function(id) {
-                var item = index.items[id];
-                if (item.storage === 'indexeddb') {
-                    if (!idbKeySet[item.storageKey]) {
-                        hilangDariIdb.push(id);
-                    }
-                }
-            });
-
-            // Cek: di IDB tapi tidak ada di index
-            (idbKeys || []).forEach(function(k) {
-                if (!existingKeys[k]) {
-                    baruDariIdb.push(k);
-                }
-            });
-
-            return {
-                sukses: true,
-                totalIdb: (idbKeys || []).length,
-                totalIndex: Object.keys(index.items).length,
-                hilangDariIdb: hilangDariIdb,
-                baruDariIdb: baruDariIdb,
-                perluSinkron: hilangDariIdb.length > 0 || baruDariIdb.length > 0
-            };
-        });
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 30] — DEBUG
+    // [MODUL 29] — DEBUG BATCH 2
     // ═══════════════════════════════════════════════════════════
     window.debugMDB2 = function() {
         try {
@@ -15316,11 +16243,10 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                     mdAmbilMetadata: typeof window.mdAmbilMetadata,
                     mdCariByReferensi: typeof window.mdCariByReferensi,
                     mdHapusTanpaReferensi: typeof window.mdHapusTanpaReferensi,
-                    mdSimpanReferensiMassal: typeof window.mdSimpanReferensiMassal,
-                    mdSyncIndexDenganIdb: typeof window.mdSyncIndexDenganIdb
+                    mdSimpanReferensiMassal: typeof window.mdSimpanReferensiMassal
                 }
             };
-            console.log('🔍 debugMDB2 v2.0:', info);
+            console.log('🔍 debugMDB2:', info);
             return info;
         } catch (e) {
             console.error('debugMDB2 error:', e);
@@ -15331,661 +16257,30 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // LOG
     // ═══════════════════════════════════════════════════════════
-    console.log('✅ BLOK FUNGSI GLOBAL MEDIA (Batch 2) v2.0 terpasang.');
-    console.log('   📦 16 modul — support IndexedDB + async');
-    console.log('   🔄 mdExportSemua / mdDownloadMedia / mdHapusSemuaOwner → Promise');
-    console.log('   🎯 mdSyncIndexDenganIdb() — cek konsistensi index vs IDB');
-    console.log('   🔍 Debug: debugMDB2()');
+    console.log('✅ BLOK FUNGSI GLOBAL MEDIA (Batch 2) terpasang.');
+    console.log('   📦 Modul tambahan (16):');
+    console.log('   14. mdAmbilSemuaMedia(opts)      — untuk SA, dengan sort');
+    console.log('   15. mdStatistikGlobal()          — statistik semua owner');
+    console.log('   16. mdTotalSizeGlobal()          — total size global');
+    console.log('   17. mdReferensiMedia(id)         — lihat referensi');
+    console.log('   18. mdTambahReferensi(id, ref)   — tambah referensi');
+    console.log('   19. mdHapusReferensi(id, ref)    — hapus referensi');
+    console.log('   20. mdExportSemua(opts)          — export untuk SA');
+    console.log('   21. mdDownloadMedia(id, nama)    — download helper');
+    console.log('   22. mdFilterMedia(list, opts)    — filter reusable');
+    console.log('   23. mdPaginateMedia(list, p, n)  — paginate reusable');
+    console.log('   24. mdDaftarOwner()              — daftar owner unik');
+    console.log('   25. mdHapusSemuaOwner(id)        — hapus semua owner');
+    console.log('   26. mdCekMediaAda(id)            — cek ada');
+    console.log('   27. mdAmbilMetadata(id)          — metadata tanpa base64');
+    console.log('   28. mdCariByReferensi(opts)      — cari by referensi');
+    console.log('   29. mdHapusTanpaReferensi(opts)  — hapus tanpa ref');
+    console.log('   30. mdSimpanReferensiMassal(id, arr)');
+    console.log('   🎯 Debug: debugMDB2()');
 })();
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK FUNGSI GLOBAL MEDIA (BATCH 2) v2.0 ═════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FUNGSI GLOBAL MEDIA (MD) — BATCH 2 v2.0 ══════════ -->
-<!-- ═══ Tambahan fungsi untuk SA (Penyimpanan Media) ══════════ -->
-<!-- ═══ Revisi: support IndexedDB + async + scan orphan ═══════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_FUNGSI_GLOBAL_MEDIA_BATCH2_V2() {
-    if (window._blokMDB2DoneV2) {
-        console.log('ℹ️ BLOK FUNGSI GLOBAL MEDIA (Batch 2) v2.0 sudah terpasang.');
-        return;
-    }
-    if (!window._blokMDDoneV2) {
-        console.warn('⚠️ BLOK MD v2.0 belum terpasang. Batch 2 ditunda.');
-        return;
-    }
-    window._blokMDB2DoneV2 = true;
-    window._blokMDB2Done   = true; // alias
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 14] — AMBIL SEMUA MEDIA (UNTUK SA)
-    // ═══════════════════════════════════════════════════════════
-    window.mdAmbilSemuaMedia = function(opts) {
-        opts = opts || {};
-        try {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return [];
-
-            var list = [];
-            Object.keys(index.items).forEach(function(k) {
-                var item = index.items[k];
-                if (!item) return;
-
-                if (opts.kategori && item.kategori !== opts.kategori) return;
-                if (opts.idOwner && item.idOwner !== opts.idOwner) return;
-                if (opts.kodeRole && item.kodeRole !== opts.kodeRole) return;
-                if (opts.storage && item.storage !== opts.storage) return;
-
-                list.push(Object.assign({}, item));
-            });
-
-            var sortBy = opts.sortBy || 'dibuatAt';
-            var sortDir = (opts.sortDir === 'asc') ? 'asc' : 'desc';
-            var factor = (sortDir === 'asc') ? 1 : -1;
-
-            list.sort(function(a, b) {
-                var va, vb;
-                switch (sortBy) {
-                    case 'nama':
-                        va = String(a.nama || '').toLowerCase();
-                        vb = String(b.nama || '').toLowerCase();
-                        return va.localeCompare(vb, 'id') * factor;
-                    case 'size':
-                        va = parseInt(a.size, 10) || 0;
-                        vb = parseInt(b.size, 10) || 0;
-                        break;
-                    case 'kategori':
-                        va = String(a.kategori || '').toLowerCase();
-                        vb = String(b.kategori || '').toLowerCase();
-                        return va.localeCompare(vb, 'id') * factor;
-                    case 'storage':
-                        va = String(a.storage || 'local').toLowerCase();
-                        vb = String(b.storage || 'local').toLowerCase();
-                        return va.localeCompare(vb, 'id') * factor;
-                    case 'dibuatAt':
-                    default:
-                        va = new Date(a.dibuatAt || 0).getTime();
-                        vb = new Date(b.dibuatAt || 0).getTime();
-                        break;
-                }
-                return factor * (va - vb);
-            });
-
-            var limit = parseInt(opts.limit, 10) || 0;
-            if (limit > 0) list = list.slice(0, limit);
-
-            return list;
-        } catch (e) {
-            console.error('mdAmbilSemuaMedia error:', e);
-            return [];
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 15] — STATISTIK GLOBAL
-    // ═══════════════════════════════════════════════════════════
-    window.mdStatistikGlobal = function() {
-        try {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) {
-                return {
-                    totalFile: 0, totalSize: 0, totalSizeTeks: '0 B',
-                    totalOwner: 0, totalKategori: 0,
-                    totalLocal: 0, totalIdb: 0,
-                    sizeLocal: 0, sizeLocalTeks: '0 B',
-                    sizeIdb: 0, sizeIdbTeks: '0 B',
-                    maxSize: window.MD_KONSTANTA.MAX_TOTAL_SIZE,
-                    maxSizeTeks: window.mdFormatSize(window.MD_KONSTANTA.MAX_TOTAL_SIZE),
-                    persen: 0, hampirPenuh: false
-                };
-            }
-
-            var totalFile = 0;
-            var totalSize = 0;
-            var totalLocal = 0, totalIdb = 0;
-            var sizeLocal = 0, sizeIdb = 0;
-            var ownerSet = {};
-            var kategoriSet = {};
-
-            Object.keys(index.items).forEach(function(k) {
-                var item = index.items[k];
-                if (!item) return;
-                totalFile++;
-                var sz = parseInt(item.size, 10) || 0;
-                totalSize += sz;
-
-                if (item.storage === 'indexeddb') {
-                    totalIdb++;
-                    sizeIdb += sz;
-                } else {
-                    totalLocal++;
-                    sizeLocal += sz;
-                }
-
-                if (item.idOwner) ownerSet[item.idOwner] = true;
-                if (item.kategori) kategoriSet[item.kategori] = true;
-            });
-
-            var max = window.MD_KONSTANTA.MAX_TOTAL_SIZE;
-            var persen = max > 0 ? Math.round((totalSize / max) * 100) : 0;
-
-            return {
-                totalFile: totalFile,
-                totalSize: totalSize,
-                totalSizeTeks: window.mdFormatSize(totalSize),
-                totalOwner: Object.keys(ownerSet).length,
-                totalKategori: Object.keys(kategoriSet).length,
-                totalLocal: totalLocal,
-                totalIdb: totalIdb,
-                sizeLocal: sizeLocal,
-                sizeLocalTeks: window.mdFormatSize(sizeLocal),
-                sizeIdb: sizeIdb,
-                sizeIdbTeks: window.mdFormatSize(sizeIdb),
-                maxSize: max,
-                maxSizeTeks: window.mdFormatSize(max),
-                persen: persen,
-                hampirPenuh: persen >= 80
-            };
-        } catch (e) {
-            console.error('mdStatistikGlobal error:', e);
-            return { totalFile: 0, totalSize: 0, persen: 0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 16] — TOTAL SIZE GLOBAL
-    // ═══════════════════════════════════════════════════════════
-    window.mdTotalSizeGlobal = function() {
-        try {
-            var stat = window.mdStatistikGlobal();
-            return {
-                bytes: stat.totalSize,
-                teks: stat.totalSizeTeks,
-                persen: stat.persen,
-                local: {
-                    bytes: stat.sizeLocal,
-                    teks: stat.sizeLocalTeks,
-                    jumlah: stat.totalLocal
-                },
-                indexeddb: {
-                    bytes: stat.sizeIdb,
-                    teks: stat.sizeIdbTeks,
-                    jumlah: stat.totalIdb
-                }
-            };
-        } catch (e) {
-            return { bytes: 0, teks: '0 B', persen: 0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 17] — REFERENSI MEDIA
-    // ═══════════════════════════════════════════════════════════
-    window.mdReferensiMedia = function(idMedia) {
-        try {
-            if (!idMedia) return [];
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return [];
-
-            var item = index.items[idMedia];
-            if (!item) return [];
-
-            return Array.isArray(item.referensi) ? item.referensi : [];
-        } catch (e) { return []; }
-    };
-
-    window.mdTambahReferensi = function(idMedia, referensi) {
-        try {
-            if (!idMedia || !referensi) {
-                return { sukses: false, pesan: 'Param tidak valid' };
-            }
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) {
-                return { sukses: false, pesan: 'Index kosong' };
-            }
-
-            var item = index.items[idMedia];
-            if (!item) {
-                return { sukses: false, pesan: 'Media tidak ditemukan' };
-            }
-
-            if (!Array.isArray(item.referensi)) item.referensi = [];
-
-            var sudahAda = item.referensi.some(function(r) {
-                return r.blok === referensi.blok &&
-                       r.field === referensi.field &&
-                       r.idProduk === referensi.idProduk;
-            });
-            if (sudahAda) {
-                return { sukses: true, sudahAda: true };
-            }
-
-            item.referensi.push(referensi);
-            item.updatedAt = window.mppNow();
-
-            index.items[idMedia] = item;
-            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    window.mdHapusReferensi = function(idMedia, referensi) {
-        try {
-            if (!idMedia || !referensi) {
-                return { sukses: false, pesan: 'Param tidak valid' };
-            }
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false };
-
-            var item = index.items[idMedia];
-            if (!item || !Array.isArray(item.referensi)) {
-                return { sukses: false, pesan: 'Media tidak ditemukan' };
-            }
-
-            item.referensi = item.referensi.filter(function(r) {
-                return !(r.blok === referensi.blok &&
-                         r.field === referensi.field &&
-                         r.idProduk === referensi.idProduk);
-            });
-            item.updatedAt = window.mppNow();
-
-            index.items[idMedia] = item;
-            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 18] — EXPORT SEMUA (UNTUK SA)
-    // ═══════════════════════════════════════════════════════════
-    window.mdExportSemua = function(opts) {
-        opts = opts || {};
-        return new Promise(function(resolve) {
-            try {
-                var scope = opts.scope || 'all';
-                var list = [];
-
-                if (scope === 'all') {
-                    list = window.mdAmbilSemuaMedia({});
-                } else if (scope === 'kategori' && opts.kategori) {
-                    list = window.mdAmbilSemuaMedia({ kategori: opts.kategori });
-                } else if (scope === 'owner' && opts.idOwner) {
-                    list = window.mdAmbilSemuaMedia({ idOwner: opts.idOwner });
-                } else if (scope === 'storage' && opts.storage) {
-                    list = window.mdAmbilSemuaMedia({ storage: opts.storage });
-                }
-
-                if (list.length === 0) {
-                    return resolve({ sukses: false, pesan: 'Tidak ada media' });
-                }
-
-                var includeBase64 = opts.includeBase64 !== false;
-                var promises = list.map(function(x) {
-                    if (!includeBase64) {
-                        return Promise.resolve(Object.assign({}, x));
-                    }
-                    return window.mdAmbilUrlAsync(x.id).then(function(url) {
-                        return Object.assign({}, x, { base64: url });
-                    });
-                });
-
-                Promise.all(promises).then(function(data) {
-                    var paket = {
-                        _meta: {
-                            versi: '2.0',
-                            tipe: 'md-export-sa',
-                            scope: scope,
-                            kategori: opts.kategori || null,
-                            idOwner: opts.idOwner || null,
-                            storage: opts.storage || null,
-                            timestamp: window.mppNow(),
-                            total: data.length,
-                            includeBase64: includeBase64
-                        },
-                        data: data
-                    };
-                    resolve({
-                        sukses: true,
-                        paket: paket,
-                        json: JSON.stringify(paket),
-                        total: data.length
-                    });
-                });
-            } catch (e) {
-                console.error('mdExportSemua error:', e);
-                resolve({ sukses: false, pesan: e.message });
-            }
-        });
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 19] — DOWNLOAD MEDIA (ASYNC)
-    // ═══════════════════════════════════════════════════════════
-    window.mdDownloadMedia = function(idMedia, namaFile) {
-        return window.mdAmbilAsync(idMedia).then(function(item) {
-            if (!item || !item.base64) {
-                return { sukses: false, pesan: 'Media tidak tersedia' };
-            }
-            try {
-                var nama = namaFile || item.nama || ('media-' + idMedia);
-                var a = document.createElement('a');
-                a.href = item.base64;
-                a.download = nama;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                return { sukses: true, namaFile: nama };
-            } catch (e) {
-                return { sukses: false, pesan: e.message };
-            }
-        });
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 20] — FILTER MEDIA
-    // ═══════════════════════════════════════════════════════════
-    window.mdFilterMedia = function(list, opts) {
-        opts = opts || {};
-        try {
-            if (!Array.isArray(list)) return [];
-
-            var cari = String(opts.cari || '').toLowerCase().trim();
-            var kategori = opts.kategori || '';
-            var idOwner = opts.idOwner || '';
-            var kodeRole = opts.kodeRole || '';
-            var mime = opts.mime || '';
-            var storage = opts.storage || '';
-
-            return list.filter(function(x) {
-                if (!x) return false;
-
-                if (cari) {
-                    var hay = ((x.nama || '') + ' ' + (x.id || '')).toLowerCase();
-                    if (hay.indexOf(cari) === -1) return false;
-                }
-                if (kategori && x.kategori !== kategori) return false;
-                if (idOwner && x.idOwner !== idOwner) return false;
-                if (kodeRole && x.kodeRole !== kodeRole) return false;
-                if (mime && (x.mime || '').indexOf(mime) === -1) return false;
-                if (storage && x.storage !== storage) return false;
-
-                return true;
-            });
-        } catch (e) {
-            console.error('mdFilterMedia error:', e);
-            return list || [];
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 21] — PAGINATE MEDIA
-    // ═══════════════════════════════════════════════════════════
-    window.mdPaginateMedia = function(list, page, perPage) {
-        try {
-            if (!Array.isArray(list)) list = [];
-            page = Math.max(1, parseInt(page, 10) || 1);
-            perPage = Math.max(1, parseInt(perPage, 10) || 20);
-
-            var total = list.length;
-            var totalPages = Math.max(1, Math.ceil(total / perPage));
-            if (page > totalPages) page = totalPages;
-
-            var s = (page - 1) * perPage;
-            var e = Math.min(s + perPage, total);
-
-            return {
-                items: list.slice(s, e),
-                page: page,
-                perPage: perPage,
-                total: total,
-                totalPages: totalPages,
-                hasPrev: page > 1,
-                hasNext: page < totalPages,
-                start: total > 0 ? s + 1 : 0,
-                end: e,
-                rangeText: total > 0
-                    ? (s + 1) + '–' + e + ' dari ' + total
-                    : '0 dari 0'
-            };
-        } catch (e) {
-            return {
-                items: [], page: 1, perPage: 20, total: 0,
-                totalPages: 1, hasPrev: false, hasNext: false,
-                start: 0, end: 0, rangeText: '0'
-            };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 22] — DAFTAR OWNER UNIK
-    // ═══════════════════════════════════════════════════════════
-    window.mdDaftarOwner = function() {
-        try {
-            var list = window.mdAmbilSemuaMedia({});
-            var set = {};
-            list.forEach(function(x) {
-                if (x.idOwner) set[x.idOwner] = (set[x.idOwner] || 0) + 1;
-            });
-            return Object.keys(set).sort().map(function(k) {
-                return { idOwner: k, jumlah: set[k] };
-            });
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 23] — BERSIHKAN SEMUA MEDIA OWNER (ASYNC)
-    // ═══════════════════════════════════════════════════════════
-    window.mdHapusSemuaOwner = function(idOwner, opts) {
-        opts = opts || {};
-        try {
-            if (!idOwner) return Promise.resolve({ sukses: false, pesan: 'ID owner kosong' });
-            var list = window.mdAmbilByOwner(idOwner);
-            var ids = list.map(function(x) { return x.id; });
-            return window.mdHapusBatchAsync(ids, { bypass: true });
-        } catch (e) {
-            return Promise.resolve({ sukses: false, pesan: e.message });
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 24] — CEK MEDIA ADA
-    // ═══════════════════════════════════════════════════════════
-    window.mdCekMediaAda = function(idMedia) {
-        try {
-            if (!idMedia) return false;
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return false;
-            return !!index.items[idMedia];
-        } catch (e) { return false; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 25] — AMBIL METADATA (TANPA BASE64)
-    // ═══════════════════════════════════════════════════════════
-    window.mdAmbilMetadata = function(idMedia) {
-        try {
-            if (!idMedia) return null;
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return null;
-            return index.items[idMedia] || null;
-        } catch (e) { return null; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 26] — CARI MEDIA BY REFERENSI
-    // ═══════════════════════════════════════════════════════════
-    window.mdCariByReferensi = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.mdAmbilSemuaMedia({});
-            return list.filter(function(x) {
-                if (!Array.isArray(x.referensi)) return false;
-                return x.referensi.some(function(r) {
-                    if (opts.blok && r.blok !== opts.blok) return false;
-                    if (opts.field && r.field !== opts.field) return false;
-                    if (opts.idProduk && r.idProduk !== opts.idProduk) return false;
-                    return true;
-                });
-            });
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 27] — BERSIHKAN MEDIA TANPA REFERENSI
-    // ═══════════════════════════════════════════════════════════
-    window.mdHapusTanpaReferensi = function(opts) {
-        opts = opts || {};
-        try {
-            var list = window.mdAmbilSemuaMedia({});
-            var ids = list.filter(function(x) {
-                return !Array.isArray(x.referensi) || x.referensi.length === 0;
-            }).map(function(x) { return x.id; });
-
-            if (ids.length === 0) {
-                return Promise.resolve({ sukses: true, berhasil: 0 });
-            }
-            if (opts.dryRun === true) {
-                return Promise.resolve({
-                    sukses: true, dryRun: true,
-                    akanDihapus: ids.length, ids: ids
-                });
-            }
-            return window.mdHapusBatchAsync(ids, { bypass: true });
-        } catch (e) {
-            return Promise.resolve({ sukses: false, pesan: e.message });
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 28] — SIMPAN REFERENSI MASSAL
-    // ═══════════════════════════════════════════════════════════
-    window.mdSimpanReferensiMassal = function(idMedia, arrayReferensi) {
-        try {
-            if (!idMedia || !Array.isArray(arrayReferensi)) {
-                return { sukses: false, pesan: 'Param tidak valid' };
-            }
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) return { sukses: false };
-
-            var item = index.items[idMedia];
-            if (!item) return { sukses: false, pesan: 'Media tidak ditemukan' };
-
-            item.referensi = arrayReferensi.slice();
-            item.updatedAt = window.mppNow();
-            index.items[idMedia] = item;
-
-            return window.mppSaveJSON(window.MD_KONSTANTA.KEY_INDEX, index);
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 29] — SYNC INDEX DENGAN IDB (BARU) ⭐
-    // ═══════════════════════════════════════════════════════════
-    window.mdSyncIndexDenganIdb = function() {
-        return window.mdIdbHitungKeys().then(function(idbKeys) {
-            var index = window.mppLoadJSON(window.MD_KONSTANTA.KEY_INDEX, null);
-            if (!index || !index.items) {
-                index = { items: {}, meta: {} };
-            }
-
-            var existingKeys = {};
-            Object.keys(index.items).forEach(function(id) {
-                var item = index.items[id];
-                if (item.storageKey) existingKeys[item.storageKey] = id;
-            });
-
-            var idbKeySet = {};
-            (idbKeys || []).forEach(function(k) { idbKeySet[k] = true; });
-
-            var hilangDariIdb = [];
-            var baruDariIdb = [];
-
-            // Cek: item di index tapi tidak ada di IDB
-            Object.keys(index.items).forEach(function(id) {
-                var item = index.items[id];
-                if (item.storage === 'indexeddb') {
-                    if (!idbKeySet[item.storageKey]) {
-                        hilangDariIdb.push(id);
-                    }
-                }
-            });
-
-            // Cek: di IDB tapi tidak ada di index
-            (idbKeys || []).forEach(function(k) {
-                if (!existingKeys[k]) {
-                    baruDariIdb.push(k);
-                }
-            });
-
-            return {
-                sukses: true,
-                totalIdb: (idbKeys || []).length,
-                totalIndex: Object.keys(index.items).length,
-                hilangDariIdb: hilangDariIdb,
-                baruDariIdb: baruDariIdb,
-                perluSinkron: hilangDariIdb.length > 0 || baruDariIdb.length > 0
-            };
-        });
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 30] — DEBUG
-    // ═══════════════════════════════════════════════════════════
-    window.debugMDB2 = function() {
-        try {
-            var info = {
-                versi: '2.0',
-                statGlobal: window.mdStatistikGlobal(),
-                totalSize: window.mdTotalSizeGlobal(),
-                daftarOwner: window.mdDaftarOwner().slice(0, 10),
-                fungsiBaru: {
-                    mdAmbilSemuaMedia: typeof window.mdAmbilSemuaMedia,
-                    mdStatistikGlobal: typeof window.mdStatistikGlobal,
-                    mdTotalSizeGlobal: typeof window.mdTotalSizeGlobal,
-                    mdReferensiMedia: typeof window.mdReferensiMedia,
-                    mdTambahReferensi: typeof window.mdTambahReferensi,
-                    mdHapusReferensi: typeof window.mdHapusReferensi,
-                    mdExportSemua: typeof window.mdExportSemua,
-                    mdDownloadMedia: typeof window.mdDownloadMedia,
-                    mdFilterMedia: typeof window.mdFilterMedia,
-                    mdPaginateMedia: typeof window.mdPaginateMedia,
-                    mdDaftarOwner: typeof window.mdDaftarOwner,
-                    mdHapusSemuaOwner: typeof window.mdHapusSemuaOwner,
-                    mdCekMediaAda: typeof window.mdCekMediaAda,
-                    mdAmbilMetadata: typeof window.mdAmbilMetadata,
-                    mdCariByReferensi: typeof window.mdCariByReferensi,
-                    mdHapusTanpaReferensi: typeof window.mdHapusTanpaReferensi,
-                    mdSimpanReferensiMassal: typeof window.mdSimpanReferensiMassal,
-                    mdSyncIndexDenganIdb: typeof window.mdSyncIndexDenganIdb
-                }
-            };
-            console.log('🔍 debugMDB2 v2.0:', info);
-            return info;
-        } catch (e) {
-            console.error('debugMDB2 error:', e);
-            return null;
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // LOG
-    // ═══════════════════════════════════════════════════════════
-    console.log('✅ BLOK FUNGSI GLOBAL MEDIA (Batch 2) v2.0 terpasang.');
-    console.log('   📦 16 modul — support IndexedDB + async');
-    console.log('   🔄 mdExportSemua / mdDownloadMedia / mdHapusSemuaOwner → Promise');
-    console.log('   🎯 mdSyncIndexDenganIdb() — cek konsistensi index vs IDB');
-    console.log('   🔍 Debug: debugMDB2()');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK FUNGSI GLOBAL MEDIA (BATCH 2) v2.0 ═════════ -->
+<!-- ═══ AKHIR BLOK FUNGSI GLOBAL MEDIA (BATCH 2) ══════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -16002,9 +16297,9 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     }
     window._blokOMDone = true;
 
-		window.OM_KONSTANTA = window.OM_KONSTANTA || {
-		GRACE_KANDIDAT: 1,
-		GRACE_ORPHAN: 3,
+    window.OM_KONSTANTA = window.OM_KONSTANTA || {
+        GRACE_KANDIDAT: 7,
+        GRACE_ORPHAN: 30,
         KATEGORI_PROTECTED: ['profil', 'avatar_hf', 'verifikasi', 'struk', 'dokumentasi'],
         AUTO_CLEAN: false,
         AUTO_CLEAN_INTERVAL_HARI: 7,
@@ -16104,22 +16399,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             return { tingkat: T.SEMU, nama: 'orphan-semu', alasan: 'Tanpa ref > 30 hari', umurHari: umurHari };
         } catch (e) { return { tingkat: 0, nama: 'error', alasan: e.message, umurHari: 0 }; }
     };
-
-	window.omHapusTingkat3 = function(opts) {
-    opts = opts || {};
-    try {
-        var list = window.omScanTingkat(3).filter(function(x) {
-            return !window.omCekProtected(x).protected;
-        });
-        if (list.length === 0) return { sukses: true, berhasil: 0, gagal: 0 };
-        var ids = list.map(function(x) { return x.id; });
-        if (opts.dryRun === true) return { sukses: true, dryRun: true, akanDihapus: ids.length, ids: ids };
-        var hasil = window.mdHapusBatch(ids, { bypass: true });
-        _catatLogAksi('hapus-tingkat-3', { jumlah: hasil.berhasil });
-        try { window.mppEmitEvent('r2coin:orphan-dibersihkan', { tingkat: 3, jumlah: hasil.berhasil }); } catch (e) {}
-        return Object.assign({ sukses: true, tingkat: 3 }, hasil);
-    } catch (e) { return { sukses: false, pesan: e.message }; }
-};
 
     window.omScanSemua = function() {
         try {
@@ -16450,9 +16729,10 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // [MODUL 1] — KONSTANTA OM2
     // ═══════════════════════════════════════════════════════════
     window.OM2_KONSTANTA = window.OM2_KONSTANTA || {
-    VERSI: '1.0',
-    GRACE_KANDIDAT:  3,
-    GRACE_SEMU:      7,
+        VERSI: '1.0',
+        // Threshold hari
+        GRACE_KANDIDAT:  30,     // < 30 hari = VALID / KANDIDAT
+        GRACE_SEMU:      90,     // > 90 hari tanpa referensi = SEMU
         // Limit
         MAX_ARSIP:       5000,   // Maksimum item di arsip
         RETENSI_ARSIP:   90,     // Hari sebelum arsip auto-hapus
@@ -16703,16 +16983,15 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                         stat.semu++;
                     } else {
                         var umur = window.om2Helper.umurHari(entitas.tanggal);
-						var graceKandidat = window.OM2_KONSTANTA.GRACE_KANDIDAT;
-						if (umur > graceKandidat) {
-							entitas.tingkat = 3;
-							entitas.alasan = 'Order > ' + graceKandidat + ' hari';
-							stat.kandidat++;
-						} else {
-							entitas.tingkat = 4;
-							entitas.alasan = 'OK';
-							stat.valid++;
-						}
+                        if (umur > 30) {
+                            entitas.tingkat = 3; // KANDIDAT
+                            entitas.alasan = 'Tanpa update ' + umur + ' hari';
+                            stat.kandidat++;
+                        } else {
+                            entitas.tingkat = 4; // VALID
+                            entitas.alasan = 'OK';
+                            stat.valid++;
+                        }
                     }
 
                     hasil.push(entitas);
@@ -16766,12 +17045,11 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                         stat.sejati++;
                     } else {
                         var umur = window.om2Helper.umurHari(entitas.tanggal);
-						var graceKandidat = window.OM2_KONSTANTA.GRACE_KANDIDAT;
-						if (umur > graceKandidat) {
-							entitas.tingkat = 3;
-							entitas.alasan = 'Transaksi > ' + graceKandidat + ' hari';
-							stat.kandidat++;
-						} else {
+                        if (umur > 90) {
+                            entitas.tingkat = 3;
+                            entitas.alasan = 'Transaksi > 90 hari';
+                            stat.kandidat++;
+                        } else {
                             entitas.tingkat = 4;
                             entitas.alasan = 'OK';
                             stat.valid++;
@@ -16984,7 +17262,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             }
 
             var T = window.OM2_KONSTANTA.TINGKAT;
-            
+            var umur = window.om2Helper.umurHari(entitas.tanggal);
 
             switch (entitas.tingkat) {
                 case T.SEJATI:
@@ -18109,13 +18387,10 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
             // Filter by opts
             if (opts.hanyaHapus) {
-				items = items.filter(function(x) {
-					// ⭐ FIX: sertakan KANDIDAT (orphan kecil yang belum dihapus)
-					return x.tingkat === 'sejati'
-						|| x.tingkat === 'semu'
-						|| x.tingkat === 'kandidat';
-				});
-			}
+                items = items.filter(function(x) {
+                    return x.tingkat === 'sejati' || x.tingkat === 'semu';
+                });
+            }
 
             return {
                 sukses: true,
@@ -18792,51 +19067,51 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     // [MODUL 2] — AKSI: HAPUS MEDIA ORPHAN (delegate OM)
     // ═══════════════════════════════════════════════════════════
-    window.autorHapusDataOrphan = function(opts) {
-    opts = opts || {};
-    try {
-        if (typeof window.om2HapusTingkat1 !== 'function') {
-            return { sukses: false, pesan: 'OM2 tidak tersedia', berhasil: 0 };
+    window.autorHapusMediaOrphan = function(opts) {
+        opts = opts || {};
+        try {
+            if (typeof window.omHapusTingkat1 !== 'function') {
+                return { sukses: false, pesan: 'OM tidak tersedia', berhasil: 0 };
+            }
+
+            var config = window.autorAmbilConfig();
+            var dryRun = opts.dryRun === true || config.dryRun === true;
+
+            // Deteksi dulu
+            var deteksi = window.autorDeteksiMediaOrphan({ hanyaHapus: true });
+            if (!deteksi.sukses || deteksi.total === 0) {
+                return { sukses: true, berhasil: 0, pesan: 'Tidak ada media orphan' };
+            }
+
+            // Limit
+            var max = opts.max || config.maxPerRun || 1000;
+            var kandidat = deteksi.items.slice(0, max);
+
+            if (dryRun) {
+                return {
+                    sukses: true,
+                    dryRun: true,
+                    akanDihapus: kandidat.length,
+                    total: deteksi.total
+                };
+            }
+
+            // Eksekusi via OM (tingkat 1 + 2)
+            var hasil = { sukses: true, berhasil: 0, gagal: 0 };
+            var r1 = window.omHapusTingkat1();
+            hasil.berhasil += (r1.berhasil || 0);
+            hasil.gagal += (r1.gagal || 0);
+
+            var r2 = window.omHapusTingkat2();
+            hasil.berhasil += (r2.berhasil || 0);
+            hasil.gagal += (r2.gagal || 0);
+
+            return hasil;
+        } catch (e) {
+            console.error('autorHapusMediaOrphan error:', e);
+            return { sukses: false, pesan: e.message, berhasil: 0 };
         }
-
-        var config = window.autorAmbilConfig();
-        var dryRun = opts.dryRun === true || config.dryRun === true;
-
-        var deteksi = window.autorDeteksiDataOrphan({ hanyaHapus: true });
-        if (!deteksi.sukses || deteksi.total === 0) {
-            return { sukses: true, berhasil: 0, pesan: 'Tidak ada data orphan' };
-        }
-
-        var max = opts.max || config.maxPerRun || 1000;
-        var kandidat = deteksi.items.slice(0, max);
-
-        if (dryRun) {
-            return { sukses: true, dryRun: true, akanDihapus: kandidat.length, total: deteksi.total };
-        }
-
-        var hasil = { sukses: true, berhasil: 0, gagal: 0 };
-
-        var r1 = window.om2HapusTingkat1();
-        hasil.berhasil += (r1.berhasil || 0);
-        hasil.gagal += (r1.gagal || 0);
-
-        var r2 = window.om2HapusTingkat2();
-        hasil.berhasil += (r2.berhasil || 0);
-        hasil.gagal += (r2.gagal || 0);
-
-        // ⭐ FIX: hapus KANDIDAT (tingkat 3)
-        if (typeof window.om2HapusTingkat3 === 'function') {
-            var r3 = window.om2HapusTingkat3();
-            hasil.berhasil += (r3.berhasil || 0);
-            hasil.gagal += (r3.gagal || 0);
-        }
-
-        return hasil;
-    } catch (e) {
-        console.error('autorHapusDataOrphan error:', e);
-        return { sukses: false, pesan: e.message, berhasil: 0 };
-    }
-};
+    };
 
     // ═══════════════════════════════════════════════════════════
     // [MODUL 3] — AKSI: HAPUS DATA ORPHAN (delegate OM2)
