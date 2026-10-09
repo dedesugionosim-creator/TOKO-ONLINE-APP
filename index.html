@@ -5107,16 +5107,42 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL CORE SYSTEM (8) — AUTH FLOW ════════ -->
+<!-- ═══ Versi   : 2.0 (FIXED — userAktif sync) ═════════════════ -->
 <!-- ═══ Dependency: Core System (1)-(7) + GID (opsional) ══════ -->
+<!-- ═══ Fix utama: csAutoRestoreSession() setUserAktif() ══════ -->
+<!-- ═══ Fix bonus: prosesLogin() + semua restore sync global ══ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
 (function BLOK_CORE_SYSTEM_8() {
-    if (window._coreSystem8Done) return;
+    if (window._coreSystem8DoneV2) {
+        console.log('ℹ️ Core System (8) v2 sudah terpasang.');
+        return;
+    }
     if (!window._coreSystem7Done) {
         console.warn('⚠️ Core System (7) belum terpasang.');
         return;
     }
-    window._coreSystem8Done = true;
+
+    // ⭐ Guard baru
+    window._coreSystem8DoneV2 = true;
+    window._coreSystem8Done   = true; // alias backward compat
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 0] — HELPER: SYNC USER KE GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    // Fungsi internal untuk memastikan window.userAktif selalu terisi
+    // saat ada user yang valid di storage.
+    // ═══════════════════════════════════════════════════════════
+    window._cs8SyncUserGlobal = function(user) {
+        try {
+            if (!user) return false;
+            window.userAktif = user;
+            return true;
+        } catch (e) {
+            console.warn('_cs8SyncUserGlobal error:', e.message);
+            return false;
+        }
+    };
 
     // ═══════════════════════════════════════════════════════════
     // [MODUL 1] — PROSES LOGIN
@@ -5124,7 +5150,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     window.prosesLogin = function(event) {
         if (event) event.preventDefault();
         try {
-            // Ambil input
             var inputUser = document.getElementById('usernameLogin');
             var inputPass = document.getElementById('passwordLogin');
             var username = (inputUser ? inputUser.value : '').trim();
@@ -5135,13 +5160,12 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return false;
             }
 
-            // Maintenance mode
             if (window.CS_FLAG.MAINTENANCE) {
                 window.csTampilkanNotifLogin('Sistem dalam maintenance. Coba lagi nanti.', 'warning');
                 return false;
             }
 
-            // Cari user
+            // Cari user di dataLoginUser
             var user = null;
             var list = window.csLoadJSON(window.CS_KEY.DATA_LOGIN_USER, []);
             if (!Array.isArray(list)) list = [];
@@ -5158,26 +5182,25 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return false;
             }
 
-            // Cek password
             if (user.password !== password) {
                 window.csTampilkanNotifLogin('Password salah!', 'danger');
                 return false;
             }
 
-            // Cek status
             var status = user.statusVerifikasi || user.status || 'Aktif';
             if (status === 'Diblokir' || status === 'Ditolak') {
                 window.csTampilkanNotifLogin('Akun Anda ' + status + '. Hubungi admin.', 'danger');
                 return false;
             }
 
-            // Set user aktif
+            // ⭐ FIX: setUserAktif sudah otomatis set window.userAktif
             window.setUserAktif(user);
 
             // Catat aktivitas
-            window.catatAktivitasGlobal(user.idUser, 'Login', 'User ' + user.username + ' berhasil login');
+            window.catatAktivitasGlobal(user.idUser, 'Login',
+                'User ' + user.username + ' berhasil login');
 
-            // Simpan remember me (kalau dicentang)
+            // Remember me
             var rememberEl = document.getElementById('rememberMe');
             if (rememberEl && rememberEl.checked) {
                 try {
@@ -5188,7 +5211,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 } catch (e) {}
             }
 
-            // Mulai auto-logout + heartbeat
+            // Timer
             window.csMulaiAutoLogout();
             window.csMulaiHeartbeat();
 
@@ -5198,7 +5221,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             // Tampilkan dasbor
             window.tampilkanHalaman('dasbor');
 
-            // Render menu
+            // Render menu + dasbor
             setTimeout(function() {
                 if (typeof window.renderMenuUntukRole === 'function') {
                     var kodeRole = user.kodeRole || window.csKodeRoleDariNama(user.role);
@@ -5206,7 +5229,12 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 } else if (typeof window.loadMenuNavigasi === 'function') {
                     window.loadMenuNavigasi();
                 }
-            }, 100);
+
+                // ⭐ Tampilkan konten dasbor
+                if (window.menuHandlers && typeof window.menuHandlers['dashboardUtama'] === 'function') {
+                    window.menuHandlers['dashboardUtama']();
+                }
+            }, 200);
 
             console.log('✅ Login berhasil:', user.username);
             return true;
@@ -5225,27 +5253,20 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             var user = window.getUserAktif();
             var idUser = user ? (user.idUser || user.id) : null;
 
-            // Stop timer
             window.csStopAutoLogout();
             window.csStopHeartbeat();
 
-            // Catat aktivitas (kalau bukan forced dari idle)
             if (idUser && !forced) {
                 window.catatAktivitasGlobal(idUser, 'Logout', 'User logout');
             }
 
-            // Hapus status online
             if (idUser) {
                 try { localStorage.removeItem('r2coin_online_' + idUser); } catch (e) {}
             }
 
-            // Clear user aktif
             window.clearUserAktif();
-
-            // Sembunyikan dasbor, tampilkan login
             window.tampilkanHalaman('login');
 
-            // Reset form
             try {
                 var el = document.getElementById('passwordLogin');
                 if (el) el.value = '';
@@ -5264,7 +5285,6 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     window.renderMenuUntukRole = function(kodeRole) {
         try {
-            // Delegate ke loadMenuNavigasi kalau ada (Blok 9.3.2(0))
             if (typeof window.loadMenuNavigasi === 'function') {
                 var user = window.getUserAktif();
                 var status = user ? (user.statusVerifikasi || user.status || 'Aktif') : 'Aktif';
@@ -5285,15 +5305,14 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
         try {
             if (!namaRole) return null;
 
-            // Map nama role → kode
             var map = {
                 'SuperAdmin': 'SA',
                 'Toko': 'TK', 'Ojek': 'OJ', 'Pedagang Pasar': 'PP',
                 'Pedagang Makanan': 'PM', 'COD Seller': 'COD',
                 'Grosir': 'GR', 'Distributor': 'DST', 'Jasa': 'JS',
                 'Developer Properti': 'DP', 'Dealer dan Showroom': 'DLR',
-				'Finance Multifinance': 'FIN', 'Customer': 'CT',
-				'Kopdes Merah Putih': 'KDMP',
+                'Finance Multifinance': 'FIN', 'Customer': 'CT',
+                'Kopdes Merah Putih': 'KDMP',
                 'Staf Admin': 'ADM', 'Staf Marketing': 'MKT',
                 'Staf Penagihan': 'TGH', 'Customer Service': 'CS',
                 'Staf Owner Toko': 'SOT', 'Staf Owner Ojek': 'SOO',
@@ -5301,6 +5320,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 'Kasir Pedagang Pasar': 'KSR_PP',
                 'Kasir Pedagang Makanan': 'KSR_PM',
                 'Kasir Distributor': 'KSR_DST', 'Kasir Grosir': 'KSR_GR',
+                'Kasir Kopdes Merah Putih': 'KSR_KDMP',
                 'Event Organizer': 'EO', 'Organisasi': 'ORG', 'Individu': 'IND'
             };
 
@@ -5329,7 +5349,7 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — TOGGLE PASSWORD (LOGIN)
+    // [MODUL 6] — TOGGLE PASSWORD
     // ═══════════════════════════════════════════════════════════
     window.togglePasswordLogin = function() {
         try {
@@ -5347,12 +5367,17 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — AUTO-RESTORE SESSION (saat halaman reload)
+    // [MODUL 7] — ⭐ AUTO-RESTORE SESSION (FIXED v2)
+    // ═══════════════════════════════════════════════════════════
+    // Fix kritis: panggil setUserAktif(user) supaya window.userAktif
+    // terisi. Sebelumnya hanya tampilkanHalaman tanpa sinkron global.
     // ═══════════════════════════════════════════════════════════
     window.csAutoRestoreSession = function() {
         try {
             var user = window.getUserAktif();
-            if (!user) return { sukses: false, pesan: 'Tidak ada session' };
+            if (!user) {
+                return { sukses: false, pesan: 'Tidak ada session' };
+            }
 
             // Validasi session
             var cek = window.csCekSessionValid();
@@ -5361,21 +5386,29 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 return { sukses: false, pesan: cek.alasan };
             }
 
+            // ⭐⭐⭐ FIX KRITIS — sinkron ke global window.userAktif ⭐⭐⭐
+            window.setUserAktif(user);
+            console.log('✅ CS8: userAktif global telah di-set:', user.username);
+
             // Restore UI
             window.tampilkanHalaman('dasbor');
 
-                        // Render menu + dasbor
+            // Render menu + dasbor
             setTimeout(function() {
-                var kodeRole = user.kodeRole || window.csKodeRoleDariNama(user.role);
+                try {
+                    var kodeRole = user.kodeRole || window.csKodeRoleDariNama(user.role);
 
-                // 1. Render sidebar menu
-                if (typeof window.renderMenuUntukRole === 'function') {
-                    window.renderMenuUntukRole(kodeRole);
-                }
+                    // 1. Render sidebar menu
+                    if (typeof window.renderMenuUntukRole === 'function') {
+                        window.renderMenuUntukRole(kodeRole);
+                    }
 
-                // 2. Tampilkan konten dasbor (BARU)
-                if (window.menuHandlers && typeof window.menuHandlers['dashboardUtama'] === 'function') {
-                    window.menuHandlers['dashboardUtama']();
+                    // 2. Tampilkan konten dasbor
+                    if (window.menuHandlers && typeof window.menuHandlers['dashboardUtama'] === 'function') {
+                        window.menuHandlers['dashboardUtama']();
+                    }
+                } catch (e) {
+                    console.error('csAutoRestoreSession render error:', e);
                 }
             }, 200);
 
@@ -5399,9 +5432,14 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
             // Load data dari storage ke variabel global
             window.loadDataDariLocalStorage();
 
-            // Coba restore session (kalau ada user aktif)
-            if (window.isLogin()) {
+            // Coba restore session
+            var user = window.getUserAktif();
+            if (user && (user.idUser || user.id)) {
                 window.csAutoRestoreSession();
+            } else {
+                // Tidak ada session → pastikan window.userAktif = null
+                window.userAktif = null;
+                console.log('ℹ️ CS8: Tidak ada session aktif');
             }
 
             // Restore remember me
@@ -5428,27 +5466,47 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     // ═══════════════════════════════════════════════════════════
     window.debugCS8 = function() {
         var info = {
-            versi: '1.0',
-            userAktif: window.getDataIdUser(),
-            isLogin: window.isLogin(),
+            versi: '2.0-FIXED',
+            guard: {
+                v2: window._coreSystem8DoneV2,
+                v1: window._coreSystem8Done
+            },
+            userAktifGlobal: window.userAktif
+                ? {
+                    idUser: window.userAktif.idUser || window.userAktif.id,
+                    username: window.userAktif.username,
+                    role: window.userAktif.role,
+                    kodeRole: window.userAktif.kodeRole
+                }
+                : null,
+            isLogin: window.isLogin ? window.isLogin() : null,
+            getUserAktif: typeof window.getUserAktif,
             fungsi: {
-                prosesLogin:      typeof window.prosesLogin,
-                prosesLogout:     typeof window.prosesLogout,
-                renderMenu:       typeof window.renderMenuUntukRole,
-                togglePassword:   typeof window.togglePasswordLogin,
-                autoRestore:      typeof window.csAutoRestoreSession,
-                kodeRoleDariNama: typeof window.csKodeRoleDariNama
+                prosesLogin:           typeof window.prosesLogin,
+                prosesLogout:          typeof window.prosesLogout,
+                renderMenu:            typeof window.renderMenuUntukRole,
+                togglePassword:        typeof window.togglePasswordLogin,
+                autoRestore:           typeof window.csAutoRestoreSession,
+                kodeRoleDariNama:      typeof window.csKodeRoleDariNama,
+                syncUserGlobal:        typeof window._cs8SyncUserGlobal
             }
         };
-        console.log('🔍 debugCS8:', info);
+        console.log('🔍 debugCS8 v2:', info);
         return info;
     };
 
-    console.log('✅ Core System (8) — AUTH FLOW terpasang.');
-    console.log('   🎯 8 Blok Core System LENGKAP (1-8)');
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c✅ Core System (8) — AUTH FLOW v2.0-FIXED terpasang.',
+        'background:#0D6EFD;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   ⭐ FIX: csAutoRestoreSession() sinkron ke window.userAktif');
+    console.log('   ⭐ FIX: prosesLogin() pakai setUserAktif() — auto sync');
+    console.log('   ⭐ FIX: auto-init cek user + set null kalau kosong');
+    console.log('   🔍 Debug: debugCS8()');
 })();
 </script>
-<!-- ═══ AKHIR CORE SYSTEM (8) ═══ -->
+<!-- ═══ AKHIR CORE SYSTEM (8) v2 ═══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL CORE SYSTEM (9) — NOTIFIKASI ═══════ -->
@@ -28725,15 +28783,18 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 <!-- ═══ AKHIR BLOK R 10.1.a v3 ═════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK R 10.1.b v3 — DASBOR SA (Entry) ═══════════════════ -->
-<!-- ═══ Layer: L5 · Dependency: 10.1.a + FD-Universal + CS8 ═══ -->
-<!-- ═══             + GID + MN ═════════════════════════════════ -->
-<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A23, A31, A32 ══ -->
+<!-- ═══ BLOK R 10.1.b v4 — DASBOR SA (Entry) ═══════════════════ -->
+<!-- ═══ Layer    : L5 · Dependency: 10.1.a + FD-Universal + CS8 -->
+<!-- ═══            + GID + MN                                    -->
+<!-- ═══ Versi    : 4.0 (FIXED — getUserAktif fallback) ═════════ -->
+<!-- ═══ Fix      : window.userAktif null-safe pakai getUserAktif -->
+<!-- ═══ Aturan   : A1, A2, A3, A5, A11, A12, A13, A23, A31,    -->
+<!-- ═══            A32                                           -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_10_1_B_ENTRY_V3() {
-    if (window._blok101bDoneV3) {
-        console.log('ℹ️ BLOK 10.1.b v3 sudah terpasang.');
+(function BLOK_10_1_B_ENTRY_V4() {
+    if (window._blok101bDoneV4) {
+        console.log('ℹ️ BLOK 10.1.b v4 sudah terpasang.');
         return;
     }
 
@@ -28748,7 +28809,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     ];
     var miss = deps.filter(function(d) { return !window[d.flag]; });
     if (miss.length > 0) {
-        console.warn('⚠️ 10.1.b v3 ditunda — dependency belum ada:');
+        console.warn('⚠️ 10.1.b v4 ditunda — dependency belum ada:');
         miss.forEach(function(d) { console.warn('   • ' + d.nama); });
         return;
     }
@@ -28756,19 +28817,19 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     var fdWajib = ['fdMountDasbor', 'fdStartJam', 'fdUpdateJam'];
     var fdHilang = fdWajib.filter(function(f) { return typeof window[f] !== 'function'; });
     if (fdHilang.length > 0) {
-        console.warn('⚠️ 10.1.b v3 ditunda — fungsi FD belum ada:');
+        console.warn('⚠️ 10.1.b v4 ditunda — fungsi FD belum ada:');
         fdHilang.forEach(function(f) { console.warn('   • ' + f); });
         return;
     }
 
     // ✓ Guard unik (A32) — TANPA alias
-    window._blok101bDoneV3 = true;
+    window._blok101bDoneV4 = true;
 
     // ═══════════════════════════════════════════════════════════
     // [10.1.b.2] — KONSTANTA
     // ═══════════════════════════════════════════════════════════
     window.SADASBOR_KONSTANTA = window.SADASBOR_KONSTANTA || {
-        VERSI: '3.0',
+        VERSI: '4.0',
         BLOK: '10.1',
         MENU: 'dashboardUtama',
         KODE_ROLE: 'SuperAdmin',
@@ -28786,7 +28847,59 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [10.1.b.4] — HELPER LOKAL
+    // [10.1.b.4] — ⭐ HELPER: RESOLVE USER AKTIF (FIX KRITIS)
+    // ═══════════════════════════════════════════════════════════
+    // Prioritas:
+    //   1. window.getUserAktif() — fungsi CS3 (robust)
+    //   2. window.userAktif       — variabel global
+    //   3. gidUserAktif()         — dari GID
+    //   4. TIDAK ADA
+    //
+    // Kalau ketemu via salah satu sumber tapi window.userAktif null,
+    // otomatis sinkron ke window.userAktif.
+    // ═══════════════════════════════════════════════════════════
+    window.saResolveUserAktif = function() {
+        try {
+            // Prioritas 1: getUserAktif() — fungsi global dari CS3
+            if (typeof window.getUserAktif === 'function') {
+                var u1 = window.getUserAktif();
+                if (u1 && (u1.idUser || u1.id)) {
+                    // ⭐ Sinkron ke global kalau sebelumnya null
+                    if (!window.userAktif) {
+                        window.userAktif = u1;
+                        console.log('🔧 saResolveUserAktif: sinkron ke window.userAktif dari getUserAktif()');
+                    }
+                    return u1;
+                }
+            }
+
+            // Prioritas 2: window.userAktif langsung
+            if (window.userAktif && (window.userAktif.idUser || window.userAktif.id)) {
+                return window.userAktif;
+            }
+
+            // Prioritas 3: dari GID
+            if (typeof window.gidUserAktif === 'function') {
+                var u3 = window.gidUserAktif();
+                if (u3 && (u3.idUser || u3.id)) {
+                    // ⭐ Sinkron ke global
+                    if (!window.userAktif) {
+                        window.userAktif = u3;
+                        console.log('🔧 saResolveUserAktif: sinkron ke window.userAktif dari GID');
+                    }
+                    return u3;
+                }
+            }
+
+            return null;
+        } catch (e) {
+            console.error('saResolveUserAktif error:', e);
+            return null;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.1.b.5] — HELPER LOKAL
     // ═══════════════════════════════════════════════════════════
     window.saDasborEsc = function(s) {
         if (typeof window.fdEsc === 'function') return window.fdEsc(s);
@@ -28824,7 +28937,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [10.1.b.5] — WARNA ROLE
+    // [10.1.b.6] — WARNA ROLE
     // ═══════════════════════════════════════════════════════════
     window.saDasborWarnaRole = function(role) {
         var map = {
@@ -28842,7 +28955,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [10.1.b.6] — 3 PINTU STANDAR (A11, A12, A13)
+    // [10.1.b.7] — 3 PINTU STANDAR (A11, A12, A13)
     // ═══════════════════════════════════════════════════════════
     window.kirim101 = function(tipe, ke, data, idRef) {
         try {
@@ -28874,8 +28987,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     window.ambil101 = function(filter) {
         try {
             return {
-                user: (typeof window.gidUserAktif === 'function')
-                    ? window.gidUserAktif() : null,
+                user: window.saResolveUserAktif(),
                 akun: (typeof window.csLoadJSON === 'function')
                     ? window.csLoadJSON('dataAkunAktif', []) : [],
                 filter: filter || {}
@@ -28895,19 +29007,23 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [10.1.b.7] — ENTRY POINT
+    // [10.1.b.8] — ⭐ ENTRY POINT (FIXED v4)
     // ═══════════════════════════════════════════════════════════
     window.tampilkanDasborSuperAdmin = function(opts) {
         opts = opts || {};
         try {
-            var u = window.userAktif;
+            // ⭐ FIX: pakai saResolveUserAktif() — bukan window.userAktif langsung
+            var u = window.saResolveUserAktif();
+
             if (!u || !u.idUser) {
-                console.warn('[10.1] User belum login');
+                console.warn('[10.1] User belum login (resolveUserAktif = null)');
                 if (typeof window.tampilkanHalaman === 'function') {
                     window.tampilkanHalaman('login');
                 }
                 return false;
             }
+
+            console.log('✅ [10.1] Mount dasbor SA untuk:', u.nama || u.username || u.idUser);
 
             if (typeof window.tutupMenu === 'function') window.tutupMenu();
 
@@ -28927,14 +29043,18 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 
                     // Trigger render
                     setTimeout(function() {
-                        if (typeof window.renderAlertBarSA === 'function')          window.renderAlertBarSA();
-                        if (typeof window.renderStatistikSuperAdmin === 'function') window.renderStatistikSuperAdmin();
-                        if (typeof window.renderShortcutAksiSA === 'function')      window.renderShortcutAksiSA();
-                        if (typeof window.renderMenuKategoriSA === 'function')      window.renderMenuKategoriSA();
-                        if (typeof window.renderTop5SellerSA === 'function')        window.renderTop5SellerSA();
-                        if (typeof window.renderAktivitasTerbaru === 'function')    window.renderAktivitasTerbaru();
-                        if (typeof window.renderRingkasanRole === 'function')       window.renderRingkasanRole();
-                        console.log('✅ BLOK 10.1 v3 — Dasbor SA rendered');
+                        try {
+                            if (typeof window.renderAlertBarSA === 'function')          window.renderAlertBarSA();
+                            if (typeof window.renderStatistikSuperAdmin === 'function') window.renderStatistikSuperAdmin();
+                            if (typeof window.renderShortcutAksiSA === 'function')      window.renderShortcutAksiSA();
+                            if (typeof window.renderMenuKategoriSA === 'function')      window.renderMenuKategoriSA();
+                            if (typeof window.renderTop5SellerSA === 'function')        window.renderTop5SellerSA();
+                            if (typeof window.renderAktivitasTerbaru === 'function')    window.renderAktivitasTerbaru();
+                            if (typeof window.renderRingkasanRole === 'function')       window.renderRingkasanRole();
+                            console.log('✅ BLOK 10.1 v4 — Dasbor SA rendered');
+                        } catch (e) {
+                            console.error('10.1.b onMount render error:', e);
+                        }
                     }, 100);
                 }
             });
@@ -28954,23 +29074,41 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
     window.bukaDasborSA = window.tampilkanDasborSuperAdmin;
 
     // ═══════════════════════════════════════════════════════════
-    // [10.1.b.8] — DEBUG
+    // [10.1.b.9] — DEBUG
     // ═══════════════════════════════════════════════════════════
-    window.debug101bV3 = function() {
+    window.debug101bV4 = function() {
+        var u = window.saResolveUserAktif();
         return {
             blok: '10.1.b',
             versi: window.SADASBOR_KONSTANTA.VERSI,
-            guard: window._blok101bDoneV3,
+            guard: {
+                v4: window._blok101bDoneV4,
+                v3: window._blok101bDoneV3
+            },
             entry: typeof window.tampilkanDasborSuperAdmin,
+            resolusiUser: {
+                ada: !!u,
+                idUser: u ? (u.idUser || u.id) : null,
+                nama: u ? (u.nama || u.username) : null,
+                sumber: u
+                    ? (window.userAktif === u ? 'window.userAktif' : 'getUserAktif/GID')
+                    : 'null'
+            },
+            windowUserAktif: window.userAktif
+                ? (window.userAktif.idUser || window.userAktif.id)
+                : null,
             pintu: window.cekPintu101()
         };
     };
 
-    console.log('%c📦 BLOK 10.1.b v3 — Entry + Helper + 3 Pintu terpasang.',
+    console.log('%c📦 BLOK 10.1.b v4 — Entry + Helper + 3 Pintu terpasang (FIXED).',
         'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
+    console.log('   ⭐ FIX: saResolveUserAktif() — pakai getUserAktif fallback');
+    console.log('   ⭐ FIX: auto-sinkron window.userAktif kalau null');
+    console.log('   🔍 Debug: debug101bV4()');
 })();
 </script>
-<!-- ═══ AKHIR BLOK R 10.1.b v3 ═════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK R 10.1.b v4 ═════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.1.c v3 — DASBOR SA (Render 1) ═══════════════ -->
