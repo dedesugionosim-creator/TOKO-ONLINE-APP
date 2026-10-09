@@ -18740,49 +18740,23 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
                 kasir:     function() { return window.autorDeteksiKasirOrphan(); }
             };
             entitas.forEach(function(kat) {
-                if (!detectors[kat]) return;
-                var r = detectors[kat]();
-                if (!r || !r.sukses) return;
-                hasil.perEntitas[kat] = { total: r.total || 0, items: r.items || [] };
-                (r.items || []).forEach(function(it) { it.entitas = kat; hasil.items.push(it); });
-            });
-            if (entitas.indexOf('order') !== -1 || entitas.indexOf('transaksi') !== -1) {
-                var stale = window.autorDeteksiOrderStale({ maxHari: 3 });
-                if (stale.sukses && stale.total > 0) {
-                    hasil.perEntitas['order-stale'] = { total: stale.total, items: stale.items };
-                    stale.items.forEach(function(it) { it.entitas = 'order-stale'; hasil.items.push(it); });
-                }
-            }
-            if (opts.includeChat !== false) {
-                var chatStale = window.autorDeteksiChatStale({ maxHari: 7 });
-                if (chatStale.sukses && chatStale.total > 0) {
-                    hasil.perEntitas['chat-stale'] = { total: chatStale.total, items: chatStale.items };
-                    chatStale.items.forEach(function(it) { it.entitas = 'chat-stale'; hasil.items.push(it); });
-                }
-            }
-            if (opts.includeCart !== false) {
-                var cartOrphan = window.autorDeteksiCartOrphan();
-                if (cartOrphan.sukses && cartOrphan.total > 0) {
-                    hasil.perEntitas['cart-orphan'] = { total: cartOrphan.total, items: cartOrphan.items };
-                    cartOrphan.items.forEach(function(it) { it.entitas = 'cart-orphan'; hasil.items.push(it); });
-                }
-            }
-            hasil.total = hasil.items.length;
-            hasil.totalHapus = hasil.items.filter(function(x) {
-                return x.tingkat === 'orphan-sejati' || x.tingkat === 'orphan-semu'
-                    || x.tingkat === 'kandidat'
-                    || x.level === 1 || x.level === 2 || x.level === 3
-                    || x.tipe === 'kategori' || x.tipe === 'wilayah' || x.tipe === 'kasir'
-                    || x.tipe === 'order-stale' || x.tipe === 'chat' || x.tipe === 'cart'
-                    || x.tipe === 'wishlist' || x.tipe === 'koleksi' || x.tipe === 'histori';
-            }).length;
-            hasil.elapsedMs = Date.now() - t0;
-            return hasil;
-        } catch (e) {
-            console.error('autorDeteksiSemua error:', e);
-            return { sukses: false, pesan: e.message, items: [], total: 0 };
+    try {
+        var r = window.autorHapusPerEntitas(kat, opts);
+        hasil.perEntitas[kat] = {
+            berhasil: r.berhasil || 0, gagal: r.gagal || 0,
+            dryRun: r.dryRun === true, akanDihapus: r.akanDihapus || 0,
+            pesan: r.pesan || null
+        };
+        hasil.totalBerhasil += (r.berhasil || 0);
+        hasil.totalGagal += (r.gagal || 0);
+        // ⭐ FIX: akumulasi akanDihapus
+        if (r.dryRun === true) {
+            hasil.totalAkanDihapus = (hasil.totalAkanDihapus || 0) + (r.akanDihapus || 0);
         }
-    };
+    } catch (e) {
+        hasil.perEntitas[kat] = { error: e.message };
+    }
+});
 
     window.autorStatistikDeteksi = function() {
         try {
@@ -19187,59 +19161,119 @@ window.tampilkanMenu[ROLE] = () => renderMenuUntukRole('[KODE_ROLE]');
     };
 
     window.autorHapusSemua = function(opts) {
-        opts = opts || {};
-        var t0 = Date.now();
-        try {
-            var config = window.autorAmbilConfig();
-            var dryRun = opts.dryRun === true || config.dryRun === true;
-            var entitas = opts.entitas || config.entitasAktif || Object.keys(window.AUTOR_ENTITAS);
-            var hasil = {
-                sukses: true, waktu: H.now(), dryRun: dryRun,
-                entitas: entitas, perEntitas: {},
-                totalBerhasil: 0, totalGagal: 0, elapsedMs: 0
-            };
-            entitas.forEach(function(kat) {
-                try {
-                    var r = window.autorHapusPerEntitas(kat, opts);
-                    hasil.perEntitas[kat] = {
-                        berhasil: r.berhasil || 0, gagal: r.gagal || 0,
-                        dryRun: r.dryRun === true, akanDihapus: r.akanDihapus || 0,
-                        pesan: r.pesan || null
-                    };
-                    hasil.totalBerhasil += (r.berhasil || 0);
-                    hasil.totalGagal += (r.gagal || 0);
-                } catch (e) {
-                    hasil.perEntitas[kat] = { error: e.message };
+    opts = opts || {};
+    var t0 = Date.now();
+    try {
+        var config = window.autorAmbilConfig();
+        var dryRun = opts.dryRun === true || config.dryRun === true;
+        var entitas = opts.entitas || config.entitasAktif || Object.keys(window.AUTOR_ENTITAS);
+
+        var hasil = {
+            sukses: true,
+            waktu: H.now(),
+            dryRun: dryRun,
+            entitas: entitas,
+            perEntitas: {},
+            totalBerhasil: 0,
+            totalGagal: 0,
+            totalAkanDihapus: 0,   // ⭐ FIX: field baru
+            elapsedMs: 0
+        };
+
+        // ═══════════════════════════════════════════════════════
+        // LOOP PER ENTITAS
+        // ═══════════════════════════════════════════════════════
+        entitas.forEach(function(kat) {
+            try {
+                var r = window.autorHapusPerEntitas(kat, opts);
+                hasil.perEntitas[kat] = {
+                    berhasil: r.berhasil || 0,
+                    gagal: r.gagal || 0,
+                    dryRun: r.dryRun === true,
+                    akanDihapus: r.akanDihapus || 0,
+                    pesan: r.pesan || null
+                };
+                hasil.totalBerhasil += (r.berhasil || 0);
+                hasil.totalGagal += (r.gagal || 0);
+
+                // ⭐ FIX: akumulasi akanDihapus dari setiap entitas
+                if (r.dryRun === true) {
+                    hasil.totalAkanDihapus += (r.akanDihapus || 0);
                 }
-            });
-            if (opts.includeStale !== false) {
-                try {
-                    var rs = window.autorHapusOrderStale({ maxHari: 3, dryRun: dryRun });
-                    hasil.perEntitas['order-stale'] = rs;
-                    hasil.totalBerhasil += (rs.berhasil || 0);
-                } catch (e) {}
-                try {
-                    var rc = window.autorHapusChatStale({ maxHari: 7, dryRun: dryRun });
-                    hasil.perEntitas['chat-stale'] = rc;
-                    hasil.totalBerhasil += (rc.berhasil || 0);
-                } catch (e) {}
-                try {
-                    var rt = window.autorHapusCartOrphan({ dryRun: dryRun });
-                    hasil.perEntitas['cart-orphan'] = rt;
-                    hasil.totalBerhasil += (rt.berhasil || 0);
-                } catch (e) {}
+            } catch (e) {
+                hasil.perEntitas[kat] = { error: e.message };
             }
-            hasil.elapsedMs = Date.now() - t0;
-            if (!dryRun && hasil.totalBerhasil > 0) {
-                H.catat('Auto-Hapus Orphan',
-                    'Total: ' + hasil.totalBerhasil + ' | Elapsed: ' + hasil.elapsedMs + 'ms');
-            }
-            return hasil;
-        } catch (e) {
-            console.error('autorHapusSemua error:', e);
-            return { sukses: false, pesan: e.message, totalBerhasil: 0 };
+        });
+
+        // ═══════════════════════════════════════════════════════
+        // INCLUDE STALE (order + chat + cart)
+        // ═══════════════════════════════════════════════════════
+        if (opts.includeStale !== false) {
+
+            // ── Order Stale ──
+            try {
+                var rs = window.autorHapusOrderStale({ maxHari: 3, dryRun: dryRun });
+                hasil.perEntitas['order-stale'] = rs;
+                hasil.totalBerhasil += (rs.berhasil || 0);
+                // ⭐ FIX: akumulasi akanDihapus
+                if (dryRun && rs && rs.dryRun) {
+                    hasil.totalAkanDihapus += (rs.akanDihapus || 0);
+                }
+            } catch (e) {}
+
+            // ── Chat Stale ──
+            try {
+                var rc = window.autorHapusChatStale({ maxHari: 7, dryRun: dryRun });
+                hasil.perEntitas['chat-stale'] = rc;
+                hasil.totalBerhasil += (rc.berhasil || 0);
+                // ⭐ FIX: akumulasi akanDihapus
+                if (dryRun && rc && rc.dryRun) {
+                    hasil.totalAkanDihapus += (rc.akanDihapus || 0);
+                }
+            } catch (e) {}
+
+            // ── Cart Orphan ──
+            try {
+                var rt = window.autorHapusCartOrphan({ dryRun: dryRun });
+                hasil.perEntitas['cart-orphan'] = rt;
+                hasil.totalBerhasil += (rt.berhasil || 0);
+                // ⭐ FIX: akumulasi akanDihapus
+                if (dryRun && rt && rt.dryRun) {
+                    hasil.totalAkanDihapus += (rt.akanDihapus || 0);
+                }
+            } catch (e) {}
         }
-    };
+
+        // ═══════════════════════════════════════════════════════
+        // TOTAL GABUNGAN
+        // ═══════════════════════════════════════════════════════
+        // Saat dryRun: total = totalAkanDihapus
+        // Saat real:   total = totalBerhasil
+        hasil.total = dryRun
+            ? hasil.totalAkanDihapus
+            : hasil.totalBerhasil;
+
+        hasil.elapsedMs = Date.now() - t0;
+
+        // ── Catat aktivitas (kalau bukan dry run & ada yang dihapus) ──
+        if (!dryRun && hasil.totalBerhasil > 0) {
+            H.catat('Auto-Hapus Orphan',
+                'Total: ' + hasil.totalBerhasil +
+                ' | Elapsed: ' + hasil.elapsedMs + 'ms');
+        }
+
+        return hasil;
+    } catch (e) {
+        console.error('autorHapusSemua error:', e);
+        return {
+            sukses: false,
+            pesan: e.message,
+            totalBerhasil: 0,
+            totalAkanDihapus: 0,
+            total: 0
+        };
+    }
+};
 
     window.autorHapusPerOwner = function(idOwner, opts) {
         opts = opts || {};
@@ -73986,5 +74020,7 @@ window.profilGetNamaLengkapGlobal = function(idUser) {
 })();
 </script>
 <!-- ═══ AKHIR 9.3.2(3) ═══ -->
+
+
 </body>
 </html>	
