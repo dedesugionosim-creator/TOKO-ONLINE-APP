@@ -21672,6 +21672,691 @@
 <!-- ═══ AKHIR BLOK FUNGSI GLOBAL CORE SYSTEM (17) — FVD v2 🇮🇩 ══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK MN — MENU NETWORK 🇮🇩 v3 FINAL ═══════════════════ -->
+<!-- ═══ Layer: L3c (Menu Network — Event Bus) ═════════════════ -->
+<!-- ═══ Dependency: CS1 + CS2 + CS3 + CS4 + CS7 + GID v4 ══════ -->
+<!-- ═══ Guard: _blokMN_DoneV3 ═════════════════════════════════ -->
+<!-- ═══ Versi: 3.0 — R2COIN Merah Putih (3 Pintu Standar) ═════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A21, A25, ═════ -->
+<!-- ═══         A29—A32 ═══════════════════════════════════════ -->
+<!-- ═══ Tujuan: Fondasi komunikasi antar blok UI via 3 Pintu. ═ -->
+<!-- ═══         Format paket: { tipe, dari, ke, data, idRef } ═ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_MN_V3() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokMN_DoneV3) {
+        console.log('ℹ️ BLOK MN v3 sudah terpasang.');
+        return;
+    }
+    // ── Cek dependency ──
+    if (!window._coreSystem7DoneV3) {
+        console.warn('⚠️ CS7 v3 belum terpasang. BLOK MN ditunda.');
+        return;
+    }
+    if (!window._gidV4Done) {
+        console.warn('⚠️ GID v4 belum terpasang. BLOK MN ditunda.');
+        return;
+    }
+    window._blokMN_DoneV3 = true;
+    window._blokMN_Versi   = '3.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA & STORAGE KEY
+    // ═══════════════════════════════════════════════════════════
+    var MN_PREFIX_INBOX  = 'r2c_mn_inbox_';   // per menu
+    var MN_PREFIX_OUTBOX = 'r2c_mn_outbox_';  // per idUser
+    var MN_MAX_INBOX     = 200;
+    var MN_MAX_OUTBOX    = 200;
+    var MN_TTL_HARI      = 7;                 // kadaluarsa 7 hari
+
+    var MN_TIPE = {
+        PESAN:     'pesan',
+        NOTIF:     'notif',
+        REQUEST:   'request',
+        RESPONSE:  'response',
+        BROADCAST: 'broadcast',
+        EVENT:     'event'
+    };
+
+    var MN_STATUS = {
+        BELUM_DIBACA: 'belum_dibaca',
+        DIBACA:       'dibaca',
+        DIPROSES:     'diproses',
+        SELESAI:      'selesai',
+        DIBATALKAN:   'dibatalkan'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _loadJSON(key, def) {
+        try {
+            if (typeof window.csLoadJSON === 'function') {
+                return window.csLoadJSON(key, def);
+            }
+            var raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : def;
+        } catch (e) { return def; }
+    }
+
+    function _saveJSON(key, data) {
+        try {
+            if (typeof window.csSaveJSON === 'function') {
+                return window.csSaveJSON(key, data, { backup: false });
+            }
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) {
+            console.warn('MN: gagal simpan', key, e.message);
+            return { sukses: false, pesan: e.message };
+        }
+    }
+
+    function _now() {
+        return (typeof window.csNow === 'function')
+            ? window.csNow()
+            : new Date().toISOString();
+    }
+
+    function _randomStr(n) {
+        if (typeof window.csRandomStr === 'function') return window.csRandomStr(n);
+        var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        var s = '';
+        for (var i = 0; i < (n || 4); i++) {
+            s += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return s;
+    }
+
+    function _loadInbox(kodeMenu) {
+        if (!kodeMenu) return [];
+        var v = _loadJSON(MN_PREFIX_INBOX + kodeMenu, []);
+        return Array.isArray(v) ? v : [];
+    }
+
+    function _saveInbox(kodeMenu, list) {
+        if (!kodeMenu) return { sukses: false, pesan: 'kodeMenu kosong' };
+        return _saveJSON(MN_PREFIX_INBOX + kodeMenu, list);
+    }
+
+    function _loadOutbox(idUser) {
+        if (!idUser) return [];
+        var v = _loadJSON(MN_PREFIX_OUTBOX + idUser, []);
+        return Array.isArray(v) ? v : [];
+    }
+
+    function _saveOutbox(idUser, list) {
+        if (!idUser) return { sukses: false, pesan: 'idUser kosong' };
+        return _saveJSON(MN_PREFIX_OUTBOX + idUser, list);
+    }
+
+    function _hapusPaketLama(list) {
+        try {
+            if (!Array.isArray(list)) return list;
+            var batas = Date.now() - (MN_TTL_HARI * 24 * 60 * 60 * 1000);
+            return list.filter(function(p) {
+                if (!p || !p.timestamp) return false;
+                var t = new Date(p.timestamp).getTime();
+                return !isNaN(t) && t >= batas;
+            });
+        } catch (e) { return list; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — VALIDASI & BUAT PAKET (A13)
+    // ═══════════════════════════════════════════════════════════
+    // Format paket WAJIB: { tipe, dari, ke, data, idRef }
+    // ═══════════════════════════════════════════════════════════
+    function _validasiPaket(paket) {
+        if (!paket || typeof paket !== 'object') {
+            return { valid: false, pesan: 'Paket bukan objek' };
+        }
+        if (!paket.tipe) return { valid: false, pesan: 'Paket tanpa tipe' };
+        if (!paket.ke || !paket.ke.menu) {
+            return { valid: false, pesan: 'Paket tanpa tujuan menu' };
+        }
+        return { valid: true };
+    }
+
+    function _buatPaket(tipe, dari, ke, data, idRef) {
+        return {
+            idPaket:   'MN-' + Date.now().toString(36).toUpperCase() + '-' + _randomStr(4),
+            tipe:      tipe,
+            dari:      dari || {
+                idUser:   window.gidIdUser ? window.gidIdUser() : null,
+                idOwner:  window.gidIdOwner ? window.gidIdOwner() : null,
+                kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                menu:     'unknown',
+                blok:     'unknown'
+            },
+            ke:        ke,
+            data:      data || {},
+            idRef:     idRef || null,
+            status:    MN_STATUS.BELUM_DIBACA,
+            prioritas: (data && data.prioritas) || 'normal',
+            timestamp: _now(),
+            dibacaOleh: [],
+            createdAt: _now()
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — ⭐ PINTU 1: KIRIM (A11)
+    // ═══════════════════════════════════════════════════════════
+    window.mnKirimKeMenu = function(paket) {
+        try {
+            var v = _validasiPaket(paket);
+            if (!v.valid) {
+                console.warn('⚠️ MN kirim: paket tidak valid — ' + v.pesan);
+                return { sukses: false, pesan: v.pesan };
+            }
+
+            // ── Buat paket lengkap ──
+            var paketLengkap = _buatPaket(
+                paket.tipe,
+                paket.dari || null,
+                paket.ke,
+                paket.data || {},
+                paket.idRef || null
+            );
+
+            // ── Simpan ke inbox tujuan ──
+            var kodeMenuTujuan = paket.ke.menu;
+            var inbox = _loadInbox(kodeMenuTujuan);
+            inbox.unshift(paketLengkap);
+            if (inbox.length > MN_MAX_INBOX) {
+                inbox = inbox.slice(0, MN_MAX_INBOX);
+            }
+            var hasilInbox = _saveInbox(kodeMenuTujuan, inbox);
+
+            // ── Simpan ke outbox pengirim ──
+            var idPengirim = paketLengkap.dari.idUser || 'SYSTEM';
+            var outbox = _loadOutbox(idPengirim);
+            outbox.unshift(paketLengkap);
+            if (outbox.length > MN_MAX_OUTBOX) {
+                outbox = outbox.slice(0, MN_MAX_OUTBOX);
+            }
+            _saveOutbox(idPengirim, outbox);
+
+            // ── Catat aktivitas (CS7) ──
+            try {
+                if (typeof window.catatAktivitasGlobal === 'function') {
+                    window.catatAktivitasGlobal(
+                        idPengirim,
+                        'MN Kirim',
+                        'Tipe: ' + paketLengkap.tipe + ' → menu: ' + kodeMenuTujuan,
+                        { kategori: 'Sistem', idRef: paketLengkap.idPaket }
+                    );
+                }
+            } catch (e) {}
+
+            // ── Emit event (untuk listener live) ──
+            try {
+                window.dispatchEvent(new CustomEvent('mn:pesan-baru', {
+                    detail: paketLengkap
+                }));
+            } catch (e) {}
+
+            // ── Notifikasi visual ke user kalau tipe notif ──
+            try {
+                if (paketLengkap.tipe === MN_TIPE.NOTIF &&
+                    typeof window.csToast === 'function') {
+                    window.csToast(
+                        (paketLengkap.data && paketLengkap.data.judul) ||
+                        'Pesan baru dari ' + kodeMenuTujuan,
+                        'info'
+                    );
+                }
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                idPaket: paketLengkap.idPaket,
+                paket: paketLengkap
+            };
+        } catch (e) {
+            console.error('mnKirimKeMenu error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — ⭐ PINTU 2: TERIMA (A11)
+    // ═══════════════════════════════════════════════════════════
+    window.mnInboxMenu = function(aksiMenu, opts) {
+        opts = opts || {};
+        try {
+            if (!aksiMenu) {
+                console.warn('⚠️ MN terima: aksiMenu kosong');
+                return [];
+            }
+
+            var inbox = _loadInbox(aksiMenu);
+
+            // ── Filter tipe ──
+            if (opts.tipe) {
+                inbox = inbox.filter(function(p) {
+                    return p && p.tipe === opts.tipe;
+                });
+            }
+
+            // ── Filter status ──
+            if (opts.status) {
+                inbox = inbox.filter(function(p) {
+                    return p && p.status === opts.status;
+                });
+            }
+
+            // ── Filter belum dibaca saja ──
+            if (opts.belumDibaca === true) {
+                inbox = inbox.filter(function(p) {
+                    return p && p.status === MN_STATUS.BELUM_DIBACA;
+                });
+            }
+
+            // ── Filter dari pengirim ──
+            if (opts.dariIdUser) {
+                inbox = inbox.filter(function(p) {
+                    return p && p.dari && p.dari.idUser === opts.dariIdUser;
+                });
+            }
+
+            // ── Filter kode role pengirim ──
+            if (opts.dariKodeRole) {
+                inbox = inbox.filter(function(p) {
+                    return p && p.dari && p.dari.kodeRole === opts.dariKodeRole;
+                });
+            }
+
+            // ── Filter prioritas ──
+            if (opts.prioritas) {
+                inbox = inbox.filter(function(p) {
+                    return p && p.prioritas === opts.prioritas;
+                });
+            }
+
+            // ── Sort by timestamp desc (terbaru dulu) ──
+            inbox.sort(function(a, b) {
+                var ta = new Date(a.timestamp || 0).getTime();
+                var tb = new Date(b.timestamp || 0).getTime();
+                return tb - ta;
+            });
+
+            // ── Limit ──
+            var limit = parseInt(opts.limit, 10) || 50;
+            return inbox.slice(0, limit);
+        } catch (e) {
+            console.error('mnInboxMenu error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — ⭐ PINTU 3: AMBIL (A11)
+    // ═══════════════════════════════════════════════════════════
+    // Ambil 1 paket by id, auto-mark dibaca, opsi hapus
+    // ═══════════════════════════════════════════════════════════
+    window.mnAmbilPaket = function(aksiMenu, idPaket, opts) {
+        opts = opts || {};
+        try {
+            if (!aksiMenu || !idPaket) {
+                return { sukses: false, pesan: 'aksiMenu/idPaket kosong' };
+            }
+
+            var inbox = _loadInbox(aksiMenu);
+            var idx = inbox.findIndex(function(p) {
+                return p && p.idPaket === idPaket;
+            });
+            if (idx === -1) {
+                return { sukses: false, pesan: 'Paket tidak ditemukan' };
+            }
+
+            var paket = inbox[idx];
+
+            // ── Tandai dibaca ──
+            if (paket.status === MN_STATUS.BELUM_DIBACA) {
+                paket.status = MN_STATUS.DIBACA;
+                var idUser = window.gidIdUser ? window.gidIdUser() : null;
+                if (idUser && Array.isArray(paket.dibacaOleh)) {
+                    if (paket.dibacaOleh.indexOf(idUser) === -1) {
+                        paket.dibacaOleh.push(idUser);
+                    }
+                }
+            }
+
+            // ── Opsi: hapus setelah diambil ──
+            if (opts.hapusSetelah === true) {
+                inbox.splice(idx, 1);
+            } else {
+                inbox[idx] = paket;
+            }
+
+            _saveInbox(aksiMenu, inbox);
+
+            return { sukses: true, paket: paket };
+        } catch (e) {
+            console.error('mnAmbilPaket error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — NAVIGASI MENU (mnBukaMenu)
+    // ═══════════════════════════════════════════════════════════
+    window.mnBukaMenu = function(aksiMenu) {
+        try {
+            if (!aksiMenu) return false;
+
+            // ── 1. Highlight menu aktif ──
+            if (typeof window.setMenuAktif === 'function') {
+                window.setMenuAktif(aksiMenu);
+            }
+
+            // ── 2. Delegasi ke menuHandlers ──
+            if (window.menuHandlers &&
+                typeof window.menuHandlers[aksiMenu] === 'function') {
+                try {
+                    window.menuHandlers[aksiMenu]();
+                } catch (e) {
+                    console.error('menuHandlers[' + aksiMenu + '] error:', e);
+                    if (typeof window.csRenderError === 'function') {
+                        window.csRenderError('Gagal membuka menu: ' + aksiMenu);
+                    }
+                }
+            } else {
+                // ── Fallback: placeholder ──
+                if (typeof window.tampilkanPlaceholderMenu === 'function') {
+                    window.tampilkanPlaceholderMenu(aksiMenu, '-');
+                } else {
+                    console.warn('⚠️ MN buka menu: handler tidak ada untuk', aksiMenu);
+                }
+            }
+
+            // ── 3. Catat aktivitas ──
+            try {
+                if (typeof window.catatAktivitasGlobal === 'function') {
+                    window.catatAktivitasGlobal(
+                        window.gidIdUser ? window.gidIdUser() : 'SYSTEM',
+                        'MN Buka Menu',
+                        'Menu: ' + aksiMenu,
+                        { kategori: 'Sistem' }
+                    );
+                }
+            } catch (e) {}
+
+            return true;
+        } catch (e) {
+            console.error('mnBukaMenu error:', e);
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — CRUD: TANDAI DIBACA / HAPUS / BERSIHKAN
+    // ═══════════════════════════════════════════════════════════
+    window.mnTandaiDibaca = function(aksiMenu, idPaket) {
+        try {
+            var inbox = _loadInbox(aksiMenu);
+            var idUser = window.gidIdUser ? window.gidIdUser() : null;
+            var berubah = 0;
+
+            inbox.forEach(function(p) {
+                if (!p) return;
+                if (!idPaket || p.idPaket === idPaket) {
+                    if (p.status === MN_STATUS.BELUM_DIBACA) {
+                        p.status = MN_STATUS.DIBACA;
+                        berubah++;
+                    }
+                    if (idUser && Array.isArray(p.dibacaOleh)) {
+                        if (p.dibacaOleh.indexOf(idUser) === -1) {
+                            p.dibacaOleh.push(idUser);
+                        }
+                    }
+                }
+            });
+
+            _saveInbox(aksiMenu, inbox);
+            return { sukses: true, berubah: berubah };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.mnHapusPaket = function(aksiMenu, idPaket) {
+        try {
+            var inbox = _loadInbox(aksiMenu);
+            var panjangAwal = inbox.length;
+            inbox = inbox.filter(function(p) {
+                return p && p.idPaket !== idPaket;
+            });
+            _saveInbox(aksiMenu, inbox);
+            return { sukses: true, dihapus: panjangAwal - inbox.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.mnBersihkanInbox = function(aksiMenu) {
+        try {
+            var panjangAwal = _loadInbox(aksiMenu).length;
+            _saveInbox(aksiMenu, []);
+            return { sukses: true, dihapus: panjangAwal };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.mnBersihkanOutbox = function(idUser) {
+        try {
+            if (!idUser) idUser = window.gidIdUser ? window.gidIdUser() : null;
+            var panjangAwal = _loadOutbox(idUser).length;
+            _saveOutbox(idUser, []);
+            return { sukses: true, dihapus: panjangAwal };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.mnStatistikInbox = function(aksiMenu) {
+        try {
+            var inbox = _loadInbox(aksiMenu);
+            var perTipe = {};
+            var perStatus = {};
+            var perPrioritas = { low:0, normal:0, high:0 };
+
+            inbox.forEach(function(p) {
+                if (!p) return;
+                perTipe[p.tipe] = (perTipe[p.tipe] || 0) + 1;
+                perStatus[p.status] = (perStatus[p.status] || 0) + 1;
+                var pr = p.prioritas || 'normal';
+                perPrioritas[pr] = (perPrioritas[pr] || 0) + 1;
+            });
+
+            var belumDibaca = perStatus[MN_STATUS.BELUM_DIBACA] || 0;
+
+            return {
+                menu:         aksiMenu,
+                total:        inbox.length,
+                belumDibaca:  belumDibaca,
+                perTipe:      perTipe,
+                perStatus:    perStatus,
+                perPrioritas: perPrioritas
+            };
+        } catch (e) {
+            return { total: 0, belumDibaca: 0, perTipe: {}, perStatus: {}, perPrioritas: {} };
+        }
+    };
+
+    window.mnStatistikGlobal = function() {
+        try {
+            var semuaInbox = [];
+            var semuaOutbox = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k) continue;
+                if (k.indexOf(MN_PREFIX_INBOX) === 0) {
+                    var data = _loadJSON(k, []);
+                    if (Array.isArray(data)) {
+                        semuaInbox.push({ key: k, total: data.length });
+                    }
+                } else if (k.indexOf(MN_PREFIX_OUTBOX) === 0) {
+                    var dataO = _loadJSON(k, []);
+                    if (Array.isArray(dataO)) {
+                        semuaOutbox.push({ key: k, total: dataO.length });
+                    }
+                }
+            }
+
+            var totalInbox = semuaInbox.reduce(function(s, x) { return s + x.total; }, 0);
+            var totalOutbox = semuaOutbox.reduce(function(s, x) { return s + x.total; }, 0);
+
+            return {
+                totalMenuInbox:  semuaInbox.length,
+                totalPesanInbox: totalInbox,
+                totalUserOutbox: semuaOutbox.length,
+                totalPesanOutbox: totalOutbox,
+                detail: { inbox: semuaInbox, outbox: semuaOutbox }
+            };
+        } catch (e) {
+            return { totalMenuInbox:0, totalPesanInbox:0, totalUserOutbox:0, totalPesanOutbox:0, detail:{} };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — EVENT BUS (kompatibilitas A12)
+    // ═══════════════════════════════════════════════════════════
+    window.mnEmit = function(eventName, data) {
+        try {
+            window.dispatchEvent(new CustomEvent('mn:' + eventName, { detail: data }));
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.mnOn = function(eventName, callback) {
+        try {
+            if (typeof callback !== 'function') return false;
+            window.addEventListener('mn:' + eventName, function(e) {
+                try { callback(e.detail); } catch (err) {
+                    console.error('mnOn callback error:', err);
+                }
+            });
+            return true;
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — AUTO-CLEANUP (hapus paket > 7 hari)
+    // ═══════════════════════════════════════════════════════════
+    setInterval(function() {
+        try {
+            var cleaned = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k) continue;
+                if (k.indexOf(MN_PREFIX_INBOX) === 0 ||
+                    k.indexOf(MN_PREFIX_OUTBOX) === 0) {
+                    var data = _loadJSON(k, []);
+                    if (Array.isArray(data)) {
+                        var baru = _hapusPaketLama(data);
+                        if (baru.length !== data.length) {
+                            _saveJSON(k, baru);
+                            cleaned += (data.length - baru.length);
+                        }
+                    }
+                }
+            }
+            if (cleaned > 0 && window.CS_FLAG && window.CS_FLAG.DEBUG_MODE) {
+                console.log('🧹 MN auto-cleanup: ' + cleaned + ' paket kadaluarsa dihapus');
+            }
+        } catch (e) {}
+    }, 5 * 60 * 1000); // 5 menit
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugMN = function() {
+        var statGlobal = window.mnStatistikGlobal();
+        var info = {
+            blok:  'MN',
+            versi: window._blokMN_Versi,
+            guard: window._blokMN_DoneV3,
+            statGlobal: statGlobal,
+            konstanta: {
+                maxInbox:   MN_MAX_INBOX,
+                maxOutbox:  MN_MAX_OUTBOX,
+                ttlHari:    MN_TTL_HARI,
+                tipe:       Object.keys(MN_TIPE),
+                status:     Object.keys(MN_STATUS)
+            },
+            fungsi: {
+                // 3 Pintu Standar
+                mnKirimKeMenu:      typeof window.mnKirimKeMenu,
+                mnInboxMenu:        typeof window.mnInboxMenu,
+                mnAmbilPaket:       typeof window.mnAmbilPaket,
+                // Navigasi
+                mnBukaMenu:         typeof window.mnBukaMenu,
+                // CRUD
+                mnTandaiDibaca:     typeof window.mnTandaiDibaca,
+                mnHapusPaket:       typeof window.mnHapusPaket,
+                mnBersihkanInbox:   typeof window.mnBersihkanInbox,
+                mnBersihkanOutbox:  typeof window.mnBersihkanOutbox,
+                // Statistik
+                mnStatistikInbox:   typeof window.mnStatistikInbox,
+                mnStatistikGlobal:  typeof window.mnStatistikGlobal,
+                // Event Bus
+                mnEmit:             typeof window.mnEmit,
+                mnOn:               typeof window.mnOn
+            }
+        };
+        console.log('🔍 debugMN v3:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — TEST SELF (opsional)
+    // ═══════════════════════════════════════════════════════════
+    window.mnTestKirim = function() {
+        var hasil = window.mnKirimKeMenu({
+            tipe: 'pesan',
+            dari: { idUser:'SYSTEM', kodeRole:'SA', menu:'TEST', blok:'L3c-MN' },
+            ke:   { menu: 'TEST' },
+            data: { judul:'Test MN', pesan:'Halo dari MN!' },
+            idRef: null
+        });
+        console.log('🧪 mnTestKirim:', hasil);
+        var inbox = window.mnInboxMenu('TEST');
+        console.log('🧪 Inbox TEST:', inbox.length, inbox);
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — LOG TERPASANG (A5)
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🇮🇩 BLOK MN v3 — MENU NETWORK terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   🚪 3 Pintu Standar:');
+    console.log('      • PINTU 1 → mnKirimKeMenu(paket)');
+    console.log('      • PINTU 2 → mnInboxMenu(aksiMenu, opts)');
+    console.log('      • PINTU 3 → mnAmbilPaket(aksiMenu, idPaket)');
+    console.log('   🎯 Navigasi: mnBukaMenu(aksiMenu)');
+    console.log('   📡 Event Bus: mnEmit, mnOn');
+    console.log('   🧹 Auto-cleanup: paket > ' + MN_TTL_HARI + ' hari dihapus');
+    console.log('   🎁 Helper: mnStatistikInbox, mnStatistikGlobal');
+    console.log('   🔍 Debug: debugMN()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK MN — MENU NETWORK 🇮🇩 v3 FINAL ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL REKENING BANK & E-WALLET (REKBANK) ═ -->
 <!-- ═══ Layer        : L4 (Fungsi Global Domain) ════════════════ -->
 <!-- ═══ Prefix       : rek* ═════════════════════════════════════ -->
@@ -22734,691 +23419,6 @@
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK REKBANK v1.0 — REKENING BANK & E-WALLET 🇮🇩 ═ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK MN — MENU NETWORK 🇮🇩 v3 FINAL ═══════════════════ -->
-<!-- ═══ Layer: L3c (Menu Network — Event Bus) ═════════════════ -->
-<!-- ═══ Dependency: CS1 + CS2 + CS3 + CS4 + CS7 + GID v4 ══════ -->
-<!-- ═══ Guard: _blokMN_DoneV3 ═════════════════════════════════ -->
-<!-- ═══ Versi: 3.0 — R2COIN Merah Putih (3 Pintu Standar) ═════ -->
-<!-- ═══ Aturan: A1, A2, A3, A5, A11, A12, A13, A21, A25, ═════ -->
-<!-- ═══         A29—A32 ═══════════════════════════════════════ -->
-<!-- ═══ Tujuan: Fondasi komunikasi antar blok UI via 3 Pintu. ═ -->
-<!-- ═══         Format paket: { tipe, dari, ke, data, idRef } ═ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_MN_V3() {
-    // ═══════════════════════════════════════════════════════════
-    // [A32] — GUARD FLAG UNIK
-    // ═══════════════════════════════════════════════════════════
-    if (window._blokMN_DoneV3) {
-        console.log('ℹ️ BLOK MN v3 sudah terpasang.');
-        return;
-    }
-    // ── Cek dependency ──
-    if (!window._coreSystem7DoneV3) {
-        console.warn('⚠️ CS7 v3 belum terpasang. BLOK MN ditunda.');
-        return;
-    }
-    if (!window._gidV4Done) {
-        console.warn('⚠️ GID v4 belum terpasang. BLOK MN ditunda.');
-        return;
-    }
-    window._blokMN_DoneV3 = true;
-    window._blokMN_Versi   = '3.0';
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — KONSTANTA & STORAGE KEY
-    // ═══════════════════════════════════════════════════════════
-    var MN_PREFIX_INBOX  = 'r2c_mn_inbox_';   // per menu
-    var MN_PREFIX_OUTBOX = 'r2c_mn_outbox_';  // per idUser
-    var MN_MAX_INBOX     = 200;
-    var MN_MAX_OUTBOX    = 200;
-    var MN_TTL_HARI      = 7;                 // kadaluarsa 7 hari
-
-    var MN_TIPE = {
-        PESAN:     'pesan',
-        NOTIF:     'notif',
-        REQUEST:   'request',
-        RESPONSE:  'response',
-        BROADCAST: 'broadcast',
-        EVENT:     'event'
-    };
-
-    var MN_STATUS = {
-        BELUM_DIBACA: 'belum_dibaca',
-        DIBACA:       'dibaca',
-        DIPROSES:     'diproses',
-        SELESAI:      'selesai',
-        DIBATALKAN:   'dibatalkan'
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — HELPER INTERNAL
-    // ═══════════════════════════════════════════════════════════
-    function _loadJSON(key, def) {
-        try {
-            if (typeof window.csLoadJSON === 'function') {
-                return window.csLoadJSON(key, def);
-            }
-            var raw = localStorage.getItem(key);
-            return raw ? JSON.parse(raw) : def;
-        } catch (e) { return def; }
-    }
-
-    function _saveJSON(key, data) {
-        try {
-            if (typeof window.csSaveJSON === 'function') {
-                return window.csSaveJSON(key, data, { backup: false });
-            }
-            localStorage.setItem(key, JSON.stringify(data));
-            return { sukses: true };
-        } catch (e) {
-            console.warn('MN: gagal simpan', key, e.message);
-            return { sukses: false, pesan: e.message };
-        }
-    }
-
-    function _now() {
-        return (typeof window.csNow === 'function')
-            ? window.csNow()
-            : new Date().toISOString();
-    }
-
-    function _randomStr(n) {
-        if (typeof window.csRandomStr === 'function') return window.csRandomStr(n);
-        var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        var s = '';
-        for (var i = 0; i < (n || 4); i++) {
-            s += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        return s;
-    }
-
-    function _loadInbox(kodeMenu) {
-        if (!kodeMenu) return [];
-        var v = _loadJSON(MN_PREFIX_INBOX + kodeMenu, []);
-        return Array.isArray(v) ? v : [];
-    }
-
-    function _saveInbox(kodeMenu, list) {
-        if (!kodeMenu) return { sukses: false, pesan: 'kodeMenu kosong' };
-        return _saveJSON(MN_PREFIX_INBOX + kodeMenu, list);
-    }
-
-    function _loadOutbox(idUser) {
-        if (!idUser) return [];
-        var v = _loadJSON(MN_PREFIX_OUTBOX + idUser, []);
-        return Array.isArray(v) ? v : [];
-    }
-
-    function _saveOutbox(idUser, list) {
-        if (!idUser) return { sukses: false, pesan: 'idUser kosong' };
-        return _saveJSON(MN_PREFIX_OUTBOX + idUser, list);
-    }
-
-    function _hapusPaketLama(list) {
-        try {
-            if (!Array.isArray(list)) return list;
-            var batas = Date.now() - (MN_TTL_HARI * 24 * 60 * 60 * 1000);
-            return list.filter(function(p) {
-                if (!p || !p.timestamp) return false;
-                var t = new Date(p.timestamp).getTime();
-                return !isNaN(t) && t >= batas;
-            });
-        } catch (e) { return list; }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — VALIDASI & BUAT PAKET (A13)
-    // ═══════════════════════════════════════════════════════════
-    // Format paket WAJIB: { tipe, dari, ke, data, idRef }
-    // ═══════════════════════════════════════════════════════════
-    function _validasiPaket(paket) {
-        if (!paket || typeof paket !== 'object') {
-            return { valid: false, pesan: 'Paket bukan objek' };
-        }
-        if (!paket.tipe) return { valid: false, pesan: 'Paket tanpa tipe' };
-        if (!paket.ke || !paket.ke.menu) {
-            return { valid: false, pesan: 'Paket tanpa tujuan menu' };
-        }
-        return { valid: true };
-    }
-
-    function _buatPaket(tipe, dari, ke, data, idRef) {
-        return {
-            idPaket:   'MN-' + Date.now().toString(36).toUpperCase() + '-' + _randomStr(4),
-            tipe:      tipe,
-            dari:      dari || {
-                idUser:   window.gidIdUser ? window.gidIdUser() : null,
-                idOwner:  window.gidIdOwner ? window.gidIdOwner() : null,
-                kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
-                menu:     'unknown',
-                blok:     'unknown'
-            },
-            ke:        ke,
-            data:      data || {},
-            idRef:     idRef || null,
-            status:    MN_STATUS.BELUM_DIBACA,
-            prioritas: (data && data.prioritas) || 'normal',
-            timestamp: _now(),
-            dibacaOleh: [],
-            createdAt: _now()
-        };
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — ⭐ PINTU 1: KIRIM (A11)
-    // ═══════════════════════════════════════════════════════════
-    window.mnKirimKeMenu = function(paket) {
-        try {
-            var v = _validasiPaket(paket);
-            if (!v.valid) {
-                console.warn('⚠️ MN kirim: paket tidak valid — ' + v.pesan);
-                return { sukses: false, pesan: v.pesan };
-            }
-
-            // ── Buat paket lengkap ──
-            var paketLengkap = _buatPaket(
-                paket.tipe,
-                paket.dari || null,
-                paket.ke,
-                paket.data || {},
-                paket.idRef || null
-            );
-
-            // ── Simpan ke inbox tujuan ──
-            var kodeMenuTujuan = paket.ke.menu;
-            var inbox = _loadInbox(kodeMenuTujuan);
-            inbox.unshift(paketLengkap);
-            if (inbox.length > MN_MAX_INBOX) {
-                inbox = inbox.slice(0, MN_MAX_INBOX);
-            }
-            var hasilInbox = _saveInbox(kodeMenuTujuan, inbox);
-
-            // ── Simpan ke outbox pengirim ──
-            var idPengirim = paketLengkap.dari.idUser || 'SYSTEM';
-            var outbox = _loadOutbox(idPengirim);
-            outbox.unshift(paketLengkap);
-            if (outbox.length > MN_MAX_OUTBOX) {
-                outbox = outbox.slice(0, MN_MAX_OUTBOX);
-            }
-            _saveOutbox(idPengirim, outbox);
-
-            // ── Catat aktivitas (CS7) ──
-            try {
-                if (typeof window.catatAktivitasGlobal === 'function') {
-                    window.catatAktivitasGlobal(
-                        idPengirim,
-                        'MN Kirim',
-                        'Tipe: ' + paketLengkap.tipe + ' → menu: ' + kodeMenuTujuan,
-                        { kategori: 'Sistem', idRef: paketLengkap.idPaket }
-                    );
-                }
-            } catch (e) {}
-
-            // ── Emit event (untuk listener live) ──
-            try {
-                window.dispatchEvent(new CustomEvent('mn:pesan-baru', {
-                    detail: paketLengkap
-                }));
-            } catch (e) {}
-
-            // ── Notifikasi visual ke user kalau tipe notif ──
-            try {
-                if (paketLengkap.tipe === MN_TIPE.NOTIF &&
-                    typeof window.csToast === 'function') {
-                    window.csToast(
-                        (paketLengkap.data && paketLengkap.data.judul) ||
-                        'Pesan baru dari ' + kodeMenuTujuan,
-                        'info'
-                    );
-                }
-            } catch (e) {}
-
-            return {
-                sukses: true,
-                idPaket: paketLengkap.idPaket,
-                paket: paketLengkap
-            };
-        } catch (e) {
-            console.error('mnKirimKeMenu error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — ⭐ PINTU 2: TERIMA (A11)
-    // ═══════════════════════════════════════════════════════════
-    window.mnInboxMenu = function(aksiMenu, opts) {
-        opts = opts || {};
-        try {
-            if (!aksiMenu) {
-                console.warn('⚠️ MN terima: aksiMenu kosong');
-                return [];
-            }
-
-            var inbox = _loadInbox(aksiMenu);
-
-            // ── Filter tipe ──
-            if (opts.tipe) {
-                inbox = inbox.filter(function(p) {
-                    return p && p.tipe === opts.tipe;
-                });
-            }
-
-            // ── Filter status ──
-            if (opts.status) {
-                inbox = inbox.filter(function(p) {
-                    return p && p.status === opts.status;
-                });
-            }
-
-            // ── Filter belum dibaca saja ──
-            if (opts.belumDibaca === true) {
-                inbox = inbox.filter(function(p) {
-                    return p && p.status === MN_STATUS.BELUM_DIBACA;
-                });
-            }
-
-            // ── Filter dari pengirim ──
-            if (opts.dariIdUser) {
-                inbox = inbox.filter(function(p) {
-                    return p && p.dari && p.dari.idUser === opts.dariIdUser;
-                });
-            }
-
-            // ── Filter kode role pengirim ──
-            if (opts.dariKodeRole) {
-                inbox = inbox.filter(function(p) {
-                    return p && p.dari && p.dari.kodeRole === opts.dariKodeRole;
-                });
-            }
-
-            // ── Filter prioritas ──
-            if (opts.prioritas) {
-                inbox = inbox.filter(function(p) {
-                    return p && p.prioritas === opts.prioritas;
-                });
-            }
-
-            // ── Sort by timestamp desc (terbaru dulu) ──
-            inbox.sort(function(a, b) {
-                var ta = new Date(a.timestamp || 0).getTime();
-                var tb = new Date(b.timestamp || 0).getTime();
-                return tb - ta;
-            });
-
-            // ── Limit ──
-            var limit = parseInt(opts.limit, 10) || 50;
-            return inbox.slice(0, limit);
-        } catch (e) {
-            console.error('mnInboxMenu error:', e);
-            return [];
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — ⭐ PINTU 3: AMBIL (A11)
-    // ═══════════════════════════════════════════════════════════
-    // Ambil 1 paket by id, auto-mark dibaca, opsi hapus
-    // ═══════════════════════════════════════════════════════════
-    window.mnAmbilPaket = function(aksiMenu, idPaket, opts) {
-        opts = opts || {};
-        try {
-            if (!aksiMenu || !idPaket) {
-                return { sukses: false, pesan: 'aksiMenu/idPaket kosong' };
-            }
-
-            var inbox = _loadInbox(aksiMenu);
-            var idx = inbox.findIndex(function(p) {
-                return p && p.idPaket === idPaket;
-            });
-            if (idx === -1) {
-                return { sukses: false, pesan: 'Paket tidak ditemukan' };
-            }
-
-            var paket = inbox[idx];
-
-            // ── Tandai dibaca ──
-            if (paket.status === MN_STATUS.BELUM_DIBACA) {
-                paket.status = MN_STATUS.DIBACA;
-                var idUser = window.gidIdUser ? window.gidIdUser() : null;
-                if (idUser && Array.isArray(paket.dibacaOleh)) {
-                    if (paket.dibacaOleh.indexOf(idUser) === -1) {
-                        paket.dibacaOleh.push(idUser);
-                    }
-                }
-            }
-
-            // ── Opsi: hapus setelah diambil ──
-            if (opts.hapusSetelah === true) {
-                inbox.splice(idx, 1);
-            } else {
-                inbox[idx] = paket;
-            }
-
-            _saveInbox(aksiMenu, inbox);
-
-            return { sukses: true, paket: paket };
-        } catch (e) {
-            console.error('mnAmbilPaket error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — NAVIGASI MENU (mnBukaMenu)
-    // ═══════════════════════════════════════════════════════════
-    window.mnBukaMenu = function(aksiMenu) {
-        try {
-            if (!aksiMenu) return false;
-
-            // ── 1. Highlight menu aktif ──
-            if (typeof window.setMenuAktif === 'function') {
-                window.setMenuAktif(aksiMenu);
-            }
-
-            // ── 2. Delegasi ke menuHandlers ──
-            if (window.menuHandlers &&
-                typeof window.menuHandlers[aksiMenu] === 'function') {
-                try {
-                    window.menuHandlers[aksiMenu]();
-                } catch (e) {
-                    console.error('menuHandlers[' + aksiMenu + '] error:', e);
-                    if (typeof window.csRenderError === 'function') {
-                        window.csRenderError('Gagal membuka menu: ' + aksiMenu);
-                    }
-                }
-            } else {
-                // ── Fallback: placeholder ──
-                if (typeof window.tampilkanPlaceholderMenu === 'function') {
-                    window.tampilkanPlaceholderMenu(aksiMenu, '-');
-                } else {
-                    console.warn('⚠️ MN buka menu: handler tidak ada untuk', aksiMenu);
-                }
-            }
-
-            // ── 3. Catat aktivitas ──
-            try {
-                if (typeof window.catatAktivitasGlobal === 'function') {
-                    window.catatAktivitasGlobal(
-                        window.gidIdUser ? window.gidIdUser() : 'SYSTEM',
-                        'MN Buka Menu',
-                        'Menu: ' + aksiMenu,
-                        { kategori: 'Sistem' }
-                    );
-                }
-            } catch (e) {}
-
-            return true;
-        } catch (e) {
-            console.error('mnBukaMenu error:', e);
-            return false;
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — CRUD: TANDAI DIBACA / HAPUS / BERSIHKAN
-    // ═══════════════════════════════════════════════════════════
-    window.mnTandaiDibaca = function(aksiMenu, idPaket) {
-        try {
-            var inbox = _loadInbox(aksiMenu);
-            var idUser = window.gidIdUser ? window.gidIdUser() : null;
-            var berubah = 0;
-
-            inbox.forEach(function(p) {
-                if (!p) return;
-                if (!idPaket || p.idPaket === idPaket) {
-                    if (p.status === MN_STATUS.BELUM_DIBACA) {
-                        p.status = MN_STATUS.DIBACA;
-                        berubah++;
-                    }
-                    if (idUser && Array.isArray(p.dibacaOleh)) {
-                        if (p.dibacaOleh.indexOf(idUser) === -1) {
-                            p.dibacaOleh.push(idUser);
-                        }
-                    }
-                }
-            });
-
-            _saveInbox(aksiMenu, inbox);
-            return { sukses: true, berubah: berubah };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    window.mnHapusPaket = function(aksiMenu, idPaket) {
-        try {
-            var inbox = _loadInbox(aksiMenu);
-            var panjangAwal = inbox.length;
-            inbox = inbox.filter(function(p) {
-                return p && p.idPaket !== idPaket;
-            });
-            _saveInbox(aksiMenu, inbox);
-            return { sukses: true, dihapus: panjangAwal - inbox.length };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    window.mnBersihkanInbox = function(aksiMenu) {
-        try {
-            var panjangAwal = _loadInbox(aksiMenu).length;
-            _saveInbox(aksiMenu, []);
-            return { sukses: true, dihapus: panjangAwal };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    window.mnBersihkanOutbox = function(idUser) {
-        try {
-            if (!idUser) idUser = window.gidIdUser ? window.gidIdUser() : null;
-            var panjangAwal = _loadOutbox(idUser).length;
-            _saveOutbox(idUser, []);
-            return { sukses: true, dihapus: panjangAwal };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 9] — STATISTIK
-    // ═══════════════════════════════════════════════════════════
-    window.mnStatistikInbox = function(aksiMenu) {
-        try {
-            var inbox = _loadInbox(aksiMenu);
-            var perTipe = {};
-            var perStatus = {};
-            var perPrioritas = { low:0, normal:0, high:0 };
-
-            inbox.forEach(function(p) {
-                if (!p) return;
-                perTipe[p.tipe] = (perTipe[p.tipe] || 0) + 1;
-                perStatus[p.status] = (perStatus[p.status] || 0) + 1;
-                var pr = p.prioritas || 'normal';
-                perPrioritas[pr] = (perPrioritas[pr] || 0) + 1;
-            });
-
-            var belumDibaca = perStatus[MN_STATUS.BELUM_DIBACA] || 0;
-
-            return {
-                menu:         aksiMenu,
-                total:        inbox.length,
-                belumDibaca:  belumDibaca,
-                perTipe:      perTipe,
-                perStatus:    perStatus,
-                perPrioritas: perPrioritas
-            };
-        } catch (e) {
-            return { total: 0, belumDibaca: 0, perTipe: {}, perStatus: {}, perPrioritas: {} };
-        }
-    };
-
-    window.mnStatistikGlobal = function() {
-        try {
-            var semuaInbox = [];
-            var semuaOutbox = [];
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k) continue;
-                if (k.indexOf(MN_PREFIX_INBOX) === 0) {
-                    var data = _loadJSON(k, []);
-                    if (Array.isArray(data)) {
-                        semuaInbox.push({ key: k, total: data.length });
-                    }
-                } else if (k.indexOf(MN_PREFIX_OUTBOX) === 0) {
-                    var dataO = _loadJSON(k, []);
-                    if (Array.isArray(dataO)) {
-                        semuaOutbox.push({ key: k, total: dataO.length });
-                    }
-                }
-            }
-
-            var totalInbox = semuaInbox.reduce(function(s, x) { return s + x.total; }, 0);
-            var totalOutbox = semuaOutbox.reduce(function(s, x) { return s + x.total; }, 0);
-
-            return {
-                totalMenuInbox:  semuaInbox.length,
-                totalPesanInbox: totalInbox,
-                totalUserOutbox: semuaOutbox.length,
-                totalPesanOutbox: totalOutbox,
-                detail: { inbox: semuaInbox, outbox: semuaOutbox }
-            };
-        } catch (e) {
-            return { totalMenuInbox:0, totalPesanInbox:0, totalUserOutbox:0, totalPesanOutbox:0, detail:{} };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 10] — EVENT BUS (kompatibilitas A12)
-    // ═══════════════════════════════════════════════════════════
-    window.mnEmit = function(eventName, data) {
-        try {
-            window.dispatchEvent(new CustomEvent('mn:' + eventName, { detail: data }));
-            return true;
-        } catch (e) { return false; }
-    };
-
-    window.mnOn = function(eventName, callback) {
-        try {
-            if (typeof callback !== 'function') return false;
-            window.addEventListener('mn:' + eventName, function(e) {
-                try { callback(e.detail); } catch (err) {
-                    console.error('mnOn callback error:', err);
-                }
-            });
-            return true;
-        } catch (e) { return false; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 11] — AUTO-CLEANUP (hapus paket > 7 hari)
-    // ═══════════════════════════════════════════════════════════
-    setInterval(function() {
-        try {
-            var cleaned = 0;
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k) continue;
-                if (k.indexOf(MN_PREFIX_INBOX) === 0 ||
-                    k.indexOf(MN_PREFIX_OUTBOX) === 0) {
-                    var data = _loadJSON(k, []);
-                    if (Array.isArray(data)) {
-                        var baru = _hapusPaketLama(data);
-                        if (baru.length !== data.length) {
-                            _saveJSON(k, baru);
-                            cleaned += (data.length - baru.length);
-                        }
-                    }
-                }
-            }
-            if (cleaned > 0 && window.CS_FLAG && window.CS_FLAG.DEBUG_MODE) {
-                console.log('🧹 MN auto-cleanup: ' + cleaned + ' paket kadaluarsa dihapus');
-            }
-        } catch (e) {}
-    }, 5 * 60 * 1000); // 5 menit
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 12] — DEBUG (A5)
-    // ═══════════════════════════════════════════════════════════
-    window.debugMN = function() {
-        var statGlobal = window.mnStatistikGlobal();
-        var info = {
-            blok:  'MN',
-            versi: window._blokMN_Versi,
-            guard: window._blokMN_DoneV3,
-            statGlobal: statGlobal,
-            konstanta: {
-                maxInbox:   MN_MAX_INBOX,
-                maxOutbox:  MN_MAX_OUTBOX,
-                ttlHari:    MN_TTL_HARI,
-                tipe:       Object.keys(MN_TIPE),
-                status:     Object.keys(MN_STATUS)
-            },
-            fungsi: {
-                // 3 Pintu Standar
-                mnKirimKeMenu:      typeof window.mnKirimKeMenu,
-                mnInboxMenu:        typeof window.mnInboxMenu,
-                mnAmbilPaket:       typeof window.mnAmbilPaket,
-                // Navigasi
-                mnBukaMenu:         typeof window.mnBukaMenu,
-                // CRUD
-                mnTandaiDibaca:     typeof window.mnTandaiDibaca,
-                mnHapusPaket:       typeof window.mnHapusPaket,
-                mnBersihkanInbox:   typeof window.mnBersihkanInbox,
-                mnBersihkanOutbox:  typeof window.mnBersihkanOutbox,
-                // Statistik
-                mnStatistikInbox:   typeof window.mnStatistikInbox,
-                mnStatistikGlobal:  typeof window.mnStatistikGlobal,
-                // Event Bus
-                mnEmit:             typeof window.mnEmit,
-                mnOn:               typeof window.mnOn
-            }
-        };
-        console.log('🔍 debugMN v3:', info);
-        return info;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 13] — TEST SELF (opsional)
-    // ═══════════════════════════════════════════════════════════
-    window.mnTestKirim = function() {
-        var hasil = window.mnKirimKeMenu({
-            tipe: 'pesan',
-            dari: { idUser:'SYSTEM', kodeRole:'SA', menu:'TEST', blok:'L3c-MN' },
-            ke:   { menu: 'TEST' },
-            data: { judul:'Test MN', pesan:'Halo dari MN!' },
-            idRef: null
-        });
-        console.log('🧪 mnTestKirim:', hasil);
-        var inbox = window.mnInboxMenu('TEST');
-        console.log('🧪 Inbox TEST:', inbox.length, inbox);
-        return hasil;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 14] — LOG TERPASANG (A5)
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c🇮🇩 BLOK MN v3 — MENU NETWORK terpasang.',
-        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
-        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
-    console.log('   🚪 3 Pintu Standar:');
-    console.log('      • PINTU 1 → mnKirimKeMenu(paket)');
-    console.log('      • PINTU 2 → mnInboxMenu(aksiMenu, opts)');
-    console.log('      • PINTU 3 → mnAmbilPaket(aksiMenu, idPaket)');
-    console.log('   🎯 Navigasi: mnBukaMenu(aksiMenu)');
-    console.log('   📡 Event Bus: mnEmit, mnOn');
-    console.log('   🧹 Auto-cleanup: paket > ' + MN_TTL_HARI + ' hari dihapus');
-    console.log('   🎁 Helper: mnStatistikInbox, mnStatistikGlobal');
-    console.log('   🔍 Debug: debugMN()');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK MN — MENU NETWORK 🇮🇩 v3 FINAL ═════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
