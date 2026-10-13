@@ -24372,6 +24372,1258 @@
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL DOMPET R2COIN (DOMPET) v2 ══════════ -->
+<!-- ═══ Layer        : L4 (Fungsi Global Domain) ════════════════ -->
+<!-- ═══ Prefix       : dompet* ═════════════════════════════════ -->
+<!-- ═══ Guard        : _blokDompetDoneV2 (UNIK — A32) ══════════ -->
+<!-- ═══                + alias _blokDompetDone, _blokDompetSADone -->
+<!-- ═══ IIFE         : BLOK_FUNGSI_GLOBAL_DOMPET_V2 ═══════════ -->
+<!-- ═══ Fokus        : Saldo + transaksi + intervensi + topup  ═ -->
+<!-- ═══ Pemakai      : SEMUA 27 role (termasuk 4 level KDMP) ══ -->
+<!-- ═══ Dependency   : CS1+CS2+CS4+CS7+CS9 + GID v4 + MN v3 ═══ -->
+<!-- ═══             + EKONOMI v2 ══════════════════════════════ -->
+<!-- ═══ Isi          : 14 Modul · ~48 fungsi · 3 Pintu ════════ -->
+<!-- ═══ Aturan       : A1,A2,A3,A5,A11—A13,A18,A19,A23, ══════ -->
+<!-- ═══                A25,A29,A31,A32,A33,A34,A35,A36,A40 ═══ -->
+<!-- ═══ Konsolidasi  : 0.10.46 (Dompet R2Coin SA) ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FUNGSI_GLOBAL_DOMPET_V2() {
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 0] — GUARD + CEK DEPENDENCY (A23, A31, A32)
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokDompetDoneV2) {
+        console.log('[DOMPET v2] sudah terpasang.');
+        return;
+    }
+
+    var depsWajib = [
+        { flag: '_coreSystem1DoneV3',  nama: 'CS1 v3' },
+        { flag: '_coreSystem2DoneV3',  nama: 'CS2 v3' },
+        { flag: '_coreSystem4DoneV3',  nama: 'CS4 v3' },
+        { flag: '_coreSystem7DoneV3',  nama: 'CS7 v3' },
+        { flag: '_coreSystem9DoneV3',  nama: 'CS9 v3' },
+        { flag: '_gidV4Done',          nama: 'GID v4' },
+        { flag: '_role27V4Done',       nama: 'ROLE27 v4' },
+        { flag: '_blokMN_DoneV3',      nama: 'MN v3' },
+        { flag: '_blokEkonomiDoneV2',  nama: 'EKONOMI v2' }
+    ];
+    var missWajib = depsWajib.filter(function(d) { return !window[d.flag]; });
+    if (missWajib.length > 0) {
+        console.warn('[DOMPET v2] ditunda — dependency belum lengkap:');
+        missWajib.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    // Guard v2 + alias
+    window._blokDompetDoneV2    = true;
+    window._blokDompetDone      = true;
+    window._blokDompetSADone    = true;
+    window._blokDompetVersi     = '2.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — HELPER DASAR
+    // ═══════════════════════════════════════════════════════════
+    function _esc(s) {
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    }
+    function _now() {
+        if (typeof window.csNow === 'function') return window.csNow();
+        return new Date().toISOString();
+    }
+    function _loadJSON(key, def) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, def);
+        try {
+            var s = localStorage.getItem(key);
+            var p = s ? JSON.parse(s) : def;
+            return (p === null || p === undefined) ? def : p;
+        } catch (e) { return def; }
+    }
+    function _saveJSON(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+    function _idUser() {
+        try { if (typeof window.gidIdUser === 'function') return window.gidIdUser(); }
+        catch (e) {}
+        return null;
+    }
+    function _kodeRole() {
+        try { if (typeof window.gidKodeRoleUser === 'function') return window.gidKodeRoleUser(); }
+        catch (e) {}
+        return null;
+    }
+    function _isSA() {
+        try { if (typeof window.gidIsSA === 'function') return window.gidIsSA(); }
+        catch (e) {}
+        var kr = _kodeRole();
+        return kr === 'SA' || kr === 'SA_STAF';
+    }
+    function _isKopdes() {
+        var kr = _kodeRole();
+        if (!kr) return false;
+        return kr.indexOf('KDMP_') === 0 || kr === 'KSR_KDMP';
+    }
+    function _catat(aksi, detail) {
+        try {
+            if (typeof window.catatAktivitasGlobal === 'function') {
+                window.catatAktivitasGlobal(_idUser(), aksi, detail);
+            }
+        } catch (e) {}
+    }
+    function _emit(nama, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(nama, { detail: detail || {} }));
+            return true;
+        } catch (e) { return false; }
+    }
+
+    window.dompetEsc = _esc;
+    window.dompetNow = _now;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.DOMPET_KONSTANTA = Object.assign(window.DOMPET_KONSTANTA || {}, {
+        VERSI: '2.0',
+        KEY_PREFIX: 'dompet_',
+        KEY_LOG_INTERVENSI: 'dataIntervensiCoinLog',
+        KEY_LOG_TRANSFER: 'dataTransferCoinLog',
+        MAX_TRANSAKSI: 500,
+        MAX_LOG: 500,
+
+        // Tipe transaksi
+        TIPE: {
+            CREDIT: 'credit',
+            DEBIT:  'debit'
+        },
+
+        // Kategori transaksi
+        KATEGORI: {
+            TOPUP:           'topup',
+            WITHDRAW:        'withdraw',
+            INTERVENSI_SA:   'intervensi_sa',
+            TRANSFER_MASUK:  'transfer_masuk',
+            TRANSFER_KELUAR: 'transfer_keluar',
+            BELANJA:         'belanja',
+            PENJUALAN:       'penjualan',
+            SAWER:           'sawer',
+            FEE:             'fee',
+            REFUND:          'refund',
+            LAINNYA:         'lainnya'
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — STORAGE KEY RESOLVER
+    // ═══════════════════════════════════════════════════════════
+    function _keyDompet(idUser) {
+        if (!idUser) return null;
+        return window.DOMPET_KONSTANTA.KEY_PREFIX + idUser;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — DEFAULT DOMPET
+    // ═══════════════════════════════════════════════════════════
+    window.dompetGetDefault = function() {
+        return {
+            idUser: null,
+            balance: 0,
+            totalMasuk: 0,
+            totalKeluar: 0,
+            transactions: [],
+            createdAt: null,
+            updatedAt: null,
+            updatedBy: null
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — CRUD DOMPET
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 5.1 Get Dompet User ──
+    window.dompetGet = function(idUser) {
+        try {
+            if (!idUser) idUser = _idUser();
+            if (!idUser) return window.dompetGetDefault();
+
+            var key = _keyDompet(idUser);
+            var raw = _loadJSON(key, null);
+
+            if (!raw || typeof raw !== 'object') {
+                var def = window.dompetGetDefault();
+                def.idUser = idUser;
+                def.createdAt = _now();
+                return def;
+            }
+
+            var def2 = window.dompetGetDefault();
+            var merged = Object.assign({}, def2, raw);
+            merged.idUser = idUser;
+            if (!Array.isArray(merged.transactions)) merged.transactions = [];
+            if (!merged.createdAt) merged.createdAt = _now();
+
+            merged.balance = parseFloat(merged.balance) || 0;
+            merged.totalMasuk = parseFloat(merged.totalMasuk) || 0;
+            merged.totalKeluar = parseFloat(merged.totalKeluar) || 0;
+
+            return merged;
+        } catch (e) {
+            console.error('dompetGet error:', e);
+            return window.dompetGetDefault();
+        }
+    };
+
+    // ── 5.2 Save Dompet User ──
+    window.dompetSave = function(idUser, data) {
+        try {
+            if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+            if (!data || typeof data !== 'object') {
+                return { sukses: false, pesan: 'Data tidak valid' };
+            }
+
+            var def = window.dompetGetDefault();
+            var merged = Object.assign({}, def, data);
+            merged.idUser = idUser;
+            if (!Array.isArray(merged.transactions)) merged.transactions = [];
+
+            // Batasi riwayat
+            if (merged.transactions.length > window.DOMPET_KONSTANTA.MAX_TRANSAKSI) {
+                merged.transactions = merged.transactions.slice(-window.DOMPET_KONSTANTA.MAX_TRANSAKSI);
+            }
+
+            merged.balance = Math.max(0, parseFloat(merged.balance) || 0);
+            merged.totalMasuk = parseFloat(merged.totalMasuk) || 0;
+            merged.totalKeluar = parseFloat(merged.totalKeluar) || 0;
+            merged.updatedAt = _now();
+            merged.updatedBy = _idUser() || 'system';
+
+            var key = _keyDompet(idUser);
+            return _saveJSON(key, merged);
+        } catch (e) {
+            console.error('dompetSave error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 5.3 Get Saldo ──
+    window.dompetGetSaldo = function(idUser) {
+        try {
+            if (!idUser) idUser = _idUser();
+            var dompet = window.dompetGet(idUser);
+            return parseFloat(dompet.balance) || 0;
+        } catch (e) { return 0; }
+    };
+
+    // ── 5.4 Set Saldo (Force) ──
+    window.dompetSetSaldo = function(idUser, saldoBaru) {
+        try {
+            if (!_isSA()) return { sukses: false, pesan: 'Hanya SA' };
+            if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+
+            var dompet = window.dompetGet(idUser);
+            var lama = parseFloat(dompet.balance) || 0;
+            var baru = Math.max(0, parseFloat(saldoBaru) || 0);
+
+            dompet.balance = baru;
+            var save = window.dompetSave(idUser, dompet);
+            if (!save.sukses) return save;
+
+            _catat('Set Saldo Dompet',
+                idUser + ' — Rp ' + lama + ' → Rp ' + baru);
+
+            _emit('r2coin:dompet-set-saldo', {
+                idUser: idUser, saldoLama: lama, saldoBaru: baru
+            });
+
+            return { sukses: true, saldoLama: lama, saldoBaru: baru };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — TRANSAKSI DOMPET (CORE)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 6.1 Tambah Transaksi (internal core) ──
+    function _catatTransaksi(idUser, opts) {
+        opts = opts || {};
+
+        if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+
+        var tipe = opts.tipe || 'credit';
+        var jumlah = parseFloat(opts.jumlah) || 0;
+
+        if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0' };
+        if (['credit', 'debit'].indexOf(tipe) === -1) {
+            return { sukses: false, pesan: 'Tipe harus credit/debit' };
+        }
+
+        var dompet = window.dompetGet(idUser);
+        var saldoLama = parseFloat(dompet.balance) || 0;
+        var saldoBaru;
+
+        if (tipe === 'credit') {
+            saldoBaru = saldoLama + jumlah;
+            dompet.totalMasuk = (parseFloat(dompet.totalMasuk) || 0) + jumlah;
+        } else {
+            if (saldoLama < jumlah) {
+                return {
+                    sukses: false,
+                    pesan: 'Saldo tidak cukup. Saldo: ' + saldoLama,
+                    saldoSekarang: saldoLama,
+                    kurang: jumlah - saldoLama
+                };
+            }
+            saldoBaru = saldoLama - jumlah;
+            dompet.totalKeluar = (parseFloat(dompet.totalKeluar) || 0) + jumlah;
+        }
+
+        dompet.balance = saldoBaru;
+
+        var trx = {
+            id: 'TRX-' + Date.now().toString(36).toUpperCase() + '-' +
+                Math.random().toString(36).substring(2, 5).toUpperCase(),
+            tipe: tipe,
+            jumlah: jumlah,
+            saldoSebelum: saldoLama,
+            saldoSesudah: saldoBaru,
+            kategori: opts.kategori || 'lainnya',
+            keterangan: opts.keterangan || '-',
+            refId: opts.refId || null,
+            lawanTransaksi: opts.lawanTransaksi || null,
+            waktu: _now(),
+            oleh: _idUser() || 'system'
+        };
+
+        if (!Array.isArray(dompet.transactions)) dompet.transactions = [];
+        dompet.transactions.push(trx);
+
+        var save = window.dompetSave(idUser, dompet);
+        if (!save.sukses) return save;
+
+        // Update saldo di dataAkunAktif (sync)
+        _syncSaldoKeAkunAktif(idUser, saldoBaru);
+
+        return {
+            sukses: true,
+            transaksi: trx,
+            saldo: saldoBaru,
+            saldoSebelum: saldoLama
+        };
+    }
+
+    // ── 6.2 Public: Tambah Transaksi ──
+    window.dompetTambahTransaksi = function(idUser, opts) {
+        try {
+            return _catatTransaksi(idUser, opts);
+        } catch (e) {
+            console.error('dompetTambahTransaksi error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 6.3 Public: Credit (Tambah saldo) ──
+    window.dompetCredit = function(idUser, jumlah, opts) {
+        opts = opts || {};
+        return _catatTransaksi(idUser, {
+            tipe: 'credit',
+            jumlah: jumlah,
+            kategori: opts.kategori || 'lainnya',
+            keterangan: opts.keterangan || 'Credit',
+            refId: opts.refId,
+            lawanTransaksi: opts.lawanTransaksi
+        });
+    };
+
+    // ── 6.4 Public: Debit (Kurangi saldo) ──
+    window.dompetDebit = function(idUser, jumlah, opts) {
+        opts = opts || {};
+        return _catatTransaksi(idUser, {
+            tipe: 'debit',
+            jumlah: jumlah,
+            kategori: opts.kategori || 'lainnya',
+            keterangan: opts.keterangan || 'Debit',
+            refId: opts.refId,
+            lawanTransaksi: opts.lawanTransaksi
+        });
+    };
+
+    // ── 6.5 Sync saldo ke dataAkunAktif ──
+    function _syncSaldoKeAkunAktif(idUser, saldo) {
+        try {
+            var aa = _loadJSON('dataAkunAktif', []);
+            if (!Array.isArray(aa)) return;
+            var idx = aa.findIndex(function(a) {
+                return a && (a.idUser === idUser || a.id === idUser);
+            });
+            if (idx !== -1) {
+                if (!aa[idx].r2coin) aa[idx].r2coin = {};
+                aa[idx].r2coin.balance = saldo;
+                aa[idx].r2coin.updatedAt = _now();
+                _saveJSON('dataAkunAktif', aa);
+                try {
+                    if (Array.isArray(window.dataAkunAktif)) {
+                        window.dataAkunAktif.length = 0;
+                        aa.forEach(function(x) { window.dataAkunAktif.push(x); });
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    // ── 6.6 Load Riwayat Transaksi ──
+    window.dompetRiwayat = function(idUser, opts) {
+        opts = opts || {};
+        try {
+            if (!idUser) idUser = _idUser();
+            var dompet = window.dompetGet(idUser);
+            var trx = Array.isArray(dompet.transactions) ? dompet.transactions.slice() : [];
+
+            // Filter kategori
+            if (opts.kategori) {
+                trx = trx.filter(function(t) { return t.kategori === opts.kategori; });
+            }
+            // Filter tipe
+            if (opts.tipe) {
+                trx = trx.filter(function(t) { return t.tipe === opts.tipe; });
+            }
+            // Filter tanggal
+            if (opts.dariTanggal) {
+                var t0 = new Date(opts.dariTanggal).getTime();
+                trx = trx.filter(function(t) {
+                    return new Date(t.waktu).getTime() >= t0;
+                });
+            }
+
+            // Sort desc
+            trx.sort(function(a, b) {
+                return new Date(b.waktu || 0) - new Date(a.waktu || 0);
+            });
+
+            var limit = parseInt(opts.limit, 10) || 50;
+            return trx.slice(0, limit);
+        } catch (e) {
+            console.error('dompetRiwayat error:', e);
+            return [];
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — INTERVENSI SA
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 7.1 Intervensi Coin SA (Core) ──
+    window.dompetIntervensiSA = function(idUser, aksi, jumlah, keterangan) {
+        try {
+            if (!_isSA()) return { sukses: false, pesan: 'Hanya SA' };
+            if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+            if (['tambah', 'kurang'].indexOf(aksi) === -1) {
+                return { sukses: false, pesan: 'Aksi harus tambah/kurang' };
+            }
+
+            jumlah = parseInt(jumlah, 10) || 0;
+            if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0' };
+
+            var tipe = (aksi === 'tambah') ? 'credit' : 'debit';
+            var hasil = _catatTransaksi(idUser, {
+                tipe: tipe,
+                jumlah: jumlah,
+                kategori: window.DOMPET_KONSTANTA.KATEGORI.INTERVENSI_SA,
+                keterangan: 'Intervensi SA: ' + (keterangan || '-')
+            });
+
+            if (!hasil.sukses) return hasil;
+
+            // Simpan log intervensi
+            var logEntry = {
+                id: 'INTERV-' + Date.now().toString(36).toUpperCase(),
+                waktu: _now(),
+                adminId: _idUser(),
+                adminKodeRole: _kodeRole(),
+                userId: idUser,
+                aksi: aksi,
+                jumlah: jumlah,
+                saldoSebelum: hasil.saldoSebelum,
+                saldoSesudah: hasil.saldo,
+                keterangan: keterangan || '-',
+                idTransaksi: hasil.transaksi.id
+            };
+            _simpanIntervensiLog(logEntry);
+
+            _catat('Intervensi Coin SA',
+                (aksi === 'tambah' ? '+' : '-') + jumlah +
+                ' coin ke ' + idUser + ' — ' + (keterangan || '-'));
+
+            _emit('r2coin:dompet-intervensi', logEntry);
+
+            return {
+                sukses: true,
+                transaksi: hasil.transaksi,
+                saldo: hasil.saldo,
+                saldoSebelum: hasil.saldoSebelum,
+                log: logEntry
+            };
+        } catch (e) {
+            console.error('dompetIntervensiSA error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 7.2 Simpan Log Intervensi ──
+    function _simpanIntervensiLog(entry) {
+        try {
+            var log = _loadJSON(window.DOMPET_KONSTANTA.KEY_LOG_INTERVENSI, []);
+            if (!Array.isArray(log)) log = [];
+            log.unshift(entry);
+            if (log.length > window.DOMPET_KONSTANTA.MAX_LOG) {
+                log = log.slice(0, window.DOMPET_KONSTANTA.MAX_LOG);
+            }
+            _saveJSON(window.DOMPET_KONSTANTA.KEY_LOG_INTERVENSI, log);
+        } catch (e) {}
+    }
+
+    // ── 7.3 Ambil Riwayat Intervensi ──
+    window.dompetRiwayatIntervensi = function(opts) {
+        opts = opts || {};
+        try {
+            var log = _loadJSON(window.DOMPET_KONSTANTA.KEY_LOG_INTERVENSI, []);
+            if (!Array.isArray(log)) return [];
+
+            if (opts.idUser) {
+                log = log.filter(function(l) { return l.userId === opts.idUser; });
+            }
+            if (opts.adminId) {
+                log = log.filter(function(l) { return l.adminId === opts.adminId; });
+            }
+            if (opts.dariTanggal) {
+                var t0 = new Date(opts.dariTanggal).getTime();
+                log = log.filter(function(l) {
+                    return new Date(l.waktu).getTime() >= t0;
+                });
+            }
+
+            var limit = parseInt(opts.limit, 10) || 50;
+            return log.slice(0, limit);
+        } catch (e) { return []; }
+    };
+
+    // ── 7.4 Bersihkan Log Intervensi ──
+    window.dompetBersihkanLogIntervensi = function() {
+        try {
+            if (!_isSA()) return { sukses: false, pesan: 'Hanya SA' };
+            _saveJSON(window.DOMPET_KONSTANTA.KEY_LOG_INTERVENSI, []);
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — TOPUP & WITHDRAW
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 8.1 Proses TopUp (Credit + validasi minimal) ──
+    window.dompetProsesTopUp = function(idUser, rupiah, opts) {
+        opts = opts || {};
+        try {
+            if (!idUser) idUser = _idUser();
+            if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+
+            // Cek fitur aktif
+            if (typeof window.ekoCekFiturAktif === 'function' &&
+                !window.ekoCekFiturAktif('fiturTopUpAktif')) {
+                return { sukses: false, pesan: 'Fitur topup sedang dinonaktifkan' };
+            }
+
+            // Cek minimal topup via EKONOMI v2
+            var cekMin = (typeof window.ekoCekMinimalTopUp === 'function')
+                ? window.ekoCekMinimalTopUp(rupiah)
+                : { valid: true };
+            if (!cekMin.valid) {
+                return {
+                    sukses: false,
+                    pesan: 'Minimal topup Rp ' + cekMin.minimal.toLocaleString('id-ID')
+                };
+            }
+
+            // Konversi rupiah → coin
+            var konversi = (typeof window.ekoHitungTotalTopUp === 'function')
+                ? window.ekoHitungTotalTopUp(rupiah)
+                : { sukses: true, coin: Math.floor(rupiah / 1000), hargaJual: 1000 };
+            if (!konversi.sukses) return konversi;
+
+            // Credit ke dompet
+            var hasil = _catatTransaksi(idUser, {
+                tipe: 'credit',
+                jumlah: konversi.coin,
+                kategori: window.DOMPET_KONSTANTA.KATEGORI.TOPUP,
+                keterangan: 'Top-Up Rp ' + rupiah.toLocaleString('id-ID') +
+                            ' → ' + konversi.coin + ' coin',
+                refId: opts.refId,
+                lawanTransaksi: opts.lawanTransaksi
+            });
+
+            if (!hasil.sukses) return hasil;
+
+            // Notif
+            try {
+                if (typeof window.csNotifKeuangan === 'function') {
+                    window.csNotifKeuangan('Top-Up Berhasil',
+                        'Rp ' + rupiah.toLocaleString('id-ID') +
+                        ' → ' + konversi.coin + ' coin. Saldo: ' + hasil.saldo,
+                        { idUser: idUser });
+                }
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                transaksi: hasil.transaksi,
+                saldo: hasil.saldo,
+                coin: konversi.coin,
+                rupiah: rupiah,
+                hargaJual: konversi.hargaJual
+            };
+        } catch (e) {
+            console.error('dompetProsesTopUp error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 8.2 Proses Withdraw (Debit + validasi minimal + fee) ──
+    window.dompetProsesWithdraw = function(idUser, coin, opts) {
+        opts = opts || {};
+        try {
+            if (!idUser) idUser = _idUser();
+            if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+
+            if (typeof window.ekoCekFiturAktif === 'function' &&
+                !window.ekoCekFiturAktif('fiturWithdrawAktif')) {
+                return { sukses: false, pesan: 'Fitur withdraw sedang dinonaktifkan' };
+            }
+
+            // Hitung total withdraw via EKONOMI v2
+            var hitung = (typeof window.ekoHitungTotalWithdraw === 'function')
+                ? window.ekoHitungTotalWithdraw(coin)
+                : { sukses: true, rupiah: coin * 900, fee: 0 };
+            if (!hitung.sukses) return hitung;
+
+            // Debit dari dompet
+            var hasil = _catatTransaksi(idUser, {
+                tipe: 'debit',
+                jumlah: coin,
+                kategori: window.DOMPET_KONSTANTA.KATEGORI.WITHDRAW,
+                keterangan: 'Withdraw ' + coin + ' coin → Rp ' +
+                            hitung.totalDiterima.toLocaleString('id-ID') +
+                            (hitung.fee > 0 ? ' (fee Rp ' + hitung.fee.toLocaleString('id-ID') + ')' : ''),
+                refId: opts.refId,
+                lawanTransaksi: opts.lawanTransaksi
+            });
+
+            if (!hasil.sukses) return hasil;
+
+            // Notif
+            try {
+                if (typeof window.csNotifKeuangan === 'function') {
+                    window.csNotifKeuangan('Withdraw Berhasil',
+                        coin + ' coin → Rp ' + hitung.totalDiterima.toLocaleString('id-ID'),
+                        { idUser: idUser });
+                }
+            } catch (e) {}
+
+            return {
+                sukses: true,
+                transaksi: hasil.transaksi,
+                saldo: hasil.saldo,
+                coin: coin,
+                rupiah: hitung.rupiah,
+                fee: hitung.fee,
+                totalDiterima: hitung.totalDiterima
+            };
+        } catch (e) {
+            console.error('dompetProsesWithdraw error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — TRANSFER ANTAR DOMPET
+    // ═══════════════════════════════════════════════════════════
+    window.dompetTransfer = function(idPengirim, idPenerima, jumlah, opts) {
+        opts = opts || {};
+        try {
+            if (!idPengirim || !idPenerima) {
+                return { sukses: false, pesan: 'ID pengirim/penerima kosong' };
+            }
+            if (idPengirim === idPenerima) {
+                return { sukses: false, pesan: 'Tidak bisa transfer ke diri sendiri' };
+            }
+
+            jumlah = parseFloat(jumlah) || 0;
+            if (jumlah <= 0) return { sukses: false, pesan: 'Jumlah harus > 0' };
+
+            var idTransfer = 'TRF-' + Date.now().toString(36).toUpperCase();
+
+            // Debit dari pengirim
+            var debit = _catatTransaksi(idPengirim, {
+                tipe: 'debit',
+                jumlah: jumlah,
+                kategori: window.DOMPET_KONSTANTA.KATEGORI.TRANSFER_KELUAR,
+                keterangan: opts.keterangan || 'Transfer ke ' + idPenerima,
+                refId: idTransfer,
+                lawanTransaksi: { idUser: idPenerima }
+            });
+            if (!debit.sukses) return debit;
+
+            // Credit ke penerima
+            var credit = _catatTransaksi(idPenerima, {
+                tipe: 'credit',
+                jumlah: jumlah,
+                kategori: window.DOMPET_KONSTANTA.KATEGORI.TRANSFER_MASUK,
+                keterangan: opts.keterangan || 'Transfer dari ' + idPengirim,
+                refId: idTransfer,
+                lawanTransaksi: { idUser: idPengirim }
+            });
+            if (!credit.sukses) {
+                // Rollback: kembalikan saldo pengirim
+                _catatTransaksi(idPengirim, {
+                    tipe: 'credit',
+                    jumlah: jumlah,
+                    kategori: window.DOMPET_KONSTANTA.KATEGORI.REFUND,
+                    keterangan: 'Rollback transfer gagal'
+                });
+                return credit;
+            }
+
+            // Log transfer
+            try {
+                var log = _loadJSON(window.DOMPET_KONSTANTA.KEY_LOG_TRANSFER, []);
+                if (!Array.isArray(log)) log = [];
+                log.unshift({
+                    id: idTransfer,
+                    waktu: _now(),
+                    dari: idPengirim,
+                    ke: idPenerima,
+                    jumlah: jumlah,
+                    keterangan: opts.keterangan || '-'
+                });
+                if (log.length > window.DOMPET_KONSTANTA.MAX_LOG) {
+                    log = log.slice(0, window.DOMPET_KONSTANTA.MAX_LOG);
+                }
+                _saveJSON(window.DOMPET_KONSTANTA.KEY_LOG_TRANSFER, log);
+            } catch (e) {}
+
+            _catat('Transfer Coin', idPengirim + ' → ' + idPenerima + ' : ' + jumlah);
+
+            _emit('r2coin:dompet-transfer', {
+                idTransfer: idTransfer,
+                dari: idPengirim,
+                ke: idPenerima,
+                jumlah: jumlah
+            });
+
+            return {
+                sukses: true,
+                idTransfer: idTransfer,
+                dari: idPengirim,
+                ke: idPenerima,
+                jumlah: jumlah,
+                saldoPengirim: debit.saldo,
+                saldoPenerima: credit.saldo
+            };
+        } catch (e) {
+            console.error('dompetTransfer error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — STATISTIK DOMPET
+    // ═══════════════════════════════════════════════════════════
+    window.dompetStatistikGlobal = function() {
+        try {
+            var aa = _loadJSON('dataAkunAktif', []);
+            if (!Array.isArray(aa)) aa = [];
+
+            var totalCoinBeredar = 0;
+            var totalUser = 0;
+            var totalSaldoTop = 0;
+
+            aa.forEach(function(a) {
+                if (!a) return;
+                var id = a.idUser || a.id;
+                if (!id) return;
+                var saldo = window.dompetGetSaldo(id);
+                totalCoinBeredar += saldo;
+                totalSaldoTop += saldo;
+                totalUser++;
+            });
+
+            // Harga coin dari EKONOMI v2
+            var hargaCoin = 1000;
+            if (typeof window.ekoGetSetting === 'function') {
+                var setting = window.ekoGetSetting();
+                hargaCoin = parseFloat(setting.hargaJual) || 1000;
+            }
+
+            return {
+                totalUser: totalUser,
+                totalCoinBeredar: totalCoinBeredar,
+                totalCoinBeredarTeks: totalCoinBeredar.toLocaleString('id-ID'),
+                setaraRupiah: totalCoinBeredar * hargaCoin,
+                setaraRupiahTeks: 'Rp ' + (totalCoinBeredar * hargaCoin).toLocaleString('id-ID'),
+                hargaCoinSaatIni: hargaCoin
+            };
+        } catch (e) {
+            console.error('dompetStatistikGlobal error:', e);
+            return { totalUser: 0, totalCoinBeredar: 0, setaraRupiah: 0 };
+        }
+    };
+
+    window.dompetStatistikPerRole = function() {
+        try {
+            var lu = _loadJSON('dataLoginUser', []);
+            if (!Array.isArray(lu)) lu = [];
+
+            var perRole = {};
+            var totalCoin = 0;
+            var totalUser = 0;
+
+            lu.forEach(function(u) {
+                if (!u || !u.idUser) return;
+                if (u.kodeRole === 'SA') return;
+
+                var kodeRole = u.kodeRole || 'unknown';
+                var saldo = window.dompetGetSaldo(u.idUser);
+
+                if (!perRole[kodeRole]) {
+                    var info = (typeof window.role27Info === 'function')
+                        ? window.role27Info(kodeRole) : null;
+                    perRole[kodeRole] = {
+                        kodeRole: kodeRole,
+                        nama: info ? info.nama : kodeRole,
+                        kategori: info ? info.kategori : '-',
+                        jumlahUser: 0,
+                        totalCoin: 0
+                    };
+                }
+
+                perRole[kodeRole].jumlahUser++;
+                perRole[kodeRole].totalCoin += saldo;
+                totalCoin += saldo;
+                totalUser++;
+            });
+
+            return { perRole: perRole, totalCoin: totalCoin, totalUser: totalUser };
+        } catch (e) { return { perRole: {}, totalCoin: 0, totalUser: 0 }; }
+    };
+
+    window.dompetDaftarSaldoUser = function(filter) {
+        filter = filter || {};
+        try {
+            var lu = _loadJSON('dataLoginUser', []);
+            if (!Array.isArray(lu)) lu = [];
+
+            var cari = String(filter.cari || '').toLowerCase().trim();
+            var filterKodeRole = filter.kodeRole || '';
+            var filterSaldo = filter.saldo || '';
+            var hasil = [];
+
+            lu.forEach(function(u) {
+                if (!u || !u.idUser) return;
+                if (u.kodeRole === 'SA') return;
+
+                var saldo = window.dompetGetSaldo(u.idUser);
+                var dompet = window.dompetGet(u.idUser);
+
+                var matchCari = !cari ||
+                    (u.nama || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.idUser || '').toLowerCase().indexOf(cari) !== -1 ||
+                    (u.username || '').toLowerCase().indexOf(cari) !== -1;
+
+                var matchRole = !filterKodeRole || u.kodeRole === filterKodeRole;
+                var matchSaldo = !filterSaldo ||
+                    (filterSaldo === 'ada' && saldo > 0) ||
+                    (filterSaldo === 'kosong' && saldo === 0);
+
+                if (!matchCari || !matchRole || !matchSaldo) return;
+
+                hasil.push({
+                    idUser: u.idUser,
+                    nama: u.nama || '-',
+                    kodeRole: u.kodeRole || '-',
+                    role: u.role || '-',
+                    username: u.username || '-',
+                    saldo: saldo,
+                    totalMasuk: dompet.totalMasuk || 0,
+                    totalKeluar: dompet.totalKeluar || 0,
+                    jumlahTransaksi: (dompet.transactions || []).length
+                });
+            });
+
+            hasil.sort(function(a, b) { return b.saldo - a.saldo; });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — RESET & EXPORT
+    // ═══════════════════════════════════════════════════════════
+    window.dompetReset = function(idUser, opts) {
+        opts = opts || {};
+        try {
+            if (!_isSA()) return { sukses: false, pesan: 'Hanya SA' };
+            if (!idUser) return { sukses: false, pesan: 'ID user kosong' };
+            if (opts.konfirmasi !== true) {
+                return { sukses: false, pesan: 'Reset butuh { konfirmasi: true }' };
+            }
+
+            // Backup
+            var backup = localStorage.getItem(_keyDompet(idUser));
+            if (backup) {
+                try {
+                    localStorage.setItem('backup_dompet_' + idUser + '_' + Date.now(), backup);
+                } catch (e) {}
+            }
+
+            var def = window.dompetGetDefault();
+            def.idUser = idUser;
+            def.createdAt = _now();
+            def.updatedAt = _now();
+            def.updatedBy = _idUser();
+
+            var save = window.dompetSave(idUser, def);
+            if (!save.sukses) return save;
+
+            _catat('Reset Dompet', idUser + ' — Reset ke 0');
+
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.dompetExportCSV = function(idUser) {
+        try {
+            if (!idUser) idUser = _idUser();
+            var riwayat = window.dompetRiwayat(idUser, { limit: 9999 });
+            if (riwayat.length === 0) return { sukses: false, pesan: 'Tidak ada transaksi' };
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = ['No,Waktu,Tipe,Jumlah,Saldo Sebelum,Saldo Sesudah,Kategori,Keterangan,Ref ID'];
+            riwayat.forEach(function(t, i) {
+                lines.push([
+                    i + 1,
+                    esc(t.waktu ? new Date(t.waktu).toLocaleString('id-ID') : '-'),
+                    esc(t.tipe),
+                    t.jumlah || 0,
+                    t.saldoSebelum || 0,
+                    t.saldoSesudah || 0,
+                    esc(t.kategori || '-'),
+                    esc((t.keterangan || '').substring(0, 150)),
+                    esc(t.refId || '-')
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'dompet_' + String(idUser).replace(/[^A-Z0-9]/gi, '_') + '_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+
+            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = namaFile;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            return { sukses: true, namaFile: namaFile, total: riwayat.length };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.dompetExportIntervensiCSV = function() {
+        try {
+            if (!_isSA()) return { sukses: false, pesan: 'Hanya SA' };
+            var log = window.dompetRiwayatIntervensi({ limit: 9999 });
+            if (log.length === 0) return { sukses: false, pesan: 'Tidak ada log' };
+
+            function esc(v) {
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }
+
+            var lines = ['No,Waktu,Admin,User,Aksi,Jumlah,Saldo Sebelum,Saldo Sesudah,ID Trx,Keterangan'];
+            log.forEach(function(l, i) {
+                lines.push([
+                    i + 1,
+                    esc(l.waktu ? new Date(l.waktu).toLocaleString('id-ID') : '-'),
+                    esc(l.adminId || '-'),
+                    esc(l.userId || '-'),
+                    esc(l.aksi || '-'),
+                    l.jumlah || 0,
+                    l.saldoSebelum || 0,
+                    l.saldoSesudah || 0,
+                    esc(l.idTransaksi || '-'),
+                    esc((l.keterangan || '').substring(0, 150))
+                ].join(','));
+            });
+
+            var csv = '\uFEFF' + lines.join('\n');
+            var namaFile = 'intervensi_coin_' +
+                new Date().toISOString().split('T')[0] + '.csv';
+
+            var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = namaFile;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+
+            return { sukses: true, namaFile: namaFile, total: log.length };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimDompet = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') {
+                return { sukses: false, pesan: 'MN belum terpasang' };
+            }
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser: _idUser(),
+                    idOwner: (typeof window.gidIdOwner === 'function') ? window.gidIdOwner() : null,
+                    kodeRole: _kodeRole(),
+                    menu: 'dompet', blok: 'DOMPET'
+                },
+                ke: ke || { menu: 'dompet' },
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _now()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaDompet = function(aksiMenu) {
+        try { return window.mnInboxMenu(aksiMenu || 'dompet'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilDompet = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'all';
+            switch (tipe) {
+                case 'all':              return window.dompetGet(filter.idUser);
+                case 'saldo':            return window.dompetGetSaldo(filter.idUser);
+                case 'riwayat':          return window.dompetRiwayat(filter.idUser, filter);
+                case 'statistik':        return window.dompetStatistikGlobal();
+                case 'statistik-role':   return window.dompetStatistikPerRole();
+                case 'daftar-saldo':     return window.dompetDaftarSaldoUser(filter);
+                case 'intervensi-log':   return window.dompetRiwayatIntervensi(filter);
+                case 'default':          return window.dompetGetDefault();
+                default:                 return null;
+            }
+        } catch (e) { return null; }
+    };
+
+    window.cekPintuDompet = function() {
+        var skor = (typeof window.kirimDompet === 'function' ? 1 : 0)
+                 + (typeof window.terimaDompet === 'function' ? 1 : 0)
+                 + (typeof window.ambilDompet === 'function' ? 1 : 0);
+        return {
+            blok: 'DOMPET',
+            kirim: typeof window.kirimDompet === 'function',
+            terima: typeof window.terimaDompet === 'function',
+            ambil: typeof window.ambilDompet === 'function',
+            skor: skor + '/3',
+            lengkap: skor === 3
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugDompet = function() {
+        try {
+            var idUser = _idUser();
+            var dompet = idUser ? window.dompetGet(idUser) : null;
+            var stat = window.dompetStatistikGlobal();
+
+            var info = {
+                blok: 'DOMPET', versi: window.DOMPET_KONSTANTA.VERSI,
+                guard: window._blokDompetDoneV2,
+                userAktif: {
+                    idUser: idUser,
+                    kodeRole: _kodeRole(),
+                    isSA: _isSA(),
+                    isKopdes: _isKopdes()
+                },
+                dompetUserAktif: dompet ? {
+                    balance: dompet.balance,
+                    totalMasuk: dompet.totalMasuk,
+                    totalKeluar: dompet.totalKeluar,
+                    jumlahTransaksi: (dompet.transactions || []).length
+                } : null,
+                statistikGlobal: stat,
+                totalIntervensiLog: window.dompetRiwayatIntervensi({ limit: 9999 }).length,
+                pintu: window.cekPintuDompet(),
+                fungsi: {
+                    // CRUD
+                    dompetGet:            typeof window.dompetGet,
+                    dompetSave:           typeof window.dompetSave,
+                    dompetGetSaldo:       typeof window.dompetGetSaldo,
+                    dompetSetSaldo:       typeof window.dompetSetSaldo,
+                    dompetGetDefault:     typeof window.dompetGetDefault,
+                    // Transaksi
+                    dompetTambahTransaksi: typeof window.dompetTambahTransaksi,
+                    dompetCredit:          typeof window.dompetCredit,
+                    dompetDebit:           typeof window.dompetDebit,
+                    dompetRiwayat:         typeof window.dompetRiwayat,
+                    // Intervensi
+                    dompetIntervensiSA:    typeof window.dompetIntervensiSA,
+                    dompetRiwayatIntervensi: typeof window.dompetRiwayatIntervensi,
+                    dompetBersihkanLogIntervensi: typeof window.dompetBersihkanLogIntervensi,
+                    // TopUp/Withdraw
+                    dompetProsesTopUp:     typeof window.dompetProsesTopUp,
+                    dompetProsesWithdraw:  typeof window.dompetProsesWithdraw,
+                    // Transfer
+                    dompetTransfer:        typeof window.dompetTransfer,
+                    // Statistik
+                    dompetStatistikGlobal: typeof window.dompetStatistikGlobal,
+                    dompetStatistikPerRole: typeof window.dompetStatistikPerRole,
+                    dompetDaftarSaldoUser: typeof window.dompetDaftarSaldoUser,
+                    // Reset & Export
+                    dompetReset:           typeof window.dompetReset,
+                    dompetExportCSV:       typeof window.dompetExportCSV,
+                    dompetExportIntervensiCSV: typeof window.dompetExportIntervensiCSV,
+                    // 3 Pintu
+                    kirimDompet:           typeof window.kirimDompet,
+                    terimaDompet:          typeof window.terimaDompet,
+                    ambilDompet:           typeof window.ambilDompet,
+                    cekPintuDompet:        typeof window.cekPintuDompet
+                }
+            };
+            console.log('debugDompet v2:', info);
+            return info;
+        } catch (e) { console.error('debugDompet error:', e); return null; }
+    };
+
+    // Alias debug lama
+    window.debugDompetSA = window.debugDompet;
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — AUTO-REGISTRY 0.1 (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var sudahAda = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'Dompet-Universal';
+                });
+                if (!sudahAda) {
+                    window.cpTambahBlok({
+                        kode: 'Dompet-Universal',
+                        nama: 'Fungsi Global Dompet R2Coin v2',
+                        layer: 'L4', status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('Dompet-Universal', {
+                        status: 'Selesai',
+                        nama: 'Fungsi Global Dompet R2Coin v2'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('dompet', {
+                    nama: 'Dompet R2Coin Universal (L4)',
+                    status: 'Selesai', jumlah: 48
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({
+                    blok: 'Dompet-Universal',
+                    nama: 'DOMPET v2 — Dompet R2Coin',
+                    keterangan: 'Saldo + transaksi + intervensi SA + topup/withdraw + transfer • 27 role + KDMP • 3 Pintu • auto-registry'
+                });
+            }
+        } catch (e) {
+            console.warn('DOMPET v2: Auto-registry error:', e.message);
+        }
+    }, 800);
+
+    // Whitelist A14
+    setTimeout(function() {
+        try {
+            if (!window._SUDAH_ADA_UI_2) window._SUDAH_ADA_UI_2 = [];
+            ['dompetSaya', 'dompetR2Coin', 'dompetSA'].forEach(function(a) {
+                if (window._SUDAH_ADA_UI_2.indexOf(a) === -1) {
+                    window._SUDAH_ADA_UI_2.push(a);
+                }
+            });
+        } catch (e) {}
+    }, 300);
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🇮🇩 BLOK DOMPET v2 — DOMPET R2COIN terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:5px 10px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   📦 14 Modul · ~48 Fungsi');
+    console.log('   🎯 Fokus: Saldo + transaksi + intervensi + topup/withdraw');
+    console.log('   👥 Pemakai: SEMUA 27 role (termasuk 4 level KDMP)');
+    console.log('   ⭐ DOMPET v2:');
+    console.log('      • Guard modern: _blokDompetDoneV2 + alias');
+    console.log('      • 3 Pintu: kirimDompet · terimaDompet · ambilDompet');
+    console.log('      • Auto-registry → Dompet-Universal di CP_REGISTRY_BLOK');
+    console.log('      • Integrasi EKONOMI v2 (harga coin, minimal, fee)');
+    console.log('      • TopUp/Withdraw dengan validasi EKONOMI');
+    console.log('      • Transfer antar dompet + rollback');
+    console.log('   🎨 Fungsi kunci:');
+    console.log('      • dompetGet() · dompetGetSaldo()');
+    console.log('      • dompetCredit() · dompetDebit()');
+    console.log('      • dompetProsesTopUp() · dompetProsesWithdraw()');
+    console.log('      • dompetTransfer() — antar user');
+    console.log('      • dompetIntervensiSA() — SA only');
+    console.log('      • dompetStatistikGlobal() · dompetDaftarSaldoUser()');
+    console.log('   🚪 3 Pintu: kirimDompet · terimaDompet · ambilDompet');
+    console.log('   🔍 Debug: debugDompet()');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK DOMPET v2 — DOMPET R2COIN 🇮🇩 ══════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL — FKMK v4 (MANAJEMEN KOPDES) 🇮🇩 ════ -->
 <!-- ═══ Layer: L4 (Fungsi Global Domain) ═══════════════════════ -->
 <!-- ═══ Dependency: CS1+CS2+CS4+CS7+CS11+CS14+CS15+CS16+CS17 ══ -->
