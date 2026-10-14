@@ -14658,6 +14658,1720 @@
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) v3 KONSOLIDASI ═ -->
+<!-- ═══ Layer        : L4 (Fungsi Global Domain) ════════════════ -->
+<!-- ═══ Prefix       : om3* ════════════════════════════════════ -->
+<!-- ═══ Guard        : _blokOMv3Done (UNIK — A32) ══════════════ -->
+<!-- ═══                + alias: _blokOMDoneV3, _blokOM3Done ════ -->
+<!-- ═══ IIFE         : BLOK_ORPHAN_MANAGEMENT_V3 ══════════════ -->
+<!-- ═══ Fokus        : Deteksi + klasifikasi + hapus orphan ═══ -->
+<!-- ═══ Pemakai      : Blok UI 10.82 (Orphan Management SA) ═══ -->
+<!-- ═══ Dependency   : CS1+CS2+CS4+CS7+CS12 + GID v4 + ════════ -->
+<!-- ═══             ROLE27 v4 + KDMP v4 + MN v3 + MD v2 + ═════ -->
+<!-- ═══             PRODUK-UNIV v1.0 ══════════════════════════ -->
+<!-- ═══ Isi          : 18 Modul · 20 Detektor · ~45 fungsi ════ -->
+<!-- ═══ Aturan       : A1,A2,A3,A5,A6,A7,A11—A13,A14, ════════ -->
+<!-- ═══                A18,A19,A23,A25,A29,A31,A32,A33, ══════ -->
+<!-- ═══                A34,A35,A36,A40 ═══════════════════════ -->
+<!-- ═══ Konsolidasi  : OM v2 (media) + AUTORPHAN v2 (scheduler) -->
+<!-- ═══             + 14 detektor orphan baru ═════════════════ -->
+<!-- ═══ Default AMAN : AUTO_START=false, AUTO_HAPUS=false, ════ -->
+<!-- ═══                MODE_DRY_RUN=true ═════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_ORPHAN_MANAGEMENT_V3() {
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 0] — GUARD + DEPENDENCY (A23, A31, A32)
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokOMv3Done) {
+        console.log('ℹ️ OM v3 sudah terpasang.');
+        return;
+    }
+
+    var depsWajib = [
+        { flag: '_coreSystem1DoneV3',    nama: 'CS1 v3' },
+        { flag: '_coreSystem2DoneV3',    nama: 'CS2 v3' },
+        { flag: '_coreSystem4DoneV3',    nama: 'CS4 v3' },
+        { flag: '_coreSystem7DoneV3',    nama: 'CS7 v3' },
+        { flag: '_gidV4Done',            nama: 'GID v4' },
+        { flag: '_role27V4Done',         nama: 'ROLE27 v4' },
+        { flag: '_blokMN_DoneV3',        nama: 'MN v3' },
+        { flag: '_blokMDDoneV2',         nama: 'MD v2' }
+    ];
+    var missWajib = depsWajib.filter(function(d) { return !window[d.flag]; });
+    if (missWajib.length > 0) {
+        console.warn('⚠️ OM v3 ditunda — dependency belum lengkap:');
+        missWajib.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+        // Guard v3 + semua alias
+    window._blokOMv3Done     = true;
+    window._blokOMDoneV3     = true;
+    window._blokOM3Done      = true;
+    window._blokOrphanDoneV2 = true;   // ⭐ ALIAS — PSM butuh ini
+    window._blokOMVersi      = '3.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 1] — KONSTANTA (20 JENIS ORPHAN) (A18, A19)
+    // ═══════════════════════════════════════════════════════════
+    window.OM3_KONSTANTA = Object.assign(window.OM3_KONSTANTA || {}, {
+        VERSI: '3.0',
+        PREFIX: 'om3',
+
+        // ── 20 Jenis Orphan ──
+        JENIS_ORPHAN: {
+            'produk-orphan':         { label: 'Produk Tanpa Owner',         prioritas: 'tinggi', kategori: 'produk' },
+            'produk-tanpa-kategori': { label: 'Produk Tanpa Kategori',      prioritas: 'sedang', kategori: 'produk' },
+            'produk-tanpa-foto':     { label: 'Foto Produk Orphan',         prioritas: 'sedang', kategori: 'produk' },
+            'order-orphan':          { label: 'Order Tanpa Penjual/Pembeli',prioritas: 'tinggi', kategori: 'transaksi' },
+            'transaksi-orphan':      { label: 'Transaksi Tanpa Produk/Kasir',prioritas: 'tinggi', kategori: 'transaksi' },
+            'akun-kasir-orphan':     { label: 'Kasir Tanpa Owner',          prioritas: 'tinggi', kategori: 'akun' },
+            'akun-staf-orphan':      { label: 'Staf Tanpa Pemilik',         prioritas: 'sedang', kategori: 'akun' },
+            'akun-arsip-ganda':      { label: 'Arsip Masih di Aktif',       prioritas: 'sedang', kategori: 'akun' },
+            'kopdes-orphan':         { label: 'Kopdes Tanpa Induk',         prioritas: 'tinggi', kategori: 'kopdes' },
+            'rantai-kopdes-putus':   { label: 'Rantai Komando Terputus',    prioritas: 'tinggi', kategori: 'kopdes' },
+            'media-orphan':          { label: 'Media Tanpa Owner/Ref',      prioritas: 'tinggi', kategori: 'media' },
+            'rekening-orphan':       { label: 'Rekening Tanpa User',        prioritas: 'sedang', kategori: 'keuangan' },
+            'dompet-orphan':         { label: 'Dompet Tanpa User',          prioritas: 'sedang', kategori: 'keuangan' },
+            'pengajuan-orphan':      { label: 'Pengajuan Tanpa User',       prioritas: 'sedang', kategori: 'akun' },
+            'notif-orphan':          { label: 'Notifikasi Ke User Dihapus', prioritas: 'rendah', kategori: 'komunikasi' },
+            'chat-orphan':           { label: 'Chat Tanpa Pengirim',        prioritas: 'rendah', kategori: 'komunikasi' },
+            'cart-orphan':           { label: 'Cart Tanpa Produk',          prioritas: 'rendah', kategori: 'komunikasi' },
+            'kategori-kosong':       { label: 'Kategori Tanpa Produk',      prioritas: 'rendah', kategori: 'produk' },
+            'wilayah-kosong':        { label: 'Wilayah Tanpa User',         prioritas: 'rendah', kategori: 'wilayah' },
+            'heartbeat-kadaluarsa':  { label: 'Heartbeat Online Stale',     prioritas: 'rendah', kategori: 'sistem' }
+        },
+
+        // ── Config ──
+        GRACE_KANDIDAT: 1,
+        GRACE_ORPHAN: 3,
+        PROTECTED_KATEGORI: ['profil', 'avatar_hf', 'verifikasi', 'struk', 'dokumentasi'],
+        MAX_HAPUS_PER_RUN: 1000,
+        MAX_PREVIEW: 100,
+        MAX_LOG: 50,
+
+        // ── Storage Keys ──
+        KEY_LOG:      'r2coin_om3_log',
+        KEY_LAST_RUN: 'r2coin_om3_last_run',
+        KEY_CONFIG:   'r2coin_om3_config',
+
+        // ── Scheduler (default AMAN) ──
+        AUTO_START:   false,
+        INTERVAL_JAM: 24,
+        MODE_DRY_RUN: true,
+        AUTO_HAPUS:   false,
+
+        // ── Event Trigger (9) ──
+        EVENT_TRIGGER: [
+            'r2coin:produk-deleted', 'r2coin:akun-deleted',
+            'r2coin:order-deleted',  'r2coin:trx-deleted',
+            'r2coin:kasir-deleted',  'r2coin:kategori-deleted',
+            'r2coin:wilayah-deleted','r2coin:rekening-deleted',
+            'r2coin:media-deleted'
+        ],
+        TRIGGER_DEBOUNCE_MS: 3000
+    });
+
+    (function _om3ValidasiK() {
+        var K = window.OM3_KONSTANTA;
+        if (!K || typeof K !== 'object' || Array.isArray(K)) {
+            window.OM3_KONSTANTA = { VERSI: '3.0', JENIS_ORPHAN: {}, PROTECTED_KATEGORI: [] };
+        }
+        if (!K.JENIS_ORPHAN || typeof K.JENIS_ORPHAN !== 'object') K.JENIS_ORPHAN = {};
+        if (!Array.isArray(K.PROTECTED_KATEGORI)) K.PROTECTED_KATEGORI = [];
+        if (!Array.isArray(K.EVENT_TRIGGER)) K.EVENT_TRIGGER = [];
+        if (!K._triggerTimers) K._triggerTimers = {};
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 2] — HELPER DASAR (A1 — delegasi CS)
+    // ═══════════════════════════════════════════════════════════
+    window.om3Esc = function(s) {
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.om3Now = function() {
+        if (typeof window.csNow === 'function') return window.csNow();
+        return new Date().toISOString();
+    };
+
+    window.om3UmurHari = function(iso) {
+        try {
+            if (!iso) return 0;
+            var t = new Date(iso).getTime();
+            if (isNaN(t)) return 0;
+            return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
+        } catch (e) { return 0; }
+    };
+
+    window.om3LoadJSON = function(key, fallback) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fallback);
+        try {
+            var s = localStorage.getItem(key);
+            var p = s ? JSON.parse(s) : fallback;
+            return (p === null || p === undefined) ? fallback : p;
+        } catch (e) { return fallback; }
+    };
+
+    window.om3SaveJSON = function(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3EmitEvent = function(namaEvent, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(namaEvent, { detail: detail || {} }));
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.om3CatatLog = function(aksi, detail) {
+        try {
+            var log = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LOG, []);
+            if (!Array.isArray(log)) log = [];
+            log.unshift({
+                id: 'OM3-LOG-' + Date.now(),
+                waktu: window.om3Now(),
+                oleh: window.om3GetIdUser(),
+                aksi: aksi, detail: detail || {}
+            });
+            if (log.length > window.OM3_KONSTANTA.MAX_LOG) {
+                log = log.slice(0, window.OM3_KONSTANTA.MAX_LOG);
+            }
+            window.om3SaveJSON(window.OM3_KONSTANTA.KEY_LOG, log);
+            window.om3SaveJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, { waktu: window.om3Now(), aksi: aksi });
+        } catch (e) {}
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 3] — RESOLVER USER (A1 — delegasi GID)
+    // ═══════════════════════════════════════════════════════════
+    window.om3GetIdUser = function() {
+        try { return window.gidIdUser ? window.gidIdUser() : null; }
+        catch (e) { return null; }
+    };
+    window.om3GetIdOwner = function() {
+        try { return window.gidIdOwner ? window.gidIdOwner() : null; }
+        catch (e) { return null; }
+    };
+    window.om3GetKodeRole = function() {
+        try { return window.gidKodeRoleUser ? window.gidKodeRoleUser() : null; }
+        catch (e) { return null; }
+    };
+    window.om3IsSA = function() {
+        try { return window.gidIsSA ? window.gidIsSA() : false; }
+        catch (e) { return false; }
+    };
+    window.om3GetUserById = function(id) {
+        try { return window.gidGetUserById ? window.gidGetUserById(id) : null; }
+        catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 4] — HELPER: LOAD DATA SOURCE
+    // ═══════════════════════════════════════════════════════════
+    function _loadUsers() {
+        try {
+            var v = window.csLoadJSON('dataLoginUser', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadProduk() {
+        try {
+            if (typeof window.produkList === 'function') {
+                return window.produkList({ bypass: true, limit: 0 });
+            }
+        } catch (e) {}
+        try {
+            var v = window.csLoadJSON('dataProduk', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadKategori() {
+        try {
+            if (typeof window.kategoriList === 'function') {
+                return window.kategoriList({ bypass: true });
+            }
+        } catch (e) {}
+        try {
+            var v = window.csLoadJSON('dataKategoriProduk', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadOrder() {
+        try {
+            var v = window.csLoadJSON('dataOrder', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadTransaksi() {
+        try {
+            var v = window.csLoadJSON('dataTransaksi', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadRekening() {
+        try {
+            var v = window.csLoadJSON('dataRekening', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadPengajuan() {
+        try {
+            var v = window.csLoadJSON('dataPengajuanBukaAkun', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadWilayah() {
+        try {
+            var v = window.csLoadJSON('dataWilayah', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    function _loadChat() {
+        try {
+            var v = window.dataChat || window.csLoadJSON('dataChat', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+
+    // Helper: cek user valid (ada di dataLoginUser)
+    function _userValid(idUser) {
+        if (!idUser) return false;
+        var users = _loadUsers();
+        for (var i = 0; i < users.length; i++) {
+            var u = users[i];
+            if (u && (u.idUser === idUser || u.id === idUser)) return true;
+        }
+        return false;
+    }
+
+    // Helper: cek kategori valid
+    function _kategoriValid(namaKategori) {
+        if (!namaKategori) return false;
+        var list = _loadKategori();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].nama === namaKategori) return true;
+        }
+        return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 5] — DETEKTOR: PRODUK (3 jenis)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiProdukOrphan = function() {
+        try {
+            var list = _loadProduk();
+            var hasil = [];
+            list.forEach(function(p) {
+                if (!p) return;
+                if (!p.idOwner || !_userValid(p.idOwner)) {
+                    hasil.push({
+                        jenis: 'produk-orphan', tipe: 'produk',
+                        id: p.id || p.idProduk, nama: p.nama || '-',
+                        alasan: 'Owner tidak valid',
+                        idOwner: p.idOwner || null,
+                        raw: p
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiProdukTanpaKategori = function() {
+        try {
+            var list = _loadProduk();
+            var hasil = [];
+            list.forEach(function(p) {
+                if (!p) return;
+                if (!p.kategori || p.kategori === 'Umum') return;
+                if (!_kategoriValid(p.kategori)) {
+                    hasil.push({
+                        jenis: 'produk-tanpa-kategori', tipe: 'produk',
+                        id: p.id || p.idProduk, nama: p.nama || '-',
+                        alasan: 'Kategori tidak ada: ' + p.kategori,
+                        raw: p
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiProdukTanpaFoto = function() {
+        try {
+            var list = _loadProduk();
+            var hasil = [];
+            if (typeof window.mdAmbilMetadata !== 'function') return hasil;
+            list.forEach(function(p) {
+                if (!p || !Array.isArray(p.fotoIds)) return;
+                p.fotoIds.forEach(function(fid) {
+                    var meta = window.mdAmbilMetadata(fid);
+                    if (!meta) {
+                        hasil.push({
+                            jenis: 'produk-tanpa-foto', tipe: 'produk',
+                            id: fid, nama: 'Foto orphan di ' + (p.nama || '-'),
+                            alasan: 'FotoId tidak ada di MD',
+                            raw: { idProduk: p.id, fotoId: fid }
+                        });
+                    }
+                });
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 6] — DETEKTOR: ORDER & TRANSAKSI (2 jenis)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiOrderOrphan = function() {
+        try {
+            var list = _loadOrder();
+            var hasil = [];
+            list.forEach(function(o) {
+                if (!o) return;
+                var idSeller = o.idSeller || o.idOwner || o.idPenjual;
+                var idPembeli = o.idPembeli || o.idCustomer;
+                if (idSeller && !_userValid(idSeller)) {
+                    hasil.push({
+                        jenis: 'order-orphan', tipe: 'order',
+                        id: o.id || o.idOrder, nama: o.nama || 'Order',
+                        alasan: 'Penjual tidak ada: ' + idSeller,
+                        raw: o
+                    });
+                } else if (idPembeli && !_userValid(idPembeli)) {
+                    hasil.push({
+                        jenis: 'order-orphan', tipe: 'order',
+                        id: o.id || o.idOrder, nama: o.nama || 'Order',
+                        alasan: 'Pembeli tidak ada: ' + idPembeli,
+                        raw: o
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiTransaksiOrphan = function() {
+        try {
+            var list = _loadTransaksi();
+            var hasil = [];
+            var produkList = _loadProduk();
+            var produkIds = {};
+            produkList.forEach(function(p) {
+                if (p && (p.id || p.idProduk)) produkIds[p.id || p.idProduk] = true;
+            });
+
+            list.forEach(function(t) {
+                if (!t) return;
+                var idKasir = t.idKasir || t.idOwner;
+                if (idKasir && !_userValid(idKasir)) {
+                    hasil.push({
+                        jenis: 'transaksi-orphan', tipe: 'transaksi',
+                        id: t.id || t.idTransaksi, nama: t.nama || 'Transaksi',
+                        alasan: 'Kasir tidak ada: ' + idKasir,
+                        raw: t
+                    });
+                } else if (t.idProduk && !produkIds[t.idProduk]) {
+                    hasil.push({
+                        jenis: 'transaksi-orphan', tipe: 'transaksi',
+                        id: t.id || t.idTransaksi, nama: t.nama || 'Transaksi',
+                        alasan: 'Produk tidak ada: ' + t.idProduk,
+                        raw: t
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 7] — DETEKTOR: AKUN (3 jenis)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiKasirOrphan = function() {
+        try {
+            var users = _loadUsers();
+            var validOwners = {};
+            users.forEach(function(u) { if (u && u.idUser) validOwners[u.idUser] = true; });
+
+            var hasil = [];
+            users.forEach(function(u) {
+                if (!u || !u.kodeRole) return;
+                if (u.kodeRole.indexOf('KSR') !== 0) return;
+                var idOwner = u.idOwner || u.ownerId || u.idInduk;
+                if (!idOwner) {
+                    hasil.push({
+                        jenis: 'akun-kasir-orphan', tipe: 'akun',
+                        id: u.idUser || u.id, nama: u.nama || '-',
+                        alasan: 'Kasir tanpa owner',
+                        raw: u
+                    });
+                } else if (!validOwners[idOwner]) {
+                    hasil.push({
+                        jenis: 'akun-kasir-orphan', tipe: 'akun',
+                        id: u.idUser || u.id, nama: u.nama || '-',
+                        alasan: 'Owner tidak ada: ' + idOwner,
+                        raw: u
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiStafOrphan = function() {
+        try {
+            var users = _loadUsers();
+            var validOwners = {};
+            users.forEach(function(u) { if (u && u.idUser) validOwners[u.idUser] = true; });
+
+            var hasil = [];
+            users.forEach(function(u) {
+                if (!u || !u.kodeRole) return;
+                if (u.kodeRole.indexOf('STAF') !== 0) return;
+                if (u.kodeRole === 'STAF_KDMP') return; // Kopdes punya induk Kopdes, bukan user
+                var idInduk = u.idInduk || u.idOwner;
+                if (idInduk && !validOwners[idInduk]) {
+                    hasil.push({
+                        jenis: 'akun-staf-orphan', tipe: 'akun',
+                        id: u.idUser || u.id, nama: u.nama || '-',
+                        alasan: 'Pemilik tidak ada: ' + idInduk,
+                        raw: u
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiArsipGanda = function() {
+        try {
+            var users = _loadUsers();
+            var akuns = window.csLoadJSON('dataAkunAktif', []);
+            if (!Array.isArray(akuns)) akuns = [];
+
+            var arsipIds = {};
+            users.forEach(function(u) {
+                if (u && (u.status === 'Diarsipkan' || u.arsip === true)) {
+                    arsipIds[u.idUser || u.id] = true;
+                }
+            });
+
+            var hasil = [];
+            akuns.forEach(function(a) {
+                if (!a) return;
+                var id = a.idUser || a.id;
+                if (id && arsipIds[id]) {
+                    hasil.push({
+                        jenis: 'akun-arsip-ganda', tipe: 'akun',
+                        id: id, nama: a.nama || '-',
+                        alasan: 'Akun arsip masih di dataAkunAktif',
+                        raw: a
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 8] — DETEKTOR: KOPDES (2 jenis)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiKopdesOrphan = function() {
+        try {
+            var users = _loadUsers();
+            var validIds = {};
+            users.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
+
+            var hasil = [];
+            users.forEach(function(u) {
+                if (!u || !u.kodeRole) return;
+                if (u.kodeRole.indexOf('KDMP_') !== 0) return;
+                var idInduk = u.idInduk;
+                if (u.kodeRole === 'KDMP_PUSAT') return;
+                if (!idInduk) {
+                    hasil.push({
+                        jenis: 'kopdes-orphan', tipe: 'kopdes',
+                        id: u.idUser || u.id, nama: u.nama || '-',
+                        alasan: 'Kopdes ' + u.kodeRole + ' tanpa induk',
+                        raw: u
+                    });
+                } else if (!validIds[idInduk]) {
+                    hasil.push({
+                        jenis: 'kopdes-orphan', tipe: 'kopdes',
+                        id: u.idUser || u.id, nama: u.nama || '-',
+                        alasan: 'Induk tidak ada: ' + idInduk,
+                        raw: u
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiRantaiKopdesPutus = function() {
+        try {
+            if (typeof window.kdmpRantaiKomando !== 'function') return [];
+            var users = _loadUsers();
+            var hasil = [];
+            users.forEach(function(u) {
+                if (!u || !u.kodeRole) return;
+                if (u.kodeRole.indexOf('KDMP_') !== 0) return;
+                if (u.kodeRole === 'KDMP_PUSAT') return;
+                var rantai = window.kdmpRantaiKomando(u.idUser || u.id);
+                if (!rantai || rantai.length < 2) {
+                    hasil.push({
+                        jenis: 'rantai-kopdes-putus', tipe: 'kopdes',
+                        id: u.idUser || u.id, nama: u.nama || '-',
+                        alasan: 'Rantai komando terputus (panjang: ' + (rantai ? rantai.length : 0) + ')',
+                        raw: u
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 9] — DETEKTOR: MEDIA (delegasi OM v2)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiMediaOrphan = function() {
+        try {
+            if (typeof window.omScanSemua === 'function') {
+                var scan = window.omScanSemua();
+                var hasil = [];
+                ['sejati', 'semu', 'kandidat'].forEach(function(t) {
+                    (scan[t] || []).forEach(function(m) {
+                        hasil.push({
+                            jenis: 'media-orphan', tipe: 'media',
+                            id: m.id, nama: m.nama || '-',
+                            alasan: (m._alasan || m.alasan || 'Orphan media'),
+                            raw: m
+                        });
+                    });
+                });
+                return hasil;
+            }
+            return [];
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 10] — DETEKTOR: KEUANGAN (2 jenis)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiRekeningOrphan = function() {
+        try {
+            var list = _loadRekening();
+            var hasil = [];
+            list.forEach(function(r) {
+                if (!r) return;
+                var idUser = r.idUser || r.idOwner;
+                if (!idUser || !_userValid(idUser)) {
+                    hasil.push({
+                        jenis: 'rekening-orphan', tipe: 'rekening',
+                        id: r.id, nama: r.namaPenyedia || '-',
+                        alasan: 'User tidak ada: ' + (idUser || '-'),
+                        raw: r
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiDompetOrphan = function() {
+        try {
+            var hasil = [];
+            var users = _loadUsers();
+            var validIds = {};
+            users.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
+
+            // Scan semua key dompet_
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k || k.indexOf('dompet_') !== 0) continue;
+                var idUser = k.substring(7);
+                if (!validIds[idUser]) {
+                    hasil.push({
+                        jenis: 'dompet-orphan', tipe: 'dompet',
+                        id: k, nama: 'Dompet ' + idUser,
+                        alasan: 'User tidak ada: ' + idUser,
+                        raw: { key: k, idUser: idUser }
+                    });
+                }
+            }
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 11] — DETEKTOR: LAIN-LAIN (5 jenis)
+    // ═══════════════════════════════════════════════════════════
+    window.om3DeteksiPengajuanOrphan = function() {
+        try {
+            var list = _loadPengajuan();
+            var hasil = [];
+            list.forEach(function(p) {
+                if (!p) return;
+                if (p.id && !_userValid(p.id) && p.status === 'Menunggu') {
+                    hasil.push({
+                        jenis: 'pengajuan-orphan', tipe: 'pengajuan',
+                        id: p.id || p.idPengajuan, nama: p.nama || '-',
+                        alasan: 'User tidak ada',
+                        raw: p
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiNotifOrphan = function() {
+        try {
+            var hasil = [];
+            var users = _loadUsers();
+            var validIds = {};
+            users.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
+
+            var notifKey = window.CS_KEY?.NOTIF_PREFIX || 'r2c_notifikasi';
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k || k.indexOf(notifKey) !== 0) continue;
+                var idUser = k.substring(notifKey.length + 1);
+                if (!validIds[idUser]) {
+                    hasil.push({
+                        jenis: 'notif-orphan', tipe: 'notifikasi',
+                        id: k, nama: 'Notif ke ' + idUser,
+                        alasan: 'User tidak ada',
+                        raw: { key: k }
+                    });
+                }
+            }
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiChatOrphan = function() {
+        try {
+            var list = _loadChat();
+            var hasil = [];
+            list.forEach(function(c) {
+                if (!c) return;
+                var idFrom = c.idPengirim || c.dari;
+                var idTo = c.idPenerima || c.ke;
+                if ((idFrom && !_userValid(idFrom)) || (idTo && !_userValid(idTo))) {
+                    hasil.push({
+                        jenis: 'chat-orphan', tipe: 'chat',
+                        id: c.id, nama: 'Chat ' + (c.id || '-'),
+                        alasan: 'Pengirim/penerima tidak ada',
+                        raw: c
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiCartOrphan = function() {
+        try {
+            var hasil = [];
+            var produkList = _loadProduk();
+            var produkIds = {};
+            produkList.forEach(function(p) {
+                if (p && p.id) produkIds[p.id] = true;
+                if (p && p.idProduk) produkIds[p.idProduk] = true;
+            });
+
+            var prefixes = ['mpp_cart_', 'mpp_wishlist_', 'mpp_koleksi_', 'mpp_histori_'];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k) continue;
+                var matched = prefixes.some(function(p) { return k.indexOf(p) === 0; });
+                if (!matched) continue;
+
+                var items = window.om3LoadJSON(k, []);
+                if (!Array.isArray(items)) continue;
+                items.forEach(function(it) {
+                    if (!it) return;
+                    var idP = it.idProduk || it.id;
+                    if (idP && !produkIds[idP]) {
+                        var tipe = k.indexOf('cart') !== -1 ? 'cart' :
+                                   k.indexOf('wishlist') !== -1 ? 'wishlist' :
+                                   k.indexOf('koleksi') !== -1 ? 'koleksi' : 'histori';
+                        hasil.push({
+                            jenis: 'cart-orphan', tipe: tipe,
+                            id: it.idCartItem || idP, nama: it.nama || ('Produk ' + idP),
+                            alasan: 'Produk tidak ada',
+                            raw: { key: k, item: it }
+                        });
+                    }
+                });
+            }
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiKategoriKosong = function() {
+        try {
+            var list = _loadKategori();
+            var produkList = _loadProduk();
+            var dipakai = {};
+            produkList.forEach(function(p) {
+                if (p && p.kategori) dipakai[p.kategori] = true;
+            });
+            var hasil = [];
+            list.forEach(function(k) {
+                if (!k || !k.nama) return;
+                if (k.isGlobal) return; // global jangan dihapus
+                if (!dipakai[k.nama]) {
+                    hasil.push({
+                        jenis: 'kategori-kosong', tipe: 'kategori',
+                        id: k.id, nama: k.nama,
+                        alasan: 'Tidak dipakai produk manapun',
+                        raw: k
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiWilayahKosong = function() {
+        try {
+            var list = _loadWilayah();
+            var users = _loadUsers();
+            var dipakai = {};
+            users.forEach(function(u) {
+                if (u && u.wilayah) dipakai[u.wilayah] = true;
+            });
+            var hasil = [];
+            list.forEach(function(w) {
+                if (!w) return;
+                var key = w.id || w.nama;
+                if (!dipakai[key] && !dipakai[w.nama]) {
+                    hasil.push({
+                        jenis: 'wilayah-kosong', tipe: 'wilayah',
+                        id: key, nama: w.nama || '-',
+                        alasan: 'Tidak ada user terdaftar',
+                        raw: w
+                    });
+                }
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.om3DeteksiHeartbeatKadaluarsa = function() {
+        try {
+            var hasil = [];
+            var prefix = window.CS_KEY?.ONLINE_PREFIX || 'r2c_online_';
+            var batas = Date.now() - 90 * 1000; // 90 detik
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k || k.indexOf(prefix) !== 0) continue;
+                var data = window.om3LoadJSON(k, null);
+                if (data && data.timestamp && data.timestamp < batas) {
+                    hasil.push({
+                        jenis: 'heartbeat-kadaluarsa', tipe: 'sistem',
+                        id: k, nama: 'Heartbeat ' + (data.nama || '-'),
+                        alasan: 'Online marker kadaluarsa',
+                        raw: data
+                    });
+                }
+            }
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 12] — SCANNER UTAMA (ocScanSemua → om3ScanSemua)
+    // ═══════════════════════════════════════════════════════════
+    window.om3ScanSemua = function(opts) {
+        opts = opts || {};
+        var t0 = Date.now();
+        try {
+            var detektorMap = {
+                'produk-orphan':         window.om3DeteksiProdukOrphan,
+                'produk-tanpa-kategori': window.om3DeteksiProdukTanpaKategori,
+                'produk-tanpa-foto':     window.om3DeteksiProdukTanpaFoto,
+                'order-orphan':          window.om3DeteksiOrderOrphan,
+                'transaksi-orphan':      window.om3DeteksiTransaksiOrphan,
+                'akun-kasir-orphan':     window.om3DeteksiKasirOrphan,
+                'akun-staf-orphan':      window.om3DeteksiStafOrphan,
+                'akun-arsip-ganda':      window.om3DeteksiArsipGanda,
+                'kopdes-orphan':         window.om3DeteksiKopdesOrphan,
+                'rantai-kopdes-putus':   window.om3DeteksiRantaiKopdesPutus,
+                'media-orphan':          window.om3DeteksiMediaOrphan,
+                'rekening-orphan':       window.om3DeteksiRekeningOrphan,
+                'dompet-orphan':         window.om3DeteksiDompetOrphan,
+                'pengajuan-orphan':      window.om3DeteksiPengajuanOrphan,
+                'notif-orphan':          window.om3DeteksiNotifOrphan,
+                'chat-orphan':           window.om3DeteksiChatOrphan,
+                'cart-orphan':           window.om3DeteksiCartOrphan,
+                'kategori-kosong':       window.om3DeteksiKategoriKosong,
+                'wilayah-kosong':        window.om3DeteksiWilayahKosong,
+                'heartbeat-kadaluarsa':  window.om3DeteksiHeartbeatKadaluarsa
+            };
+
+            var jenisFilter = opts.jenis;
+            if (jenisFilter && !Array.isArray(jenisFilter)) jenisFilter = [jenisFilter];
+
+            var hasil = {
+                sukses: true,
+                waktu: window.om3Now(),
+                elapsedMs: 0,
+                perJenis: {},
+                items: [],
+                total: 0,
+                perTipe: {},
+                perPrioritas: { tinggi: 0, sedang: 0, rendah: 0 }
+            };
+
+            Object.keys(detektorMap).forEach(function(jenis) {
+                if (jenisFilter && jenisFilter.indexOf(jenis) === -1) return;
+                try {
+                    var items = detektorMap[jenis]();
+                    if (!Array.isArray(items)) items = [];
+                    items.forEach(function(it) { it.jenis = jenis; });
+
+                    hasil.perJenis[jenis] = {
+                        total: items.length,
+                        items: items,
+                        label: window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.label || jenis,
+                        prioritas: window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.prioritas || 'sedang',
+                        kategori: window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.kategori || 'lain'
+                    };
+
+                    items.forEach(function(it) {
+                        hasil.items.push(it);
+                        var tipe = it.tipe || 'lain';
+                        hasil.perTipe[tipe] = (hasil.perTipe[tipe] || 0) + 1;
+                        var pr = window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.prioritas || 'sedang';
+                        hasil.perPrioritas[pr] = (hasil.perPrioritas[pr] || 0) + 1;
+                    });
+                } catch (e) {
+                    hasil.perJenis[jenis] = { total: 0, items: [], error: e.message };
+                }
+            });
+
+            hasil.total = hasil.items.length;
+            hasil.elapsedMs = Date.now() - t0;
+            return hasil;
+        } catch (e) {
+            console.error('om3ScanSemua error:', e);
+            return { sukses: false, pesan: e.message, items: [], total: 0, elapsedMs: Date.now() - t0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 13] — STATISTIK
+    // ═══════════════════════════════════════════════════════════
+    window.om3Statistik = function(opts) {
+        try {
+            var scan = window.om3ScanSemua(opts);
+            return {
+                total: scan.total,
+                perJenis: Object.keys(scan.perJenis).map(function(j) {
+                    return {
+                        jenis: j,
+                        label: scan.perJenis[j].label,
+                        total: scan.perJenis[j].total,
+                        prioritas: scan.perJenis[j].prioritas
+                    };
+                }).filter(function(x) { return x.total > 0; }),
+                perTipe: scan.perTipe,
+                perPrioritas: scan.perPrioritas,
+                elapsedMs: scan.elapsedMs,
+                waktu: scan.waktu
+            };
+        } catch (e) { return { total: 0, perJenis: [], perTipe: {}, perPrioritas: {} }; }
+    };
+
+    window.om3Ringkasan = function() {
+        try {
+            var s = window.om3Statistik();
+            return 'OM v3: ' + s.total + ' orphan | ' +
+                   'Tinggi: ' + (s.perPrioritas.tinggi || 0) + ' | ' +
+                   'Sedang: ' + (s.perPrioritas.sedang || 0) + ' | ' +
+                   'Rendah: ' + (s.perPrioritas.rendah || 0);
+        } catch (e) { return 'OM v3: error'; }
+    };
+
+    window.om3EstimasiHemat = function() {
+        try {
+            var scan = window.om3ScanSemua();
+            var totalBytes = 0;
+            scan.items.forEach(function(it) {
+                try {
+                    var json = JSON.stringify(it.raw);
+                    totalBytes += json.length * 2;
+                } catch (e) {}
+            });
+            return {
+                total: totalBytes,
+                totalKB: Math.round(totalBytes / 1024),
+                totalTeks: Math.round(totalBytes / 1024) + ' KB'
+            };
+        } catch (e) { return { total: 0, totalKB: 0, totalTeks: '0 KB' }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 14] — AKSI: HAPUS
+    // ═══════════════════════════════════════════════════════════
+    window.om3PreviewHapus = function(opts) {
+        opts = opts || {};
+        try {
+            var scan = window.om3ScanSemua({ jenis: opts.jenis });
+            var items = scan.items || [];
+            var limit = parseInt(opts.limit, 10) || window.OM3_KONSTANTA.MAX_PREVIEW;
+            var totalBytes = 0;
+            items.forEach(function(it) {
+                try {
+                    totalBytes += JSON.stringify(it.raw).length * 2;
+                } catch (e) {}
+            });
+            return {
+                total: items.length,
+                size: totalBytes,
+                sizeTeks: Math.round(totalBytes / 1024) + ' KB',
+                items: items.slice(0, limit),
+                truncated: items.length > limit
+            };
+        } catch (e) { return { total: 0, items: [], sizeTeks: '0 KB' }; }
+    };
+
+    function _hapusItem(it) {
+        try {
+            if (!it || !it.raw) return false;
+            var raw = it.raw;
+            var jenis = it.jenis;
+
+            // ── Produk orphan ──
+            if (jenis === 'produk-orphan' || jenis === 'produk-tanpa-kategori') {
+                if (typeof window.produkHapus === 'function') {
+                    window.produkHapus(raw.id || raw.idProduk);
+                    return true;
+                }
+            }
+
+            // ── Foto orphan ──
+            if (jenis === 'produk-tanpa-foto') {
+                if (typeof window.mdHapus === 'function' && raw.fotoId) {
+                    window.mdHapus(raw.fotoId, { bypass: true });
+                    return true;
+                }
+            }
+
+            // ── Order orphan ──
+            if (jenis === 'order-orphan') {
+                var idOrder = raw.id || raw.idOrder;
+                var orders = _loadOrder();
+                var before = orders.length;
+                orders = orders.filter(function(o) { return o && (o.id !== idOrder && o.idOrder !== idOrder); });
+                if (orders.length < before) {
+                    window.csSaveJSON('dataOrder', orders, { backup: false });
+                    return true;
+                }
+            }
+
+            // ── Transaksi orphan ──
+            if (jenis === 'transaksi-orphan') {
+                var idTrx = raw.id || raw.idTransaksi;
+                var trxs = _loadTransaksi();
+                var before2 = trxs.length;
+                trxs = trxs.filter(function(t) { return t && (t.id !== idTrx && t.idTransaksi !== idTrx); });
+                if (trxs.length < before2) {
+                    window.csSaveJSON('dataTransaksi', trxs, { backup: false });
+                    return true;
+                }
+            }
+
+            // ── Kasir orphan → nonaktifkan (bukan hapus) ──
+            if (jenis === 'akun-kasir-orphan' || jenis === 'akun-staf-orphan') {
+                var idA = raw.idUser || raw.id;
+                var users = _loadUsers();
+                for (var i = 0; i < users.length; i++) {
+                    if (users[i] && (users[i].idUser === idA || users[i].id === idA)) {
+                        users[i].status = 'Nonaktif';
+                        users[i].statusVerifikasi = 'Nonaktif';
+                        users[i].orphanNote = 'Auto-nonaktif OM v3';
+                        window.csSaveJSON('dataLoginUser', users, { backup: false });
+                        return true;
+                    }
+                }
+            }
+
+            // ── Arsip ganda ──
+            if (jenis === 'akun-arsip-ganda') {
+                var idB = raw.idUser || raw.id;
+                var akuns = window.csLoadJSON('dataAkunAktif', []);
+                if (!Array.isArray(akuns)) akuns = [];
+                var before3 = akuns.length;
+                akuns = akuns.filter(function(a) { return a && (a.idUser !== idB && a.id !== idB); });
+                if (akuns.length < before3) {
+                    window.csSaveJSON('dataAkunAktif', akuns, { backup: false });
+                    return true;
+                }
+            }
+
+            // ── Media orphan → delegasi OM v2 ──
+            if (jenis === 'media-orphan') {
+                if (typeof window.mdHapus === 'function' && raw.id) {
+                    window.mdHapus(raw.id, { bypass: true });
+                    return true;
+                }
+            }
+
+            // ── Rekening orphan ──
+            if (jenis === 'rekening-orphan') {
+                if (typeof window.rekHapus === 'function') {
+                    window.rekHapus(raw.id);
+                    return true;
+                }
+            }
+
+            // ── Dompet orphan → hapus key localStorage ──
+            if (jenis === 'dompet-orphan') {
+                if (raw.key) {
+                    try { localStorage.removeItem(raw.key); return true; } catch (e) {}
+                }
+            }
+
+            // ── Pengajuan orphan ──
+            if (jenis === 'pengajuan-orphan') {
+                if (typeof window.csHapusPengajuan === 'function') {
+                    window.csHapusPengajuan(raw.id || raw.idPengajuan);
+                    return true;
+                }
+            }
+
+            // ── Notif orphan → hapus key ──
+            if (jenis === 'notif-orphan') {
+                if (raw.key) {
+                    try { localStorage.removeItem(raw.key); return true; } catch (e) {}
+                }
+            }
+
+            // ── Chat orphan ──
+            if (jenis === 'chat-orphan') {
+                var chat = _loadChat();
+                var idC = raw.id;
+                var before4 = chat.length;
+                chat = chat.filter(function(c) { return c && c.id !== idC; });
+                if (chat.length < before4) {
+                    window.csSaveJSON('dataChat', chat, { backup: false });
+                    return true;
+                }
+            }
+
+            // ── Cart orphan → hapus item dari key ──
+            if (jenis === 'cart-orphan') {
+                if (raw.key && raw.item) {
+                    var list = window.om3LoadJSON(raw.key, []);
+                    if (Array.isArray(list)) {
+                        var id = raw.item.idCartItem || raw.item.id || raw.item.idProduk;
+                        list = list.filter(function(x) {
+                            if (!x) return false;
+                            var xi = x.idCartItem || x.id || x.idProduk;
+                            return xi !== id;
+                        });
+                        window.om3SaveJSON(raw.key, list);
+                        return true;
+                    }
+                }
+            }
+
+            // ── Kategori kosong ──
+            if (jenis === 'kategori-kosong') {
+                if (typeof window.kategoriHapus === 'function') {
+                    window.kategoriHapus(raw.id);
+                    return true;
+                }
+            }
+
+            // ── Wilayah kosong ──
+            if (jenis === 'wilayah-kosong') {
+                if (typeof window.csHapusWilayah === 'function') {
+                    window.csHapusWilayah(raw.id);
+                    return true;
+                }
+            }
+
+            // ── Heartbeat kadaluarsa → hapus key ──
+            if (jenis === 'heartbeat-kadaluarsa') {
+                if (raw.key || it.id) {
+                    var key = raw.key || it.id;
+                    try { localStorage.removeItem(key); return true; } catch (e) {}
+                }
+            }
+
+            return false;
+        } catch (e) {
+            console.error('_hapusItem error:', e);
+            return false;
+        }
+    }
+
+    window.om3HapusSelektif = function(arrayId, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(arrayId)) return { sukses: false, pesan: 'Array ID kosong' };
+            var scan = window.om3ScanSemua();
+            var target = scan.items.filter(function(it) { return arrayId.indexOf(it.id) !== -1; });
+
+            if (opts.dryRun !== false) {
+                return { sukses: true, dryRun: true, akanDihapus: target.length, items: target };
+            }
+
+            var berhasil = 0, gagal = 0;
+            target.forEach(function(it) {
+                if (_hapusItem(it)) berhasil++;
+                else gagal++;
+            });
+
+            window.om3CatatLog('hapus-selektif', { berhasil: berhasil, gagal: gagal });
+            return { sukses: true, berhasil: berhasil, gagal: gagal, total: target.length };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3HapusPerJenis = function(jenis, opts) {
+        opts = opts || {};
+        try {
+            if (!jenis) return { sukses: false, pesan: 'Jenis kosong' };
+            if (!window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]) {
+                return { sukses: false, pesan: 'Jenis tidak dikenal: ' + jenis };
+            }
+
+            var scan = window.om3ScanSemua({ jenis: [jenis] });
+            var items = scan.items || [];
+            if (items.length === 0) {
+                return { sukses: true, berhasil: 0, gagal: 0, pesan: 'Tidak ada orphan' };
+            }
+
+            // Cek konfigurasi: dry-run default ON
+            var cfg = window.om3AmbilConfig();
+            var dryRun = opts.dryRun === true || (opts.dryRun !== false && cfg.modeDryRun);
+
+            if (dryRun) {
+                return { sukses: true, dryRun: true, akanDihapus: items.length };
+            }
+
+            var berhasil = 0, gagal = 0;
+            items.slice(0, window.OM3_KONSTANTA.MAX_HAPUS_PER_RUN).forEach(function(it) {
+                if (_hapusItem(it)) berhasil++;
+                else gagal++;
+            });
+
+            window.om3CatatLog('hapus-per-jenis', { jenis: jenis, berhasil: berhasil, gagal: gagal });
+            return { sukses: true, jenis: jenis, berhasil: berhasil, gagal: gagal };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3HapusSemua = function(opts) {
+        opts = opts || {};
+        try {
+            var scan = window.om3ScanSemua({ jenis: opts.jenis });
+            var items = scan.items || [];
+
+            var cfg = window.om3AmbilConfig();
+            var dryRun = opts.dryRun === true || (opts.dryRun !== false && cfg.modeDryRun);
+
+            if (dryRun) {
+                var totalBytes = 0;
+                items.forEach(function(it) {
+                    try { totalBytes += JSON.stringify(it.raw).length * 2; } catch (e) {}
+                });
+                return {
+                    sukses: true, dryRun: true,
+                    akanDihapus: items.length,
+                    sizeTeks: Math.round(totalBytes / 1024) + ' KB',
+                    perJenis: scan.perJenis
+                };
+            }
+
+            var berhasil = 0, gagal = 0;
+            var limit = window.OM3_KONSTANTA.MAX_HAPUS_PER_RUN;
+            items.slice(0, limit).forEach(function(it) {
+                if (_hapusItem(it)) berhasil++;
+                else gagal++;
+            });
+
+            window.om3CatatLog('hapus-semua', { berhasil: berhasil, gagal: gagal, total: items.length });
+            window.om3EmitEvent('r2coin:om3-cleanup', { berhasil: berhasil, gagal: gagal });
+            return { sukses: true, berhasil: berhasil, gagal: gagal, total: items.length };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15] — SCHEDULER (AUTO CLEANUP)
+    // ═══════════════════════════════════════════════════════════
+    var _schedulerTimer = null;
+    var _lastRunInfo = null;
+
+    window.om3AmbilConfig = function() {
+        try {
+            var saved = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_CONFIG, null);
+            if (saved && typeof saved === 'object') {
+                return {
+                    autoStart:   saved.autoStart === true,
+                    intervalJam: saved.intervalJam || window.OM3_KONSTANTA.INTERVAL_JAM,
+                    modeDryRun:  saved.modeDryRun !== false,
+                    autoHapus:   saved.autoHapus === true,
+                    jenisAktif:  Array.isArray(saved.jenisAktif) ? saved.jenisAktif : Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN)
+                };
+            }
+        } catch (e) {}
+        return {
+            autoStart:   false,
+            intervalJam: window.OM3_KONSTANTA.INTERVAL_JAM,
+            modeDryRun:  true,
+            autoHapus:   false,
+            jenisAktif:  Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN)
+        };
+    };
+
+    window.om3SimpanConfig = function(cfg) {
+        try {
+            if (!cfg || typeof cfg !== 'object') return { sukses: false };
+            var current = window.om3AmbilConfig();
+            var merged = Object.assign({}, current, cfg);
+            return window.om3SaveJSON(window.OM3_KONSTANTA.KEY_CONFIG, merged);
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3JalankanSekarang = function(opts) {
+        opts = opts || {};
+        var t0 = Date.now();
+        try {
+            var cfg = window.om3AmbilConfig();
+            var dryRun = opts.dryRun === true || (opts.dryRun !== false && cfg.modeDryRun);
+
+            var hasil = window.om3HapusSemua({
+                jenis: opts.jenis,
+                dryRun: dryRun
+            });
+
+            var info = {
+                waktu: window.om3Now(),
+                dryRun: dryRun,
+                elapsedMs: Date.now() - t0,
+                hasil: hasil
+            };
+            _lastRunInfo = info;
+
+            if (!dryRun && hasil.sukses && hasil.berhasil > 0) {
+                window.om3CatatLog('auto-run', {
+                    berhasil: hasil.berhasil,
+                    gagal: hasil.gagal,
+                    dryRun: false
+                });
+            }
+
+            return info;
+        } catch (e) {
+            return { waktu: window.om3Now(), error: e.message, elapsedMs: Date.now() - t0 };
+        }
+    };
+
+    window.om3JadwalMulai = function(intervalJam) {
+        try {
+            if (_schedulerTimer) {
+                clearInterval(_schedulerTimer);
+                _schedulerTimer = null;
+            }
+
+            var cfg = window.om3AmbilConfig();
+            var jam = parseInt(intervalJam, 10) || cfg.intervalJam || 24;
+            var intervalMs = jam * 60 * 60 * 1000;
+
+            _schedulerTimer = setInterval(function() {
+                try {
+                    console.log('⏰ OM v3 scheduler: jalankan auto cleanup');
+                    window.om3JalankanSekarang({ dryRun: false });
+                } catch (e) {}
+            }, intervalMs);
+
+            console.log('%c✅ OM v3 scheduler aktif (interval ' + jam + ' jam)',
+                'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
+            return { sukses: true, intervalJam: jam, intervalMs: intervalMs };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3JadwalStop = function() {
+        try {
+            if (_schedulerTimer) {
+                clearInterval(_schedulerTimer);
+                _schedulerTimer = null;
+                console.log('%c⏹️ OM v3 scheduler dihentikan',
+                    'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
+                return { sukses: true, aktif: false };
+            }
+            return { sukses: true, aktif: false, pesan: 'Scheduler tidak aktif' };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3JadwalStatus = function() {
+        try {
+            var aktif = _schedulerTimer !== null;
+            var cfg = window.om3AmbilConfig();
+            var last = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, null);
+            return {
+                aktif: aktif,
+                intervalJam: cfg.intervalJam,
+                autoStart: cfg.autoStart,
+                modeDryRun: cfg.modeDryRun,
+                autoHapus: cfg.autoHapus,
+                lastRun: last ? last.waktu : null,
+                lastRunAksi: last ? last.aksi : null
+            };
+        } catch (e) { return { aktif: false, error: e.message }; }
+    };
+
+    window.om3ToggleAutoStart = function(aktif) {
+        try {
+            var cfg = window.om3AmbilConfig();
+            window.om3SimpanConfig({ autoStart: aktif });
+            if (aktif) window.om3JadwalMulai(cfg.intervalJam);
+            else window.om3JadwalStop();
+            return { sukses: true, autoStart: aktif };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3ToggleDryRun = function(dryRun) {
+        try {
+            window.om3SimpanConfig({ modeDryRun: dryRun });
+            return { sukses: true, modeDryRun: dryRun };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3ToggleAutoHapus = function(autoHapus) {
+        try {
+            window.om3SimpanConfig({ autoHapus: autoHapus });
+            return { sukses: true, autoHapus: autoHapus };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 16] — EVENT LISTENER (Auto Trigger)
+    // ═══════════════════════════════════════════════════════════
+    var _registeredHandlers = [];
+
+    function _debounceTrigger(namaEvent, fn) {
+        try {
+            var timers = window.OM3_KONSTANTA._triggerTimers;
+            if (timers[namaEvent]) clearTimeout(timers[namaEvent]);
+            timers[namaEvent] = setTimeout(function() {
+                try { fn(); } catch (e) {}
+                delete timers[namaEvent];
+            }, window.OM3_KONSTANTA.TRIGGER_DEBOUNCE_MS);
+        } catch (e) {}
+    }
+
+    window.om3DaftarkanListener = function() {
+        try {
+            window.om3LepasListener();
+            var events = window.OM3_KONSTANTA.EVENT_TRIGGER || [];
+            events.forEach(function(evt) {
+                var handler = function(ev) {
+                    try {
+                        var detail = (ev && ev.detail) || {};
+                        console.log('🔔 OM v3 trigger:', evt, detail);
+
+                        _debounceTrigger(evt, function() {
+                            var cfg = window.om3AmbilConfig();
+                            if (!cfg.autoStart) return;
+                            window.om3JalankanSekarang({
+                                tipe: 'event', trigger: evt, dryRun: false
+                            });
+                        });
+                    } catch (e) {}
+                };
+                window.addEventListener(evt, handler);
+                _registeredHandlers.push({ event: evt, handler: handler });
+            });
+            console.log('%c✅ OM v3: ' + events.length + ' listener terpasang',
+                'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
+            return { sukses: true, total: events.length };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3LepasListener = function() {
+        try {
+            var total = _registeredHandlers.length;
+            _registeredHandlers.forEach(function(item) {
+                window.removeEventListener(item.event, item.handler);
+            });
+            _registeredHandlers = [];
+            return { sukses: true, dilepas: total };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3CekListener = function() {
+        return {
+            total: _registeredHandlers.length,
+            daftar: _registeredHandlers.map(function(x) { return x.event; })
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 17] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimOM3 = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') {
+                return { sukses: false, pesan: 'MN belum terpasang' };
+            }
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: {
+                    idUser:   window.om3GetIdUser(),
+                    idOwner:  window.om3GetIdOwner(),
+                    kodeRole: window.om3GetKodeRole(),
+                    menu: 'orphanManagement', blok: 'OM-V3'
+                },
+                ke: ke || { menu: 'orphanManagement' },
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: window.om3Now()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaOM3 = function(aksiMenu) {
+        try { return window.mnInboxMenu(aksiMenu || 'orphanManagement'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilOM3 = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'all';
+            switch (tipe) {
+                case 'all':          return window.om3ScanSemua(filter);
+                case 'statistik':    return window.om3Statistik(filter);
+                case 'ringkasan':    return window.om3Ringkasan();
+                case 'estimasi':     return window.om3EstimasiHemat();
+                case 'preview':      return window.om3PreviewHapus(filter);
+                case 'config':       return window.om3AmbilConfig();
+                case 'jadwal-status':return window.om3JadwalStatus();
+                case 'last-run':     return window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, null);
+                case 'log':          return window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LOG, []);
+                case 'jenis-list':   return Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN);
+                case 'jenis-detail': return window.OM3_KONSTANTA.JENIS_ORPHAN;
+                case 'listener':     return window.om3CekListener();
+                default:             return null;
+            }
+        } catch (e) { return null; }
+    };
+
+    window.cekPintuOM3 = function() {
+        var skor = (typeof window.kirimOM3 === 'function' ? 1 : 0)
+                 + (typeof window.terimaOM3 === 'function' ? 1 : 0)
+                 + (typeof window.ambilOM3 === 'function' ? 1 : 0);
+        return {
+            blok: 'OM-V3',
+            kirim:  typeof window.kirimOM3 === 'function',
+            terima: typeof window.terimaOM3 === 'function',
+            ambil:  typeof window.ambilOM3 === 'function',
+            skor:   skor + '/3',
+            lengkap: skor === 3
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MODUL 18] — DEBUG + AUTO-REGISTRY 0.1 (A5, A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    window.debugOM3 = function() {
+        var stat = window.om3Statistik();
+        var cfg = window.om3AmbilConfig();
+        var jadwal = window.om3JadwalStatus();
+        var info = {
+            blok: 'OM-V3', versi: window._blokOMVersi,
+            guard: window._blokOMv3Done,
+            fokus: 'Konsolidasi OM v2 + AUTORPHAN v2 + 14 detektor baru',
+            konfigurasi: {
+                totalJenisOrphan: Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN).length,
+                autoStart: cfg.autoStart,
+                modeDryRun: cfg.modeDryRun,
+                autoHapus: cfg.autoHapus,
+                intervalJam: cfg.intervalJam,
+                graceKandidat: window.OM3_KONSTANTA.GRACE_KANDIDAT,
+                graceOrphan: window.OM3_KONSTANTA.GRACE_ORPHAN
+            },
+            jadwal: jadwal,
+            statistik: {
+                total: stat.total,
+                perPrioritas: stat.perPrioritas,
+                jumlahJenisAktif: stat.perJenis.length
+            },
+            listener: window.om3CekListener(),
+            pintu: window.cekPintuOM3(),
+            fungsi: {
+                // Scanner (1)
+                om3ScanSemua:               typeof window.om3ScanSemua,
+                // Detektor (20)
+                om3DeteksiProdukOrphan:     typeof window.om3DeteksiProdukOrphan,
+                om3DeteksiProdukTanpaKategori: typeof window.om3DeteksiProdukTanpaKategori,
+                om3DeteksiProdukTanpaFoto:  typeof window.om3DeteksiProdukTanpaFoto,
+                om3DeteksiOrderOrphan:      typeof window.om3DeteksiOrderOrphan,
+                om3DeteksiTransaksiOrphan:  typeof window.om3DeteksiTransaksiOrphan,
+                om3DeteksiKasirOrphan:      typeof window.om3DeteksiKasirOrphan,
+                om3DeteksiStafOrphan:       typeof window.om3DeteksiStafOrphan,
+                om3DeteksiArsipGanda:       typeof window.om3DeteksiArsipGanda,
+                om3DeteksiKopdesOrphan:     typeof window.om3DeteksiKopdesOrphan,
+                om3DeteksiRantaiKopdesPutus:typeof window.om3DeteksiRantaiKopdesPutus,
+                om3DeteksiMediaOrphan:      typeof window.om3DeteksiMediaOrphan,
+                om3DeteksiRekeningOrphan:   typeof window.om3DeteksiRekeningOrphan,
+                om3DeteksiDompetOrphan:     typeof window.om3DeteksiDompetOrphan,
+                om3DeteksiPengajuanOrphan:  typeof window.om3DeteksiPengajuanOrphan,
+                om3DeteksiNotifOrphan:      typeof window.om3DeteksiNotifOrphan,
+                om3DeteksiChatOrphan:       typeof window.om3DeteksiChatOrphan,
+                om3DeteksiCartOrphan:       typeof window.om3DeteksiCartOrphan,
+                om3DeteksiKategoriKosong:   typeof window.om3DeteksiKategoriKosong,
+                om3DeteksiWilayahKosong:    typeof window.om3DeteksiWilayahKosong,
+                om3DeteksiHeartbeatKadaluarsa: typeof window.om3DeteksiHeartbeatKadaluarsa,
+                // Statistik (3)
+                om3Statistik:               typeof window.om3Statistik,
+                om3Ringkasan:               typeof window.om3Ringkasan,
+                om3EstimasiHemat:           typeof window.om3EstimasiHemat,
+                // Aksi (4)
+                om3PreviewHapus:            typeof window.om3PreviewHapus,
+                om3HapusSelektif:           typeof window.om3HapusSelektif,
+                om3HapusPerJenis:           typeof window.om3HapusPerJenis,
+                om3HapusSemua:              typeof window.om3HapusSemua,
+                // Scheduler (6)
+                om3AmbilConfig:             typeof window.om3AmbilConfig,
+                om3SimpanConfig:            typeof window.om3SimpanConfig,
+                om3JalankanSekarang:        typeof window.om3JalankanSekarang,
+                om3JadwalMulai:             typeof window.om3JadwalMulai,
+                om3JadwalStop:              typeof window.om3JadwalStop,
+                om3JadwalStatus:            typeof window.om3JadwalStatus,
+                om3ToggleAutoStart:         typeof window.om3ToggleAutoStart,
+                om3ToggleDryRun:            typeof window.om3ToggleDryRun,
+                om3ToggleAutoHapus:         typeof window.om3ToggleAutoHapus,
+                // Event (3)
+                om3DaftarkanListener:       typeof window.om3DaftarkanListener,
+                om3LepasListener:           typeof window.om3LepasListener,
+                om3CekListener:             typeof window.om3CekListener,
+                // 3 Pintu (4)
+                kirimOM3:                   typeof window.kirimOM3,
+                terimaOM3:                  typeof window.terimaOM3,
+                ambilOM3:                   typeof window.ambilOM3,
+                cekPintuOM3:                typeof window.cekPintuOM3
+            }
+        };
+        console.log('🔍 debugOM3 v3.0:', info);
+        return info;
+    };
+
+    // ── Auto-registry 0.1 (A33, A34, A35) ──
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && (b.kode === 'ORPHAN-CLEANUP' || b.kode === 'OM3');
+                });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'ORPHAN-CLEANUP',
+                        nama: 'Fungsi Global Orphan Management v3 (Konsolidasi)',
+                        layer: 'L4', status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('ORPHAN-CLEANUP', {
+                        status: 'Selesai',
+                        nama: 'Fungsi Global Orphan Management v3 (Konsolidasi)'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('om3', {
+                    nama: 'Orphan Management v3 (L4)',
+                    status: 'Selesai', jumlah: 45
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'ORPHAN-CLEANUP';
+                });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        blok: 'ORPHAN-CLEANUP',
+                        nama: 'OM v3.0 — Konsolidasi Orphan Management',
+                        keterangan: 'Konsolidasi OM v2 + AUTORPHAN v2 + 14 detektor baru (20 jenis) • default AMAN • 3 Pintu • scheduler • event listener'
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('OM v3: Auto-registry error:', e.message);
+        }
+    }, 900);
+
+    // ── Whitelist A14 ──
+    setTimeout(function() {
+        try {
+            if (!window._SUDAH_ADA_UI_2) window._SUDAH_ADA_UI_2 = [];
+            ['orphanManagement', 'orphanCleanup', 'autoCleanup'].forEach(function(a) {
+                if (window._SUDAH_ADA_UI_2.indexOf(a) === -1) {
+                    window._SUDAH_ADA_UI_2.push(a);
+                }
+            });
+        } catch (e) {}
+    }, 300);
+
+    // ── Auto-register listener (delay) ──
+    setTimeout(function() {
+        try { window.om3DaftarkanListener(); } catch (e) {}
+    }, 2000);
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🇮🇩 BLOK OM v3 — ORPHAN MANAGEMENT (KONSOLIDASI) terpasang.',
+        'background:linear-gradient(90deg,#6F42C1 0%,#6F42C1 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:5px 10px;font-weight:bold;border:2px solid #6F42C1;');
+    console.log('   📦 18 Modul · 20 Detektor · ~45 Fungsi');
+    console.log('   🎯 Konsolidasi: OM v2 (media) + AUTORPHAN v2 (scheduler)');
+    console.log('   🔍 20 Jenis Orphan:');
+    console.log('      • Produk (3) · Transaksi (2) · Akun (3) · Kopdes (2)');
+    console.log('      • Media (1) · Keuangan (2) · Komunikasi (3) · Lain (4)');
+    console.log('   ⚠️  DEFAULT AMAN:');
+    console.log('      • autoStart  = false (user aktifkan manual)');
+    console.log('      • autoHapus  = false (dry-run only)');
+    console.log('      • modeDryRun = true  (preview dulu)');
+    console.log('   ⏱️  Scheduler: 24 jam (opsional)');
+    console.log('   🚪 3 Pintu: kirimOM3 · terimaOM3 · ambilOM3');
+    console.log('   🔍 Debug: debugOM3()');
+    console.log('   💡 Manual run: om3JalankanSekarang()');
+    console.log('   💡 Aktifkan auto: om3ToggleAutoStart(true)');
+})();
+</script>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ AKHIR BLOK OM v3 — ORPHAN MANAGEMENT 🇮🇩 KONSOLIDASI ════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FUNGSI GLOBAL PENYIMPANAN MEDIA (PSM) v2 ═════════ -->
 <!-- ═══ Layer        : L4 (Fungsi Global Domain) ════════════════ -->
 <!-- ═══ Prefix       : psm* ═════════════════════════════════════ -->
@@ -22095,1719 +23809,6 @@
 </script>
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ AKHIR BLOK REKAP-UNIV v1.0 — REKAP UNIVERSAL 🇮🇩 ═══════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK FUNGSI GLOBAL ORPHAN MANAGEMENT (OM) v3 KONSOLIDASI ═ -->
-<!-- ═══ Layer        : L4 (Fungsi Global Domain) ════════════════ -->
-<!-- ═══ Prefix       : om3* ════════════════════════════════════ -->
-<!-- ═══ Guard        : _blokOMv3Done (UNIK — A32) ══════════════ -->
-<!-- ═══                + alias: _blokOMDoneV3, _blokOM3Done ════ -->
-<!-- ═══ IIFE         : BLOK_ORPHAN_MANAGEMENT_V3 ══════════════ -->
-<!-- ═══ Fokus        : Deteksi + klasifikasi + hapus orphan ═══ -->
-<!-- ═══ Pemakai      : Blok UI 10.82 (Orphan Management SA) ═══ -->
-<!-- ═══ Dependency   : CS1+CS2+CS4+CS7+CS12 + GID v4 + ════════ -->
-<!-- ═══             ROLE27 v4 + KDMP v4 + MN v3 + MD v2 + ═════ -->
-<!-- ═══             PRODUK-UNIV v1.0 ══════════════════════════ -->
-<!-- ═══ Isi          : 18 Modul · 20 Detektor · ~45 fungsi ════ -->
-<!-- ═══ Aturan       : A1,A2,A3,A5,A6,A7,A11—A13,A14, ════════ -->
-<!-- ═══                A18,A19,A23,A25,A29,A31,A32,A33, ══════ -->
-<!-- ═══                A34,A35,A36,A40 ═══════════════════════ -->
-<!-- ═══ Konsolidasi  : OM v2 (media) + AUTORPHAN v2 (scheduler) -->
-<!-- ═══             + 14 detektor orphan baru ═════════════════ -->
-<!-- ═══ Default AMAN : AUTO_START=false, AUTO_HAPUS=false, ════ -->
-<!-- ═══                MODE_DRY_RUN=true ═════════════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_ORPHAN_MANAGEMENT_V3() {
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 0] — GUARD + DEPENDENCY (A23, A31, A32)
-    // ═══════════════════════════════════════════════════════════
-    if (window._blokOMv3Done) {
-        console.log('ℹ️ OM v3 sudah terpasang.');
-        return;
-    }
-
-    var depsWajib = [
-        { flag: '_coreSystem1DoneV3',    nama: 'CS1 v3' },
-        { flag: '_coreSystem2DoneV3',    nama: 'CS2 v3' },
-        { flag: '_coreSystem4DoneV3',    nama: 'CS4 v3' },
-        { flag: '_coreSystem7DoneV3',    nama: 'CS7 v3' },
-        { flag: '_gidV4Done',            nama: 'GID v4' },
-        { flag: '_role27V4Done',         nama: 'ROLE27 v4' },
-        { flag: '_blokMN_DoneV3',        nama: 'MN v3' },
-        { flag: '_blokMDDoneV2',         nama: 'MD v2' }
-    ];
-    var missWajib = depsWajib.filter(function(d) { return !window[d.flag]; });
-    if (missWajib.length > 0) {
-        console.warn('⚠️ OM v3 ditunda — dependency belum lengkap:');
-        missWajib.forEach(function(d) { console.warn('   • ' + d.nama); });
-        return;
-    }
-
-        // Guard v3 + semua alias
-    window._blokOMv3Done     = true;
-    window._blokOMDoneV3     = true;
-    window._blokOM3Done      = true;
-    window._blokOrphanDoneV2 = true;   // ⭐ ALIAS — PSM butuh ini
-    window._blokOMVersi      = '3.0';
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 1] — KONSTANTA (20 JENIS ORPHAN) (A18, A19)
-    // ═══════════════════════════════════════════════════════════
-    window.OM3_KONSTANTA = Object.assign(window.OM3_KONSTANTA || {}, {
-        VERSI: '3.0',
-        PREFIX: 'om3',
-
-        // ── 20 Jenis Orphan ──
-        JENIS_ORPHAN: {
-            'produk-orphan':         { label: 'Produk Tanpa Owner',         prioritas: 'tinggi', kategori: 'produk' },
-            'produk-tanpa-kategori': { label: 'Produk Tanpa Kategori',      prioritas: 'sedang', kategori: 'produk' },
-            'produk-tanpa-foto':     { label: 'Foto Produk Orphan',         prioritas: 'sedang', kategori: 'produk' },
-            'order-orphan':          { label: 'Order Tanpa Penjual/Pembeli',prioritas: 'tinggi', kategori: 'transaksi' },
-            'transaksi-orphan':      { label: 'Transaksi Tanpa Produk/Kasir',prioritas: 'tinggi', kategori: 'transaksi' },
-            'akun-kasir-orphan':     { label: 'Kasir Tanpa Owner',          prioritas: 'tinggi', kategori: 'akun' },
-            'akun-staf-orphan':      { label: 'Staf Tanpa Pemilik',         prioritas: 'sedang', kategori: 'akun' },
-            'akun-arsip-ganda':      { label: 'Arsip Masih di Aktif',       prioritas: 'sedang', kategori: 'akun' },
-            'kopdes-orphan':         { label: 'Kopdes Tanpa Induk',         prioritas: 'tinggi', kategori: 'kopdes' },
-            'rantai-kopdes-putus':   { label: 'Rantai Komando Terputus',    prioritas: 'tinggi', kategori: 'kopdes' },
-            'media-orphan':          { label: 'Media Tanpa Owner/Ref',      prioritas: 'tinggi', kategori: 'media' },
-            'rekening-orphan':       { label: 'Rekening Tanpa User',        prioritas: 'sedang', kategori: 'keuangan' },
-            'dompet-orphan':         { label: 'Dompet Tanpa User',          prioritas: 'sedang', kategori: 'keuangan' },
-            'pengajuan-orphan':      { label: 'Pengajuan Tanpa User',       prioritas: 'sedang', kategori: 'akun' },
-            'notif-orphan':          { label: 'Notifikasi Ke User Dihapus', prioritas: 'rendah', kategori: 'komunikasi' },
-            'chat-orphan':           { label: 'Chat Tanpa Pengirim',        prioritas: 'rendah', kategori: 'komunikasi' },
-            'cart-orphan':           { label: 'Cart Tanpa Produk',          prioritas: 'rendah', kategori: 'komunikasi' },
-            'kategori-kosong':       { label: 'Kategori Tanpa Produk',      prioritas: 'rendah', kategori: 'produk' },
-            'wilayah-kosong':        { label: 'Wilayah Tanpa User',         prioritas: 'rendah', kategori: 'wilayah' },
-            'heartbeat-kadaluarsa':  { label: 'Heartbeat Online Stale',     prioritas: 'rendah', kategori: 'sistem' }
-        },
-
-        // ── Config ──
-        GRACE_KANDIDAT: 1,
-        GRACE_ORPHAN: 3,
-        PROTECTED_KATEGORI: ['profil', 'avatar_hf', 'verifikasi', 'struk', 'dokumentasi'],
-        MAX_HAPUS_PER_RUN: 1000,
-        MAX_PREVIEW: 100,
-        MAX_LOG: 50,
-
-        // ── Storage Keys ──
-        KEY_LOG:      'r2coin_om3_log',
-        KEY_LAST_RUN: 'r2coin_om3_last_run',
-        KEY_CONFIG:   'r2coin_om3_config',
-
-        // ── Scheduler (default AMAN) ──
-        AUTO_START:   false,
-        INTERVAL_JAM: 24,
-        MODE_DRY_RUN: true,
-        AUTO_HAPUS:   false,
-
-        // ── Event Trigger (9) ──
-        EVENT_TRIGGER: [
-            'r2coin:produk-deleted', 'r2coin:akun-deleted',
-            'r2coin:order-deleted',  'r2coin:trx-deleted',
-            'r2coin:kasir-deleted',  'r2coin:kategori-deleted',
-            'r2coin:wilayah-deleted','r2coin:rekening-deleted',
-            'r2coin:media-deleted'
-        ],
-        TRIGGER_DEBOUNCE_MS: 3000
-    });
-
-    (function _om3ValidasiK() {
-        var K = window.OM3_KONSTANTA;
-        if (!K || typeof K !== 'object' || Array.isArray(K)) {
-            window.OM3_KONSTANTA = { VERSI: '3.0', JENIS_ORPHAN: {}, PROTECTED_KATEGORI: [] };
-        }
-        if (!K.JENIS_ORPHAN || typeof K.JENIS_ORPHAN !== 'object') K.JENIS_ORPHAN = {};
-        if (!Array.isArray(K.PROTECTED_KATEGORI)) K.PROTECTED_KATEGORI = [];
-        if (!Array.isArray(K.EVENT_TRIGGER)) K.EVENT_TRIGGER = [];
-        if (!K._triggerTimers) K._triggerTimers = {};
-    })();
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 2] — HELPER DASAR (A1 — delegasi CS)
-    // ═══════════════════════════════════════════════════════════
-    window.om3Esc = function(s) {
-        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
-        var d = document.createElement('div');
-        d.textContent = String(s == null ? '' : s);
-        return d.innerHTML;
-    };
-
-    window.om3Now = function() {
-        if (typeof window.csNow === 'function') return window.csNow();
-        return new Date().toISOString();
-    };
-
-    window.om3UmurHari = function(iso) {
-        try {
-            if (!iso) return 0;
-            var t = new Date(iso).getTime();
-            if (isNaN(t)) return 0;
-            return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
-        } catch (e) { return 0; }
-    };
-
-    window.om3LoadJSON = function(key, fallback) {
-        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fallback);
-        try {
-            var s = localStorage.getItem(key);
-            var p = s ? JSON.parse(s) : fallback;
-            return (p === null || p === undefined) ? fallback : p;
-        } catch (e) { return fallback; }
-    };
-
-    window.om3SaveJSON = function(key, data) {
-        if (typeof window.csSaveJSON === 'function') {
-            return window.csSaveJSON(key, data, { backup: false });
-        }
-        try {
-            localStorage.setItem(key, JSON.stringify(data));
-            return { sukses: true };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3EmitEvent = function(namaEvent, detail) {
-        try {
-            window.dispatchEvent(new CustomEvent(namaEvent, { detail: detail || {} }));
-            return true;
-        } catch (e) { return false; }
-    };
-
-    window.om3CatatLog = function(aksi, detail) {
-        try {
-            var log = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LOG, []);
-            if (!Array.isArray(log)) log = [];
-            log.unshift({
-                id: 'OM3-LOG-' + Date.now(),
-                waktu: window.om3Now(),
-                oleh: window.om3GetIdUser(),
-                aksi: aksi, detail: detail || {}
-            });
-            if (log.length > window.OM3_KONSTANTA.MAX_LOG) {
-                log = log.slice(0, window.OM3_KONSTANTA.MAX_LOG);
-            }
-            window.om3SaveJSON(window.OM3_KONSTANTA.KEY_LOG, log);
-            window.om3SaveJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, { waktu: window.om3Now(), aksi: aksi });
-        } catch (e) {}
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 3] — RESOLVER USER (A1 — delegasi GID)
-    // ═══════════════════════════════════════════════════════════
-    window.om3GetIdUser = function() {
-        try { return window.gidIdUser ? window.gidIdUser() : null; }
-        catch (e) { return null; }
-    };
-    window.om3GetIdOwner = function() {
-        try { return window.gidIdOwner ? window.gidIdOwner() : null; }
-        catch (e) { return null; }
-    };
-    window.om3GetKodeRole = function() {
-        try { return window.gidKodeRoleUser ? window.gidKodeRoleUser() : null; }
-        catch (e) { return null; }
-    };
-    window.om3IsSA = function() {
-        try { return window.gidIsSA ? window.gidIsSA() : false; }
-        catch (e) { return false; }
-    };
-    window.om3GetUserById = function(id) {
-        try { return window.gidGetUserById ? window.gidGetUserById(id) : null; }
-        catch (e) { return null; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 4] — HELPER: LOAD DATA SOURCE
-    // ═══════════════════════════════════════════════════════════
-    function _loadUsers() {
-        try {
-            var v = window.csLoadJSON('dataLoginUser', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadProduk() {
-        try {
-            if (typeof window.produkList === 'function') {
-                return window.produkList({ bypass: true, limit: 0 });
-            }
-        } catch (e) {}
-        try {
-            var v = window.csLoadJSON('dataProduk', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadKategori() {
-        try {
-            if (typeof window.kategoriList === 'function') {
-                return window.kategoriList({ bypass: true });
-            }
-        } catch (e) {}
-        try {
-            var v = window.csLoadJSON('dataKategoriProduk', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadOrder() {
-        try {
-            var v = window.csLoadJSON('dataOrder', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadTransaksi() {
-        try {
-            var v = window.csLoadJSON('dataTransaksi', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadRekening() {
-        try {
-            var v = window.csLoadJSON('dataRekening', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadPengajuan() {
-        try {
-            var v = window.csLoadJSON('dataPengajuanBukaAkun', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadWilayah() {
-        try {
-            var v = window.csLoadJSON('dataWilayah', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    function _loadChat() {
-        try {
-            var v = window.dataChat || window.csLoadJSON('dataChat', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
-
-    // Helper: cek user valid (ada di dataLoginUser)
-    function _userValid(idUser) {
-        if (!idUser) return false;
-        var users = _loadUsers();
-        for (var i = 0; i < users.length; i++) {
-            var u = users[i];
-            if (u && (u.idUser === idUser || u.id === idUser)) return true;
-        }
-        return false;
-    }
-
-    // Helper: cek kategori valid
-    function _kategoriValid(namaKategori) {
-        if (!namaKategori) return false;
-        var list = _loadKategori();
-        for (var i = 0; i < list.length; i++) {
-            if (list[i] && list[i].nama === namaKategori) return true;
-        }
-        return false;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 5] — DETEKTOR: PRODUK (3 jenis)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiProdukOrphan = function() {
-        try {
-            var list = _loadProduk();
-            var hasil = [];
-            list.forEach(function(p) {
-                if (!p) return;
-                if (!p.idOwner || !_userValid(p.idOwner)) {
-                    hasil.push({
-                        jenis: 'produk-orphan', tipe: 'produk',
-                        id: p.id || p.idProduk, nama: p.nama || '-',
-                        alasan: 'Owner tidak valid',
-                        idOwner: p.idOwner || null,
-                        raw: p
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiProdukTanpaKategori = function() {
-        try {
-            var list = _loadProduk();
-            var hasil = [];
-            list.forEach(function(p) {
-                if (!p) return;
-                if (!p.kategori || p.kategori === 'Umum') return;
-                if (!_kategoriValid(p.kategori)) {
-                    hasil.push({
-                        jenis: 'produk-tanpa-kategori', tipe: 'produk',
-                        id: p.id || p.idProduk, nama: p.nama || '-',
-                        alasan: 'Kategori tidak ada: ' + p.kategori,
-                        raw: p
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiProdukTanpaFoto = function() {
-        try {
-            var list = _loadProduk();
-            var hasil = [];
-            if (typeof window.mdAmbilMetadata !== 'function') return hasil;
-            list.forEach(function(p) {
-                if (!p || !Array.isArray(p.fotoIds)) return;
-                p.fotoIds.forEach(function(fid) {
-                    var meta = window.mdAmbilMetadata(fid);
-                    if (!meta) {
-                        hasil.push({
-                            jenis: 'produk-tanpa-foto', tipe: 'produk',
-                            id: fid, nama: 'Foto orphan di ' + (p.nama || '-'),
-                            alasan: 'FotoId tidak ada di MD',
-                            raw: { idProduk: p.id, fotoId: fid }
-                        });
-                    }
-                });
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — DETEKTOR: ORDER & TRANSAKSI (2 jenis)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiOrderOrphan = function() {
-        try {
-            var list = _loadOrder();
-            var hasil = [];
-            list.forEach(function(o) {
-                if (!o) return;
-                var idSeller = o.idSeller || o.idOwner || o.idPenjual;
-                var idPembeli = o.idPembeli || o.idCustomer;
-                if (idSeller && !_userValid(idSeller)) {
-                    hasil.push({
-                        jenis: 'order-orphan', tipe: 'order',
-                        id: o.id || o.idOrder, nama: o.nama || 'Order',
-                        alasan: 'Penjual tidak ada: ' + idSeller,
-                        raw: o
-                    });
-                } else if (idPembeli && !_userValid(idPembeli)) {
-                    hasil.push({
-                        jenis: 'order-orphan', tipe: 'order',
-                        id: o.id || o.idOrder, nama: o.nama || 'Order',
-                        alasan: 'Pembeli tidak ada: ' + idPembeli,
-                        raw: o
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiTransaksiOrphan = function() {
-        try {
-            var list = _loadTransaksi();
-            var hasil = [];
-            var produkList = _loadProduk();
-            var produkIds = {};
-            produkList.forEach(function(p) {
-                if (p && (p.id || p.idProduk)) produkIds[p.id || p.idProduk] = true;
-            });
-
-            list.forEach(function(t) {
-                if (!t) return;
-                var idKasir = t.idKasir || t.idOwner;
-                if (idKasir && !_userValid(idKasir)) {
-                    hasil.push({
-                        jenis: 'transaksi-orphan', tipe: 'transaksi',
-                        id: t.id || t.idTransaksi, nama: t.nama || 'Transaksi',
-                        alasan: 'Kasir tidak ada: ' + idKasir,
-                        raw: t
-                    });
-                } else if (t.idProduk && !produkIds[t.idProduk]) {
-                    hasil.push({
-                        jenis: 'transaksi-orphan', tipe: 'transaksi',
-                        id: t.id || t.idTransaksi, nama: t.nama || 'Transaksi',
-                        alasan: 'Produk tidak ada: ' + t.idProduk,
-                        raw: t
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 7] — DETEKTOR: AKUN (3 jenis)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiKasirOrphan = function() {
-        try {
-            var users = _loadUsers();
-            var validOwners = {};
-            users.forEach(function(u) { if (u && u.idUser) validOwners[u.idUser] = true; });
-
-            var hasil = [];
-            users.forEach(function(u) {
-                if (!u || !u.kodeRole) return;
-                if (u.kodeRole.indexOf('KSR') !== 0) return;
-                var idOwner = u.idOwner || u.ownerId || u.idInduk;
-                if (!idOwner) {
-                    hasil.push({
-                        jenis: 'akun-kasir-orphan', tipe: 'akun',
-                        id: u.idUser || u.id, nama: u.nama || '-',
-                        alasan: 'Kasir tanpa owner',
-                        raw: u
-                    });
-                } else if (!validOwners[idOwner]) {
-                    hasil.push({
-                        jenis: 'akun-kasir-orphan', tipe: 'akun',
-                        id: u.idUser || u.id, nama: u.nama || '-',
-                        alasan: 'Owner tidak ada: ' + idOwner,
-                        raw: u
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiStafOrphan = function() {
-        try {
-            var users = _loadUsers();
-            var validOwners = {};
-            users.forEach(function(u) { if (u && u.idUser) validOwners[u.idUser] = true; });
-
-            var hasil = [];
-            users.forEach(function(u) {
-                if (!u || !u.kodeRole) return;
-                if (u.kodeRole.indexOf('STAF') !== 0) return;
-                if (u.kodeRole === 'STAF_KDMP') return; // Kopdes punya induk Kopdes, bukan user
-                var idInduk = u.idInduk || u.idOwner;
-                if (idInduk && !validOwners[idInduk]) {
-                    hasil.push({
-                        jenis: 'akun-staf-orphan', tipe: 'akun',
-                        id: u.idUser || u.id, nama: u.nama || '-',
-                        alasan: 'Pemilik tidak ada: ' + idInduk,
-                        raw: u
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiArsipGanda = function() {
-        try {
-            var users = _loadUsers();
-            var akuns = window.csLoadJSON('dataAkunAktif', []);
-            if (!Array.isArray(akuns)) akuns = [];
-
-            var arsipIds = {};
-            users.forEach(function(u) {
-                if (u && (u.status === 'Diarsipkan' || u.arsip === true)) {
-                    arsipIds[u.idUser || u.id] = true;
-                }
-            });
-
-            var hasil = [];
-            akuns.forEach(function(a) {
-                if (!a) return;
-                var id = a.idUser || a.id;
-                if (id && arsipIds[id]) {
-                    hasil.push({
-                        jenis: 'akun-arsip-ganda', tipe: 'akun',
-                        id: id, nama: a.nama || '-',
-                        alasan: 'Akun arsip masih di dataAkunAktif',
-                        raw: a
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 8] — DETEKTOR: KOPDES (2 jenis)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiKopdesOrphan = function() {
-        try {
-            var users = _loadUsers();
-            var validIds = {};
-            users.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
-
-            var hasil = [];
-            users.forEach(function(u) {
-                if (!u || !u.kodeRole) return;
-                if (u.kodeRole.indexOf('KDMP_') !== 0) return;
-                var idInduk = u.idInduk;
-                if (u.kodeRole === 'KDMP_PUSAT') return;
-                if (!idInduk) {
-                    hasil.push({
-                        jenis: 'kopdes-orphan', tipe: 'kopdes',
-                        id: u.idUser || u.id, nama: u.nama || '-',
-                        alasan: 'Kopdes ' + u.kodeRole + ' tanpa induk',
-                        raw: u
-                    });
-                } else if (!validIds[idInduk]) {
-                    hasil.push({
-                        jenis: 'kopdes-orphan', tipe: 'kopdes',
-                        id: u.idUser || u.id, nama: u.nama || '-',
-                        alasan: 'Induk tidak ada: ' + idInduk,
-                        raw: u
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiRantaiKopdesPutus = function() {
-        try {
-            if (typeof window.kdmpRantaiKomando !== 'function') return [];
-            var users = _loadUsers();
-            var hasil = [];
-            users.forEach(function(u) {
-                if (!u || !u.kodeRole) return;
-                if (u.kodeRole.indexOf('KDMP_') !== 0) return;
-                if (u.kodeRole === 'KDMP_PUSAT') return;
-                var rantai = window.kdmpRantaiKomando(u.idUser || u.id);
-                if (!rantai || rantai.length < 2) {
-                    hasil.push({
-                        jenis: 'rantai-kopdes-putus', tipe: 'kopdes',
-                        id: u.idUser || u.id, nama: u.nama || '-',
-                        alasan: 'Rantai komando terputus (panjang: ' + (rantai ? rantai.length : 0) + ')',
-                        raw: u
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 9] — DETEKTOR: MEDIA (delegasi OM v2)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiMediaOrphan = function() {
-        try {
-            if (typeof window.omScanSemua === 'function') {
-                var scan = window.omScanSemua();
-                var hasil = [];
-                ['sejati', 'semu', 'kandidat'].forEach(function(t) {
-                    (scan[t] || []).forEach(function(m) {
-                        hasil.push({
-                            jenis: 'media-orphan', tipe: 'media',
-                            id: m.id, nama: m.nama || '-',
-                            alasan: (m._alasan || m.alasan || 'Orphan media'),
-                            raw: m
-                        });
-                    });
-                });
-                return hasil;
-            }
-            return [];
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 10] — DETEKTOR: KEUANGAN (2 jenis)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiRekeningOrphan = function() {
-        try {
-            var list = _loadRekening();
-            var hasil = [];
-            list.forEach(function(r) {
-                if (!r) return;
-                var idUser = r.idUser || r.idOwner;
-                if (!idUser || !_userValid(idUser)) {
-                    hasil.push({
-                        jenis: 'rekening-orphan', tipe: 'rekening',
-                        id: r.id, nama: r.namaPenyedia || '-',
-                        alasan: 'User tidak ada: ' + (idUser || '-'),
-                        raw: r
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiDompetOrphan = function() {
-        try {
-            var hasil = [];
-            var users = _loadUsers();
-            var validIds = {};
-            users.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
-
-            // Scan semua key dompet_
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k || k.indexOf('dompet_') !== 0) continue;
-                var idUser = k.substring(7);
-                if (!validIds[idUser]) {
-                    hasil.push({
-                        jenis: 'dompet-orphan', tipe: 'dompet',
-                        id: k, nama: 'Dompet ' + idUser,
-                        alasan: 'User tidak ada: ' + idUser,
-                        raw: { key: k, idUser: idUser }
-                    });
-                }
-            }
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 11] — DETEKTOR: LAIN-LAIN (5 jenis)
-    // ═══════════════════════════════════════════════════════════
-    window.om3DeteksiPengajuanOrphan = function() {
-        try {
-            var list = _loadPengajuan();
-            var hasil = [];
-            list.forEach(function(p) {
-                if (!p) return;
-                if (p.id && !_userValid(p.id) && p.status === 'Menunggu') {
-                    hasil.push({
-                        jenis: 'pengajuan-orphan', tipe: 'pengajuan',
-                        id: p.id || p.idPengajuan, nama: p.nama || '-',
-                        alasan: 'User tidak ada',
-                        raw: p
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiNotifOrphan = function() {
-        try {
-            var hasil = [];
-            var users = _loadUsers();
-            var validIds = {};
-            users.forEach(function(u) { if (u && u.idUser) validIds[u.idUser] = true; });
-
-            var notifKey = window.CS_KEY?.NOTIF_PREFIX || 'r2c_notifikasi';
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k || k.indexOf(notifKey) !== 0) continue;
-                var idUser = k.substring(notifKey.length + 1);
-                if (!validIds[idUser]) {
-                    hasil.push({
-                        jenis: 'notif-orphan', tipe: 'notifikasi',
-                        id: k, nama: 'Notif ke ' + idUser,
-                        alasan: 'User tidak ada',
-                        raw: { key: k }
-                    });
-                }
-            }
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiChatOrphan = function() {
-        try {
-            var list = _loadChat();
-            var hasil = [];
-            list.forEach(function(c) {
-                if (!c) return;
-                var idFrom = c.idPengirim || c.dari;
-                var idTo = c.idPenerima || c.ke;
-                if ((idFrom && !_userValid(idFrom)) || (idTo && !_userValid(idTo))) {
-                    hasil.push({
-                        jenis: 'chat-orphan', tipe: 'chat',
-                        id: c.id, nama: 'Chat ' + (c.id || '-'),
-                        alasan: 'Pengirim/penerima tidak ada',
-                        raw: c
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiCartOrphan = function() {
-        try {
-            var hasil = [];
-            var produkList = _loadProduk();
-            var produkIds = {};
-            produkList.forEach(function(p) {
-                if (p && p.id) produkIds[p.id] = true;
-                if (p && p.idProduk) produkIds[p.idProduk] = true;
-            });
-
-            var prefixes = ['mpp_cart_', 'mpp_wishlist_', 'mpp_koleksi_', 'mpp_histori_'];
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k) continue;
-                var matched = prefixes.some(function(p) { return k.indexOf(p) === 0; });
-                if (!matched) continue;
-
-                var items = window.om3LoadJSON(k, []);
-                if (!Array.isArray(items)) continue;
-                items.forEach(function(it) {
-                    if (!it) return;
-                    var idP = it.idProduk || it.id;
-                    if (idP && !produkIds[idP]) {
-                        var tipe = k.indexOf('cart') !== -1 ? 'cart' :
-                                   k.indexOf('wishlist') !== -1 ? 'wishlist' :
-                                   k.indexOf('koleksi') !== -1 ? 'koleksi' : 'histori';
-                        hasil.push({
-                            jenis: 'cart-orphan', tipe: tipe,
-                            id: it.idCartItem || idP, nama: it.nama || ('Produk ' + idP),
-                            alasan: 'Produk tidak ada',
-                            raw: { key: k, item: it }
-                        });
-                    }
-                });
-            }
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiKategoriKosong = function() {
-        try {
-            var list = _loadKategori();
-            var produkList = _loadProduk();
-            var dipakai = {};
-            produkList.forEach(function(p) {
-                if (p && p.kategori) dipakai[p.kategori] = true;
-            });
-            var hasil = [];
-            list.forEach(function(k) {
-                if (!k || !k.nama) return;
-                if (k.isGlobal) return; // global jangan dihapus
-                if (!dipakai[k.nama]) {
-                    hasil.push({
-                        jenis: 'kategori-kosong', tipe: 'kategori',
-                        id: k.id, nama: k.nama,
-                        alasan: 'Tidak dipakai produk manapun',
-                        raw: k
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiWilayahKosong = function() {
-        try {
-            var list = _loadWilayah();
-            var users = _loadUsers();
-            var dipakai = {};
-            users.forEach(function(u) {
-                if (u && u.wilayah) dipakai[u.wilayah] = true;
-            });
-            var hasil = [];
-            list.forEach(function(w) {
-                if (!w) return;
-                var key = w.id || w.nama;
-                if (!dipakai[key] && !dipakai[w.nama]) {
-                    hasil.push({
-                        jenis: 'wilayah-kosong', tipe: 'wilayah',
-                        id: key, nama: w.nama || '-',
-                        alasan: 'Tidak ada user terdaftar',
-                        raw: w
-                    });
-                }
-            });
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    window.om3DeteksiHeartbeatKadaluarsa = function() {
-        try {
-            var hasil = [];
-            var prefix = window.CS_KEY?.ONLINE_PREFIX || 'r2c_online_';
-            var batas = Date.now() - 90 * 1000; // 90 detik
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k || k.indexOf(prefix) !== 0) continue;
-                var data = window.om3LoadJSON(k, null);
-                if (data && data.timestamp && data.timestamp < batas) {
-                    hasil.push({
-                        jenis: 'heartbeat-kadaluarsa', tipe: 'sistem',
-                        id: k, nama: 'Heartbeat ' + (data.nama || '-'),
-                        alasan: 'Online marker kadaluarsa',
-                        raw: data
-                    });
-                }
-            }
-            return hasil;
-        } catch (e) { return []; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 12] — SCANNER UTAMA (ocScanSemua → om3ScanSemua)
-    // ═══════════════════════════════════════════════════════════
-    window.om3ScanSemua = function(opts) {
-        opts = opts || {};
-        var t0 = Date.now();
-        try {
-            var detektorMap = {
-                'produk-orphan':         window.om3DeteksiProdukOrphan,
-                'produk-tanpa-kategori': window.om3DeteksiProdukTanpaKategori,
-                'produk-tanpa-foto':     window.om3DeteksiProdukTanpaFoto,
-                'order-orphan':          window.om3DeteksiOrderOrphan,
-                'transaksi-orphan':      window.om3DeteksiTransaksiOrphan,
-                'akun-kasir-orphan':     window.om3DeteksiKasirOrphan,
-                'akun-staf-orphan':      window.om3DeteksiStafOrphan,
-                'akun-arsip-ganda':      window.om3DeteksiArsipGanda,
-                'kopdes-orphan':         window.om3DeteksiKopdesOrphan,
-                'rantai-kopdes-putus':   window.om3DeteksiRantaiKopdesPutus,
-                'media-orphan':          window.om3DeteksiMediaOrphan,
-                'rekening-orphan':       window.om3DeteksiRekeningOrphan,
-                'dompet-orphan':         window.om3DeteksiDompetOrphan,
-                'pengajuan-orphan':      window.om3DeteksiPengajuanOrphan,
-                'notif-orphan':          window.om3DeteksiNotifOrphan,
-                'chat-orphan':           window.om3DeteksiChatOrphan,
-                'cart-orphan':           window.om3DeteksiCartOrphan,
-                'kategori-kosong':       window.om3DeteksiKategoriKosong,
-                'wilayah-kosong':        window.om3DeteksiWilayahKosong,
-                'heartbeat-kadaluarsa':  window.om3DeteksiHeartbeatKadaluarsa
-            };
-
-            var jenisFilter = opts.jenis;
-            if (jenisFilter && !Array.isArray(jenisFilter)) jenisFilter = [jenisFilter];
-
-            var hasil = {
-                sukses: true,
-                waktu: window.om3Now(),
-                elapsedMs: 0,
-                perJenis: {},
-                items: [],
-                total: 0,
-                perTipe: {},
-                perPrioritas: { tinggi: 0, sedang: 0, rendah: 0 }
-            };
-
-            Object.keys(detektorMap).forEach(function(jenis) {
-                if (jenisFilter && jenisFilter.indexOf(jenis) === -1) return;
-                try {
-                    var items = detektorMap[jenis]();
-                    if (!Array.isArray(items)) items = [];
-                    items.forEach(function(it) { it.jenis = jenis; });
-
-                    hasil.perJenis[jenis] = {
-                        total: items.length,
-                        items: items,
-                        label: window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.label || jenis,
-                        prioritas: window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.prioritas || 'sedang',
-                        kategori: window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.kategori || 'lain'
-                    };
-
-                    items.forEach(function(it) {
-                        hasil.items.push(it);
-                        var tipe = it.tipe || 'lain';
-                        hasil.perTipe[tipe] = (hasil.perTipe[tipe] || 0) + 1;
-                        var pr = window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]?.prioritas || 'sedang';
-                        hasil.perPrioritas[pr] = (hasil.perPrioritas[pr] || 0) + 1;
-                    });
-                } catch (e) {
-                    hasil.perJenis[jenis] = { total: 0, items: [], error: e.message };
-                }
-            });
-
-            hasil.total = hasil.items.length;
-            hasil.elapsedMs = Date.now() - t0;
-            return hasil;
-        } catch (e) {
-            console.error('om3ScanSemua error:', e);
-            return { sukses: false, pesan: e.message, items: [], total: 0, elapsedMs: Date.now() - t0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 13] — STATISTIK
-    // ═══════════════════════════════════════════════════════════
-    window.om3Statistik = function(opts) {
-        try {
-            var scan = window.om3ScanSemua(opts);
-            return {
-                total: scan.total,
-                perJenis: Object.keys(scan.perJenis).map(function(j) {
-                    return {
-                        jenis: j,
-                        label: scan.perJenis[j].label,
-                        total: scan.perJenis[j].total,
-                        prioritas: scan.perJenis[j].prioritas
-                    };
-                }).filter(function(x) { return x.total > 0; }),
-                perTipe: scan.perTipe,
-                perPrioritas: scan.perPrioritas,
-                elapsedMs: scan.elapsedMs,
-                waktu: scan.waktu
-            };
-        } catch (e) { return { total: 0, perJenis: [], perTipe: {}, perPrioritas: {} }; }
-    };
-
-    window.om3Ringkasan = function() {
-        try {
-            var s = window.om3Statistik();
-            return 'OM v3: ' + s.total + ' orphan | ' +
-                   'Tinggi: ' + (s.perPrioritas.tinggi || 0) + ' | ' +
-                   'Sedang: ' + (s.perPrioritas.sedang || 0) + ' | ' +
-                   'Rendah: ' + (s.perPrioritas.rendah || 0);
-        } catch (e) { return 'OM v3: error'; }
-    };
-
-    window.om3EstimasiHemat = function() {
-        try {
-            var scan = window.om3ScanSemua();
-            var totalBytes = 0;
-            scan.items.forEach(function(it) {
-                try {
-                    var json = JSON.stringify(it.raw);
-                    totalBytes += json.length * 2;
-                } catch (e) {}
-            });
-            return {
-                total: totalBytes,
-                totalKB: Math.round(totalBytes / 1024),
-                totalTeks: Math.round(totalBytes / 1024) + ' KB'
-            };
-        } catch (e) { return { total: 0, totalKB: 0, totalTeks: '0 KB' }; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 14] — AKSI: HAPUS
-    // ═══════════════════════════════════════════════════════════
-    window.om3PreviewHapus = function(opts) {
-        opts = opts || {};
-        try {
-            var scan = window.om3ScanSemua({ jenis: opts.jenis });
-            var items = scan.items || [];
-            var limit = parseInt(opts.limit, 10) || window.OM3_KONSTANTA.MAX_PREVIEW;
-            var totalBytes = 0;
-            items.forEach(function(it) {
-                try {
-                    totalBytes += JSON.stringify(it.raw).length * 2;
-                } catch (e) {}
-            });
-            return {
-                total: items.length,
-                size: totalBytes,
-                sizeTeks: Math.round(totalBytes / 1024) + ' KB',
-                items: items.slice(0, limit),
-                truncated: items.length > limit
-            };
-        } catch (e) { return { total: 0, items: [], sizeTeks: '0 KB' }; }
-    };
-
-    function _hapusItem(it) {
-        try {
-            if (!it || !it.raw) return false;
-            var raw = it.raw;
-            var jenis = it.jenis;
-
-            // ── Produk orphan ──
-            if (jenis === 'produk-orphan' || jenis === 'produk-tanpa-kategori') {
-                if (typeof window.produkHapus === 'function') {
-                    window.produkHapus(raw.id || raw.idProduk);
-                    return true;
-                }
-            }
-
-            // ── Foto orphan ──
-            if (jenis === 'produk-tanpa-foto') {
-                if (typeof window.mdHapus === 'function' && raw.fotoId) {
-                    window.mdHapus(raw.fotoId, { bypass: true });
-                    return true;
-                }
-            }
-
-            // ── Order orphan ──
-            if (jenis === 'order-orphan') {
-                var idOrder = raw.id || raw.idOrder;
-                var orders = _loadOrder();
-                var before = orders.length;
-                orders = orders.filter(function(o) { return o && (o.id !== idOrder && o.idOrder !== idOrder); });
-                if (orders.length < before) {
-                    window.csSaveJSON('dataOrder', orders, { backup: false });
-                    return true;
-                }
-            }
-
-            // ── Transaksi orphan ──
-            if (jenis === 'transaksi-orphan') {
-                var idTrx = raw.id || raw.idTransaksi;
-                var trxs = _loadTransaksi();
-                var before2 = trxs.length;
-                trxs = trxs.filter(function(t) { return t && (t.id !== idTrx && t.idTransaksi !== idTrx); });
-                if (trxs.length < before2) {
-                    window.csSaveJSON('dataTransaksi', trxs, { backup: false });
-                    return true;
-                }
-            }
-
-            // ── Kasir orphan → nonaktifkan (bukan hapus) ──
-            if (jenis === 'akun-kasir-orphan' || jenis === 'akun-staf-orphan') {
-                var idA = raw.idUser || raw.id;
-                var users = _loadUsers();
-                for (var i = 0; i < users.length; i++) {
-                    if (users[i] && (users[i].idUser === idA || users[i].id === idA)) {
-                        users[i].status = 'Nonaktif';
-                        users[i].statusVerifikasi = 'Nonaktif';
-                        users[i].orphanNote = 'Auto-nonaktif OM v3';
-                        window.csSaveJSON('dataLoginUser', users, { backup: false });
-                        return true;
-                    }
-                }
-            }
-
-            // ── Arsip ganda ──
-            if (jenis === 'akun-arsip-ganda') {
-                var idB = raw.idUser || raw.id;
-                var akuns = window.csLoadJSON('dataAkunAktif', []);
-                if (!Array.isArray(akuns)) akuns = [];
-                var before3 = akuns.length;
-                akuns = akuns.filter(function(a) { return a && (a.idUser !== idB && a.id !== idB); });
-                if (akuns.length < before3) {
-                    window.csSaveJSON('dataAkunAktif', akuns, { backup: false });
-                    return true;
-                }
-            }
-
-            // ── Media orphan → delegasi OM v2 ──
-            if (jenis === 'media-orphan') {
-                if (typeof window.mdHapus === 'function' && raw.id) {
-                    window.mdHapus(raw.id, { bypass: true });
-                    return true;
-                }
-            }
-
-            // ── Rekening orphan ──
-            if (jenis === 'rekening-orphan') {
-                if (typeof window.rekHapus === 'function') {
-                    window.rekHapus(raw.id);
-                    return true;
-                }
-            }
-
-            // ── Dompet orphan → hapus key localStorage ──
-            if (jenis === 'dompet-orphan') {
-                if (raw.key) {
-                    try { localStorage.removeItem(raw.key); return true; } catch (e) {}
-                }
-            }
-
-            // ── Pengajuan orphan ──
-            if (jenis === 'pengajuan-orphan') {
-                if (typeof window.csHapusPengajuan === 'function') {
-                    window.csHapusPengajuan(raw.id || raw.idPengajuan);
-                    return true;
-                }
-            }
-
-            // ── Notif orphan → hapus key ──
-            if (jenis === 'notif-orphan') {
-                if (raw.key) {
-                    try { localStorage.removeItem(raw.key); return true; } catch (e) {}
-                }
-            }
-
-            // ── Chat orphan ──
-            if (jenis === 'chat-orphan') {
-                var chat = _loadChat();
-                var idC = raw.id;
-                var before4 = chat.length;
-                chat = chat.filter(function(c) { return c && c.id !== idC; });
-                if (chat.length < before4) {
-                    window.csSaveJSON('dataChat', chat, { backup: false });
-                    return true;
-                }
-            }
-
-            // ── Cart orphan → hapus item dari key ──
-            if (jenis === 'cart-orphan') {
-                if (raw.key && raw.item) {
-                    var list = window.om3LoadJSON(raw.key, []);
-                    if (Array.isArray(list)) {
-                        var id = raw.item.idCartItem || raw.item.id || raw.item.idProduk;
-                        list = list.filter(function(x) {
-                            if (!x) return false;
-                            var xi = x.idCartItem || x.id || x.idProduk;
-                            return xi !== id;
-                        });
-                        window.om3SaveJSON(raw.key, list);
-                        return true;
-                    }
-                }
-            }
-
-            // ── Kategori kosong ──
-            if (jenis === 'kategori-kosong') {
-                if (typeof window.kategoriHapus === 'function') {
-                    window.kategoriHapus(raw.id);
-                    return true;
-                }
-            }
-
-            // ── Wilayah kosong ──
-            if (jenis === 'wilayah-kosong') {
-                if (typeof window.csHapusWilayah === 'function') {
-                    window.csHapusWilayah(raw.id);
-                    return true;
-                }
-            }
-
-            // ── Heartbeat kadaluarsa → hapus key ──
-            if (jenis === 'heartbeat-kadaluarsa') {
-                if (raw.key || it.id) {
-                    var key = raw.key || it.id;
-                    try { localStorage.removeItem(key); return true; } catch (e) {}
-                }
-            }
-
-            return false;
-        } catch (e) {
-            console.error('_hapusItem error:', e);
-            return false;
-        }
-    }
-
-    window.om3HapusSelektif = function(arrayId, opts) {
-        opts = opts || {};
-        try {
-            if (!Array.isArray(arrayId)) return { sukses: false, pesan: 'Array ID kosong' };
-            var scan = window.om3ScanSemua();
-            var target = scan.items.filter(function(it) { return arrayId.indexOf(it.id) !== -1; });
-
-            if (opts.dryRun !== false) {
-                return { sukses: true, dryRun: true, akanDihapus: target.length, items: target };
-            }
-
-            var berhasil = 0, gagal = 0;
-            target.forEach(function(it) {
-                if (_hapusItem(it)) berhasil++;
-                else gagal++;
-            });
-
-            window.om3CatatLog('hapus-selektif', { berhasil: berhasil, gagal: gagal });
-            return { sukses: true, berhasil: berhasil, gagal: gagal, total: target.length };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3HapusPerJenis = function(jenis, opts) {
-        opts = opts || {};
-        try {
-            if (!jenis) return { sukses: false, pesan: 'Jenis kosong' };
-            if (!window.OM3_KONSTANTA.JENIS_ORPHAN[jenis]) {
-                return { sukses: false, pesan: 'Jenis tidak dikenal: ' + jenis };
-            }
-
-            var scan = window.om3ScanSemua({ jenis: [jenis] });
-            var items = scan.items || [];
-            if (items.length === 0) {
-                return { sukses: true, berhasil: 0, gagal: 0, pesan: 'Tidak ada orphan' };
-            }
-
-            // Cek konfigurasi: dry-run default ON
-            var cfg = window.om3AmbilConfig();
-            var dryRun = opts.dryRun === true || (opts.dryRun !== false && cfg.modeDryRun);
-
-            if (dryRun) {
-                return { sukses: true, dryRun: true, akanDihapus: items.length };
-            }
-
-            var berhasil = 0, gagal = 0;
-            items.slice(0, window.OM3_KONSTANTA.MAX_HAPUS_PER_RUN).forEach(function(it) {
-                if (_hapusItem(it)) berhasil++;
-                else gagal++;
-            });
-
-            window.om3CatatLog('hapus-per-jenis', { jenis: jenis, berhasil: berhasil, gagal: gagal });
-            return { sukses: true, jenis: jenis, berhasil: berhasil, gagal: gagal };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3HapusSemua = function(opts) {
-        opts = opts || {};
-        try {
-            var scan = window.om3ScanSemua({ jenis: opts.jenis });
-            var items = scan.items || [];
-
-            var cfg = window.om3AmbilConfig();
-            var dryRun = opts.dryRun === true || (opts.dryRun !== false && cfg.modeDryRun);
-
-            if (dryRun) {
-                var totalBytes = 0;
-                items.forEach(function(it) {
-                    try { totalBytes += JSON.stringify(it.raw).length * 2; } catch (e) {}
-                });
-                return {
-                    sukses: true, dryRun: true,
-                    akanDihapus: items.length,
-                    sizeTeks: Math.round(totalBytes / 1024) + ' KB',
-                    perJenis: scan.perJenis
-                };
-            }
-
-            var berhasil = 0, gagal = 0;
-            var limit = window.OM3_KONSTANTA.MAX_HAPUS_PER_RUN;
-            items.slice(0, limit).forEach(function(it) {
-                if (_hapusItem(it)) berhasil++;
-                else gagal++;
-            });
-
-            window.om3CatatLog('hapus-semua', { berhasil: berhasil, gagal: gagal, total: items.length });
-            window.om3EmitEvent('r2coin:om3-cleanup', { berhasil: berhasil, gagal: gagal });
-            return { sukses: true, berhasil: berhasil, gagal: gagal, total: items.length };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 15] — SCHEDULER (AUTO CLEANUP)
-    // ═══════════════════════════════════════════════════════════
-    var _schedulerTimer = null;
-    var _lastRunInfo = null;
-
-    window.om3AmbilConfig = function() {
-        try {
-            var saved = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_CONFIG, null);
-            if (saved && typeof saved === 'object') {
-                return {
-                    autoStart:   saved.autoStart === true,
-                    intervalJam: saved.intervalJam || window.OM3_KONSTANTA.INTERVAL_JAM,
-                    modeDryRun:  saved.modeDryRun !== false,
-                    autoHapus:   saved.autoHapus === true,
-                    jenisAktif:  Array.isArray(saved.jenisAktif) ? saved.jenisAktif : Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN)
-                };
-            }
-        } catch (e) {}
-        return {
-            autoStart:   false,
-            intervalJam: window.OM3_KONSTANTA.INTERVAL_JAM,
-            modeDryRun:  true,
-            autoHapus:   false,
-            jenisAktif:  Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN)
-        };
-    };
-
-    window.om3SimpanConfig = function(cfg) {
-        try {
-            if (!cfg || typeof cfg !== 'object') return { sukses: false };
-            var current = window.om3AmbilConfig();
-            var merged = Object.assign({}, current, cfg);
-            return window.om3SaveJSON(window.OM3_KONSTANTA.KEY_CONFIG, merged);
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3JalankanSekarang = function(opts) {
-        opts = opts || {};
-        var t0 = Date.now();
-        try {
-            var cfg = window.om3AmbilConfig();
-            var dryRun = opts.dryRun === true || (opts.dryRun !== false && cfg.modeDryRun);
-
-            var hasil = window.om3HapusSemua({
-                jenis: opts.jenis,
-                dryRun: dryRun
-            });
-
-            var info = {
-                waktu: window.om3Now(),
-                dryRun: dryRun,
-                elapsedMs: Date.now() - t0,
-                hasil: hasil
-            };
-            _lastRunInfo = info;
-
-            if (!dryRun && hasil.sukses && hasil.berhasil > 0) {
-                window.om3CatatLog('auto-run', {
-                    berhasil: hasil.berhasil,
-                    gagal: hasil.gagal,
-                    dryRun: false
-                });
-            }
-
-            return info;
-        } catch (e) {
-            return { waktu: window.om3Now(), error: e.message, elapsedMs: Date.now() - t0 };
-        }
-    };
-
-    window.om3JadwalMulai = function(intervalJam) {
-        try {
-            if (_schedulerTimer) {
-                clearInterval(_schedulerTimer);
-                _schedulerTimer = null;
-            }
-
-            var cfg = window.om3AmbilConfig();
-            var jam = parseInt(intervalJam, 10) || cfg.intervalJam || 24;
-            var intervalMs = jam * 60 * 60 * 1000;
-
-            _schedulerTimer = setInterval(function() {
-                try {
-                    console.log('⏰ OM v3 scheduler: jalankan auto cleanup');
-                    window.om3JalankanSekarang({ dryRun: false });
-                } catch (e) {}
-            }, intervalMs);
-
-            console.log('%c✅ OM v3 scheduler aktif (interval ' + jam + ' jam)',
-                'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
-            return { sukses: true, intervalJam: jam, intervalMs: intervalMs };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3JadwalStop = function() {
-        try {
-            if (_schedulerTimer) {
-                clearInterval(_schedulerTimer);
-                _schedulerTimer = null;
-                console.log('%c⏹️ OM v3 scheduler dihentikan',
-                    'background:#DC3545;color:#fff;padding:4px 8px;font-weight:bold;');
-                return { sukses: true, aktif: false };
-            }
-            return { sukses: true, aktif: false, pesan: 'Scheduler tidak aktif' };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3JadwalStatus = function() {
-        try {
-            var aktif = _schedulerTimer !== null;
-            var cfg = window.om3AmbilConfig();
-            var last = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, null);
-            return {
-                aktif: aktif,
-                intervalJam: cfg.intervalJam,
-                autoStart: cfg.autoStart,
-                modeDryRun: cfg.modeDryRun,
-                autoHapus: cfg.autoHapus,
-                lastRun: last ? last.waktu : null,
-                lastRunAksi: last ? last.aksi : null
-            };
-        } catch (e) { return { aktif: false, error: e.message }; }
-    };
-
-    window.om3ToggleAutoStart = function(aktif) {
-        try {
-            var cfg = window.om3AmbilConfig();
-            window.om3SimpanConfig({ autoStart: aktif });
-            if (aktif) window.om3JadwalMulai(cfg.intervalJam);
-            else window.om3JadwalStop();
-            return { sukses: true, autoStart: aktif };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3ToggleDryRun = function(dryRun) {
-        try {
-            window.om3SimpanConfig({ modeDryRun: dryRun });
-            return { sukses: true, modeDryRun: dryRun };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3ToggleAutoHapus = function(autoHapus) {
-        try {
-            window.om3SimpanConfig({ autoHapus: autoHapus });
-            return { sukses: true, autoHapus: autoHapus };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 16] — EVENT LISTENER (Auto Trigger)
-    // ═══════════════════════════════════════════════════════════
-    var _registeredHandlers = [];
-
-    function _debounceTrigger(namaEvent, fn) {
-        try {
-            var timers = window.OM3_KONSTANTA._triggerTimers;
-            if (timers[namaEvent]) clearTimeout(timers[namaEvent]);
-            timers[namaEvent] = setTimeout(function() {
-                try { fn(); } catch (e) {}
-                delete timers[namaEvent];
-            }, window.OM3_KONSTANTA.TRIGGER_DEBOUNCE_MS);
-        } catch (e) {}
-    }
-
-    window.om3DaftarkanListener = function() {
-        try {
-            window.om3LepasListener();
-            var events = window.OM3_KONSTANTA.EVENT_TRIGGER || [];
-            events.forEach(function(evt) {
-                var handler = function(ev) {
-                    try {
-                        var detail = (ev && ev.detail) || {};
-                        console.log('🔔 OM v3 trigger:', evt, detail);
-
-                        _debounceTrigger(evt, function() {
-                            var cfg = window.om3AmbilConfig();
-                            if (!cfg.autoStart) return;
-                            window.om3JalankanSekarang({
-                                tipe: 'event', trigger: evt, dryRun: false
-                            });
-                        });
-                    } catch (e) {}
-                };
-                window.addEventListener(evt, handler);
-                _registeredHandlers.push({ event: evt, handler: handler });
-            });
-            console.log('%c✅ OM v3: ' + events.length + ' listener terpasang',
-                'background:#28A745;color:#fff;padding:4px 8px;font-weight:bold;');
-            return { sukses: true, total: events.length };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3LepasListener = function() {
-        try {
-            var total = _registeredHandlers.length;
-            _registeredHandlers.forEach(function(item) {
-                window.removeEventListener(item.event, item.handler);
-            });
-            _registeredHandlers = [];
-            return { sukses: true, dilepas: total };
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.om3CekListener = function() {
-        return {
-            total: _registeredHandlers.length,
-            daftar: _registeredHandlers.map(function(x) { return x.event; })
-        };
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 17] — 3 PINTU STANDAR (A11, A12, A13)
-    // ═══════════════════════════════════════════════════════════
-    window.kirimOM3 = function(tipe, ke, data, idRef) {
-        try {
-            if (typeof window.mnKirimKeMenu !== 'function') {
-                return { sukses: false, pesan: 'MN belum terpasang' };
-            }
-            return window.mnKirimKeMenu({
-                tipe: tipe,
-                dari: {
-                    idUser:   window.om3GetIdUser(),
-                    idOwner:  window.om3GetIdOwner(),
-                    kodeRole: window.om3GetKodeRole(),
-                    menu: 'orphanManagement', blok: 'OM-V3'
-                },
-                ke: ke || { menu: 'orphanManagement' },
-                data: data || {},
-                idRef: idRef || null,
-                timestamp: window.om3Now()
-            });
-        } catch (e) { return { sukses: false, pesan: e.message }; }
-    };
-
-    window.terimaOM3 = function(aksiMenu) {
-        try { return window.mnInboxMenu(aksiMenu || 'orphanManagement'); }
-        catch (e) { return []; }
-    };
-
-    window.ambilOM3 = function(filter) {
-        try {
-            filter = filter || {};
-            var tipe = filter.tipe || 'all';
-            switch (tipe) {
-                case 'all':          return window.om3ScanSemua(filter);
-                case 'statistik':    return window.om3Statistik(filter);
-                case 'ringkasan':    return window.om3Ringkasan();
-                case 'estimasi':     return window.om3EstimasiHemat();
-                case 'preview':      return window.om3PreviewHapus(filter);
-                case 'config':       return window.om3AmbilConfig();
-                case 'jadwal-status':return window.om3JadwalStatus();
-                case 'last-run':     return window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, null);
-                case 'log':          return window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LOG, []);
-                case 'jenis-list':   return Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN);
-                case 'jenis-detail': return window.OM3_KONSTANTA.JENIS_ORPHAN;
-                case 'listener':     return window.om3CekListener();
-                default:             return null;
-            }
-        } catch (e) { return null; }
-    };
-
-    window.cekPintuOM3 = function() {
-        var skor = (typeof window.kirimOM3 === 'function' ? 1 : 0)
-                 + (typeof window.terimaOM3 === 'function' ? 1 : 0)
-                 + (typeof window.ambilOM3 === 'function' ? 1 : 0);
-        return {
-            blok: 'OM-V3',
-            kirim:  typeof window.kirimOM3 === 'function',
-            terima: typeof window.terimaOM3 === 'function',
-            ambil:  typeof window.ambilOM3 === 'function',
-            skor:   skor + '/3',
-            lengkap: skor === 3
-        };
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 18] — DEBUG + AUTO-REGISTRY 0.1 (A5, A33, A34, A35)
-    // ═══════════════════════════════════════════════════════════
-    window.debugOM3 = function() {
-        var stat = window.om3Statistik();
-        var cfg = window.om3AmbilConfig();
-        var jadwal = window.om3JadwalStatus();
-        var info = {
-            blok: 'OM-V3', versi: window._blokOMVersi,
-            guard: window._blokOMv3Done,
-            fokus: 'Konsolidasi OM v2 + AUTORPHAN v2 + 14 detektor baru',
-            konfigurasi: {
-                totalJenisOrphan: Object.keys(window.OM3_KONSTANTA.JENIS_ORPHAN).length,
-                autoStart: cfg.autoStart,
-                modeDryRun: cfg.modeDryRun,
-                autoHapus: cfg.autoHapus,
-                intervalJam: cfg.intervalJam,
-                graceKandidat: window.OM3_KONSTANTA.GRACE_KANDIDAT,
-                graceOrphan: window.OM3_KONSTANTA.GRACE_ORPHAN
-            },
-            jadwal: jadwal,
-            statistik: {
-                total: stat.total,
-                perPrioritas: stat.perPrioritas,
-                jumlahJenisAktif: stat.perJenis.length
-            },
-            listener: window.om3CekListener(),
-            pintu: window.cekPintuOM3(),
-            fungsi: {
-                // Scanner (1)
-                om3ScanSemua:               typeof window.om3ScanSemua,
-                // Detektor (20)
-                om3DeteksiProdukOrphan:     typeof window.om3DeteksiProdukOrphan,
-                om3DeteksiProdukTanpaKategori: typeof window.om3DeteksiProdukTanpaKategori,
-                om3DeteksiProdukTanpaFoto:  typeof window.om3DeteksiProdukTanpaFoto,
-                om3DeteksiOrderOrphan:      typeof window.om3DeteksiOrderOrphan,
-                om3DeteksiTransaksiOrphan:  typeof window.om3DeteksiTransaksiOrphan,
-                om3DeteksiKasirOrphan:      typeof window.om3DeteksiKasirOrphan,
-                om3DeteksiStafOrphan:       typeof window.om3DeteksiStafOrphan,
-                om3DeteksiArsipGanda:       typeof window.om3DeteksiArsipGanda,
-                om3DeteksiKopdesOrphan:     typeof window.om3DeteksiKopdesOrphan,
-                om3DeteksiRantaiKopdesPutus:typeof window.om3DeteksiRantaiKopdesPutus,
-                om3DeteksiMediaOrphan:      typeof window.om3DeteksiMediaOrphan,
-                om3DeteksiRekeningOrphan:   typeof window.om3DeteksiRekeningOrphan,
-                om3DeteksiDompetOrphan:     typeof window.om3DeteksiDompetOrphan,
-                om3DeteksiPengajuanOrphan:  typeof window.om3DeteksiPengajuanOrphan,
-                om3DeteksiNotifOrphan:      typeof window.om3DeteksiNotifOrphan,
-                om3DeteksiChatOrphan:       typeof window.om3DeteksiChatOrphan,
-                om3DeteksiCartOrphan:       typeof window.om3DeteksiCartOrphan,
-                om3DeteksiKategoriKosong:   typeof window.om3DeteksiKategoriKosong,
-                om3DeteksiWilayahKosong:    typeof window.om3DeteksiWilayahKosong,
-                om3DeteksiHeartbeatKadaluarsa: typeof window.om3DeteksiHeartbeatKadaluarsa,
-                // Statistik (3)
-                om3Statistik:               typeof window.om3Statistik,
-                om3Ringkasan:               typeof window.om3Ringkasan,
-                om3EstimasiHemat:           typeof window.om3EstimasiHemat,
-                // Aksi (4)
-                om3PreviewHapus:            typeof window.om3PreviewHapus,
-                om3HapusSelektif:           typeof window.om3HapusSelektif,
-                om3HapusPerJenis:           typeof window.om3HapusPerJenis,
-                om3HapusSemua:              typeof window.om3HapusSemua,
-                // Scheduler (6)
-                om3AmbilConfig:             typeof window.om3AmbilConfig,
-                om3SimpanConfig:            typeof window.om3SimpanConfig,
-                om3JalankanSekarang:        typeof window.om3JalankanSekarang,
-                om3JadwalMulai:             typeof window.om3JadwalMulai,
-                om3JadwalStop:              typeof window.om3JadwalStop,
-                om3JadwalStatus:            typeof window.om3JadwalStatus,
-                om3ToggleAutoStart:         typeof window.om3ToggleAutoStart,
-                om3ToggleDryRun:            typeof window.om3ToggleDryRun,
-                om3ToggleAutoHapus:         typeof window.om3ToggleAutoHapus,
-                // Event (3)
-                om3DaftarkanListener:       typeof window.om3DaftarkanListener,
-                om3LepasListener:           typeof window.om3LepasListener,
-                om3CekListener:             typeof window.om3CekListener,
-                // 3 Pintu (4)
-                kirimOM3:                   typeof window.kirimOM3,
-                terimaOM3:                  typeof window.terimaOM3,
-                ambilOM3:                   typeof window.ambilOM3,
-                cekPintuOM3:                typeof window.cekPintuOM3
-            }
-        };
-        console.log('🔍 debugOM3 v3.0:', info);
-        return info;
-    };
-
-    // ── Auto-registry 0.1 (A33, A34, A35) ──
-    setTimeout(function() {
-        try {
-            if (typeof window.cpTambahBlok === 'function') {
-                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
-                    return b && (b.kode === 'ORPHAN-CLEANUP' || b.kode === 'OM3');
-                });
-                if (!ada) {
-                    window.cpTambahBlok({
-                        kode: 'ORPHAN-CLEANUP',
-                        nama: 'Fungsi Global Orphan Management v3 (Konsolidasi)',
-                        layer: 'L4', status: 'Selesai',
-                        tanggal: new Date().toISOString().substring(0, 10)
-                    });
-                } else if (typeof window.cpUpdateBlok === 'function') {
-                    window.cpUpdateBlok('ORPHAN-CLEANUP', {
-                        status: 'Selesai',
-                        nama: 'Fungsi Global Orphan Management v3 (Konsolidasi)'
-                    });
-                }
-            }
-            if (typeof window.cpUpdateFungsi === 'function') {
-                window.cpUpdateFungsi('om3', {
-                    nama: 'Orphan Management v3 (L4)',
-                    status: 'Selesai', jumlah: 45
-                });
-            }
-            if (typeof window.cpTambahRiwayat === 'function') {
-                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
-                    return r && r.blok === 'ORPHAN-CLEANUP';
-                });
-                if (!adaR) {
-                    window.cpTambahRiwayat({
-                        blok: 'ORPHAN-CLEANUP',
-                        nama: 'OM v3.0 — Konsolidasi Orphan Management',
-                        keterangan: 'Konsolidasi OM v2 + AUTORPHAN v2 + 14 detektor baru (20 jenis) • default AMAN • 3 Pintu • scheduler • event listener'
-                    });
-                }
-            }
-        } catch (e) {
-            console.warn('OM v3: Auto-registry error:', e.message);
-        }
-    }, 900);
-
-    // ── Whitelist A14 ──
-    setTimeout(function() {
-        try {
-            if (!window._SUDAH_ADA_UI_2) window._SUDAH_ADA_UI_2 = [];
-            ['orphanManagement', 'orphanCleanup', 'autoCleanup'].forEach(function(a) {
-                if (window._SUDAH_ADA_UI_2.indexOf(a) === -1) {
-                    window._SUDAH_ADA_UI_2.push(a);
-                }
-            });
-        } catch (e) {}
-    }, 300);
-
-    // ── Auto-register listener (delay) ──
-    setTimeout(function() {
-        try { window.om3DaftarkanListener(); } catch (e) {}
-    }, 2000);
-
-    // ═══════════════════════════════════════════════════════════
-    // LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log('%c🇮🇩 BLOK OM v3 — ORPHAN MANAGEMENT (KONSOLIDASI) terpasang.',
-        'background:linear-gradient(90deg,#6F42C1 0%,#6F42C1 50%,#FFFFFF 50%,#FFFFFF 100%);' +
-        'color:#000;padding:5px 10px;font-weight:bold;border:2px solid #6F42C1;');
-    console.log('   📦 18 Modul · 20 Detektor · ~45 Fungsi');
-    console.log('   🎯 Konsolidasi: OM v2 (media) + AUTORPHAN v2 (scheduler)');
-    console.log('   🔍 20 Jenis Orphan:');
-    console.log('      • Produk (3) · Transaksi (2) · Akun (3) · Kopdes (2)');
-    console.log('      • Media (1) · Keuangan (2) · Komunikasi (3) · Lain (4)');
-    console.log('   ⚠️  DEFAULT AMAN:');
-    console.log('      • autoStart  = false (user aktifkan manual)');
-    console.log('      • autoHapus  = false (dry-run only)');
-    console.log('      • modeDryRun = true  (preview dulu)');
-    console.log('   ⏱️  Scheduler: 24 jam (opsional)');
-    console.log('   🚪 3 Pintu: kirimOM3 · terimaOM3 · ambilOM3');
-    console.log('   🔍 Debug: debugOM3()');
-    console.log('   💡 Manual run: om3JalankanSekarang()');
-    console.log('   💡 Aktifkan auto: om3ToggleAutoStart(true)');
-})();
-</script>
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ AKHIR BLOK OM v3 — ORPHAN MANAGEMENT 🇮🇩 KONSOLIDASI ════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
