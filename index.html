@@ -25006,6 +25006,299 @@
     // cekPintuOM3 — semua sama seperti v3, tidak di-copy ulang untuk efisiensi
     // (mereka tetap ada di source v3, hanya guard berubah)
 
+	    // ═══════════════════════════════════════════════════════════
+    // [MODUL 15b] — FUNGSI HAPUS + CONFIG (v4.0 RESTORE)
+    // ⭐ Restore fungsi yang hilang dari v3 (anti-blank)
+    // [A1] — pakai KEY_CONFIG & KEY_LAST_RUN dari OM3_KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+
+    // ── Hapus item tunggal ──
+    function _hapusItemOm3(item) {
+        try {
+            if (!item || !item.jenis) return 0;
+            var jumlah = 0;
+
+            // Media orphan → hapus dari MD
+            if (item.jenis === 'media-orphan' && item.raw && item.raw.id) {
+                if (typeof window.mdHapus === 'function') {
+                    window.mdHapus(item.raw.id, { bypass: true });
+                    jumlah++;
+                }
+            }
+            // Dompet/Notif orphan → hapus key storage
+            else if ((item.jenis === 'dompet-orphan' ||
+                      item.jenis === 'notif-orphan' ||
+                      item.jenis === 'heartbeat-kadaluarsa') &&
+                     item.raw && item.raw.key) {
+                try { localStorage.removeItem(item.raw.key); jumlah++; } catch (e) {}
+            }
+            // Produk orphan → hapus via produkHapus
+            else if (item.jenis === 'produk-orphan' && item.raw && item.raw.id) {
+                if (typeof window.produkHapus === 'function') {
+                    window.produkHapus(item.raw.id);
+                    jumlah++;
+                }
+            }
+            // Akun orphan → tandai diarsip
+            else if ((item.jenis === 'akun-kasir-orphan' ||
+                      item.jenis === 'akun-staf-orphan' ||
+                      item.jenis === 'kopdes-orphan') &&
+                     item.raw && (item.raw.idUser || item.raw.id)) {
+                if (typeof window.fkaHapusSoft === 'function') {
+                    window.fkaHapusSoft(item.raw.idUser || item.raw.id, 'OM auto-hapus');
+                    jumlah++;
+                }
+            }
+            // Fallback: tidak dihapus, hanya di-skip
+            return jumlah;
+        } catch (e) {
+            console.warn('[OM v4] _hapusItem error:', e.message);
+            return 0;
+        }
+    }
+
+    // ── Hapus selektif (by list item) ──
+    window.om3HapusSelektif = function(listItem, opts) {
+        opts = opts || {};
+        try {
+            if (!Array.isArray(listItem)) listItem = [];
+            var cfg = window.om3AmbilConfig();
+
+            // Safety: cek dry-run
+            if (cfg.modeDryRun && opts.force !== true) {
+                return {
+                    sukses: true, dryRun: true,
+                    total: listItem.length, dihapus: 0,
+                    pesan: 'Mode DRY-RUN — tidak ada yang dihapus'
+                };
+            }
+
+            var dihapus = 0;
+            listItem.forEach(function(item) {
+                dihapus += _hapusItemOm3(item);
+            });
+
+            // Log
+            if (typeof window.om3CatatLog === 'function' && dihapus > 0) {
+                window.om3CatatLog('hapus-selektif', {
+                    totalTarget: listItem.length,
+                    dihapus: dihapus,
+                    scope: opts.scope || 'selektif'
+                });
+            }
+
+            return {
+                sukses: true,
+                total: listItem.length,
+                dihapus: dihapus
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message, dihapus: 0 };
+        }
+    };
+
+    // ── Hapus per jenis ──
+    window.om3HapusPerJenis = function(jenis, opts) {
+        opts = opts || {};
+        try {
+            if (!jenis) return { sukses: false, pesan: 'jenis kosong' };
+            var preview = window.om3PreviewHapus({ jenis: jenis, limit: 9999 });
+            return window.om3HapusSelektif(preview.items || [], {
+                scope: 'jenis:' + jenis,
+                force: opts.force
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message, dihapus: 0 };
+        }
+    };
+
+    // ── Hapus per prioritas ──
+    window.om3HapusPerPrioritas = function(prioritas, opts) {
+        opts = opts || {};
+        try {
+            if (!prioritas) return { sukses: false, pesan: 'prioritas kosong' };
+            var scan = window.om3ScanSemua();
+            var listItem = [];
+            Object.keys(scan.perJenis || {}).forEach(function(j) {
+                var r = scan.perJenis[j];
+                if (r && r.prioritas === prioritas && r.total > 0) {
+                    (r.items || []).forEach(function(it) { listItem.push(it); });
+                }
+            });
+            return window.om3HapusSelektif(listItem, {
+                scope: 'prioritas:' + prioritas,
+                force: opts.force
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message, dihapus: 0 };
+        }
+    };
+
+    // ── Hapus semua ──
+    window.om3HapusSemua = function(opts) {
+        opts = opts || {};
+        try {
+            var preview = window.om3PreviewHapus({ limit: 9999 });
+            return window.om3HapusSelektif(preview.items || [], {
+                scope: 'semua',
+                force: opts.force
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message, dihapus: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // CONFIG SCHEDULER — pakai KEY_CONFIG dari OM3_KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.om3AmbilConfig = function() {
+        try {
+            var def = {
+                autoStart: false,
+                intervalJam: window.OM3_KONSTANTA.INTERVAL_JAM || 24,
+                modeDryRun: window.OM3_KONSTANTA.MODE_DRY_RUN !== false,
+                autoHapus: window.OM3_KONSTANTA.AUTO_HAPUS === true
+            };
+            var stored = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_CONFIG, null);
+            if (stored && typeof stored === 'object') {
+                return Object.assign({}, def, stored);
+            }
+            return def;
+        } catch (e) { return { autoStart: false, intervalJam: 24, modeDryRun: true, autoHapus: false }; }
+    };
+
+    window.om3SimpanConfig = function(cfg) {
+        try {
+            if (!cfg || typeof cfg !== 'object') return { sukses: false };
+            var merged = Object.assign(window.om3AmbilConfig(), cfg);
+            var r = window.om3SaveJSON(window.OM3_KONSTANTA.KEY_CONFIG, merged);
+            return r;
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3ToggleAutoStart = function(v) {
+        return window.om3SimpanConfig({ autoStart: v === true });
+    };
+    window.om3ToggleDryRun = function(v) {
+        return window.om3SimpanConfig({ modeDryRun: v === true });
+    };
+    window.om3ToggleAutoHapus = function(v) {
+        return window.om3SimpanConfig({ autoHapus: v === true });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // SCHEDULER JADWAL — pakai KEY_LAST_RUN dari OM3_KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    window.om3JadwalStatus = function() {
+        try {
+            var cfg = window.om3AmbilConfig();
+            var lastRun = window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, null);
+            return {
+                aktif: cfg.autoStart === true,
+                intervalJam: cfg.intervalJam || 24,
+                modeDryRun: cfg.modeDryRun !== false,
+                autoHapus: cfg.autoHapus === true,
+                lastRun: lastRun ? (lastRun.waktu || lastRun) : null
+            };
+        } catch (e) {
+            return { aktif: false, intervalJam: 24, modeDryRun: true, autoHapus: false, lastRun: null };
+        }
+    };
+
+    var _om3IntervalId = null;
+    window.om3JadwalMulai = function() {
+        try {
+            if (_om3IntervalId) clearInterval(_om3IntervalId);
+            var cfg = window.om3AmbilConfig();
+            var ms = (cfg.intervalJam || 24) * 3600 * 1000;
+
+            _om3IntervalId = setInterval(function() {
+                try {
+                    window.om3JalankanSekarang({ auto: true });
+                } catch (e) {}
+            }, ms);
+
+            window.om3SimpanConfig({ autoStart: true });
+            console.log('[OM v4] Scheduler aktif — interval ' + cfg.intervalJam + ' jam');
+            return { sukses: true, intervalJam: cfg.intervalJam, ms: ms };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.om3JadwalStop = function() {
+        try {
+            if (_om3IntervalId) { clearInterval(_om3IntervalId); _om3IntervalId = null; }
+            window.om3SimpanConfig({ autoStart: false });
+            console.log('[OM v4] Scheduler STOP');
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // JALANKAN SEKARANG — scan + hapus sesuai config
+    // ═══════════════════════════════════════════════════════════
+    window.om3JalankanSekarang = function(opts) {
+        opts = opts || {};
+        try {
+            var cfg = window.om3AmbilConfig();
+            var scan = window.om3ScanSemua();
+            var laporan = {
+                waktu: window.om3Now(),
+                totalOrphan: scan.total,
+                modeDryRun: cfg.modeDryRun,
+                autoHapus: cfg.autoHapus,
+                dihapus: 0
+            };
+
+            // Auto-hapus hanya kalau:
+            //   - modeDryRun = false
+            //   - autoHapus = true
+            //   - bukan manual (opts.auto = true)
+            if (opts.auto === true && cfg.modeDryRun === false && cfg.autoHapus === true) {
+                var hasil = window.om3HapusSemua({ force: true });
+                laporan.dihapus = hasil.dihapus || 0;
+            }
+
+            window.om3SaveJSON(window.OM3_KONSTANTA.KEY_LAST_RUN, laporan);
+            return { sukses: true, laporan: laporan };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 3 PINTU OM v4 (audit bridge)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimOM3 = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+            return window.mnKirimKeMenu({
+                tipe: tipe, dari: { menu: 'orphanMgmt', blok: 'OM' },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: window.om3Now()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+    window.terimaOM3 = function(aksiMenu) {
+        try { return window.mnInboxMenu ? window.mnInboxMenu(aksiMenu || 'orphanMgmt') : []; }
+        catch (e) { return []; }
+    };
+    window.ambilOM3 = function(filter) {
+        filter = filter || {};
+        var tipe = filter.tipe || 'all';
+        switch (tipe) {
+            case 'all':       return window.om3ScanSemua();
+            case 'statistik': return window.om3Statistik();
+            case 'config':    return window.om3AmbilConfig();
+            case 'jadwal':    return window.om3JadwalStatus();
+            case 'log':       return window.om3LoadJSON(window.OM3_KONSTANTA.KEY_LOG, []);
+            default: return null;
+        }
+    };
+    window.cekPintuOM3 = function() {
+        var skor = (typeof window.kirimOM3 === 'function' ? 1 : 0)
+                 + (typeof window.terimaOM3 === 'function' ? 1 : 0)
+                 + (typeof window.ambilOM3 === 'function' ? 1 : 0);
+        return { blok: 'OM', skor: skor + '/3', lengkap: skor === 3 };
+    };
+
     // ═══════════════════════════════════════════════════════════
     // [MODUL 18] — DEBUG + AUTO-REGISTRY
     // ═══════════════════════════════════════════════════════════
