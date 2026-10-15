@@ -37797,9 +37797,1435 @@
 <!-- ═══ AKHIR BLOK FKVD v1.0 — VERIFIKASI KOPDES 🇮🇩 ═══════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 
-<!-- ═══ BLOK BRU — BACKUP RESTORE UNIVERSAL 🇮🇩 v1 FINAL ═══════ -->
-...
-<!-- ═══ AKHIR BLOK BRU — BACKUP RESTORE UNIVERSAL 🇮🇩 v1 FINAL ══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK BRU — BACKUP RESTORE UNIVERSAL 🇮🇩 v1.1 FINAL ═════ -->
+<!-- ═══ Layer        : L4 (Fungsi Global Domain) ════════════════ -->
+<!-- ═══ Prefix       : bru* ═════════════════════════════════════ -->
+<!-- ═══ Guard        : _blokBRUDone (UNIK — A32) ═══════════════ -->
+<!-- ═══ IIFE         : BLOK_BRU_V1_1 ═══════════════════════════ -->
+<!-- ═══ Fokus        : Backup granular + Auto-detect + Snapshot -->
+<!-- ═══ Pemakai      : UI 10.85 + menu lain (via 3 Pintu) ═════ -->
+<!-- ═══ Dependency   : CS1—CS17 + GID v4 + ROLE27 v4 + MN v3 ══ -->
+<!-- ═══             + MD v2 + AMF v1 + L4 domain ═════════════ -->
+<!-- ═══ Isi          : 13 Modul · ~65 fungsi · 3 Pintu ════════ -->
+<!-- ═══ Aturan       : A1,A2,A3,A5,A6,A7,A11—A13,A18,A19, ════ -->
+<!-- ═══                A23,A25,A29,A31,A32,A33,A34,A35 ═══════ -->
+<!-- ═══ FIX v1.1     :                                            -->
+<!-- ═══   [1] Snapshot default TANPA 'storage' (anti-circular)  -->
+<!-- ═══   [2] Guard ukuran max 800 KB per snapshot              -->
+<!-- ═══   [3] Auto-cleanup kalau storage penuh                  -->
+<!-- ═══   [4] Max snapshot 10 (dari 20)                         -->
+<!-- ═══   [5] Pre-snapshot restore minimal (3 kategori kecil)   -->
+<!-- ═══   [6] bruBackupStorage EXCLUDE bru_snapshot_* (anti-circ) -->
+<!-- ═══   [7] Fungsi bruEmergencyCleanupSnapshot + bruCekStorage -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_BRU_V1_1() {
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.0] — GUARD + DEPENDENCY
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokBRUDone) { console.log('ℹ️ BLOK BRU sudah terpasang (versi: ' + (window._blokBRUVersi || '?') + ').'); return; }
+
+    var depsWajib = [
+        { flag: '_coreSystem12DoneV3', nama: 'CS12 v3' },
+        { flag: '_coreSystem2DoneV3',  nama: 'CS2 v3' },
+        { flag: '_coreSystem7DoneV3',  nama: 'CS7 v3' },
+        { flag: '_coreSystem10DoneV3', nama: 'CS10 v3' },
+        { flag: '_gidV4Done',          nama: 'GID v4' },
+        { flag: '_role27V4Done',       nama: 'ROLE27 v4' },
+        { flag: '_blokMN_DoneV3',      nama: 'MN v3' }
+    ];
+    var missWajib = depsWajib.filter(function(d) { return !window[d.flag]; });
+    if (missWajib.length > 0) {
+        console.warn('⚠️ BLOK BRU v1.1 ditunda — dependency belum lengkap:');
+        missWajib.forEach(function(d) { console.warn('   • ' + d.nama); });
+        return;
+    }
+
+    window._blokBRUDone  = true;
+    window._blokBRUVersi = '1.1';
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.1] — KONSTANTA (FIXED v1.1)
+    // ═══════════════════════════════════════════════════════════
+    window.BRU_KONSTANTA = {
+        VERSI: '1.1',
+        NAMA: 'Backup Restore Universal',
+        PREFIX: 'bru',
+        LAYER: 'L4',
+
+        KATEGORI: ['role', 'menu', 'global', 'ui', 'registry', 'aturan', 'storage', 'media'],
+
+        KATEGORI_INFO: {
+            'role':     { label: 'Role & Akun',      ikon: 'fas fa-users',    warna: '#DC3545', prioritas: 1 },
+            'menu':     { label: 'Menu Config',      ikon: 'fas fa-bars',     warna: '#FF8C00', prioritas: 2 },
+            'global':   { label: 'Fungsi Global L4', ikon: 'fas fa-cubes',    warna: '#6F42C1', prioritas: 3 },
+            'ui':       { label: 'UI Blok L5',       ikon: 'fas fa-palette',  warna: '#17A2B8', prioritas: 4 },
+            'registry': { label: 'Registry Sistem',  ikon: 'fas fa-database', warna: '#007BFF', prioritas: 5 },
+            'aturan':   { label: 'Aturan & Lapisan', ikon: 'fas fa-gavel',    warna: '#28A745', prioritas: 6 },
+            'storage':  { label: 'Raw Storage',      ikon: 'fas fa-hdd',      warna: '#6C757D', prioritas: 7 },
+            'media':    { label: 'Media (base64)',   ikon: 'fas fa-image',    warna: '#FFC107', prioritas: 8 }
+        },
+
+        KEY_SNAPSHOT_INDEX: 'bru_snapshot_index',
+        KEY_SNAPSHOT_PREFIX: 'bru_snapshot_',
+        KEY_AUTO_CONFIG: 'bru_auto_config',
+        KEY_MANIFEST: 'bru_manifest',
+        KEY_LOG: 'bru_log',
+
+        // ⭐ FIX v1.1: Turun ke 10
+        MAX_SNAPSHOT: 10,
+        MAX_LOG: 100,
+        AUTO_INTERVAL_MS: 3600000,
+
+        // ⭐ FIX v1.1: Guard ukuran snapshot
+        MAX_SNAPSHOT_SIZE_KB: 800,
+
+        // ⭐ FIX v1.1: Default kategori TANPA 'storage' (anti-circular)
+        DEFAULT_KATEGORI: ['role', 'menu', 'registry', 'aturan'],
+
+        // ⭐ FIX v1.1: Pre-snapshot restore — kategori minimal
+        DEFAULT_KATEGORI_PRE_SNAPSHOT: ['aturan', 'registry', 'menu'],
+
+        // ⭐ FIX v1.1: Storage keys yang DI-EXCLUDE saat backup storage
+        STORAGE_EXCLUDE_PREFIXES: [
+            'bru_snapshot_',   // anti-circular!
+            'bru_manifest',
+            'bru_log'
+        ],
+
+        STORAGE_PREFIXES: [
+            'r2c_', 'data', 'profil_', 'mpp_', 'md_', 'eko_',
+            'bru_', 'amf_', 'ojToggle', 'settingEkonomi',
+            'CP_REGISTRY_', 'CP_RIWAYAT', 'CP_ATURAN', 'CP_LAPISAN',
+            'menuConfig', 'sku_', 'fpv_', 'fvd_', 'fn_'
+        ]
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.2] — HELPER DASAR (9 fungsi — +1 baru)
+    // ═══════════════════════════════════════════════════════════
+    window.bruEsc = function(s) {
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    };
+
+    window.bruNow = function() {
+        if (typeof window.csNow === 'function') return window.csNow();
+        return new Date().toISOString();
+    };
+
+    window.bruLoadJSON = function(key, fallback) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, fallback);
+        try {
+            var s = localStorage.getItem(key);
+            var p = s ? JSON.parse(s) : fallback;
+            return (p === null || p === undefined) ? fallback : p;
+        } catch (e) { return fallback; }
+    };
+
+    window.bruSaveJSON = function(key, data) {
+        if (typeof window.csSaveJSON === 'function') {
+            return window.csSaveJSON(key, data, { backup: false });
+        }
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruResolveIdUser = function() {
+        try {
+            if (typeof window.gidIdUser === 'function') {
+                var id = window.gidIdUser();
+                if (id) return id;
+            }
+        } catch (e) {}
+        return 'SYSTEM';
+    };
+
+    window.bruResolveKodeRole = function() {
+        try {
+            if (typeof window.gidKodeRoleUser === 'function') {
+                return window.gidKodeRoleUser() || 'SYSTEM';
+            }
+        } catch (e) {}
+        return 'SYSTEM';
+    };
+
+    window.bruEmit = function(namaEvent, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(namaEvent, { detail: detail || {} }));
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.bruCatatLog = function(aksi, detail, opts) {
+        opts = opts || {};
+        try {
+            var log = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_LOG, []);
+            if (!Array.isArray(log)) log = [];
+            log.unshift({
+                id: 'BRU-LOG-' + Date.now(),
+                waktu: window.bruNow(),
+                oleh: window.bruResolveIdUser(),
+                kodeRole: window.bruResolveKodeRole(),
+                aksi: aksi || '-',
+                detail: detail || {},
+                level: opts.level || 'info'
+            });
+            if (log.length > window.BRU_KONSTANTA.MAX_LOG) {
+                log = log.slice(0, window.BRU_KONSTANTA.MAX_LOG);
+            }
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_LOG, log);
+            if (typeof window.catatAktivitasGlobal === 'function') {
+                try {
+                    window.catatAktivitasGlobal(
+                        window.bruResolveIdUser(),
+                        'BRU ' + aksi,
+                        typeof detail === 'object'
+                            ? JSON.stringify(detail).substring(0, 200)
+                            : String(detail || '-'),
+                        { kategori: 'Sistem', level: opts.level || 'info' }
+                    );
+                } catch (e) {}
+            }
+            return { sukses: true };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruFormatSize = function(bytes) {
+        if (typeof window.csFormatSizeFile === 'function') return window.csFormatSizeFile(bytes);
+        var b = parseInt(bytes, 10) || 0;
+        if (b < 1024) return b + ' B';
+        if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+        return (b / 1024 / 1024).toFixed(2) + ' MB';
+    };
+
+    // ⭐ FIX v1.1: Cek ukuran storage
+    window.bruCekStorageSize = function() {
+        try {
+            var total = 0;
+            var perPrefix = {};
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k) continue;
+                var v = localStorage.getItem(k) || '';
+                var size = k.length + v.length;
+                total += size;
+                var prefix = k.split('_')[0] + '_';
+                if (!perPrefix[prefix]) perPrefix[prefix] = { count: 0, size: 0 };
+                perPrefix[prefix].count++;
+                perPrefix[prefix].size += size;
+            }
+            return {
+                total: total,
+                totalKB: Math.round(total / 1024),
+                totalMB: (total / 1024 / 1024).toFixed(2),
+                perPrefix: perPrefix
+            };
+        } catch (e) { return { error: e.message }; }
+    };
+
+    // ⭐ FIX v1.1: Emergency cleanup snapshot
+    window.bruEmergencyCleanupSnapshot = function(keep) {
+        keep = parseInt(keep, 10) || 3;
+        try {
+            var index = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, []);
+            if (!Array.isArray(index)) index = [];
+
+            if (index.length <= keep) {
+                return { sukses: true, dihapus: 0, pesan: 'Sudah <= ' + keep };
+            }
+
+            index.sort(function(a, b) {
+                return new Date(b.waktu).getTime() - new Date(a.waktu).getTime();
+            });
+
+            var hapus = index.slice(keep);
+            hapus.forEach(function(s) {
+                try {
+                    localStorage.removeItem(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + s.id);
+                } catch (e) {}
+            });
+
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, index.slice(0, keep));
+            console.log('[BRU] 🧹 Cleanup:', hapus.length, 'snapshot dihapus (keep:', keep + ')');
+            return { sukses: true, dihapus: hapus.length, keep: keep };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.3] — KATEGORI INFO & HELPER (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruGetKategoriList = function() { return window.BRU_KONSTANTA.KATEGORI.slice(); };
+
+    window.bruCekKategoriValid = function(kat) {
+        if (!kat) return false;
+        return window.BRU_KONSTANTA.KATEGORI.indexOf(kat) !== -1;
+    };
+
+    window.bruInfoKategori = function(kat) {
+        return window.BRU_KONSTANTA.KATEGORI_INFO[kat] || null;
+    };
+
+    window.bruListKategoriInfo = function() {
+        return window.BRU_KONSTANTA.KATEGORI.map(function(k) {
+            var info = window.BRU_KONSTANTA.KATEGORI_INFO[k] || {};
+            return Object.assign({ kode: k }, info);
+        }).sort(function(a, b) { return (a.prioritas || 99) - (b.prioritas || 99); });
+    };
+
+    window.bruChecksum = function(data) {
+        try {
+            var str = typeof data === 'string' ? data : JSON.stringify(data);
+            var h = 5381;
+            var step = Math.max(1, Math.floor(str.length / 5000));
+            for (var i = 0; i < str.length; i += step) {
+                h = ((h << 5) + h) + str.charCodeAt(i);
+                h = h | 0;
+            }
+            return Math.abs(h).toString(36);
+        } catch (e) { return 'xxx'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.4] — DETEKTOR & SCANNER (8 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruScanSemuaRole = function() {
+        try {
+            var map = window.CS_ROLE_MAP || {};
+            var hasil = [];
+            Object.keys(map).forEach(function(kode) {
+                var r = map[kode];
+                if (!r) return;
+                hasil.push({
+                    kode: kode, nama: r.nama || kode,
+                    kategori: r.kategori || 'Lain', tipe: r.tipe || '-',
+                    prefix: r.prefix || '-', verif: r.verif === true,
+                    status: r.status || '-'
+                });
+            });
+            return hasil.sort(function(a, b) { return (a.kode > b.kode) ? 1 : -1; });
+        } catch (e) { return []; }
+    };
+
+    window.bruScanSemuaMenuConfig = function() {
+        try {
+            var cfg = window.menuConfig || {};
+            var hasil = [];
+            Object.keys(cfg).forEach(function(kode) {
+                var c = cfg[kode];
+                if (!c || !c.menu) return;
+                var totalMenu = 0;
+                c.menu.forEach(function(g) { totalMenu += (g.items || []).length; });
+                hasil.push({
+                    kodeRole: kode, namaRole: c.namaRole || kode,
+                    totalMenu: totalMenu, totalGrup: c.menu.length,
+                    level: c.level || null
+                });
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.bruScanSemuaFungsiGlobal = function() {
+        try {
+            var reg = window.CP_REGISTRY_FUNGSI || {};
+            var hasil = [];
+            Object.keys(reg).forEach(function(prefix) {
+                var f = reg[prefix];
+                if (!f) return;
+                hasil.push({
+                    prefix: prefix, nama: f.nama || prefix,
+                    status: f.status || '-', jumlah: f.jumlah || 0
+                });
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.bruScanSemuaUIBlok = function() {
+        try {
+            var list = window.CP_REGISTRY_BLOK || [];
+            return list.filter(function(b) { return b && b.layer === 'L5'; })
+                .map(function(b) { return { kode: b.kode, nama: b.nama, layer: b.layer, status: b.status }; });
+        } catch (e) { return []; }
+    };
+
+    // ⭐ FIX v1.1: EXCLUDE snapshot keys (anti-circular)
+    window.bruScanSemuaStorageKey = function(opts) {
+        opts = opts || {};
+        try {
+            var hasil = [];
+            var prefixes = window.BRU_KONSTANTA.STORAGE_PREFIXES;
+            var excludes = window.BRU_KONSTANTA.STORAGE_EXCLUDE_PREFIXES;
+
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (!k) continue;
+
+                // Skip kalau tidak match prefix
+                var cocok = prefixes.some(function(p) { return k.indexOf(p) === 0; });
+                if (!cocok) continue;
+
+                // ⭐ FIX: Skip kalau kena exclude (anti-circular)
+                if (!opts.force) {
+                    var excluded = excludes.some(function(e) { return k.indexOf(e) === 0; });
+                    if (excluded) continue;
+                }
+
+                var v = localStorage.getItem(k) || '';
+                hasil.push({ key: k, size: v.length, sizeKB: Math.round(v.length / 1024) });
+            }
+            return hasil.sort(function(a, b) { return b.size - a.size; });
+        } catch (e) { return []; }
+    };
+
+    window.bruScanSemuaMedia = function() {
+        try {
+            if (typeof window.mdStatistikGlobal === 'function') {
+                var stat = window.mdStatistikGlobal();
+                return {
+                    total: stat.totalFile || 0, totalSize: stat.totalSize || 0,
+                    totalSizeTeks: stat.totalSizeTeks || '0 B',
+                    totalOwner: stat.totalOwner || 0,
+                    totalKategori: stat.totalKategori || 0
+                };
+            }
+        } catch (e) {}
+        return { total: 0, totalSize: 0, totalSizeTeks: '0 B', totalOwner: 0, totalKategori: 0 };
+    };
+
+    window.bruScanSemuaAturan = function() {
+        try {
+            return {
+                totalAturan: (window.CP_ATURAN || []).length,
+                totalLapisan: (window.CP_LAPISAN || []).length
+            };
+        } catch (e) { return { totalAturan: 0, totalLapisan: 0 }; }
+    };
+
+    window.bruScanRingkasan = function() {
+        try {
+            var t0 = Date.now();
+            var hasil = { waktu: window.bruNow(), elapsedMs: 0, perKategori: {}, totalItem: 0 };
+            hasil.perKategori.role = { total: window.bruScanSemuaRole().length, target: 29 };
+            hasil.perKategori.menu = { total: window.bruScanSemuaMenuConfig().length, target: 29 };
+            hasil.perKategori.global = { total: window.bruScanSemuaFungsiGlobal().length };
+            hasil.perKategori.ui = { total: window.bruScanSemuaUIBlok().length };
+            hasil.perKategori.registry = { total: (window.CP_REGISTRY_BLOK || []).length };
+            hasil.perKategori.aturan = window.bruScanSemuaAturan();
+            hasil.perKategori.storage = { total: window.bruScanSemuaStorageKey().length };
+            hasil.perKategori.media = window.bruScanSemuaMedia();
+
+            var total = 0;
+            Object.keys(hasil.perKategori).forEach(function(k) { total += (hasil.perKategori[k].total || 0); });
+            hasil.totalItem = total;
+            hasil.elapsedMs = Date.now() - t0;
+            return hasil;
+        } catch (e) { return { waktu: window.bruNow(), perKategori: {}, totalItem: 0, error: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.5] — BACKUP PER-KATEGORI (8 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruBackupRole = function(kodeRole) {
+        try {
+            if (!kodeRole) return { sukses: false, pesan: 'kodeRole kosong' };
+            var userList = window.csLoadJSON('dataLoginUser', []);
+            var users = (userList || []).filter(function(u) { return u && u.kodeRole === kodeRole; });
+            var cfg = window.menuConfig[kodeRole] || null;
+            return {
+                sukses: true, kodeRole: kodeRole,
+                data: {
+                    info: (window.CS_ROLE_MAP && window.CS_ROLE_MAP[kodeRole]) || null,
+                    users: users, menuConfig: cfg
+                }
+            };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBackupSemuaRole = function() {
+        try {
+            var hasil = { roles: {}, totalRole: 0, totalUser: 0 };
+            var list = window.bruScanSemuaRole();
+            list.forEach(function(r) {
+                var bak = window.bruBackupRole(r.kode);
+                if (bak.sukses) {
+                    hasil.roles[r.kode] = bak.data;
+                    hasil.totalRole++;
+                    hasil.totalUser += (bak.data.users || []).length;
+                }
+            });
+            return { sukses: true, data: hasil };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBackupSemuaMenuConfig = function() {
+        try { return { sukses: true, data: window.menuConfig || {} }; }
+        catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBackupFungsiGlobal = function() {
+        try {
+            return {
+                sukses: true,
+                data: {
+                    registryFungsi: window.CP_REGISTRY_FUNGSI || {},
+                    totalDomain: Object.keys(window.CP_REGISTRY_FUNGSI || {}).length
+                }
+            };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBackupUIBlok = function() {
+        try {
+            var list = window.CP_REGISTRY_BLOK || [];
+            var uiBlok = list.filter(function(b) { return b && b.layer === 'L5'; });
+            return { sukses: true, data: { total: uiBlok.length, list: uiBlok } };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBackupRegistry = function() {
+        try {
+            return {
+                sukses: true,
+                data: {
+                    registryBlok: window.CP_REGISTRY_BLOK || [],
+                    registryFungsi: window.CP_REGISTRY_FUNGSI || {},
+                    riwayat: window.CP_RIWAYAT || []
+                }
+            };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBackupAturan = function() {
+        try {
+            return {
+                sukses: true,
+                data: { aturan: window.CP_ATURAN || [], lapisan: window.CP_LAPISAN || [] }
+            };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ⭐ FIX v1.1: Exclude bru_snapshot_* (anti-circular)
+    window.bruBackupStorage = function(opts) {
+        opts = opts || {};
+        try {
+            var keys = window.bruScanSemuaStorageKey();  // sudah exclude snapshot
+            var data = {};
+            var totalSize = 0;
+            keys.forEach(function(k) {
+                try {
+                    var v = localStorage.getItem(k.key);
+                    if (v !== null) { data[k.key] = v; totalSize += v.length; }
+                } catch (e) {}
+            });
+            return {
+                sukses: true,
+                data: {
+                    keys: data,
+                    totalKey: Object.keys(data).length,
+                    totalSize: totalSize,
+                    totalSizeTeks: window.bruFormatSize(totalSize)
+                }
+            };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.6] — PAKET BUILDER (6 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruBuatPaket = function(opts) {
+        opts = opts || {};
+        try {
+            var t0 = Date.now();
+            var kategori = Array.isArray(opts.kategori) && opts.kategori.length > 0
+                ? opts.kategori.filter(window.bruCekKategoriValid)
+                : window.BRU_KONSTANTA.DEFAULT_KATEGORI.slice();
+
+            if (kategori.length === 0) return { sukses: false, pesan: 'Tidak ada kategori valid' };
+
+            var paket = {
+                _meta: {
+                    versi: window.BRU_KONSTANTA.VERSI,
+                    tipe: 'bru-paket', blok: 'BRU',
+                    waktu: window.bruNow(),
+                    idUser: window.bruResolveIdUser(),
+                    kodeRole: window.bruResolveKodeRole(),
+                    kategori: kategori,
+                    deskripsi: opts.deskripsi || 'Backup Universal',
+                    includeMedia: opts.includeMedia === true,
+                    includeBase64: opts.includeBase64 === true,
+                    filterRole: opts.filterRole || null,
+                    app: window.CS_APP ? { nama: window.CS_APP.nama, versi: window.CS_APP.versi } : null
+                },
+                kategori: {}
+            };
+
+            if (kategori.indexOf('role') !== -1) {
+                var roleBak = opts.filterRole
+                    ? { roles: {}, totalRole: 0, totalUser: 0 }
+                    : window.bruBackupSemuaRole().data;
+                if (opts.filterRole) {
+                    opts.filterRole.forEach(function(kr) {
+                        var r = window.bruBackupRole(kr);
+                        if (r.sukses) {
+                            roleBak.roles[kr] = r.data;
+                            roleBak.totalRole++;
+                            roleBak.totalUser += (r.data.users || []).length;
+                        }
+                    });
+                }
+                paket.kategori.role = roleBak;
+            }
+            if (kategori.indexOf('menu') !== -1) paket.kategori.menu = window.bruBackupSemuaMenuConfig().data;
+            if (kategori.indexOf('global') !== -1) paket.kategori.global = window.bruBackupFungsiGlobal().data;
+            if (kategori.indexOf('ui') !== -1) paket.kategori.ui = window.bruBackupUIBlok().data;
+            if (kategori.indexOf('registry') !== -1) paket.kategori.registry = window.bruBackupRegistry().data;
+            if (kategori.indexOf('aturan') !== -1) paket.kategori.aturan = window.bruBackupAturan().data;
+            if (kategori.indexOf('storage') !== -1) paket.kategori.storage = window.bruBackupStorage().data;
+
+            if (kategori.indexOf('media') !== -1 && opts.includeMedia === true) {
+                var media = window.bruScanSemuaMedia();
+                paket.kategori.media = {
+                    statistik: media,
+                    list: opts.includeBase64 && typeof window.mdAmbilSemuaMedia === 'function'
+                        ? window.mdAmbilSemuaMedia({}).map(function(m) {
+                            return Object.assign({}, m, {
+                                base64: typeof window.mdAmbilUrl === 'function' ? window.mdAmbilUrl(m.id) : null
+                            });
+                        })
+                        : []
+                };
+            }
+
+            paket._meta.checksum = window.bruChecksum(JSON.stringify(paket.kategori));
+            paket._meta.elapsedMs = Date.now() - t0;
+            var str = JSON.stringify(paket);
+            paket._meta.totalSize = str.length;
+            paket._meta.totalSizeTeks = window.bruFormatSize(str.length);
+
+            return { sukses: true, paket: paket, ukuranTeks: paket._meta.totalSizeTeks };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBuatPaketPenuh = function() {
+        return window.bruBuatPaket({
+            kategori: window.BRU_KONSTANTA.KATEGORI.slice(),
+            includeMedia: true, includeBase64: false,
+            deskripsi: 'Full Backup'
+        });
+    };
+
+    window.bruBuatPaketRingkas = function() {
+        return window.bruBuatPaket({
+            kategori: window.BRU_KONSTANTA.DEFAULT_KATEGORI.slice(),
+            includeMedia: false, includeBase64: false,
+            deskripsi: 'Ringkas Backup'
+        });
+    };
+
+    window.bruBuatPaketPerRole = function(kodeRole) {
+        if (!kodeRole) return { sukses: false, pesan: 'kodeRole kosong' };
+        return window.bruBuatPaket({
+            kategori: ['role', 'menu'],
+            filterRole: [kodeRole], includeMedia: false,
+            deskripsi: 'Backup role ' + kodeRole
+        });
+    };
+
+    window.bruBuatPaketPerKategori = function(kat) {
+        if (!window.bruCekKategoriValid(kat)) {
+            return { sukses: false, pesan: 'Kategori tidak valid: ' + kat };
+        }
+        return window.bruBuatPaket({
+            kategori: [kat],
+            includeMedia: kat === 'media',
+            includeBase64: false,
+            deskripsi: 'Backup kategori ' + kat
+        });
+    };
+
+    window.bruBuatPaketKustom = function(fn) {
+        if (typeof fn !== 'function') return { sukses: false, pesan: 'fn bukan fungsi' };
+        try { return window.bruBuatPaket(fn()); }
+        catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.7] — DOWNLOAD / EXPORT (6 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruDownloadPaket = function(paket, namaFile) {
+        try {
+            if (!paket) return { sukses: false, pesan: 'Paket kosong' };
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            var nama = namaFile || ('bru_paket_' + ts + '.json');
+            if (typeof window.csDownloadJSON === 'function') return window.csDownloadJSON(paket, nama);
+            var blob = new Blob([JSON.stringify(paket, null, 2)], { type: 'application/json' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = nama;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+            return { sukses: true, namaFile: nama };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruDownloadPerKategori = function(kat) {
+        try {
+            var hasil = window.bruBuatPaketPerKategori(kat);
+            if (!hasil.sukses) return hasil;
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            return window.bruDownloadPaket(hasil.paket, 'bru_' + kat + '_' + ts + '.json');
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruDownloadPerRole = function(kodeRole) {
+        try {
+            var hasil = window.bruBuatPaketPerRole(kodeRole);
+            if (!hasil.sukses) return hasil;
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            return window.bruDownloadPaket(hasil.paket, 'bru_role_' + kodeRole + '_' + ts + '.json');
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruDownloadBatch = function(kategoriList) {
+        try {
+            var hasil = [];
+            (kategoriList || []).forEach(function(kat) {
+                hasil.push({ kategori: kat, hasil: window.bruDownloadPerKategori(kat) });
+            });
+            return { sukses: true, total: hasil.length, list: hasil };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruDownloadCSV = function() {
+        try {
+            var rows = [['Kategori', 'Total Item', 'Status']];
+            var stat = window.bruScanRingkasan();
+            Object.keys(stat.perKategori).forEach(function(k) {
+                rows.push([k, stat.perKategori[k].total || 0, 'OK']);
+            });
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            if (typeof window.csDownloadCSV === 'function') {
+                return window.csDownloadCSV(rows, 'bru_ringkasan_' + ts + '.csv');
+            }
+            return { sukses: false, pesan: 'CS Download tidak tersedia' };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruDownloadManifest = function() {
+        try {
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            return window.bruDownloadPaket(window.bruBuatManifest(), 'bru_manifest_' + ts + '.json');
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.8] — RESTORE / IMPORT (6 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruBacaFile = function(file) {
+        return new Promise(function(resolve) {
+            try {
+                if (!file) return resolve({ sukses: false, pesan: 'File kosong' });
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    try { resolve({ sukses: true, paket: JSON.parse(e.target.result) }); }
+                    catch (err) { resolve({ sukses: false, pesan: 'JSON tidak valid: ' + err.message }); }
+                };
+                reader.onerror = function() { resolve({ sukses: false, pesan: 'Gagal baca file' }); };
+                reader.readAsText(file);
+            } catch (e) { resolve({ sukses: false, pesan: e.message }); }
+        });
+    };
+
+    window.bruValidasiPaket = function(paket) {
+        try {
+            if (!paket || typeof paket !== 'object') return { valid: false, pesan: 'Paket kosong' };
+            if (!paket._meta) return { valid: false, pesan: 'Paket tanpa _meta' };
+            if (paket._meta.tipe !== 'bru-paket') return { valid: false, pesan: 'Bukan paket BRU: ' + paket._meta.tipe };
+            if (!paket.kategori || typeof paket.kategori !== 'object') return { valid: false, pesan: 'Kategori tidak valid' };
+            var checksumSekarang = window.bruChecksum(JSON.stringify(paket.kategori));
+            var checksumPaket = paket._meta.checksum;
+            return {
+                valid: true, meta: paket._meta,
+                totalKategori: Object.keys(paket.kategori).length,
+                checksumOk: !checksumPaket || (checksumSekarang === checksumPaket),
+                checksumSekarang: checksumSekarang, checksumPaket: checksumPaket
+            };
+        } catch (e) { return { valid: false, pesan: e.message }; }
+    };
+
+    window.bruPreviewRestore = function(paket) {
+        try {
+            var valid = window.bruValidasiPaket(paket);
+            if (!valid.valid) return valid;
+            var kategori = Object.keys(paket.kategori);
+            var preview = {
+                meta: valid.meta, checksumOk: valid.checksumOk,
+                totalKategori: kategori.length,
+                kategoriAkanDiRestore: kategori, detailKategori: {}
+            };
+            kategori.forEach(function(kat) {
+                var data = paket.kategori[kat];
+                var count = 0;
+                if (Array.isArray(data)) count = data.length;
+                else if (data && typeof data === 'object') count = Object.keys(data).length;
+                preview.detailKategori[kat] = { item: count };
+            });
+            return { sukses: true, preview: preview };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ⭐ FIX v1.1: Pre-snapshot minimal + skip option
+    window.bruRestoreSelektif = function(paket, kategoriList, opts) {
+        opts = opts || {};
+        try {
+            var valid = window.bruValidasiPaket(paket);
+            if (!valid.valid) return { sukses: false, pesan: valid.pesan };
+
+            var katAktif = Array.isArray(kategoriList) && kategoriList.length > 0
+                ? kategoriList
+                : Object.keys(paket.kategori);
+
+            // ⭐ FIX v1.1: Pre-snapshot hanya kalau diminta, dan pakai kategori kecil
+            if (opts.skipPreSnapshot !== true) {
+                try {
+                    window.bruBuatSnapshot('Pre-restore', {
+                        kategori: window.BRU_KONSTANTA.DEFAULT_KATEGORI_PRE_SNAPSHOT.slice()
+                    });
+                } catch (e) {
+                    console.warn('[BRU] Pre-snapshot gagal (lanjut):', e.message);
+                }
+            }
+
+            var hasil = { sukses: 0, gagal: 0, perKategori: {} };
+
+            katAktif.forEach(function(kat) {
+                try {
+                    var data = paket.kategori[kat];
+                    if (!data) { hasil.perKategori[kat] = 'SKIP'; return; }
+
+                    if (kat === 'role' && data.roles) {
+                        var lu = window.csLoadJSON('dataLoginUser', []);
+                        if (!Array.isArray(lu)) lu = [];
+                        var seen = {};
+                        lu.forEach(function(u) { if (u && u.idUser) seen[u.idUser] = true; });
+                        Object.keys(data.roles).forEach(function(kr) {
+                            (data.roles[kr].users || []).forEach(function(u) {
+                                if (!u || !u.idUser || seen[u.idUser]) return;
+                                lu.push(u); seen[u.idUser] = true;
+                            });
+                        });
+                        window.csSaveJSON('dataLoginUser', lu, { backup: false });
+                        hasil.sukses++; hasil.perKategori[kat] = 'OK';
+                    } else if (kat === 'menu') {
+                        Object.keys(data).forEach(function(kr) {
+                            if (!window.menuConfig[kr]) window.menuConfig[kr] = data[kr];
+                        });
+                        hasil.sukses++; hasil.perKategori[kat] = 'OK';
+                    } else if (kat === 'registry') {
+                        if (data.registryBlok) {
+                            window.CP_REGISTRY_BLOK = data.registryBlok;
+                            window.csSaveJSON('CP_REGISTRY_BLOK', data.registryBlok, { backup: false });
+                        }
+                        if (data.riwayat) {
+                            window.CP_RIWAYAT = data.riwayat;
+                            window.csSaveJSON('CP_RIWAYAT', data.riwayat, { backup: false });
+                        }
+                        hasil.sukses++; hasil.perKategori[kat] = 'OK';
+                    } else if (kat === 'aturan') {
+                        if (data.aturan) window.CP_ATURAN = data.aturan;
+                        if (data.lapisan) window.CP_LAPISAN = data.lapisan;
+                        hasil.sukses++; hasil.perKategori[kat] = 'OK';
+                    } else if (kat === 'storage' && data.keys) {
+                        Object.keys(data.keys).forEach(function(k) {
+                            try { localStorage.setItem(k, data.keys[k]); } catch (e) {}
+                        });
+                        hasil.sukses++; hasil.perKategori[kat] = 'OK';
+                    } else {
+                        hasil.perKategori[kat] = 'SKIP';
+                    }
+                } catch (e) {
+                    hasil.gagal++;
+                    hasil.perKategori[kat] = 'GAGAL: ' + e.message;
+                }
+            });
+
+            if (typeof window.loadDataDariLocalStorage === 'function') {
+                try { window.loadDataDariLocalStorage(); } catch (e) {}
+            }
+
+            window.bruCatatLog('Restore Selektif', {
+                kategori: katAktif, sukses: hasil.sukses, gagal: hasil.gagal
+            });
+            window.bruEmit('r2coin:bru-restore-selesai', hasil);
+            return { sukses: true, hasil: hasil };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruRestorePenuh = function(paket, opts) {
+        return window.bruRestoreSelektif(paket, null, opts);
+    };
+
+    window.bruRestoreDryRun = function(paket) {
+        try {
+            var valid = window.bruValidasiPaket(paket);
+            if (!valid.valid) return valid;
+            var preview = window.bruPreviewRestore(paket);
+            return {
+                sukses: true, dryRun: true,
+                pesan: 'Dry-run: ' + preview.preview.totalKategori + ' kategori',
+                preview: preview.preview
+            };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.9] — AUTO-DETECT & AUTO-BACKUP (8 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruBuatManifest = function() {
+        try {
+            var manifest = {
+                _meta: {
+                    versi: window.BRU_KONSTANTA.VERSI,
+                    tipe: 'bru-manifest', waktu: window.bruNow(),
+                    app: window.CS_APP ? { nama: window.CS_APP.nama, versi: window.CS_APP.versi } : null
+                },
+                stats: {
+                    roleCount: Object.keys(window.CS_ROLE_MAP || {}).length,
+                    menuConfigCount: Object.keys(window.menuConfig || {}).length,
+                    registryBlokCount: (window.CP_REGISTRY_BLOK || []).length,
+                    registryFungsiCount: Object.keys(window.CP_REGISTRY_FUNGSI || {}).length,
+                    riwayatCount: (window.CP_RIWAYAT || []).length,
+                    aturanCount: (window.CP_ATURAN || []).length,
+                    lapisanCount: (window.CP_LAPISAN || []).length
+                }
+            };
+            manifest.checksum = window.bruChecksum(JSON.stringify(manifest.stats));
+            return manifest;
+        } catch (e) { return { error: e.message }; }
+    };
+
+    window.bruCekPerubahan = function() {
+        try {
+            var manifestBaru = window.bruBuatManifest();
+            var manifestLama = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_MANIFEST, null);
+            if (!manifestLama) {
+                window.bruSaveJSON(window.BRU_KONSTANTA.KEY_MANIFEST, manifestBaru);
+                return { adaPerubahan: true, alasan: 'Manifest pertama', manifest: manifestBaru };
+            }
+            var statsLama = manifestLama.stats || {};
+            var statsBaru = manifestBaru.stats || {};
+            var perubahan = [];
+            Object.keys(statsBaru).forEach(function(k) {
+                if (statsBaru[k] !== statsLama[k]) {
+                    perubahan.push({
+                        field: k, lama: statsLama[k] || 0, baru: statsBaru[k] || 0,
+                        delta: (statsBaru[k] || 0) - (statsLama[k] || 0)
+                    });
+                }
+            });
+            return {
+                adaPerubahan: perubahan.length > 0,
+                totalPerubahan: perubahan.length,
+                perubahan: perubahan,
+                manifestLama: manifestLama, manifestBaru: manifestBaru
+            };
+        } catch (e) { return { adaPerubahan: false, error: e.message }; }
+    };
+
+    window.bruDeteksiMenuBaru = function() {
+        try {
+            var baru = window.bruBuatManifest();
+            var lama = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_MANIFEST, null);
+            if (!lama) return { totalBaru: 0, list: [] };
+            var s = (baru.stats.menuConfigCount || 0) - (lama.stats.menuConfigCount || 0);
+            return { totalBaru: Math.max(0, s), totalSekarang: baru.stats.menuConfigCount };
+        } catch (e) { return { totalBaru: 0, error: e.message }; }
+    };
+
+    window.bruDeteksiBlokBaru = function() {
+        try {
+            var baru = window.bruBuatManifest();
+            var lama = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_MANIFEST, null);
+            if (!lama) return { totalBaru: 0 };
+            var s = (baru.stats.registryBlokCount || 0) - (lama.stats.registryBlokCount || 0);
+            return { totalBaru: Math.max(0, s), totalSekarang: baru.stats.registryBlokCount };
+        } catch (e) { return { totalBaru: 0, error: e.message }; }
+    };
+
+    window.bruAutoBackup = function(opts) {
+        opts = opts || {};
+        try {
+            var cek = window.bruCekPerubahan();
+            if (!cek.adaPerubahan && !opts.force) {
+                return { sukses: true, skip: true, pesan: 'Tidak ada perubahan' };
+            }
+            var label = 'Auto ' + new Date().toLocaleString('id-ID', {
+                day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+            });
+            var snap = window.bruBuatSnapshot(label, opts);
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_MANIFEST, window.bruBuatManifest());
+            window.bruCatatLog('Auto-Backup', { label: label, perubahan: cek.totalPerubahan || 0 });
+            window.bruEmit('r2coin:bru-auto-backup', { label: label, perubahan: cek.totalPerubahan || 0 });
+            return { sukses: true, snapshot: snap, perubahan: cek };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    var _bruAutoTimer = null;
+
+    window.bruAktifkanAutoBackup = function(intervalMs) {
+        try {
+            window.bruMatikanAutoBackup();
+            var cfg = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_AUTO_CONFIG, {});
+            var interval = parseInt(intervalMs, 10) || cfg.intervalMs || window.BRU_KONSTANTA.AUTO_INTERVAL_MS;
+            _bruAutoTimer = setInterval(function() {
+                try { window.bruAutoBackup(); } catch (e) {}
+            }, interval);
+            cfg.aktif = true; cfg.intervalMs = interval; cfg.aktifSejak = window.bruNow();
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_AUTO_CONFIG, cfg);
+            window.bruCatatLog('Auto-Backup ON', { intervalMs: interval });
+            console.log('[BRU] 🟢 Auto-backup aktif (interval ' + Math.round(interval/1000) + 's)');
+            return { sukses: true, intervalMs: interval };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruMatikanAutoBackup = function() {
+        try {
+            if (_bruAutoTimer) { clearInterval(_bruAutoTimer); _bruAutoTimer = null; }
+            var cfg = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_AUTO_CONFIG, {});
+            cfg.aktif = false;
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_AUTO_CONFIG, cfg);
+            return { sukses: true, aktif: false };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruStatusAutoBackup = function() {
+        try {
+            var cfg = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_AUTO_CONFIG, {});
+            return {
+                aktif: !!_bruAutoTimer,
+                intervalMs: cfg.intervalMs || window.BRU_KONSTANTA.AUTO_INTERVAL_MS,
+                aktifSejak: cfg.aktifSejak || null,
+                cekPerubahan: window.bruCekPerubahan()
+            };
+        } catch (e) { return { aktif: false, error: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.10] — SNAPSHOT & VERSIONING (6 fungsi) — FIXED v1.1
+    // ═══════════════════════════════════════════════════════════
+
+    // ⭐ FIX v1.1: Exclude storage + guard ukuran + auto-cleanup
+    window.bruBuatSnapshot = function(label, opts) {
+        opts = opts || {};
+        try {
+            var kategori = opts.kategori || window.BRU_KONSTANTA.DEFAULT_KATEGORI.slice();
+
+            // ⭐ FIX: exclude 'storage' (anti-circular!)
+            kategori = kategori.filter(function(k) { return k !== 'storage'; });
+
+            var index = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, []);
+            if (!Array.isArray(index)) index = [];
+
+            var id = 'SNAP-' + Date.now().toString(36).toUpperCase();
+            var paket = window.bruBuatPaket({ kategori: kategori, includeMedia: false });
+            if (!paket.sukses) return paket;
+
+            var sizeKB = Math.round(paket.paket._meta.totalSize / 1024);
+
+            // ⭐ FIX: Guard ukuran
+            if (sizeKB > window.BRU_KONSTANTA.MAX_SNAPSHOT_SIZE_KB) {
+                console.warn('[BRU] ⚠️ Snapshot terlalu besar:', sizeKB, 'KB');
+                return {
+                    sukses: false,
+                    pesan: 'Paket ' + sizeKB + ' KB > max ' + window.BRU_KONSTANTA.MAX_SNAPSHOT_SIZE_KB + ' KB'
+                };
+            }
+
+            var snap = {
+                id: id, label: label || 'Snapshot',
+                waktu: window.bruNow(),
+                oleh: window.bruResolveIdUser(),
+                kodeRole: window.bruResolveKodeRole(),
+                ukuran: paket.ukuranTeks, sizeKB: sizeKB,
+                kategori: kategori,
+                checksum: paket.paket._meta.checksum,
+                paket: paket.paket
+            };
+
+            // ⭐ FIX: Coba simpan, kalau penuh → cleanup otomatis
+            var simpan = window.bruSaveJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + id, snap);
+            if (!simpan.sukses) {
+                console.warn('[BRU] Storage penuh, cleanup otomatis...');
+                window.bruEmergencyCleanupSnapshot(2);
+                simpan = window.bruSaveJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + id, snap);
+                if (!simpan.sukses) {
+                    return { sukses: false, pesan: 'Storage penuh setelah cleanup: ' + simpan.pesan };
+                }
+            }
+
+            index.unshift({
+                id: id, label: snap.label, waktu: snap.waktu,
+                oleh: snap.oleh, ukuran: snap.ukuran, sizeKB: sizeKB,
+                kategori: kategori
+            });
+
+            // Prune max 10
+            while (index.length > window.BRU_KONSTANTA.MAX_SNAPSHOT) {
+                var buang = index.pop();
+                try { localStorage.removeItem(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + buang.id); } catch (e) {}
+            }
+
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, index);
+            window.bruEmit('r2coin:bru-snapshot-baru', { id: id, label: label });
+            console.log('[BRU] 📸 Snapshot:', id, '(' + sizeKB + ' KB)');
+            return { sukses: true, id: id, label: label, ukuran: snap.ukuran, sizeKB: sizeKB };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruListSnapshot = function() {
+        try {
+            var index = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, []);
+            return Array.isArray(index) ? index : [];
+        } catch (e) { return []; }
+    };
+
+    window.bruAmbilSnapshot = function(id) {
+        try {
+            if (!id) return null;
+            return window.bruLoadJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + id, null);
+        } catch (e) { return null; }
+    };
+
+    // ⭐ FIX v1.1: Skip pre-snapshot (hindari infinite loop)
+    window.bruRestoreSnapshot = function(id) {
+        try {
+            var snap = window.bruAmbilSnapshot(id);
+            if (!snap || !snap.paket) {
+                return { sukses: false, pesan: 'Snapshot tidak ditemukan: ' + id };
+            }
+            // ⭐ FIX: skipPreSnapshot = true
+            return window.bruRestoreSelektif(snap.paket, null, { skipPreSnapshot: true });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruHapusSnapshot = function(id) {
+        try {
+            if (!id) return { sukses: false, pesan: 'ID kosong' };
+            var index = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, []);
+            index = index.filter(function(x) { return x && x.id !== id; });
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, index);
+            try { localStorage.removeItem(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + id); } catch (e) {}
+            window.bruCatatLog('Hapus snapshot', { id: id });
+            return { sukses: true, id: id };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruBersihkanSnapshot = function() {
+        try {
+            var index = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, []);
+            var hapus = 0;
+            index.forEach(function(x) {
+                try { localStorage.removeItem(window.BRU_KONSTANTA.KEY_SNAPSHOT_PREFIX + x.id); hapus++; } catch (e) {}
+            });
+            window.bruSaveJSON(window.BRU_KONSTANTA.KEY_SNAPSHOT_INDEX, []);
+            window.bruCatatLog('Bersihkan semua snapshot', { total: hapus });
+            return { sukses: true, dihapus: hapus };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.11] — MANIFEST, DIFF & VALIDASI (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.bruDiff = function(paketA, paketB) {
+        try {
+            var validA = window.bruValidasiPaket(paketA);
+            var validB = window.bruValidasiPaket(paketB);
+            if (!validA.valid || !validB.valid) return { sukses: false, pesan: 'Paket tidak valid' };
+            var hasil = { ditambah: {}, dihapus: {}, diubah: {}, totalPerubahan: 0 };
+            var katA = Object.keys(paketA.kategori), katB = Object.keys(paketB.kategori);
+            katB.forEach(function(k) { if (katA.indexOf(k) === -1) hasil.ditambah[k] = 'kategori baru'; });
+            katA.forEach(function(k) { if (katB.indexOf(k) === -1) hasil.dihapus[k] = 'kategori hilang'; });
+            katA.forEach(function(k) {
+                if (katB.indexOf(k) !== -1) {
+                    if (window.bruChecksum(JSON.stringify(paketA.kategori[k])) !==
+                        window.bruChecksum(JSON.stringify(paketB.kategori[k]))) {
+                        hasil.diubah[k] = 'isi berubah';
+                    }
+                }
+            });
+            hasil.totalPerubahan = Object.keys(hasil.ditambah).length +
+                Object.keys(hasil.dihapus).length + Object.keys(hasil.diubah).length;
+            return { sukses: true, diff: hasil };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.bruLaporanPerubahan = function() {
+        try {
+            var cek = window.bruCekPerubahan();
+            if (!cek.adaPerubahan) return 'Tidak ada perubahan';
+            var laporan = 'Perubahan terdeteksi (' + cek.totalPerubahan + ' item):\n';
+            (cek.perubahan || []).forEach(function(p) {
+                laporan += '  • ' + p.field + ': ' + p.lama + ' → ' + p.baru +
+                    ' (delta: ' + (p.delta > 0 ? '+' : '') + p.delta + ')\n';
+            });
+            return laporan;
+        } catch (e) { return 'Error: ' + e.message; }
+    };
+
+    window.bruCekIntegritas = function(paket) { return window.bruValidasiPaket(paket); };
+    window.bruHitungChecksum = function(paket) {
+        try {
+            if (!paket || !paket.kategori) return null;
+            return window.bruChecksum(JSON.stringify(paket.kategori));
+        } catch (e) { return null; }
+    };
+
+    window.bruValidasiCrossVersion = function(paket) {
+        try {
+            var valid = window.bruValidasiPaket(paket);
+            if (!valid.valid) return valid;
+            var versiAppSekarang = window.CS_APP ? window.CS_APP.versi : '?';
+            var versiAppPaket = (paket._meta.app && paket._meta.app.versi) || '?';
+            var versiBRUPaket = paket._meta.versi || '?';
+            var kompatibel = (versiBRUPaket === window.BRU_KONSTANTA.VERSI);
+            return {
+                valid: true, kompatibel: kompatibel,
+                versiBRUPaket: versiBRUPaket, versiBRUSekarang: window.BRU_KONSTANTA.VERSI,
+                versiAppPaket: versiAppPaket, versiAppSekarang: versiAppSekarang,
+                pesan: kompatibel ? 'Kompatibel' : 'Versi beda'
+            };
+        } catch (e) { return { valid: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.12] — 3 PINTU STANDAR
+    // ═══════════════════════════════════════════════════════════
+    window.kirimBRU = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum terpasang' };
+            return window.mnKirimKeMenu({
+                tipe: tipe || 'info',
+                dari: {
+                    idUser: window.bruResolveIdUser(),
+                    idOwner: window.gidIdOwner ? window.gidIdOwner() : null,
+                    kodeRole: window.bruResolveKodeRole(),
+                    menu: 'backupRestore', blok: 'BRU'
+                },
+                ke: ke || { menu: 'backupRestore' },
+                data: data || {}, idRef: idRef || null,
+                timestamp: window.bruNow()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaBRU = function(aksiMenu) {
+        try { return window.mnInboxMenu(aksiMenu || 'backupRestore'); }
+        catch (e) { return []; }
+    };
+
+    window.ambilBRU = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'all';
+            switch (tipe) {
+                case 'all':              return window.bruScanRingkasan();
+                case 'manifest':         return window.bruBuatManifest();
+                case 'list-snapshot':    return window.bruListSnapshot();
+                case 'snapshot':         return window.bruAmbilSnapshot(filter.id);
+                case 'scan-role':        return window.bruScanSemuaRole();
+                case 'scan-menu':        return window.bruScanSemuaMenuConfig();
+                case 'scan-global':      return window.bruScanSemuaFungsiGlobal();
+                case 'scan-ui':          return window.bruScanSemuaUIBlok();
+                case 'scan-storage':     return window.bruScanSemuaStorageKey();
+                case 'scan-media':       return window.bruScanSemuaMedia();
+                case 'scan-aturan':      return window.bruScanSemuaAturan();
+                case 'diff':             return window.bruCekPerubahan();
+                case 'status-auto':      return window.bruStatusAutoBackup();
+                case 'kategori-list':    return window.bruListKategoriInfo();
+                case 'kategori-info':    return window.bruInfoKategori(filter.kategori);
+                case 'log':              return window.bruLoadJSON(window.BRU_KONSTANTA.KEY_LOG, []);
+                case 'cek-perubahan':    return window.bruCekPerubahan();
+                case 'cek-menu-baru':    return window.bruDeteksiMenuBaru();
+                case 'cek-blok-baru':    return window.bruDeteksiBlokBaru();
+                case 'cek-storage':      return window.bruCekStorageSize();
+                default:                 return null;
+            }
+        } catch (e) { return null; }
+    };
+
+    window.cekPintuBRU = function() {
+        var skor = (typeof window.kirimBRU === 'function' ? 1 : 0)
+                 + (typeof window.terimaBRU === 'function' ? 1 : 0)
+                 + (typeof window.ambilBRU === 'function' ? 1 : 0);
+        return {
+            blok: 'BRU',
+            kirim: typeof window.kirimBRU === 'function',
+            terima: typeof window.terimaBRU === 'function',
+            ambil: typeof window.ambilBRU === 'function',
+            skor: skor + '/3', lengkap: skor === 3
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRU.13] — SELF TEST + DEBUG + AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.bruSelfTest = function() {
+        try {
+            var hasil = { total: 0, lulus: 0, gagal: 0, detail: [] };
+            var tests = [
+                { nama: 'bruScanRingkasan', fn: function() { return window.bruScanRingkasan().totalItem >= 0; } },
+                { nama: 'bruBuatPaket', fn: function() { return window.bruBuatPaket({ kategori: ['aturan'] }).sukses; } },
+                { nama: 'bruBuatManifest', fn: function() { return !!window.bruBuatManifest()._meta; } },
+                { nama: 'bruValidasiPaket', fn: function() {
+                    var p = window.bruBuatPaket({ kategori: ['aturan'] });
+                    return p.sukses && window.bruValidasiPaket(p.paket).valid;
+                }},
+                { nama: 'bruChecksum', fn: function() { return typeof window.bruChecksum('test') === 'string'; } },
+                { nama: 'bruListSnapshot', fn: function() { return Array.isArray(window.bruListSnapshot()); } },
+                { nama: 'bruStatusAutoBackup', fn: function() { return typeof window.bruStatusAutoBackup().aktif === 'boolean'; } },
+                { nama: 'bruListKategoriInfo', fn: function() { return window.bruListKategoriInfo().length === 8; } },
+                { nama: 'bruCekStorageSize', fn: function() { return typeof window.bruCekStorageSize().totalKB === 'number'; } },
+                { nama: 'bruEmergencyCleanupSnapshot', fn: function() { return typeof window.bruEmergencyCleanupSnapshot(3).sukses === 'boolean'; } }
+            ];
+            tests.forEach(function(t) {
+                hasil.total++;
+                try {
+                    var lulus = t.fn();
+                    if (lulus) { hasil.lulus++; hasil.detail.push('✅ ' + t.nama); }
+                    else { hasil.gagal++; hasil.detail.push('❌ ' + t.nama); }
+                } catch (e) {
+                    hasil.gagal++;
+                    hasil.detail.push('❌ ' + t.nama + ' — ' + e.message);
+                }
+            });
+            return hasil;
+        } catch (e) { return { total: 0, lulus: 0, gagal: 0, error: e.message }; }
+    };
+
+    window.bruStatistik = function() {
+        try {
+            var log = window.bruLoadJSON(window.BRU_KONSTANTA.KEY_LOG, []);
+            var snap = window.bruListSnapshot();
+            var auto = window.bruStatusAutoBackup();
+            var storage = window.bruCekStorageSize();
+            return {
+                totalLog: log.length,
+                totalSnapshot: snap.length,
+                maxSnapshot: window.BRU_KONSTANTA.MAX_SNAPSHOT,
+                maxSizeKB: window.BRU_KONSTANTA.MAX_SNAPSHOT_SIZE_KB,
+                autoAktif: auto.aktif,
+                autoIntervalMs: auto.intervalMs,
+                totalKategori: window.BRU_KONSTANTA.KATEGORI.length,
+                storage: storage
+            };
+        } catch (e) { return { error: e.message }; }
+    };
+
+    window.debugBRU = function() {
+        var info = {
+            blok: 'BRU', versi: window._blokBRUVersi,
+            guard: window._blokBRUDone,
+            fokus: 'Backup granular + Auto-detect + Snapshot (v1.1 FIXED)',
+            statistik: window.bruStatistik(),
+            cekPerubahan: window.bruCekPerubahan(),
+            kategoriList: window.bruListKategoriInfo(),
+            selfTest: window.bruSelfTest(),
+            pintu: window.cekPintuBRU(),
+            fixes_v1_1: {
+                snapshotTanpaStorage: true,
+                guardUkuranKB: window.BRU_KONSTANTA.MAX_SNAPSHOT_SIZE_KB,
+                maxSnapshot: window.BRU_KONSTANTA.MAX_SNAPSHOT,
+                preSnapshotMinimal: window.BRU_KONSTANTA.DEFAULT_KATEGORI_PRE_SNAPSHOT,
+                storageExclude: window.BRU_KONSTANTA.STORAGE_EXCLUDE_PREFIXES
+            }
+        };
+        console.log('🔍 debugBRU v1.1:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [AUTO-REGISTRY 0.1]
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'BRU'; });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'BRU', nama: 'Backup Restore Universal v1.1',
+                        layer: 'L4', status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('BRU', { status: 'Selesai', nama: 'Backup Restore Universal v1.1' });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('bru', {
+                    nama: 'Backup Restore Universal v1.1 (L4)',
+                    status: 'Selesai', jumlah: 65
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) { return r && r.blok === 'BRU'; });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        blok: 'BRU',
+                        nama: 'BRU v1.1 — Backup Restore Universal (FIXED)',
+                        keterangan: 'Fix anti-circular: snapshot tanpa storage, guard ukuran 800 KB, max 10 snapshot, auto-cleanup, pre-snapshot minimal. 8 kategori · ~65 fungsi · 3 Pintu'
+                    });
+                }
+            }
+        } catch (e) { console.warn('[BRU] Auto-registry warning:', e.message); }
+    }, 800);
+
+    // ═══════════════════════════════════════════════════════════
+    // [AUTO-START] — Init manifest + auto-cleanup snapshot lama
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (!window.bruLoadJSON(window.BRU_KONSTANTA.KEY_MANIFEST, null)) {
+                window.bruSaveJSON(window.BRU_KONSTANTA.KEY_MANIFEST, window.bruBuatManifest());
+            }
+            var cek = window.bruCekPerubahan();
+            if (cek.adaPerubahan) {
+                console.log('[BRU] 🔔 Perubahan terdeteksi:', cek.totalPerubahan, 'item');
+            }
+            // Auto-cleanup kalau snapshot > max
+            var list = window.bruListSnapshot();
+            if (list.length > window.BRU_KONSTANTA.MAX_SNAPSHOT) {
+                console.warn('[BRU] Snapshot melebihi max, cleanup...');
+                window.bruEmergencyCleanupSnapshot(window.BRU_KONSTANTA.MAX_SNAPSHOT);
+            }
+        } catch (e) {}
+    }, 1500);
+
+    // ═══════════════════════════════════════════════════════════
+    // [LOG TERPASANG]
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🇮🇩 BLOK BRU v1.1 — BACKUP RESTORE UNIVERSAL (FIXED) terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:5px 10px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   📦 13 Modul · ~65 Fungsi · 3 Pintu');
+    console.log('   ⭐ FIX v1.1:');
+    console.log('      • Snapshot TANPA storage (anti-circular)');
+    console.log('      • Guard ukuran max ' + window.BRU_KONSTANTA.MAX_SNAPSHOT_SIZE_KB + ' KB');
+    console.log('      • Max snapshot ' + window.BRU_KONSTANTA.MAX_SNAPSHOT + ' (dari 20)');
+    console.log('      • Auto-cleanup kalau storage penuh');
+    console.log('      • Pre-snapshot minimal: ' + window.BRU_KONSTANTA.DEFAULT_KATEGORI_PRE_SNAPSHOT.join(', '));
+    console.log('      • bruBackupStorage EXCLUDE bru_snapshot_*');
+    console.log('   🎁 Helper BARU: bruCekStorageSize, bruEmergencyCleanupSnapshot');
+    console.log('   🔍 Debug: debugBRU() · Pintu: cekPintuBRU() · SelfTest: bruSelfTest()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK BRU — BACKUP RESTORE UNIVERSAL 🇮🇩 v1.1 FIXED ═ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK MPP — MP-PUBLIC 🇮🇩 v1 FINAL ══════════════════════ -->
