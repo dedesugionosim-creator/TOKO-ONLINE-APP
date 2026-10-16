@@ -25049,29 +25049,35 @@ window.om3DeteksiMediaOrphan = function() {
     };
 
     // ✅ FIX v5.1: guard overlap + cache user
-		window._om3ScanRunning = false;
-		window._om3UserCache = null;
-		window._om3UserCacheTime = 0;
+					window._om3ScanRunning = false;
+			window._om3UserCache = null;
+			window._om3UserCacheTime = 0;
 
-		window.om3ScanSemua = function(opts) {
-			opts = opts || {};
-			
-			// ✅ FIX: Cegah overlap — kalau sedang scan, skip
-			if (window._om3ScanRunning) {
-				console.warn('[OM3] Scan sedang berjalan — skip');
-				return { sukses: false, pesan: 'Scan sudah berjalan', total: 0, items: [],
-						 perJenis: {}, perTipe: {}, perPrioritas: {}, perKategoriRole: {},
-						 perLevelKopdes: {}, perKategoriOrphan: {} };
-			}
-			window._om3ScanRunning = true;
-			
-			var t0 = Date.now();
-			try {
-				// ✅ FIX: reset cache user (fresh)
-				window._om3UserCache = null;
-				window._om3UserCacheTime = 0;
+			window.om3ScanSemua = function(opts) {
+				opts = opts || {};
 				
-				var detektorMap = {
+				// ⭐ Cache 3 detik
+				if (opts.force !== true && window._om3ScanCache) {
+					var age = Date.now() - (window._om3ScanCacheTime || 0);
+					if (age < 3000) return window._om3ScanCache;
+				}
+				
+				// ✅ FIX: Cegah overlap — kalau sedang scan, skip
+				if (window._om3ScanRunning) {
+					console.warn('[OM3] Scan sedang berjalan — skip');
+					return { sukses: false, pesan: 'Scan sudah berjalan', total: 0, items: [],
+							 perJenis: {}, perTipe: {}, perPrioritas: {}, perKategoriRole: {},
+							 perLevelKopdes: {}, perKategoriOrphan: {} };
+				}
+				window._om3ScanRunning = true;
+				
+				var t0 = Date.now();
+				try {
+					// ✅ FIX: reset cache user (fresh)
+					window._om3UserCache = null;
+					window._om3UserCacheTime = 0;
+					
+					var detektorMap = {
                 // ── 22 detektor data (v3 + v4) ──
                 'produk-orphan':         window.om3DeteksiProdukOrphan,
                 'produk-tanpa-kategori': window.om3DeteksiProdukTanpaKategori,
@@ -25167,9 +25173,13 @@ window.om3DeteksiMediaOrphan = function() {
             hasil.total = hasil.items.length;
             hasil.elapsedMs = Date.now() - t0;
             window._om3ScanRunning = false;   // ✅ FIX: reset flag
+            
+            // ⭐ Cache
+            window._om3ScanCache = hasil;
+            window._om3ScanCacheTime = Date.now();
+            
             return hasil;
         } catch (e) {
-            window._om3ScanRunning = false;   // ✅ FIX: reset flag pada error
             window._om3ScanRunning = false;   // ✅ FIX: reset flag pada error
             return {
                 sukses: false, pesan: e.message, items: [], total: 0,
@@ -25550,7 +25560,7 @@ window.om3DeteksiMediaOrphan = function() {
                 if (r20 && r20.sukses !== false) jumlah++;
             }
         }
-                // ═══ 21-23. menu-orphan-* → SKIP (bukan data, tapi indikator kode) ═══
+        // ═══ 21-23. menu-orphan-* → SKIP (bukan data, tapi indikator kode) ═══
         // ⭐ FIX v5.2: menu orphan tidak dihapus — harus diperbaiki di KODE
         // (bukan runtime, karena menuConfig selalu di-reload dari file HTML)
         else if (jenis === 'menu-orphan-handler' ||
@@ -25567,7 +25577,7 @@ window.om3DeteksiMediaOrphan = function() {
 			}
 		}
 
-			window.om3HapusSelektif = function(listItem, opts) {
+						window.om3HapusSelektif = function(listItem, opts) {
 				opts = opts || {};
 				try {
 					if (!Array.isArray(listItem)) listItem = [];
@@ -25599,19 +25609,6 @@ window.om3DeteksiMediaOrphan = function() {
 					return { sukses: false, pesan: e.message, dihapus: 0 };
 				}
 			};
-
-    window.om3HapusPerJenis = function(jenis, opts) {
-        opts = opts || {};
-        try {
-            if (!jenis) return { sukses: false, pesan: 'jenis kosong' };
-            var preview = window.om3PreviewHapus({ jenis: jenis, limit: 9999 });
-            return window.om3HapusSelektif(preview.items || [], {
-                scope: 'jenis:' + jenis, force: opts.force
-            });
-        } catch (e) {
-            return { sukses: false, pesan: e.message, dihapus: 0 };
-        }
-    };
 
     window.om3HapusPerPrioritas = function(prioritas, opts) {
         opts = opts || {};
@@ -25694,7 +25691,24 @@ window.om3DeteksiMediaOrphan = function() {
             return { sukses: true, dihapus: dihapus, kodeRole: kodeRole, aksi: aksi };
         } catch (e) { return { sukses: false, pesan: e.message }; }
     };
+	
+					// ⭐ Log kalau jenis tidak dikenali / di-skip
+			if (jumlah === 0 && jenis) {
+				var jenisSkip = ['kategori-kosong', 'wilayah-kosong',
+								 'menu-orphan-handler', 'menu-orphan-blok',
+								 'menu-orphan-nohandler'];
+				if (jenisSkip.indexOf(jenis) !== -1) {
+					console.log('[OM3._hapusItemOm3] ⏭️ Skip (referensi):', jenis);
+				}
+			}
 
+			return jumlah;
+		} catch (e) {
+			console.error('[OM3._hapusItemOm3] error:', e);
+			return 0;
+		}
+	}
+	
     // ═══════════════════════════════════════════════════════════
     // [MODUL 10] — CONFIG & SCHEDULER (10 fungsi)
     // ═══════════════════════════════════════════════════════════
@@ -57657,45 +57671,48 @@ window.om3DeteksiMediaOrphan = function() {
         }
     };
 
-    // ═══════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════════
     // [10.82.b.8] RENDER 6 STAT CARDS + badge tab deteksi
-    // Sumber: omUiCacheScan / omUiCacheStatistik / om3Statistik
     // ═══════════════════════════════════════════════════════════
     window.omUiRenderStat = function() {
         try {
-            // ── Auto-fallback: kalau cache kosong → scan live ──
+            // ── Ambil scan (cache / fallback) ──
             var scan = window.omUiCacheScan;
             if (!scan && typeof window.om3ScanSemua === 'function') {
                 scan = window.om3ScanSemua();
                 window.omUiCacheScan = scan;
             }
+            if (!scan) scan = { total: 0, items: [], perJenis: {}, perPrioritas: {} };
 
             // ── Ambil statistik ──
             var stat = window.omUiCacheStatistik;
             if (!stat) {
                 stat = (typeof window.om3Statistik === 'function')
                     ? window.om3Statistik()
-                    : { total: 0, perPrioritas: { tinggi:0, sedang:0, rendah:0 } };
+                    : { total: scan.total || 0,
+                        perPrioritas: scan.perPrioritas || 
+                            { tinggi:0, sedang:0, rendah:0 } };
                 window.omUiCacheStatistik = stat;
             }
 
-            // ── Isi 4 stat card pertama ──
-            var perP = stat.perPrioritas || {};
-            _setText('omUiStatTotal',  (stat.total || 0).toLocaleString('id-ID'));
+            // ── 4 stat card ──
+            var perP = stat.perPrioritas || scan.perPrioritas || {};
+            var totalFinal = stat.total || scan.total || 0;
+            _setText('omUiStatTotal',  totalFinal.toLocaleString('id-ID'));
             _setText('omUiStatTinggi', (perP.tinggi || 0).toLocaleString('id-ID'));
             _setText('omUiStatSedang', (perP.sedang || 0).toLocaleString('id-ID'));
             _setText('omUiStatRendah', (perP.rendah || 0).toLocaleString('id-ID'));
 
-            // ── Media orphan count ──
+            // ── Media orphan ──
             var mediaCount = 0;
             try {
-                if (scan && scan.perJenis && scan.perJenis['media-orphan']) {
+                if (scan.perJenis && scan.perJenis['media-orphan']) {
                     mediaCount = scan.perJenis['media-orphan'].total || 0;
                 }
             } catch (e) {}
             _setText('omUiStatMedia', mediaCount.toLocaleString('id-ID'));
 
-            // ── Estimasi hemat storage ──
+            // ── Hemat storage ──
             var hematTeks = '0 KB';
             try {
                 if (typeof window.om3EstimasiHemat === 'function') {
@@ -57706,7 +57723,7 @@ window.om3DeteksiMediaOrphan = function() {
             _setText('omUiStatHemat', hematTeks);
 
             // ── Badge tab deteksi ──
-            _setText('omUiTabDeteksiBadge', String(stat.total || 0));
+            _setText('omUiTabDeteksiBadge', String(totalFinal));
         } catch (e) {
             console.error('[10.82.b.8] omUiRenderStat error:', e);
         }
@@ -59193,15 +59210,21 @@ window.om3DeteksiMediaOrphan = function() {
     // [A1] — Tutup modal via CS6
     // [A5] — Logging step-by-step
     // ═══════════════════════════════════════════════════════════
+        // ── Helper: setelah hapus selesai (FIXED v3.2) ──
     function _setelahHapus(hasil, label) {
         try {
-            console.log('[10.82.c.16] _setelahHapus:', label, hasil);
+            console.log('[10.82.c] _setelahHapus:', label, hasil);
 
             var dihapus = (hasil && hasil.dihapus) || 0;
             var gagal = (hasil && hasil.gagal) || 0;
+            var isDryRun = hasil && hasil.dryRun === true;
 
-            // ═══ A. Notifikasi hasil ═══
-            if (dihapus > 0) {
+            // ── A. Notifikasi ──
+            if (isDryRun) {
+                _toast('🧪 ' + label + ' DRY-RUN: ' +
+                       ((hasil && hasil.total) || 0) + ' item (tidak dihapus)',
+                       'info');
+            } else if (dihapus > 0) {
                 _toast('✅ ' + label + ': ' + dihapus + ' item dihapus' +
                        (gagal > 0 ? ' (' + gagal + ' gagal)' : ''),
                        'success');
@@ -59209,31 +59232,20 @@ window.om3DeteksiMediaOrphan = function() {
                 _toast('⚠️ ' + label + ': Tidak ada item dihapus', 'warning');
             }
 
-            // ═══ B. Catat log ═══
+            // ── B. Catat log ──
             window.omUiTambahLog({
                 aksi: label,
                 detail: dihapus + ' item dihapus' +
-                        (gagal > 0 ? ', ' + gagal + ' gagal' : ''),
-                hasil: dihapus > 0 ? 'SUKSES' : 'KOSONG',
+                        (gagal > 0 ? ', ' + gagal + ' gagal' : '') +
+                        (isDryRun ? ' [DRY-RUN]' : ''),
+                hasil: dihapus > 0 ? 'SUKSES' : (isDryRun ? 'DRY-RUN' : 'KOSONG'),
                 level: dihapus > 0 ? 'warning' : 'info'
             });
 
-            // ═══ C. Reset cache scan ═══
-            window.omUiCacheScan = null;
-            window.omUiCacheStatistik = null;
-            window._omUiPreviewCallback = null;
-            window._omUiPreviewTarget = null;
+            // ── C. Tutup modal ──
+            _tutupModal('omUiModalPreview');
 
-            // ═══ D. Tutup modal via CS6 ═══
-            if (typeof window.csHideModal === 'function') {
-                window.csHideModal('omUiModalPreview');
-            } else if (typeof bootstrap !== 'undefined') {
-                var modalEl = _el('omUiModalPreview');
-                var inst = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
-                if (inst) inst.hide();
-            }
-
-            // ═══ E. Reset tombol & checkbox (via timeout) ═══
+            // ── D. Reset tombol & checkbox ──
             setTimeout(function() {
                 var btn = _el('omUiPreviewConfirmBtn');
                 if (btn) {
@@ -59242,10 +59254,13 @@ window.om3DeteksiMediaOrphan = function() {
                 }
                 var cb = _el('omUiPreviewCheckbox');
                 if (cb) cb.checked = false;
-            }, 300);
+            }, 400);
 
-            // ═══ F. Re-scan & re-render setelah modal tertutup ═══
+            // ── E. Reset cache & re-scan ──
             setTimeout(function() {
+                window.omUiCacheScan = null;
+                window.omUiCacheStatistik = null;
+
                 if (typeof window.omUiScanSekarang === 'function') {
                     window.omUiScanSekarang();
                 } else {
@@ -59255,10 +59270,16 @@ window.om3DeteksiMediaOrphan = function() {
                     if (typeof window.omUiRenderDeteksi === 'function')  window.omUiRenderDeteksi();
                     if (typeof window.omUiRenderLog === 'function')      window.omUiRenderLog();
                 }
-            }, 700);
+            }, 500);
+
+            // ── F. Reset callback paling akhir ──
+            setTimeout(function() {
+                window._omUiPreviewCallback = null;
+                window._omUiPreviewTarget = null;
+            }, 800);
 
         } catch (e) {
-            console.error('[10.82.c.16] _setelahHapus ERROR:', e);
+            console.error('[10.82.c] _setelahHapus error:', e);
         }
     }
 
