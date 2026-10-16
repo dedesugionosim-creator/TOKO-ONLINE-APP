@@ -67117,6 +67117,186 @@ window.om3DeteksiMediaOrphan = function() {
             }
         } catch (e) {}
     }, 800);
+	
+	// ═══════════════════════════════════════════════════════════
+		// [10.38.d.6b] — AUTO-DETECT MENU BARU (Registry Watcher)
+		// ═══════════════════════════════════════════════════════════
+		// [A1, A2] Delegasi ke CP Registry, tidak duplikasi data
+		// [A9] Handler 1 baris delegasi
+		// ═══════════════════════════════════════════════════════════
+		(function setupAutoDetectMenu() {
+			if (window._psmAutoDetectDone) {
+				console.log('ℹ️ Auto-detect menu sudah terpasang.');
+				return;
+			}
+			window._psmAutoDetectDone = true;
+
+			// ── Simpan snapshot awal ──
+			var _snapshot = {
+				jumlahBlok:   (window.CP_REGISTRY_BLOK || []).length,
+				jumlahFungsi: Object.keys(window.CP_REGISTRY_FUNGSI || {}).length,
+				jumlahMenu:   Object.keys(window.menuHandlers || {}).length
+			};
+
+			// ── Fungsi cek perubahan ──
+			function _cekPerubahan() {
+				var sekarang = {
+					jumlahBlok:   (window.CP_REGISTRY_BLOK || []).length,
+					jumlahFungsi: Object.keys(window.CP_REGISTRY_FUNGSI || {}).length,
+					jumlahMenu:   Object.keys(window.menuHandlers || {}).length
+				};
+
+				var adaPerubahan = false;
+				var pesanPerubahan = [];
+
+				// ── Cek blok baru ──
+				if (sekarang.jumlahBlok > _snapshot.jumlahBlok) {
+					var selisih = sekarang.jumlahBlok - _snapshot.jumlahBlok;
+					pesanPerubahan.push(selisih + ' blok baru');
+					adaPerubahan = true;
+
+					// Cari blok baru (yang belum ada di snapshot)
+					var blokBaru = (window.CP_REGISTRY_BLOK || []).slice(-selisih);
+					blokBaru.forEach(function(b) {
+						console.log('🆕 BLOK BARU terdeteksi:', b.kode, '—', b.nama);
+					});
+				}
+
+				// ── Cek fungsi baru ──
+				if (sekarang.jumlahFungsi > _snapshot.jumlahFungsi) {
+					var selisihF = sekarang.jumlahFungsi - _snapshot.jumlahFungsi;
+					pesanPerubahan.push(selisihF + ' domain fungsi baru');
+					adaPerubahan = true;
+				}
+
+				// ── Cek menu handler baru ──
+				if (sekarang.jumlahMenu > _snapshot.jumlahMenu) {
+					var selisihM = sekarang.jumlahMenu - _snapshot.jumlahMenu;
+					pesanPerubahan.push(selisihM + ' menu handler baru');
+					adaPerubahan = true;
+				}
+
+				// ── Kalau ada perubahan, refresh scanner ──
+				if (adaPerubahan) {
+					_snapshot = sekarang;
+
+					// Update scanner kalau tab aktif
+					var tabAktif = window._psmUiState && window._psmUiState.tabAktif;
+					if (tabAktif === 'scanner') {
+						try {
+							window.psmUiRenderMenuScanner();
+							console.log('🔄 Scanner auto-refresh.');
+						} catch (e) {
+							console.warn('Scanner refresh error:', e.message);
+						}
+					}
+
+					// Toast notifikasi
+					if (typeof window.csToast === 'function') {
+						window.csToast('🔄 Menu baru terdeteksi: ' + 
+							pesanPerubahan.join(', '), 'info');
+					}
+				}
+			}
+
+			// ── Watcher 1: Polling setiap 2 detik ──
+			// (fallback universal — selalu bekerja)
+			var _intervalId = setInterval(_cekPerubahan, 2000);
+
+			// ── Watcher 2: Hook cpTambahBlok ──
+			// (langsung trigger saat blok ditambah)
+			if (typeof window.cpTambahBlok === 'function' && 
+				!window.cpTambahBlok._hooked) {
+				var _cpTambahBlokAsli = window.cpTambahBlok;
+				window.cpTambahBlok = function(blok) {
+					var hasil = _cpTambahBlokAsli.apply(this, arguments);
+					console.log('📥 cpTambahBlok dipanggil:', blok && blok.kode);
+					setTimeout(_cekPerubahan, 100);
+					return hasil;
+				};
+				window.cpTambahBlok._hooked = true;
+			}
+
+			// ── Watcher 3: Hook cpUpdateFungsi ──
+			if (typeof window.cpUpdateFungsi === 'function' && 
+				!window.cpUpdateFungsi._hooked) {
+				var _cpUpdateFungsiAsli = window.cpUpdateFungsi;
+				window.cpUpdateFungsi = function() {
+					var hasil = _cpUpdateFungsiAsli.apply(this, arguments);
+					setTimeout(_cekPerubahan, 100);
+					return hasil;
+				};
+				window.cpUpdateFungsi._hooked = true;
+			}
+
+			// ── Watcher 4: Hook menuHandlers (via Proxy) ──
+			// Deteksi saat handler baru ditambahkan ke menuHandlers
+			if (window.menuHandlers && !window.menuHandlers._proxied) {
+				try {
+					window.menuHandlers = new Proxy(window.menuHandlers, {
+						set: function(target, prop, value) {
+							target[prop] = value;
+							console.log('📥 Menu handler baru:', prop);
+							setTimeout(_cekPerubahan, 100);
+							return true;
+						}
+					});
+					window.menuHandlers._proxied = true;
+					console.log('✅ menuHandlers di-proxy untuk auto-detect.');
+				} catch (e) {
+					console.warn('⚠️ Proxy menuHandlers gagal:', e.message);
+				}
+			}
+
+			// ── Handle: Scan Paksa ──
+			window.psmUiScanMenuBaru = function() {
+				try {
+					// Reset snapshot untuk trigger refresh
+					_snapshot = {
+						jumlahBlok:   0,
+						jumlahFungsi: 0,
+						jumlahMenu:   0
+					};
+					_cekPerubahan();
+
+					if (typeof window.csToast === 'function') {
+						window.csToast('✅ Scan selesai — semua menu ter-update', 'success');
+					}
+					return true;
+				} catch (e) {
+					console.error('psmUiScanMenuBaru error:', e);
+					return false;
+				}
+			};
+
+			// ── Info debug ──
+			window.cekAutoDetect = function() {
+				return {
+					aktif: true,
+					intervalId: _intervalId,
+					snapshot: Object.assign({}, _snapshot),
+					sekarang: {
+						jumlahBlok:   (window.CP_REGISTRY_BLOK || []).length,
+						jumlahFungsi: Object.keys(window.CP_REGISTRY_FUNGSI || {}).length,
+						jumlahMenu:   Object.keys(window.menuHandlers || {}).length
+					},
+					hooks: {
+						cpTambahBlok:  window.cpTambahBlok && window.cpTambahBlok._hooked,
+						cpUpdateFungsi: window.cpUpdateFungsi && window.cpUpdateFungsi._hooked,
+						menuHandlers:  window.menuHandlers && window.menuHandlers._proxied
+					}
+				};
+			};
+
+			// ── Log terpasang ──
+			console.log('%c🤖 AUTO-DETECT MENU BARU terpasang.',
+				'background:#17A2B8;color:#fff;padding:4px 8px;font-weight:bold;');
+			console.log('   ⏱️  Polling setiap 2 detik');
+			console.log('   🎣 Hook: cpTambahBlok, cpUpdateFungsi, menuHandlers (Proxy)');
+			console.log('   🔄 Auto-refresh scanner saat tab Scanner aktif');
+			console.log('   🍞 Notifikasi toast saat menu baru terdeteksi');
+			console.log('   🔍 Debug: cekAutoDetect()');
+		})();
 
     // ═══════════════════════════════════════════════════════════
     // [10.38.d.7] — DEBUG FINAL (A5)
