@@ -24210,12 +24210,23 @@
         if (!kodeRole) return false;
         return window.OM3_KONSTANTA.VARIAN_KASIR.indexOf(kodeRole) !== -1;
     }
-    function _omLoadUser() {
-        try {
-            var v = window.csLoadJSON('dataLoginUser', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    }
+    // ── _omLoadUser — FIX v5.1: filter user arsip + nonaktif ──
+		function _omLoadUser() {
+			try {
+				var v = window.csLoadJSON('dataLoginUser', []);
+				var list = Array.isArray(v) ? v : [];
+				// ⭐ FIX: Skip user arsip/nonaktif/diblokir dari deteksi orphan
+				return list.filter(function(u) {
+					if (!u) return false;
+					if (u.arsip === true) return false;
+					if (u.status === 'Diarsipkan') return false;
+					if (u.statusVerifikasi === 'Diarsipkan') return false;
+					if (u.status === 'Nonaktif') return false;
+					if (u.statusVerifikasi === 'Nonaktif') return false;
+					return true;
+				});
+			} catch (e) { return []; }
+		}
     function _omCariUser(idUser) {
         if (!idUser) return null;
         var list = _omLoadUser();
@@ -25300,43 +25311,317 @@ window.om3DeteksiMediaOrphan = function() {
         } catch (e) { return { total:0, items:[], sizeTeks:'0 KB' }; }
     };
 
-    // ── Hapus item tunggal (internal) ──
-    function _hapusItemOm3(item) {
-        try {
-            if (!item || !item.jenis) return 0;
-            var jumlah = 0;
+    // ═══════════════════════════════════════════════════════════════
+	// ── _hapusItemOm3 — FIX v5.1: HANDLE SEMUA 25 JENIS ORPHAN ──
+	// ═══════════════════════════════════════════════════════════════
+	function _hapusItemOm3(item) {
+		try {
+			if (!item || !item.jenis) return 0;
+			var jumlah = 0;
+			var jenis = item.jenis;
+			var raw = item.raw || {};
+			var idUser = raw.idUser || raw.id;
 
-            if (item.jenis === 'media-orphan' && item.raw && item.raw.id) {
-                if (typeof window.mdHapus === 'function') {
-                    window.mdHapus(item.raw.id, { bypass: true });
+			// ═══ 1. media-orphan → mdHapus ═══
+			if (jenis === 'media-orphan' && raw.id) {
+				if (typeof window.mdHapus === 'function') {
+					var r1 = window.mdHapus(raw.id, { bypass: true });
+					if (r1 && r1.sukses !== false) jumlah++;
+				}
+			}
+			// ═══ 2. produk-orphan → produkHapus ═══
+			else if (jenis === 'produk-orphan' && raw.id) {
+				if (typeof window.produkHapus === 'function') {
+					var r2 = window.produkHapus(raw.id);
+					if (r2 && r2.sukses !== false) jumlah++;
+				}
+			}
+			// ═══ 3. produk-tanpa-kategori → set kategori 'Umum' ═══
+			else if (jenis === 'produk-tanpa-kategori' && raw.id) {
+				try {
+					var listP = window.csLoadJSON('dataProduk', []);
+					var idx = listP.findIndex(function(p) { return p && p.id === raw.id; });
+					if (idx !== -1) {
+						listP[idx].kategori = 'Umum';
+						window.csSaveJSON('dataProduk', listP, { backup: false });
+						if (Array.isArray(window.dataProduk)) {
+							window.dataProduk.length = 0;
+							listP.forEach(function(x) { window.dataProduk.push(x); });
+						}
+						jumlah++;
+					}
+				} catch (e) {}
+			}
+        // ═══ 4. produk-tanpa-foto → hapus ref foto dari produk ═══
+        else if (jenis === 'produk-tanpa-foto' && raw.idProduk && raw.fotoId) {
+            try {
+                var listP2 = window.csLoadJSON('dataProduk', []);
+                var idx2 = listP2.findIndex(function(p) { return p && p.id === raw.idProduk; });
+                if (idx2 !== -1 && Array.isArray(listP2[idx2].fotoIds)) {
+                    listP2[idx2].fotoIds = listP2[idx2].fotoIds.filter(function(f) {
+                        return f !== raw.fotoId;
+                    });
+                    window.csSaveJSON('dataProduk', listP2, { backup: false });
+                    if (Array.isArray(window.dataProduk)) {
+                        window.dataProduk.length = 0;
+                        listP2.forEach(function(x) { window.dataProduk.push(x); });
+                    }
                     jumlah++;
                 }
-            } else if (
-                (item.jenis === 'dompet-orphan' ||
-                 item.jenis === 'notif-orphan' ||
-                 item.jenis === 'heartbeat-kadaluarsa') &&
-                item.raw && item.raw.key) {
-                try { localStorage.removeItem(item.raw.key); jumlah++; } catch (e) {}
-            } else if (item.jenis === 'produk-orphan' && item.raw && item.raw.id) {
-                if (typeof window.produkHapus === 'function') {
-                    window.produkHapus(item.raw.id);
+            } catch (e) {}
+        }
+        // ═══ 5. order-orphan → hapus dari dataOrder ═══
+        else if (jenis === 'order-orphan' && raw.id) {
+            try {
+                var listO = window.csLoadJSON('dataOrder', []);
+                var lenO = listO.length;
+                listO = listO.filter(function(o) { return o && o.id !== raw.id; });
+                if (listO.length < lenO) {
+                    window.csSaveJSON('dataOrder', listO, { backup: false });
+                    if (Array.isArray(window.dataOrder)) {
+                        window.dataOrder.length = 0;
+                        listO.forEach(function(x) { window.dataOrder.push(x); });
+                    }
                     jumlah++;
                 }
-            } else if (
-                (item.jenis === 'akun-kasir-orphan' ||
-                 item.jenis === 'akun-staf-orphan' ||
-                 item.jenis === 'kopdes-orphan' ||
-                 item.jenis === 'verif15-orphan' ||
-                 item.jenis === 'kasir-varian-mismatch') &&
-                item.raw && (item.raw.idUser || item.raw.id)) {
-                if (typeof window.fkaHapusSoft === 'function') {
-                    window.fkaHapusSoft(item.raw.idUser || item.raw.id, 'OM auto-hapus');
+            } catch (e) {}
+        }
+        // ═══ 6. transaksi-orphan → hapus dari dataTransaksi ═══
+        else if (jenis === 'transaksi-orphan' && raw.id) {
+            try {
+                var listT = window.csLoadJSON('dataTransaksi', []);
+                var lenT = listT.length;
+                listT = listT.filter(function(t) { return t && t.id !== raw.id; });
+                if (listT.length < lenT) {
+                    window.csSaveJSON('dataTransaksi', listT, { backup: false });
+                    if (Array.isArray(window.dataTransaksi)) {
+                        window.dataTransaksi.length = 0;
+                        listT.forEach(function(x) { window.dataTransaksi.push(x); });
+                    }
                     jumlah++;
                 }
+            } catch (e) {}
+        }
+        // ═══ 7. akun-kasir-orphan → fkaHapusSoft ═══
+        else if (jenis === 'akun-kasir-orphan' && idUser) {
+            if (typeof window.fkaHapusSoft === 'function') {
+                var r7 = window.fkaHapusSoft(idUser, 'OM: kasir orphan');
+                if (r7 && r7.sukses !== false) jumlah++;
             }
-            return jumlah;
-        } catch (e) { return 0; }
+        }
+        // ═══ 8. akun-staf-orphan → fkaHapusSoft ═══
+        else if (jenis === 'akun-staf-orphan' && idUser) {
+            if (typeof window.fkaHapusSoft === 'function') {
+                var r8 = window.fkaHapusSoft(idUser, 'OM: staf orphan');
+                if (r8 && r8.sukses !== false) jumlah++;
+            }
+        }
+        // ═══ 9. akun-arsip-ganda → hapus dari dataAkunAktif ═══
+        else if (jenis === 'akun-arsip-ganda' && raw.id) {
+            try {
+                var listAA = window.csLoadJSON('dataAkunAktif', []);
+                var lenAA = listAA.length;
+                listAA = listAA.filter(function(a) {
+                    if (!a) return false;
+                    return a.idUser !== raw.id && a.id !== raw.id;
+                });
+                if (listAA.length < lenAA) {
+                    window.csSaveJSON('dataAkunAktif', listAA, { backup: false });
+                    if (Array.isArray(window.dataAkunAktif)) {
+                        window.dataAkunAktif.length = 0;
+                        listAA.forEach(function(x) { window.dataAkunAktif.push(x); });
+                    }
+                    jumlah++;
+                }
+            } catch (e) {}
+        }
+        // ═══ 10. kopdes-orphan → fkaHapusSoft ═══
+        else if (jenis === 'kopdes-orphan' && idUser) {
+            if (typeof window.fkaHapusSoft === 'function') {
+                var r10 = window.fkaHapusSoft(idUser, 'OM: kopdes orphan');
+                if (r10 && r10.sukses !== false) jumlah++;
+            }
+        }
+        // ═══ 11. rantai-kopdes-putus → fkaHapusSoft ═══
+        else if (jenis === 'rantai-kopdes-putus' && idUser) {
+            if (typeof window.fkaHapusSoft === 'function') {
+                var r11 = window.fkaHapusSoft(idUser, 'OM: rantai kopdes putus');
+                if (r11 && r11.sukses !== false) jumlah++;
+            }
+        }
+        // ═══ 12. rekening-orphan → hapus dari dataRekening ═══
+        else if (jenis === 'rekening-orphan' && raw.id) {
+            try {
+                var listR = window.csLoadJSON('dataRekening', []);
+                var lenR = listR.length;
+                listR = listR.filter(function(r) { return r && r.id !== raw.id; });
+                if (listR.length < lenR) {
+                    window.csSaveJSON('dataRekening', listR, { backup: false });
+                    if (Array.isArray(window.dataRekening)) {
+                        window.dataRekening.length = 0;
+                        listR.forEach(function(x) { window.dataRekening.push(x); });
+                    }
+                    jumlah++;
+                }
+            } catch (e) {}
+        }
+        // ═══ 13. dompet-orphan / notif-orphan / heartbeat → localStorage.removeItem ═══
+        else if ((jenis === 'dompet-orphan' ||
+                  jenis === 'notif-orphan' ||
+                  jenis === 'heartbeat-kadaluarsa') && raw.key) {
+            try {
+                localStorage.removeItem(raw.key);
+                jumlah++;
+            } catch (e) {}
+        }
+        // ═══ 14. pengajuan-orphan → hapus dari dataPengajuanBukaAkun ═══
+        else if (jenis === 'pengajuan-orphan' && raw.id) {
+            try {
+                var listPj = window.csLoadJSON('dataPengajuanBukaAkun', []);
+                var lenPj = listPj.length;
+                listPj = listPj.filter(function(p) {
+                    if (!p) return false;
+                    return p.id !== raw.id && p.idPengajuan !== raw.id;
+                });
+                if (listPj.length < lenPj) {
+                    window.csSaveJSON('dataPengajuanBukaAkun', listPj, { backup: false });
+                    if (Array.isArray(window.dataPengajuanBukaAkun)) {
+                        window.dataPengajuanBukaAkun.length = 0;
+                        listPj.forEach(function(x) { window.dataPengajuanBukaAkun.push(x); });
+                    }
+                    jumlah++;
+                }
+            } catch (e) {}
+        }
+        // ═══ 15. chat-orphan → hapus dari dataChat ═══
+        else if (jenis === 'chat-orphan' && raw.id) {
+            try {
+                var listC = window.csLoadJSON('dataChat', []);
+                var lenC = listC.length;
+                listC = listC.filter(function(c) { return c && c.id !== raw.id; });
+                if (listC.length < lenC) {
+                    window.csSaveJSON('dataChat', listC, { backup: false });
+                    if (Array.isArray(window.dataChat)) {
+                        window.dataChat.length = 0;
+                        listC.forEach(function(x) { window.dataChat.push(x); });
+                    }
+                    jumlah++;
+                }
+            } catch (e) {}
+        }
+        // ═══ 16. cart-orphan → hapus item dari storage cart ═══
+        else if (jenis === 'cart-orphan' && raw.key && raw.item) {
+            try {
+                var listCart = window.csLoadJSON(raw.key, []);
+                if (Array.isArray(listCart)) {
+                    var idProduk = raw.item.idProduk || raw.item.id;
+                    var lenCart = listCart.length;
+                    listCart = listCart.filter(function(c) {
+                        if (!c) return false;
+                        var cid = c.idProduk || c.id;
+                        return cid !== idProduk;
+                    });
+                    if (listCart.length < lenCart) {
+                        window.csSaveJSON(raw.key, listCart, { backup: false });
+                        jumlah++;
+                    }
+                }
+            } catch (e) {}
+        }
+        // ═══ 17. kategori-kosong → hapus dari dataKategoriProduk ═══
+        else if (jenis === 'kategori-kosong' && raw.id) {
+            try {
+                var listK = window.csLoadJSON('dataKategoriProduk', []);
+                var lenK = listK.length;
+                listK = listK.filter(function(k) { return k && k.id !== raw.id; });
+                if (listK.length < lenK) {
+                    window.csSaveJSON('dataKategoriProduk', listK, { backup: false });
+                    if (Array.isArray(window.dataKategoriProduk)) {
+                        window.dataKategoriProduk.length = 0;
+                        listK.forEach(function(x) { window.dataKategoriProduk.push(x); });
+                    }
+                    jumlah++;
+                }
+            } catch (e) {}
+        }
+        // ═══ 18. wilayah-kosong → hapus dari dataWilayah ═══
+        else if (jenis === 'wilayah-kosong' && raw.id) {
+            try {
+                var listW = window.csLoadJSON('dataWilayah', []);
+                var lenW = listW.length;
+                listW = listW.filter(function(w) { return w && w.id !== raw.id; });
+                if (listW.length < lenW) {
+                    window.csSaveJSON('dataWilayah', listW, { backup: false });
+                    if (Array.isArray(window.dataWilayah)) {
+                        window.dataWilayah.length = 0;
+                        listW.forEach(function(x) { window.dataWilayah.push(x); });
+                    }
+                    jumlah++;
+                }
+            } catch (e) {}
+        }
+        // ═══ 19. verif15-orphan → fkaHapusSoft ═══
+        else if (jenis === 'verif15-orphan' && idUser) {
+            if (typeof window.fkaHapusSoft === 'function') {
+                var r19 = window.fkaHapusSoft(idUser, 'OM: verif15 orphan');
+                if (r19 && r19.sukses !== false) jumlah++;
+            }
+        }
+        // ═══ 20. kasir-varian-mismatch → fkaHapusSoft ═══
+        else if (jenis === 'kasir-varian-mismatch' && idUser) {
+            if (typeof window.fkaHapusSoft === 'function') {
+                var r20 = window.fkaHapusSoft(idUser, 'OM: kasir mismatch');
+                if (r20 && r20.sukses !== false) jumlah++;
+            }
+        }
+        // ═══ 21-23. menu-orphan-* → hapus item dari menuConfig ═══
+        else if ((jenis === 'menu-orphan-handler' ||
+                  jenis === 'menu-orphan-blok' ||
+                  jenis === 'menu-orphan-nohandler') && raw.kodeRole) {
+            try {
+                var cfgM = window.menuConfig && window.menuConfig[raw.kodeRole];
+                if (cfgM && Array.isArray(cfgM.menu)) {
+                    var dihapus = 0;
+
+                    cfgM.menu.forEach(function(grup) {
+                        if (!grup || !Array.isArray(grup.items)) return;
+
+                        var filtered = grup.items.filter(function(it) {
+                            if (!it) return false;
+
+                            // Untuk handler & nohandler: hapus yang aksinya match
+                            if ((jenis === 'menu-orphan-handler' ||
+                                 jenis === 'menu-orphan-nohandler') &&
+                                it.aksi === raw.aksi) {
+                                dihapus++;
+                                return false;
+                            }
+
+                            // Untuk blok: hapus yang bloknya match
+                            if (jenis === 'menu-orphan-blok' &&
+                                it.blok === raw.kodeBlok) {
+                                dihapus++;
+                                return false;
+                            }
+
+                            return true;
+                        });
+
+                        grup.items.length = 0;
+                        filtered.forEach(function(it) { grup.items.push(it); });
+                    });
+
+                    if (dihapus > 0) jumlah += dihapus;
+                }
+            } catch (e) {}
+        }
+
+        return jumlah;
+    } catch (e) {
+        console.error('[OM3._hapusItemOm3] error:', e);
+        return 0;
     }
+}
 
     window.om3HapusSelektif = function(listItem, opts) {
         opts = opts || {};
