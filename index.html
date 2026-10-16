@@ -21715,10 +21715,19 @@
     // ═══════════════════════════════════════════════════════════
     // [MODUL 2] — HELPER INTERNAL
     // ═══════════════════════════════════════════════════════════
-    function _loadUser() {
-        try { var v = window.csLoadJSON('dataLoginUser', []); return Array.isArray(v)?v:[]; }
-        catch (e) { return []; }
-    }
+    // ✅ FIX v5.1: cache user 5 detik (hindari 25× load berulang)
+	function _loadUser() {
+		try {
+			var now = Date.now();
+			if (window._om3UserCache && (now - window._om3UserCacheTime) < 5000) {
+				return window._om3UserCache;
+			}
+			var v = window.csLoadJSON('dataLoginUser', []);
+			window._om3UserCache = Array.isArray(v) ? v : [];
+			window._om3UserCacheTime = now;
+			return window._om3UserCache;
+		} catch (e) { return []; }
+	}
     function _cariUser(idUser) {
         if (!idUser) return null;
         var list = _loadUser();
@@ -24583,27 +24592,62 @@
         } catch (e) { return []; }
     };
 
-    // ── 4.11 Media Orphan ──
-    window.om3DeteksiMediaOrphan = function() {
-        try {
-            if (typeof window.omScanSemua === 'function') {
-                var scan = window.omScanSemua(); var hasil = [];
-                ['sejati','semu','kandidat'].forEach(function(t) {
-                    (scan[t] || []).forEach(function(m) {
-                        hasil.push({
-                            jenis:'media-orphan', tipe:'media',
-                            id: m.id, nama: m.nama || '-',
-                            alasan: m._alasan || m.alasan || 'Orphan media',
-                            raw: m
-                        });
+    // ── 4.11 Media Orphan — FIX v5.1: hapus rekursi ──
+window.om3DeteksiMediaOrphan = function() {
+    try {
+        // ✅ FIX: pakai mdAmbilSemuaMedia langsung, JANGAN panggil omScanSemua()
+        if (typeof window.mdAmbilSemuaMedia !== 'function') return [];
+        
+        var semuaMedia = window.mdAmbilSemuaMedia({});
+        if (!Array.isArray(semuaMedia)) return [];
+        
+        var hasil = [];
+        semuaMedia.forEach(function(m) {
+            if (!m) return;
+            
+            // Cek orphan: owner tidak valid
+            var idOwner = m.idOwner;
+            var orphan = false;
+            var alasan = '';
+            
+            if (!idOwner) {
+                orphan = true; alasan = 'Media tanpa owner';
+            } else {
+                // Cek owner ada di dataLoginUser
+                try {
+                    var users = window.csLoadJSON('dataLoginUser', []);
+                    var found = users.some(function(u) {
+                        return u && (u.idUser === idOwner || u.id === idOwner);
                     });
-                });
-                return hasil;
+                    if (!found) {
+                        orphan = true; alasan = 'Owner tidak ada: ' + idOwner;
+                    }
+                } catch (e) {}
             }
-            return [];
-        } catch (e) { return []; }
-    };
-
+            
+            // Cek referensi kosong + sudah lama (>7 hari)
+            if (!orphan && Array.isArray(m.referensi) && m.referensi.length === 0) {
+                var umur = m.dibuatAt ? (Date.now() - new Date(m.dibuatAt).getTime()) / 86400000 : 0;
+                if (umur > 7) {
+                    orphan = true; alasan = 'Media tanpa referensi >7 hari';
+                }
+            }
+            
+            if (orphan) {
+                hasil.push({
+                    jenis: 'media-orphan', tipe: 'media',
+                    id: m.id, nama: m.nama || '-',
+                    alasan: alasan, raw: m
+                });
+            }
+        });
+        
+        return hasil;
+    } catch (e) {
+        console.error('[OM3.4.11] deteksi media error:', e);
+        return [];
+    }
+};
     // ── 4.12 Rekening Orphan ──
     window.om3DeteksiRekeningOrphan = function() {
         try {
@@ -25013,14 +25057,30 @@
         } catch (e) { return []; }
     };
 
-    // ═══════════════════════════════════════════════════════════
-    // [MODUL 6] — SCANNER UTAMA (25 DETEKTOR)
-    // ═══════════════════════════════════════════════════════════
-    window.om3ScanSemua = function(opts) {
-        opts = opts || {};
-        var t0 = Date.now();
-        try {
-            var detektorMap = {
+    // ✅ FIX v5.1: guard overlap + cache user
+		window._om3ScanRunning = false;
+		window._om3UserCache = null;
+		window._om3UserCacheTime = 0;
+
+		window.om3ScanSemua = function(opts) {
+			opts = opts || {};
+			
+			// ✅ FIX: Cegah overlap — kalau sedang scan, skip
+			if (window._om3ScanRunning) {
+				console.warn('[OM3] Scan sedang berjalan — skip');
+				return { sukses: false, pesan: 'Scan sudah berjalan', total: 0, items: [],
+						 perJenis: {}, perTipe: {}, perPrioritas: {}, perKategoriRole: {},
+						 perLevelKopdes: {}, perKategoriOrphan: {} };
+			}
+			window._om3ScanRunning = true;
+			
+			var t0 = Date.now();
+			try {
+				// ✅ FIX: reset cache user (fresh)
+				window._om3UserCache = null;
+				window._om3UserCacheTime = 0;
+				
+				var detektorMap = {
                 // ── 22 detektor data (v3 + v4) ──
                 'produk-orphan':         window.om3DeteksiProdukOrphan,
                 'produk-tanpa-kategori': window.om3DeteksiProdukTanpaKategori,
@@ -25115,8 +25175,11 @@
 
             hasil.total = hasil.items.length;
             hasil.elapsedMs = Date.now() - t0;
+            window._om3ScanRunning = false;   // ✅ FIX: reset flag
             return hasil;
         } catch (e) {
+            window._om3ScanRunning = false;   // ✅ FIX: reset flag pada error
+            window._om3ScanRunning = false;   // ✅ FIX: reset flag pada error
             return {
                 sukses: false, pesan: e.message, items: [], total: 0,
                 elapsedMs: Date.now() - t0, perJenis: {}, perTipe: {},
