@@ -8446,6 +8446,3442 @@ hr {
 </script>
 <!-- ═══ AKHIR BLOK CS1 — KONSTANTA & 32 ROLE 🇮🇩 v4.2 FINAL ═════ -->
 
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK CS2 — STORAGE ENGINE 🇮🇩 v4.0 FINAL ══════════════ -->
+<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
+<!-- ═══ Dependency: CS1 v4.2 (CS_KEY + CS_LIMIT + CS_FLAG) ════ -->
+<!-- ═══ Guard: _coreSystem2DoneV4 (UTAMA) ═════════════════════ -->
+<!-- ═══        + alias _coreSystem2DoneV3 + V2 + V1 ═══════════ -->
+<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Role Storage) ═════ -->
+<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36 ═════ -->
+<!-- ═══ Isi: 12 modul [CS2.1]—[CS2.12] ═══════════════════════ -->
+<!-- ═══   [CS2.1]   csLoadJSON (with fallback) ═══════════════ -->
+<!-- ═══   [CS2.2]   csSaveJSON (quota handling + auto-backup) ═ -->
+<!-- ═══   [CS2.3]   csRemoveJSON ═════════════════════════════ -->
+<!-- ═══   [CS2.4]   csEmergencyCleanup ═══════════════════════ -->
+<!-- ═══   [CS2.5]   csHitungSizeStorage ══════════════════════ -->
+<!-- ═══   [CS2.6]   simpanDataKeLocalStorage (19 key) ════════ -->
+<!-- ═══   [CS2.7]   loadDataDariLocalStorage (19 key) ════════ -->
+<!-- ═══   [CS2.8]   csMigrasiKasirOwnerId (auto-fix A42) ═════ -->
+<!-- ═══   [CS2.9]   csLoadArsip + csSaveArsip ════════════════ -->
+<!-- ═══   [CS2.10]  csLoadKasir + csSaveKasir ════════════════ -->
+<!-- ═══   [CS2.11]  csCekKonsistensiStorage32 (10 titik) ═════ -->
+<!-- ═══   [CS2.12]  csBersihkanStorageAman + Debug + Log ═════ -->
+<!-- ═══ ⚠️ Auto-backup sebelum save (jika CS_FLAG.AUTO_BACKUP) -->
+<!-- ═══ ⚠️ Emergency cleanup jika quota exceeded ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_CS2_STORAGE_V4() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK + ALIAS BACKWARD COMPAT
+    // ═══════════════════════════════════════════════════════════
+    if (window._coreSystem2DoneV4) {
+        console.log('ℹ️ CS2 v' + (window._coreSystem2Versi || '?') + ' sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency CS1 ──
+    var cs1Ok = window._coreSystem1DoneV4_2 ||
+                window._coreSystem1DoneV4 ||
+                window._coreSystem1DoneV3;
+    if (!cs1Ok) {
+        console.warn('⚠️ CS1 belum terpasang. CS2 v4.0 ditunda.');
+        return;
+    }
+    if (!window.CS_KEY || !window.CS_LIMIT || !window.CS_FLAG) {
+        console.warn('⚠️ CS_KEY/CS_LIMIT/CS_FLAG tidak ada. CS2 v4.0 ditunda.');
+        return;
+    }
+
+    // ── Guard + alias ──
+    window._coreSystem2DoneV4 = true;
+    window._coreSystem2DoneV3 = true;
+    window._coreSystem2DoneV2 = true;
+    window._coreSystem2DoneV1 = true;
+    window._coreSystem2Done   = true;
+    window._coreSystem2Versi  = '4.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.1] — csLoadJSON (dengan fallback)
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadJSON = function(key, fallback) {
+        try {
+            if (!key) return fallback;
+            var s = localStorage.getItem(key);
+            if (!s) return fallback;
+            var parsed = JSON.parse(s);
+            return (parsed === null || parsed === undefined) ? fallback : parsed;
+        } catch (e) {
+            console.warn('csLoadJSON error "' + key + '":', e.message);
+            return fallback;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.2] — csSaveJSON (quota handling + auto-backup)
+    // ═══════════════════════════════════════════════════════════
+    window.csSaveJSON = function(key, data, opts) {
+        opts = opts || {};
+        try {
+            if (!key) return { sukses: false, pesan: 'Key kosong' };
+
+            // ── Backup otomatis (kalau diaktifkan) ──
+            if (window.CS_FLAG && window.CS_FLAG.AUTO_BACKUP && opts.backup !== false) {
+                try {
+                    var existing = localStorage.getItem(key);
+                    if (existing) {
+                        localStorage.setItem(
+                            (window.CS_KEY ? window.CS_KEY.BACKUP_PREFIX : 'backup_') + key,
+                            existing.substring(0, 2000)
+                        );
+                    }
+                } catch (e) {}
+            }
+
+            var json = JSON.stringify(data);
+            var sizeKB = Math.round(json.length / 1024);
+
+            if (window.CS_LIMIT && sizeKB > window.CS_LIMIT.MAX_STORAGE_MB * 1024) {
+                console.warn('⚠️ Data terlalu besar: ' + sizeKB + ' KB');
+            }
+
+            try {
+                localStorage.setItem(key, json);
+                return { sukses: true, sizeKB: sizeKB };
+            } catch (e) {
+                if (e.name === 'QuotaExceededError' ||
+                    (e.message && e.message.indexOf('quota') !== -1)) {
+                    console.warn('⚠️ Storage penuh — emergency cleanup…');
+                    window.csEmergencyCleanup();
+                    try {
+                        localStorage.setItem(key, json);
+                        return { sukses: true, afterCleanup: true, sizeKB: sizeKB };
+                    } catch (e2) {
+                        return { sukses: false, pesan: 'Storage penuh setelah cleanup' };
+                    }
+                }
+                return { sukses: false, pesan: e.message };
+            }
+        } catch (e) {
+            console.error('csSaveJSON error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.3] — csRemoveJSON
+    // ═══════════════════════════════════════════════════════════
+    window.csRemoveJSON = function(key) {
+        try {
+            localStorage.removeItem(key);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.4] — csEmergencyCleanup
+    // ═══════════════════════════════════════════════════════════
+    window.csEmergencyCleanup = function() {
+        try {
+            var freed = 0;
+
+            // 1. Hapus semua backup
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('backup_') === 0) {
+                    freed += (localStorage.getItem(k) || '').length;
+                    try { localStorage.removeItem(k); } catch (e) {}
+                }
+            });
+
+            // 2. Trim log audit
+            try {
+                var la = window.csLoadJSON(window.CS_KEY.LOG_AUDIT_SA, { log: [] });
+                if (la.log && la.log.length > 100) {
+                    la.log = la.log.slice(0, 100);
+                    localStorage.setItem(window.CS_KEY.LOG_AUDIT_SA, JSON.stringify(la));
+                }
+            } catch (e) {}
+
+            // 3. Trim histori aktivitas
+            try {
+                var ha = window.csLoadJSON(window.CS_HISTORI_KEY || 'dataHistoriAktivitas', []);
+                if (ha.length > 100) {
+                    ha = ha.slice(0, 100);
+                    localStorage.setItem(window.CS_KEY.HISTORI_AKTIVITAS, JSON.stringify(ha));
+                }
+            } catch (e) {}
+
+            console.log('🧹 Emergency cleanup: ~' + Math.round(freed / 1024) + ' KB dibebaskan');
+            return { sukses: true, freedKB: Math.round(freed / 1024) };
+        } catch (e) {
+            console.error('csEmergencyCleanup error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.5] — csHitungSizeStorage
+    // ═══════════════════════════════════════════════════════════
+    window.csHitungSizeStorage = function() {
+        try {
+            var total = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                var v = localStorage.getItem(k) || '';
+                total += (k.length + v.length) * 2;
+            }
+            return {
+                bytes: total,
+                KB: Math.round(total / 1024),
+                MB: Math.round(total / 1024 / 1024 * 100) / 100
+            };
+        } catch (e) {
+            return { bytes: 0, KB: 0, MB: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.6] — simpanDataKeLocalStorage (19 KEY)
+    // ═══════════════════════════════════════════════════════════
+    // Simpan semua variabel global VG ke localStorage.
+    // +DATA_ARSIP_AKUN +DATA_KASIR (sinkron 32 role).
+    // ═══════════════════════════════════════════════════════════
+    window.simpanDataKeLocalStorage = function() {
+        try {
+            var hasil = { sukses: 0, gagal: 0, listGagal: [] };
+
+            var map = [
+                { var: 'dataLoginUser',         key: 'dataLoginUser' },
+                { var: 'dataAkunAktif',         key: 'dataAkunAktif' },
+                { var: 'dataWilayah',           key: 'dataWilayah' },
+                { var: 'dataPengajuanBukaAkun', key: 'dataPengajuanBukaAkun' },
+                { var: 'dataVerifikasiDokumen', key: 'dataVerifikasiDokumen' },
+                { var: 'dataLogAuditSA',        key: 'dataLogAuditSA' },
+                { var: 'dataHistoriAktivitas',  key: 'dataHistoriAktivitas' },
+                { var: 'dataRekening',          key: 'dataRekening' },
+                { var: 'dataTopUpHistory',      key: 'dataTopUpHistory' },
+                { var: 'dataWithdrawHistory',   key: 'dataWithdrawHistory' },
+                { var: 'dataKasir',             key: 'dataKasir' },
+                { var: 'dataArsipAkun',         key: 'dataArsipAkun' },
+                { var: 'dataOrder',             key: 'dataOrder' },
+                { var: 'dataProduk',            key: 'dataProduk' },
+                { var: 'dataKategoriProduk',    key: 'dataKategoriProduk' },
+                { var: 'dataNotifikasi',        key: 'dataNotifikasi' },
+                { var: 'dataChat',              key: 'dataChat' },
+                { var: 'dataKoleksiGif',        key: 'dataKoleksiGif' },
+                { var: 'dataMediaIndex',        key: 'dataMediaIndex' }
+            ];
+
+            map.forEach(function(m) {
+                try {
+                    var val = window[m.var];
+                    if (val === undefined) return;
+                    var r = window.csSaveJSON(m.key, val, { backup: false });
+                    if (r && r.sukses) hasil.sukses++;
+                    else {
+                        hasil.gagal++;
+                        hasil.listGagal.push(m.key);
+                    }
+                } catch (e) {
+                    hasil.gagal++;
+                    hasil.listGagal.push(m.key + ' (' + e.message + ')');
+                }
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('simpanDataKeLocalStorage error:', e);
+            return { sukses: 0, gagal: 1, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.7] — loadDataDariLocalStorage (19 KEY)
+    // ═══════════════════════════════════════════════════════════
+    window.loadDataDariLocalStorage = function() {
+        try {
+            var map = [
+                { var: 'dataLoginUser',         key: 'dataLoginUser',         def: [] },
+                { var: 'dataAkunAktif',         key: 'dataAkunAktif',         def: [] },
+                { var: 'dataWilayah',           key: 'dataWilayah',           def: [] },
+                { var: 'dataPengajuanBukaAkun', key: 'dataPengajuanBukaAkun', def: [] },
+                { var: 'dataVerifikasiDokumen', key: 'dataVerifikasiDokumen', def: [] },
+                { var: 'dataLogAuditSA',        key: 'dataLogAuditSA',        def: { log: [] } },
+                { var: 'dataHistoriAktivitas',  key: 'dataHistoriAktivitas',  def: [] },
+                { var: 'dataRekening',          key: 'dataRekening',          def: [] },
+                { var: 'dataTopUpHistory',      key: 'dataTopUpHistory',      def: [] },
+                { var: 'dataWithdrawHistory',   key: 'dataWithdrawHistory',   def: [] },
+                { var: 'dataKasir',             key: 'dataKasir',             def: [] },
+                { var: 'dataArsipAkun',         key: 'dataArsipAkun',         def: [] },
+                { var: 'dataOrder',             key: 'dataOrder',             def: [] },
+                { var: 'dataProduk',            key: 'dataProduk',            def: [] },
+                { var: 'dataKategoriProduk',    key: 'dataKategoriProduk',    def: [] },
+                { var: 'dataNotifikasi',        key: 'dataNotifikasi',        def: [] },
+                { var: 'dataChat',              key: 'dataChat',              def: [] },
+                { var: 'dataKoleksiGif',        key: 'dataKoleksiGif',        def: [] },
+                { var: 'dataMediaIndex',        key: 'dataMediaIndex',        def: {} }
+            ];
+
+            var hasil = {};
+            map.forEach(function(m) {
+                try {
+                    var loaded = window.csLoadJSON(m.key, m.def);
+                    var target = window[m.var];
+
+                    if (Array.isArray(target) && Array.isArray(loaded)) {
+                        target.length = 0;
+                        loaded.forEach(function(x) { target.push(x); });
+                    } else if (target && typeof target === 'object' &&
+                               !Array.isArray(target) && typeof loaded === 'object') {
+                        Object.keys(target).forEach(function(k) { delete target[k]; });
+                        Object.assign(target, loaded);
+                    }
+                    if (Array.isArray(loaded)) hasil[m.var] = loaded.length;
+                    else if (typeof loaded === 'object') hasil[m.var] = Object.keys(loaded).length;
+                    else hasil[m.var] = 0;
+                } catch (e) {
+                    hasil[m.var] = 0;
+                }
+            });
+
+            // ── AUTO-MIGRASI: perbaiki kasir tanpa idOwner (data lama) ──
+            try {
+                window.csMigrasiKasirOwnerId();
+            } catch (_e) {
+                console.warn('Migrasi kasir warning:', _e.message);
+            }
+
+            return hasil;
+        } catch (e) {
+            console.error('loadDataDariLocalStorage error:', e);
+            return {};
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.8] — csMigrasiKasirOwnerId (auto-fix A42)
+    // ═══════════════════════════════════════════════════════════
+    // Perbaiki kasir lama yang belum punya idOwner/ownerId/idInduk.
+    // Sinkron dengan 6 varian kasir.
+    // ═══════════════════════════════════════════════════════════
+    window.csMigrasiKasirOwnerId = function() {
+        try {
+            var _KASIR_KODE = ['KSR_TK','KSR_PP','KSR_PM','KSR_DST','KSR_GR','KSR_KDMP'];
+            var _lu = window.dataLoginUser || [];
+            if (!Array.isArray(_lu) || _lu.length === 0) return { sukses: true, fixed: 0 };
+
+            var _fixed = 0;
+            for (var _i = 0; _i < _lu.length; _i++) {
+                var _u = _lu[_i];
+                if (!_u || _KASIR_KODE.indexOf(_u.kodeRole) === -1) continue;
+                if (_u.idOwner) continue;
+
+                // Cari induk
+                var _induk = 'TK';
+                if (_u.kodeRole === 'KSR_KDMP') _induk = 'KDMP_DESA';
+                else if (_u.kodeRole && _u.kodeRole.indexOf('KSR_') === 0) {
+                    _induk = _u.kodeRole.replace('KSR_', '');
+                }
+
+                var _kandidat = _lu.filter(function(x) {
+                    return x && x.kodeRole === _induk;
+                });
+                if (_kandidat.length === 0) continue;
+
+                var _chosen = _kandidat[0];
+                _u.idOwner = _chosen.idUser || _chosen.id;
+                _u.ownerId = _u.idOwner;
+                _u.idInduk = _u.idOwner;
+                if (_chosen.kodeToko) _u.kodeOwner = _chosen.kodeToko;
+                if (!_u.createdBy) _u.createdBy = _u.idOwner;
+                _fixed++;
+            }
+
+            if (_fixed > 0) {
+                window.csSaveJSON('dataLoginUser', _lu, { backup: false });
+                console.log('%c🔧 Migrasi kasir: ' + _fixed +
+                    ' akun diperbaiki (idOwner)',
+                    'background:#DC3545;color:#fff;padding:2px 6px;');
+            }
+            return { sukses: true, fixed: _fixed };
+        } catch (e) {
+            console.warn('csMigrasiKasirOwnerId error:', e.message);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.9] — csLoadArsip + csSaveArsip
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadArsip = function() {
+        try {
+            var v = window.csLoadJSON('dataArsipAkun', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    };
+
+    window.csSaveArsip = function(list) {
+        try {
+            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
+            var r = window.csSaveJSON('dataArsipAkun', list, { backup: false });
+            if (Array.isArray(window.dataArsipAkun)) {
+                window.dataArsipAkun.length = 0;
+                list.forEach(function(x) { window.dataArsipAkun.push(x); });
+            }
+            return r;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.10] — csLoadKasir + csSaveKasir
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadKasir = function() {
+        try {
+            var v = window.csLoadJSON('dataKasir', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    };
+
+    window.csSaveKasir = function(list) {
+        try {
+            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
+            var r = window.csSaveJSON('dataKasir', list, { backup: false });
+            if (Array.isArray(window.dataKasir)) {
+                window.dataKasir.length = 0;
+                list.forEach(function(x) { window.dataKasir.push(x); });
+            }
+            return r;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.11] — csCekKonsistensiStorage32 (10 TITIK CEK)
+    // ═══════════════════════════════════════════════════════════
+    window.csCekKonsistensiStorage32 = function() {
+        var hasil = { ok: true, totalCek: 0, totalWarning: 0, detail: [] };
+
+        function _addCek(nama, status, pesan) {
+            hasil.totalCek++;
+            if (status !== 'ok') hasil.totalWarning++;
+            hasil.detail.push({ cek: nama, status: status, pesan: pesan || '-' });
+            if (status !== 'ok') hasil.ok = false;
+        }
+
+        try {
+            // ── 1. Key storage utama ada ──
+            var keyUtama = [
+                'dataLoginUser', 'dataAkunAktif', 'dataKasir',
+                'dataArsipAkun', 'dataPengajuanBukaAkun', 'dataVerifikasiDokumen'
+            ];
+            var keyHilang = keyUtama.filter(function(k) {
+                try { return localStorage.getItem(k) === null; }
+                catch (e) { return true; }
+            });
+            if (keyHilang.length === 0) {
+                _addCek('Key storage utama', 'ok', '6 key utama ada');
+            } else {
+                _addCek('Key storage utama', 'warning',
+                    'Belum ada: ' + keyHilang.join(', '));
+            }
+
+            // ── 2. dataLoginUser ter-load ──
+            if (Array.isArray(window.dataLoginUser)) {
+                _addCek('dataLoginUser ter-load', 'ok',
+                    window.dataLoginUser.length + ' user');
+            } else {
+                _addCek('dataLoginUser ter-load', 'warning', 'Bukan array');
+            }
+
+            // ── 3. dataKasir ter-load ──
+            if (Array.isArray(window.dataKasir)) {
+                _addCek('dataKasir ter-load', 'ok',
+                    window.dataKasir.length + ' kasir (6 varian)');
+            } else {
+                _addCek('dataKasir ter-load', 'warning', 'Bukan array');
+            }
+
+            // ── 4. dataArsipAkun ter-load ──
+            if (Array.isArray(window.dataArsipAkun)) {
+                _addCek('dataArsipAkun ter-load', 'ok',
+                    window.dataArsipAkun.length + ' akun diarsipkan');
+            } else {
+                _addCek('dataArsipAkun ter-load', 'warning', 'Bukan array');
+            }
+
+            // ── 5. Storage size < limit ──
+            var size = window.csHitungSizeStorage();
+            if (size.MB < window.CS_LIMIT.MAX_STORAGE_MB) {
+                _addCek('Storage size', 'ok',
+                    size.KB + ' KB (limit ' + (window.CS_LIMIT.MAX_STORAGE_MB * 1024) + ' KB)');
+            } else {
+                _addCek('Storage size', 'warning',
+                    'Hampir penuh: ' + size.KB + ' KB');
+            }
+
+            // ── 6. Auto-backup aktif ──
+            if (window.CS_FLAG.AUTO_BACKUP) {
+                _addCek('Auto-backup aktif', 'ok', 'Backup otomatis saat save');
+            } else {
+                _addCek('Auto-backup aktif', 'warning', 'Auto-backup nonaktif');
+            }
+
+            // ── 7. Total key R2C ──
+            var totalKeyR2C = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && (k.indexOf('r2c_') === 0 ||
+                          k.indexOf('data') === 0 ||
+                          k.indexOf('profil_') === 0)) {
+                    totalKeyR2C++;
+                }
+            }
+            _addCek('Total key R2C', 'ok', totalKeyR2C + ' key terdaftar');
+
+            // ── 8. CS_KEY punya DATA_ARSIP_AKUN ──
+            if (window.CS_KEY.DATA_ARSIP_AKUN) {
+                _addCek('CS_KEY.DATA_ARSIP_AKUN', 'ok', window.CS_KEY.DATA_ARSIP_AKUN);
+            } else {
+                _addCek('CS_KEY.DATA_ARSIP_AKUN', 'warning', 'Belum ada');
+            }
+
+            // ── 9. CS_KEY punya DATA_KASIR ──
+            if (window.CS_KEY.DATA_KASIR) {
+                _addCek('CS_KEY.DATA_KASIR', 'ok', window.CS_KEY.DATA_KASIR);
+            } else {
+                _addCek('CS_KEY.DATA_KASIR', 'warning', 'Belum ada');
+            }
+
+            // ── 10. CS1 v4.2 sinkron ──
+            if (window._coreSystem1DoneV4_2) {
+                _addCek('CS1 v4.2 sinkron', 'ok', 'Guard _coreSystem1DoneV4_2');
+            } else {
+                _addCek('CS1 v4.2 sinkron', 'warning', 'CS1 belum v4.2');
+            }
+        } catch (e) {
+            hasil.ok = false;
+            hasil.detail.push({ cek: 'exception', status: 'error', pesan: e.message });
+        }
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12a] — csBersihkanStorageAman
+    // ═══════════════════════════════════════════════════════════
+    // Bersihkan storage dengan backup otomatis dulu.
+    // ═══════════════════════════════════════════════════════════
+    window.csBersihkanStorageAman = function(opts) {
+        opts = opts || {};
+        try {
+            // ── Backup dulu ──
+            var backup = {
+                timestamp: window.csNow ? window.csNow() : new Date().toISOString(),
+                dataLoginUser:         window.dataLoginUser || [],
+                dataAkunAktif:         window.dataAkunAktif || [],
+                dataKasir:             window.dataKasir || [],
+                dataArsipAkun:         window.dataArsipAkun || [],
+                dataPengajuanBukaAkun: window.dataPengajuanBukaAkun || [],
+                dataVerifikasiDokumen: window.dataVerifikasiDokumen || []
+            };
+            try {
+                localStorage.setItem('r2c_backup_bersih_' + Date.now(),
+                    JSON.stringify(backup).substring(0, 100000));
+            } catch (e) {}
+
+            // ── Hapus key tertentu ──
+            var hapus = 0;
+            if (Array.isArray(opts.target)) {
+                opts.target.forEach(function(k) {
+                    try { localStorage.removeItem(k); hapus++; } catch (e) {}
+                });
+            } else {
+                // Default: hapus backup lama saja
+                Object.keys(localStorage).forEach(function(k) {
+                    if (k.indexOf('backup_') === 0 ||
+                        k.indexOf('r2c_backup_') === 0) {
+                        try { localStorage.removeItem(k); hapus++; } catch (e) {}
+                    }
+                });
+            }
+
+            return { sukses: true, hapus: hapus };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12b] — Alias kompatibilitas
+    // ═══════════════════════════════════════════════════════════
+    window.hfLoadJSON   = window.csLoadJSON;
+    window.hfSaveJSON   = window.csSaveJSON;
+    window.hfRemoveJSON = window.csRemoveJSON;
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12c] — Helper: csCekKeyStorage, csListKeyR2C, csHapusKeyR2C
+    // ═══════════════════════════════════════════════════════════
+    window.csCekKeyStorage = function(key) {
+        try {
+            return localStorage.getItem(key) !== null;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    window.csListKeyR2C = function() {
+        try {
+            var hasil = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && (k.indexOf('r2c_') === 0 ||
+                          k.indexOf('data') === 0 ||
+                          k.indexOf('profil_') === 0 ||
+                          k.indexOf('mpp_') === 0 ||
+                          k.indexOf('md_') === 0)) {
+                    hasil.push(k);
+                }
+            }
+            return hasil.sort();
+        } catch (e) {
+            return [];
+        }
+    };
+
+    window.csHapusKeyR2C = function() {
+        try {
+            var list = window.csListKeyR2C();
+            var hapus = 0;
+            list.forEach(function(k) {
+                try { localStorage.removeItem(k); hapus++; } catch (e) {}
+            });
+            return { sukses: true, dihapus: hapus };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12d] — DEBUG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    window.debugCS2 = function() {
+        var info = {
+            blok: 'CS2',
+            versi: '4.0-R2COIN',
+            guard: {
+                v4: window._coreSystem2DoneV4,
+                v3: window._coreSystem2DoneV3,
+                v2: window._coreSystem2DoneV2,
+                v1: window._coreSystem2DoneV1,
+                alias: window._coreSystem2Done
+            },
+            storage: window.csHitungSizeStorage(),
+            limit: window.CS_LIMIT.MAX_STORAGE_MB + ' MB',
+            autoBackup: window.CS_FLAG.AUTO_BACKUP,
+            emergencyMode: window.CS_FLAG.EMERGENCY,
+            totalKeyR2C: window.csListKeyR2C().length,
+            konsistensi32: window.csCekKonsistensiStorage32(),
+            dataAktif: {
+                dataLoginUser:  Array.isArray(window.dataLoginUser)  ? window.dataLoginUser.length  : 0,
+                dataAkunAktif:  Array.isArray(window.dataAkunAktif)  ? window.dataAkunAktif.length  : 0,
+                dataKasir:      Array.isArray(window.dataKasir)      ? window.dataKasir.length      : 0,
+                dataArsipAkun:  Array.isArray(window.dataArsipAkun)  ? window.dataArsipAkun.length  : 0,
+                dataPengajuan:  Array.isArray(window.dataPengajuanBukaAkun)  ? window.dataPengajuanBukaAkun.length  : 0,
+                dataVerifikasi: Array.isArray(window.dataVerifikasiDokumen)  ? window.dataVerifikasiDokumen.length  : 0
+            },
+            fungsi: {
+                csLoadJSON:                 typeof window.csLoadJSON,
+                csSaveJSON:                 typeof window.csSaveJSON,
+                csRemoveJSON:               typeof window.csRemoveJSON,
+                csEmergencyCleanup:         typeof window.csEmergencyCleanup,
+                csHitungSizeStorage:        typeof window.csHitungSizeStorage,
+                simpanDataKeLocalStorage:   typeof window.simpanDataKeLocalStorage,
+                loadDataDariLocalStorage:   typeof window.loadDataDariLocalStorage,
+                csMigrasiKasirOwnerId:      typeof window.csMigrasiKasirOwnerId,
+                csLoadArsip:                typeof window.csLoadArsip,
+                csSaveArsip:                typeof window.csSaveArsip,
+                csLoadKasir:                typeof window.csLoadKasir,
+                csSaveKasir:                typeof window.csSaveKasir,
+                csCekKonsistensiStorage32:  typeof window.csCekKonsistensiStorage32,
+                csBersihkanStorageAman:     typeof window.csBersihkanStorageAman,
+                csCekKeyStorage:            typeof window.csCekKeyStorage,
+                csListKeyR2C:               typeof window.csListKeyR2C,
+                csHapusKeyR2C:              typeof window.csHapusKeyR2C,
+                hfLoadJSON:                 typeof window.hfLoadJSON,
+                hfSaveJSON:                 typeof window.hfSaveJSON,
+                hfRemoveJSON:               typeof window.hfRemoveJSON
+            }
+        };
+        console.log('🔍 debugCS2 v4.0-R2COIN:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12e] — AUTO-REGISTRY KE 3 REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateBlok === 'function') {
+                window.cpUpdateBlok('CS2', {
+                    status: 'Selesai',
+                    tanggal: new Date().toISOString().substring(0, 10),
+                    nama: 'Storage Engine v4.0'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var ada = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'CS2';
+                });
+                if (!ada) {
+                    window.cpTambahRiwayat({
+                        blok: 'CS2',
+                        nama: 'Storage Engine v4.0',
+                        keterangan: 'csLoadJSON · csSaveJSON · csRemoveJSON · ' +
+                                    'csEmergencyCleanup · csHitungSizeStorage · ' +
+                                    'simpan/load 19 key · csMigrasiKasirOwnerId · ' +
+                                    'csCekKonsistensiStorage32 (10 titik)'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('cs', {
+                    nama: 'Core System (L1)',
+                    status: 'Selesai',
+                    jumlah: '~250'
+                });
+            }
+        } catch (e) {
+            console.warn('CS2 auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12f] — LOG TERPASANG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    var _stat = window.csHitungSizeStorage();
+    var _konsis = window.csCekKonsistensiStorage32();
+
+    console.log('%c🇮🇩 BLOK CS2 v4.0 — STORAGE ENGINE terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   📤 Exported:');
+    console.log('      • csLoadJSON, csSaveJSON, csRemoveJSON');
+    console.log('      • hfLoadJSON, hfSaveJSON, hfRemoveJSON (alias)');
+    console.log('   💾 Auto-backup  : ' + (window.CS_FLAG.AUTO_BACKUP ? 'Aktif' : 'Nonaktif'));
+    console.log('   📊 Storage      : ' + _stat.KB + ' KB / ' +
+                (window.CS_LIMIT.MAX_STORAGE_MB * 1024) + ' KB');
+    console.log('   🔑 Total key R2C: ' + window.csListKeyR2C().length);
+    console.log('   🎯 Konsistensi  : ' + (_konsis.ok ? '✅ ' : '⚠️ ') +
+                _konsis.totalCek + ' cek · ' + _konsis.totalWarning + ' warning');
+    console.log('');
+    console.log('   📦 19 Key Storage:');
+    console.log('      • dataLoginUser, dataAkunAktif, dataKasir, dataArsipAkun');
+    console.log('      • dataWilayah, dataPengajuanBukaAkun, dataVerifikasiDokumen');
+    console.log('      • dataLogAuditSA, dataHistoriAktivitas');
+    console.log('      • dataRekening, dataTopUpHistory, dataWithdrawHistory');
+    console.log('      • dataOrder, dataProduk, dataKategoriProduk');
+    console.log('      • dataNotifikasi, dataChat, dataKoleksiGif, dataMediaIndex');
+    console.log('');
+    console.log('   ⭐ v4.0 FINAL:');
+    console.log('      • Guard 3 lapis: _coreSystem2DoneV4 → V3 → V2 → V1');
+    console.log('      • Dep check: CS1 v4.2 (fallback v4/v3)');
+    console.log('      • simpan/load: 19 key (+dataKasir +dataArsipAkun)');
+    console.log('      • +csMigrasiKasirOwnerId() — auto-fix kasir tanpa idOwner');
+    console.log('      • +csLoadArsip() + csSaveArsip() — soft delete');
+    console.log('      • +csLoadKasir() + csSaveKasir() — 6 varian kasir');
+    console.log('      • +csBersihkanStorageAman() — backup dulu sebelum hapus');
+    console.log('      • +csCekKonsistensiStorage32() — 10 titik cek');
+    console.log('   🔍 Debug: debugCS2()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK CS2 — STORAGE ENGINE 🇮🇩 v4.0 FINAL ═════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK CS3 — SESSION & USER STATE 🇮🇩 v4.0 FINAL ════════ -->
+<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
+<!-- ═══ Dependency: CS1 v4.2 + CS2 v4.0 ═══════════════════════ -->
+<!-- ═══ Guard: _coreSystem3DoneV4 (UTAMA) ═════════════════════ -->
+<!-- ═══        + alias _coreSystem3DoneV3 + V2 + V1 ═══════════ -->
+<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Role Session) ═════ -->
+<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36, A40 -->
+<!-- ═══ Isi: 12 modul [CS3.1]—[CS3.12] ═══════════════════════ -->
+<!-- ═══   [CS3.1]   Getter user aktif (8 fungsi) ═════════════ -->
+<!-- ═══   [CS3.2]   Cek role user aktif (5 fungsi) ═══════════ -->
+<!-- ═══   [CS3.3]   13 flag role spesifik ════════════════════ -->
+<!-- ═══   [CS3.4]   Setter: setUserAktif + clearUserAktif ════ -->
+<!-- ═══   [CS3.5]   Auto-logout timer (10 menit) ═════════════ -->
+<!-- ═══   [CS3.6]   Heartbeat online (30 detik) ══════════════ -->
+<!-- ═══   [CS3.7]   csCekSessionValid (32 role + A40 + A42) ══ -->
+<!-- ═══   [CS3.8]   csCekUserOnline + csListUserOnline ═══════ -->
+<!-- ═══   [CS3.9]   Kepemilikan & owner (3 fungsi) ═══════════ -->
+<!-- ═══   [CS3.10]  csGetKodeRoleOwner + prefix user aktif ═══ -->
+<!-- ═══   [CS3.11]  csCekHierarkiKopdes + csCekBolehKelola ═══ -->
+<!-- ═══   [CS3.12]  Debug + auto-registry + log ══════════════ -->
+<!-- ═══ ⚠️ Peta: PETA_OWNER_KASIR (6) + PETA_INDUK_KOPDES (4) -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_CS3_SESSION_V4() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK + ALIAS BACKWARD COMPAT
+    // ═══════════════════════════════════════════════════════════
+    if (window._coreSystem3DoneV4) {
+        console.log('ℹ️ CS3 v' + (window._coreSystem3Versi || '?') + ' sudah terpasang.');
+        return;
+    }
+
+    var cs2Ok = window._coreSystem2DoneV4 || window._coreSystem2DoneV3;
+    if (!cs2Ok) {
+        console.warn('⚠️ CS2 belum terpasang. CS3 v4.0 ditunda.');
+        return;
+    }
+
+    window._coreSystem3DoneV4 = true;
+    window._coreSystem3DoneV3 = true;
+    window._coreSystem3DoneV2 = true;
+    window._coreSystem3DoneV1 = true;
+    window._coreSystem3Done   = true;
+    window._coreSystem3Versi  = '4.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.0] — VARIABEL INTERNAL + PETA
+    // ═══════════════════════════════════════════════════════════
+    var _autoLogoutTimer = null;
+    var _heartbeatTimer  = null;
+    var _lastActivity    = Date.now();
+
+    // ── Peta Owner Kasir (6 varian) ──
+    var PETA_OWNER_KASIR = {
+        'KSR_TK':   'TK',
+        'KSR_PP':   'PP',
+        'KSR_PM':   'PM',
+        'KSR_DST':  'DST',
+        'KSR_GR':   'GR',
+        'KSR_KDMP': 'KDMP_DESA'
+    };
+
+    // ── Peta Induk Kopdes (4 tingkat A40) ──
+    var PETA_INDUK_KOPDES = {
+        'KDMP_PUSAT': null,
+        'KDMP_KAB':   'KDMP_PUSAT',
+        'KDMP_KEC':   'KDMP_KAB',
+        'KDMP_DESA':  'KDMP_KEC'
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.1] — GETTER USER AKTIF (8 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.getUserAktif = function() {
+        try {
+            if (typeof window.userAktif !== 'undefined' && window.userAktif) {
+                return window.userAktif;
+            }
+            return window.csLoadJSON(window.CS_KEY.USER_AKTIF, null);
+        } catch (e) {
+            console.error('getUserAktif error:', e);
+            return null;
+        }
+    };
+
+    window.getDataIdUser = function(idUser) {
+        try {
+            if (idUser !== undefined && idUser !== null && idUser !== '') {
+                if (typeof window.gidGetUserById === 'function') {
+                    var found = window.gidGetUserById(idUser);
+                    return found ? (found.idUser || found.id || idUser) : null;
+                }
+                var list = window.csLoadJSON('dataLoginUser', []);
+                if (Array.isArray(list)) {
+                    for (var i = 0; i < list.length; i++) {
+                        var u = list[i];
+                        if (u && (u.idUser === idUser || u.id === idUser)) {
+                            return u.idUser || u.id;
+                        }
+                    }
+                }
+                return null;
+            }
+            var ua = window.getUserAktif();
+            return ua ? (ua.idUser || ua.id || null) : null;
+        } catch (e) {
+            console.error('getDataIdUser error:', e);
+            return null;
+        }
+    };
+
+    window.getIdUserAktif    = function() { return window.getDataIdUser(); };
+    window.getRoleUserAktif  = function() {
+        var u = window.getUserAktif(); return u ? (u.role || null) : null;
+    };
+    window.getKodeRoleUserAktif = function() {
+        var u = window.getUserAktif(); return u ? (u.kodeRole || null) : null;
+    };
+    window.getNamaUserAktif = function() {
+        var u = window.getUserAktif();
+        if (!u) return 'Anonim';
+        return u.nama || u.namaLengkap || u.username || 'User';
+    };
+    window.getUsernameUserAktif = function() {
+        var u = window.getUserAktif(); return u ? (u.username || null) : null;
+    };
+    window.isLogin = function() { return !!window.getDataIdUser(); };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.2] — CEK ROLE USER AKTIF (5 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.csCekRoleUserAktif = function() {
+        try {
+            var kodeRole = window.getKodeRoleUserAktif();
+            if (!kodeRole) return null;
+            return window.csGetRoleInfo ? window.csGetRoleInfo(kodeRole) : null;
+        } catch (e) { return null; }
+    };
+
+    window.csIsRole = function(kodeRoleTarget) {
+        return window.getKodeRoleUserAktif() === kodeRoleTarget;
+    };
+
+    window.csIsKategoriRole = function(kategoriTarget) {
+        try {
+            var info = window.csCekRoleUserAktif();
+            return info ? info.kategori === kategoriTarget : false;
+        } catch (e) { return false; }
+    };
+
+    window.csIsTipeRole = function(tipeTarget) {
+        try {
+            var info = window.csCekRoleUserAktif();
+            return info ? info.tipe === tipeTarget : false;
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.3] — 13 FLAG ROLE SPESIFIK
+    // ═══════════════════════════════════════════════════════════
+    window.csIsSA      = function() { return window.csIsRole('SA'); };
+    window.csIsSA_STAF = function() { return window.csIsRole('SA_STAF'); };
+    window.csIsMKT     = function() { return window.csIsRole('MKT'); };
+    window.csIsTGH     = function() { return window.csIsRole('TGH'); };
+    window.csIsCS      = function() { return window.csIsRole('CS'); };
+    window.csIsEO      = function() { return window.csIsRole('EO'); };
+    window.csIsSOT     = function() { return window.csIsRole('SOT'); };
+    window.csIsSOO     = function() { return window.csIsRole('SOO'); };
+    window.csIsORG     = function() { return window.csIsRole('ORG'); };
+    window.csIsIND     = function() { return window.csIsRole('IND'); };
+    window.csIsCT      = function() { return window.csIsRole('CT'); };
+    window.csIsFIN     = function() { return window.csIsRole('FIN'); };
+
+    window.csIsKasir = function() {
+        try {
+            var kr = window.getKodeRoleUserAktif();
+            return kr ? kr.indexOf('KSR') === 0 : false;
+        } catch (e) { return false; }
+    };
+
+    window.csIsKopdes = function() {
+        try {
+            var kr = window.getKodeRoleUserAktif();
+            if (!kr) return false;
+            return kr.indexOf('KDMP_') === 0 || kr === 'KSR_KDMP';
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.4] — SETTER: setUserAktif + clearUserAktif
+    // ═══════════════════════════════════════════════════════════
+    window.setUserAktif = function(user, opts) {
+        opts = opts || {};
+        try {
+            if (!user) return { sukses: false, pesan: 'User kosong' };
+
+            // Validasi kodeRole terhadap 32 role (A36)
+            if (user.kodeRole && window.csCekRole && !window.csCekRole(user.kodeRole)) {
+                console.warn('⚠️ setUserAktif: kodeRole tidak dikenal:', user.kodeRole);
+            }
+
+            window.userAktif = user;
+            window.csSaveJSON(window.CS_KEY.USER_AKTIF, user);
+
+            // Update UI elemen (kalau ada)
+            try {
+                var elNama = document.getElementById('namaUserDisplay');
+                if (elNama) elNama.textContent = user.nama || user.username || 'User';
+                var elOffNama = document.getElementById('offcanvasNamaUser');
+                if (elOffNama) elOffNama.textContent = user.nama || 'User';
+                var elOffRole = document.getElementById('offcanvasRoleUser');
+                if (elOffRole) elOffRole.textContent = user.role || 'Role';
+            } catch (e) {}
+
+            // Simpan fingerprint
+            try {
+                window.csSaveJSON(window.CS_KEY.FINGERPRINT, {
+                    idUser: user.idUser || user.id,
+                    role: user.role,
+                    kodeRole: user.kodeRole,
+                    timestamp: Date.now()
+                });
+            } catch (e) {}
+
+            // Emit event
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:user-login', {
+                    detail: { user: user }
+                }));
+            } catch (e) {}
+
+            return { sukses: true };
+        } catch (e) {
+            console.error('setUserAktif error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.clearUserAktif = function() {
+        try {
+            window.userAktif = null;
+            window.csRemoveJSON(window.CS_KEY.USER_AKTIF);
+            window.csRemoveJSON(window.CS_KEY.SESSION);
+            window.csRemoveJSON(window.CS_KEY.FINGERPRINT);
+
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:user-logout', {}));
+            } catch (e) {}
+
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.5] — AUTO-LOGOUT TIMER (10 menit)
+    // ═══════════════════════════════════════════════════════════
+    window.csResetTimerAktivitas = function() { _lastActivity = Date.now(); };
+
+    window.csMulaiAutoLogout = function() {
+        try {
+            if (_autoLogoutTimer) clearInterval(_autoLogoutTimer);
+            ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(function(evt) {
+                document.addEventListener(evt, window.csResetTimerAktivitas, { passive: true });
+            });
+            _autoLogoutTimer = setInterval(function() {
+                if (!window.isLogin()) return;
+                var idle = Date.now() - _lastActivity;
+                if (idle >= window.CS_LIMIT.SESSION_TIMEOUT_MS) {
+                    console.warn('⏱️ Auto-logout: idle ' +
+                        Math.round(idle / 60000) + ' menit');
+                    if (typeof window.prosesLogout === 'function') {
+                        window.prosesLogout(true);
+                    }
+                }
+            }, 60 * 1000);
+            console.log('⏱️ Auto-logout dimulai (' +
+                window.CS_LIMIT.AUTO_LOGOUT_MENIT + ' menit)');
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.csStopAutoLogout = function() {
+        if (_autoLogoutTimer) {
+            clearInterval(_autoLogoutTimer);
+            _autoLogoutTimer = null;
+        }
+        return { sukses: true };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.6] — HEARTBEAT ONLINE (30 detik)
+    // ═══════════════════════════════════════════════════════════
+    window.csMulaiHeartbeat = function() {
+        try {
+            if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+            var idUser = window.getDataIdUser();
+            if (!idUser) return { sukses: false, pesan: 'Belum login' };
+
+            _heartbeatTimer = setInterval(function() {
+                try {
+                    var key = (window.CS_KEY.ONLINE_PREFIX || 'r2c_online_') + idUser;
+                    localStorage.setItem(key, JSON.stringify({
+                        idUser: idUser,
+                        nama: window.getNamaUserAktif(),
+                        role: window.getRoleUserAktif(),
+                        kodeRole: window.getKodeRoleUserAktif(),
+                        timestamp: Date.now()
+                    }));
+                } catch (e) {}
+            }, window.CS_LIMIT.HEARTBEAT_DETIK * 1000);
+
+            console.log('💓 Heartbeat online dimulai untuk: ' + idUser);
+            return { sukses: true };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.csStopHeartbeat = function() {
+        if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+        _heartbeatTimer = null;
+        return { sukses: true };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.7] — csCekSessionValid (32 role + A40 + A42)
+    // ═══════════════════════════════════════════════════════════
+    window.csCekSessionValid = function() {
+        try {
+            var u = window.getUserAktif();
+            if (!u) return { valid: false, alasan: 'Tidak ada user aktif' };
+            if (!u.idUser && !u.id) return { valid: false, alasan: 'ID user kosong' };
+            if (!u.role) return { valid: false, alasan: 'Role kosong' };
+            if (!u.kodeRole) return { valid: false, alasan: 'Kode role kosong' };
+
+            // Cek kodeRole valid di CS_ROLE_MAP (32 role)
+            if (window.CS_ROLE_MAP && !window.CS_ROLE_MAP[u.kodeRole]) {
+                return { valid: false, alasan: 'Kode role tidak dikenal: ' + u.kodeRole };
+            }
+
+            // Cek idInduk untuk Kopdes (A40)
+            if (u.kodeRole && u.kodeRole.indexOf('KDMP_') === 0) {
+                if (u.kodeRole !== 'KDMP_PUSAT' && !u.idInduk) {
+                    return { valid: false, alasan: 'Kopdes ' + u.kodeRole + ' wajib punya idInduk' };
+                }
+            }
+
+            // Cek idOwner untuk Kasir (A42)
+            if (u.kodeRole && u.kodeRole.indexOf('KSR_') === 0) {
+                if (!u.idOwner && !u.ownerId && !u.idInduk) {
+                    return { valid: false, alasan: 'Kasir ' + u.kodeRole + ' wajib punya idOwner' };
+                }
+            }
+
+            return { valid: true, user: u };
+        } catch (e) {
+            return { valid: false, alasan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.8] — csCekUserOnline + csListUserOnline
+    // ═══════════════════════════════════════════════════════════
+    window.csCekUserOnline = function(idUser) {
+        try {
+            if (!idUser) return false;
+            var key = (window.CS_KEY.ONLINE_PREFIX || 'r2c_online_') + idUser;
+            var data = window.csLoadJSON(key, null);
+            if (!data || !data.timestamp) return false;
+            return (Date.now() - data.timestamp) < 90000;
+        } catch (e) { return false; }
+    };
+
+    window.csListUserOnline = function() {
+        try {
+            var hasil = [];
+            var prefix = window.CS_KEY.ONLINE_PREFIX || 'r2c_online_';
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && k.indexOf(prefix) === 0) {
+                    var data = window.csLoadJSON(k, null);
+                    if (data && data.timestamp &&
+                        (Date.now() - data.timestamp) < 90000) {
+                        hasil.push(data);
+                    }
+                }
+            }
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.9] — KEPEMILIKAN & OWNER (3 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.csCekKepemilikan = function(ownerId) {
+        try {
+            if (!ownerId) return false;
+            var idAktif = window.getDataIdUser();
+            if (!idAktif) return false;
+            if (idAktif === ownerId) return true;
+
+            var user = window.getUserAktif();
+            if (user && user.idOwner && user.idOwner === ownerId) return true;
+            if (user && user.ownerId && user.ownerId === ownerId) return true;
+            if (user && user.idInduk && user.idInduk === ownerId) return true;
+            return false;
+        } catch (e) { return false; }
+    };
+
+    window.csGetIdOwnerAktif = function() {
+        try {
+            var u = window.getUserAktif();
+            if (!u) return null;
+            if (u.idOwner) return u.idOwner;
+            if (u.ownerId) return u.ownerId;
+            return u.idUser || u.id;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.10] — csGetKodeRoleOwner + prefix user aktif
+    // ═══════════════════════════════════════════════════════════
+    window.csGetKodeRoleOwner = function() {
+        try {
+            var kodeRole = window.getKodeRoleUserAktif();
+            if (!kodeRole) return null;
+            if (PETA_OWNER_KASIR[kodeRole]) return PETA_OWNER_KASIR[kodeRole];
+            if (PETA_INDUK_KOPDES[kodeRole] !== undefined) return PETA_INDUK_KOPDES[kodeRole];
+            return kodeRole;
+        } catch (e) { return null; }
+    };
+
+    window.csGetPrefixUserAktif = function() {
+        try {
+            var kodeRole = window.getKodeRoleUserAktif();
+            if (!kodeRole) return null;
+            return window.csGetPrefixRole ? window.csGetPrefixRole(kodeRole) : null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.11] — csCekHierarkiKopdes + csCekBolehKelola
+    // ═══════════════════════════════════════════════════════════
+    window.csCekHierarkiKopdes = function(targetIdUser) {
+        try {
+            if (!targetIdUser) return false;
+            var idUserSaya = window.getDataIdUser();
+            if (idUserSaya === targetIdUser) return true;
+
+            var target = null;
+            if (window.gidGetUserById) target = window.gidGetUserById(targetIdUser);
+            if (!target) {
+                var list = window.csLoadJSON('dataLoginUser', []);
+                target = (list || []).find(function(u) {
+                    return u && (u.idUser === targetIdUser || u.id === targetIdUser);
+                });
+            }
+            if (!target) return false;
+
+            var kodeRoleTarget = target.kodeRole;
+            var isKopdes = kodeRoleTarget && kodeRoleTarget.indexOf('KDMP_') === 0;
+            var isKsrKdmp = kodeRoleTarget === 'KSR_KDMP';
+            if (!isKopdes && !isKsrKdmp) return false;
+
+            if (target.idInduk === idUserSaya) return true;
+            if (target.idOwner === idUserSaya) return true;
+            if (target.ownerId === idUserSaya) return true;
+
+            var current = target;
+            var depth = 0;
+            while (current && current.idInduk && depth < 5) {
+                if (current.idInduk === idUserSaya) return true;
+                current = window.gidGetUserById
+                    ? window.gidGetUserById(current.idInduk) : null;
+                depth++;
+            }
+            return false;
+        } catch (e) { return false; }
+    };
+
+    window.csCekBolehKelola = function(targetIdUser) {
+        try {
+            if (!targetIdUser) return { boleh: false, alasan: 'ID kosong' };
+            if (targetIdUser === window.getDataIdUser()) {
+                return { boleh: false, alasan: 'Tidak bisa kelola akun sendiri' };
+            }
+
+            var protectedId = window.CS_PROTECTED
+                ? window.CS_PROTECTED.ID_SUPERADMIN
+                : 'ID_R2C_SA-000001';
+            if (targetIdUser === protectedId) {
+                return { boleh: false, alasan: 'SuperAdmin tidak bisa diubah' };
+            }
+
+            if (window.csIsSA()) return { boleh: true };
+
+            var target = window.gidGetUserById
+                ? window.gidGetUserById(targetIdUser) : null;
+
+            if (window.csIsKopdes()) {
+                if (window.csCekHierarkiKopdes(targetIdUser)) {
+                    return { boleh: true };
+                }
+            }
+
+            if (target) {
+                var idSaya = window.getDataIdUser();
+                if (target.idOwner === idSaya ||
+                    target.ownerId === idSaya ||
+                    target.idInduk === idSaya) {
+                    return { boleh: true };
+                }
+            }
+
+            return { boleh: false, alasan: 'Tidak berhak kelola akun ini' };
+        } catch (e) {
+            return { boleh: false, alasan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.12a] — DEBUG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    window.debugCS3 = function() {
+        var info = {
+            blok: 'CS3',
+            versi: '4.0-R2COIN',
+            guard: {
+                v4: window._coreSystem3DoneV4,
+                v3: window._coreSystem3DoneV3,
+                v2: window._coreSystem3DoneV2,
+                alias: window._coreSystem3Done
+            },
+            userAktif: {
+                idUser:     window.getDataIdUser(),
+                nama:       window.getNamaUserAktif(),
+                username:   window.getUsernameUserAktif(),
+                role:       window.getRoleUserAktif(),
+                kodeRole:   window.getKodeRoleUserAktif(),
+                prefix:     window.csGetPrefixUserAktif(),
+                idOwner:    window.csGetIdOwnerAktif(),
+                kodeOwner:  window.csGetKodeRoleOwner(),
+                isLogin:    window.isLogin()
+            },
+            session: window.csCekSessionValid(),
+            roleInfo: window.csCekRoleUserAktif(),
+            flagRole: {
+                isSA:      window.csIsSA(),
+                isSA_STAF: window.csIsSA_STAF(),
+                isCS:      window.csIsCS(),
+                isTGH:     window.csIsTGH(),
+                isKasir:   window.csIsKasir(),
+                isKopdes:  window.csIsKopdes(),
+                isCT:      window.csIsCT(),
+                isFIN:     window.csIsFIN()
+            },
+            timer: {
+                autoLogoutAktif: !!_autoLogoutTimer,
+                heartbeatAktif:  !!_heartbeatTimer,
+                idleMs:          Date.now() - _lastActivity
+            },
+            userOnline: window.csListUserOnline().length,
+            peta: {
+                PETA_OWNER_KASIR:  Object.keys(PETA_OWNER_KASIR).length + ' varian kasir',
+                PETA_INDUK_KOPDES: Object.keys(PETA_INDUK_KOPDES).length + ' tingkat Kopdes'
+            },
+            cekV4: {
+                totalRoleCS1: window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0,
+                targetRole: 32,
+                lengkap: (window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0) === 32,
+                adaKasir6: ['KSR_TK','KSR_PP','KSR_PM','KSR_DST','KSR_GR','KSR_KDMP']
+                    .every(function(k) { return !!window.CS_ROLE_MAP[k]; }),
+                adaKopdes4: ['KDMP_PUSAT','KDMP_KAB','KDMP_KEC','KDMP_DESA']
+                    .every(function(k) { return !!window.CS_ROLE_MAP[k]; })
+            },
+            fungsi: {
+                getUserAktif:           typeof window.getUserAktif,
+                getDataIdUser:          typeof window.getDataIdUser,
+                setUserAktif:           typeof window.setUserAktif,
+                clearUserAktif:         typeof window.clearUserAktif,
+                csCekRoleUserAktif:     typeof window.csCekRoleUserAktif,
+                csIsRole:               typeof window.csIsRole,
+                csIsKategoriRole:       typeof window.csIsKategoriRole,
+                csIsTipeRole:           typeof window.csIsTipeRole,
+                csCekSessionValid:      typeof window.csCekSessionValid,
+                csCekUserOnline:        typeof window.csCekUserOnline,
+                csCekKepemilikan:       typeof window.csCekKepemilikan,
+                csGetIdOwnerAktif:      typeof window.csGetIdOwnerAktif,
+                csGetKodeRoleOwner:     typeof window.csGetKodeRoleOwner,
+                csGetPrefixUserAktif:   typeof window.csGetPrefixUserAktif,
+                csCekHierarkiKopdes:    typeof window.csCekHierarkiKopdes,
+                csCekBolehKelola:       typeof window.csCekBolehKelola
+            }
+        };
+        console.log('🔍 debugCS3 v4.0-R2COIN:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.12b] — AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateBlok === 'function') {
+                window.cpUpdateBlok('CS3', {
+                    status: 'Selesai',
+                    tanggal: new Date().toISOString().substring(0, 10),
+                    nama: 'Session & User State v4.0'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var ada = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'CS3';
+                });
+                if (!ada) {
+                    window.cpTambahRiwayat({
+                        blok: 'CS3',
+                        nama: 'Session & User State v4.0',
+                        keterangan: 'Getter · Setter · 13 flag role · csCekSessionValid · ' +
+                                    'auto-logout 10 menit · heartbeat 30 detik · ' +
+                                    'hierarki Kopdes A40 · csCekBolehKelola'
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('CS3 auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS3.12c] — LOG TERPASANG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    console.log('%c🇮🇩 BLOK CS3 v4.0 — SESSION & USER STATE terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   👤 Getter (8): getUserAktif, getDataIdUser, getIdUserAktif,');
+    console.log('                   getRoleUserAktif, getKodeRoleUserAktif,');
+    console.log('                   getNamaUserAktif, getUsernameUserAktif, isLogin');
+    console.log('   🔐 Setter (2): setUserAktif, clearUserAktif');
+    console.log('   🎭 Flag role (13): isSA, isSA_STAF, isMKT, isTGH, isCS, isEO,');
+    console.log('                      isSOT, isSOO, isORG, isIND, isCT, isFIN,');
+    console.log('                      isKasir, isKopdes');
+    console.log('   🏢 Kepemilikan (3): csCekKepemilikan, csGetIdOwnerAktif, csGetKodeRoleOwner');
+    console.log('   🌳 Hierarki Kopdes (A40): csCekHierarkiKopdes (4 tingkat)');
+    console.log('   🛡️  Validasi akses: csCekBolehKelola');
+    console.log('   ⏱️  Auto-logout: ' + window.CS_LIMIT.AUTO_LOGOUT_MENIT + ' menit');
+    console.log('   💓 Heartbeat: ' + window.CS_LIMIT.HEARTBEAT_DETIK + ' detik');
+    console.log('   📍 Peta internal:');
+    console.log('      • PETA_OWNER_KASIR: 6 varian kasir');
+    console.log('      • PETA_INDUK_KOPDES: 4 tingkat Kopdes');
+    console.log('   🔍 Debug: debugCS3()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK CS3 — SESSION & USER STATE 🇮🇩 v4.0 FINAL ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK CS4 — UTILITAS DASAR 🇮🇩 v4.0 FINAL ══════════════ -->
+<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
+<!-- ═══ Dependency: CS1 v4.2 + CS2 v4.0 + CS3 v4.0 ═══════════ -->
+<!-- ═══ Guard: _coreSystem4DoneV4 (UTAMA) + alias V3 + V2 + V1 -->
+<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Role Utilities) ═══ -->
+<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36, A40 -->
+<!-- ═══ Isi: 14 modul [CS4.1]—[CS4.14] ═══════════════════════ -->
+<!-- ═══   [CS4.1]   Escape HTML & JS ═════════════════════════ -->
+<!-- ═══   [CS4.2]   Format Rupiah (2 varian) ═════════════════ -->
+<!-- ═══   [CS4.3]   Hitung Jarak (Haversine) ═════════════════ -->
+<!-- ═══   [CS4.4]   Format Radius Kopdes (A40) ═══════════════ -->
+<!-- ═══   [CS4.5]   Format Tanggal & Waktu Relatif ═══════════ -->
+<!-- ═══   [CS4.6]   Parse & Trim ═════════════════════════════ -->
+<!-- ═══   [CS4.7]   Validasi Email, HP, NIK ══════════════════ -->
+<!-- ═══   [CS4.8]   Validasi NIK 16 (A38) ════════════════════ -->
+<!-- ═══   [CS4.9]   Validasi Kode Role & Kode Awal (32 role) ═ -->
+<!-- ═══   [CS4.10]  Helper Tipe (isEmpty, isArray, isObject) ═ -->
+<!-- ═══   [CS4.11]  Random & Hash ════════════════════════════ -->
+<!-- ═══   [CS4.12]  Debounce & Throttle ══════════════════════ -->
+<!-- ═══   [CS4.13]  Helper Array & String ════════════════════ -->
+<!-- ═══   [CS4.14]  Debug + auto-registry + log ══════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_CS4_UTILITAS_V4() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK + ALIAS
+    // ═══════════════════════════════════════════════════════════
+    if (window._coreSystem4DoneV4) {
+        console.log('ℹ️ CS4 v' + (window._coreSystem4Versi || '?') + ' sudah terpasang.');
+        return;
+    }
+    var cs3Ok = window._coreSystem3DoneV4 || window._coreSystem3DoneV3;
+    if (!cs3Ok) {
+        console.warn('⚠️ CS3 belum terpasang. CS4 v4.0 ditunda.');
+        return;
+    }
+    window._coreSystem4DoneV4 = true;
+    window._coreSystem4DoneV3 = true;
+    window._coreSystem4DoneV2 = true;
+    window._coreSystem4DoneV1 = true;
+    window._coreSystem4Done   = true;
+    window._coreSystem4Versi  = '4.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.1] — ESCAPE HTML & JS
+    // ═══════════════════════════════════════════════════════════
+    window.csEscHtml = function(s) {
+        if (s === null || s === undefined) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
+    window.csEscJs = function(s) {
+        if (s === null || s === undefined) return '';
+        return String(s)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+    };
+    if (typeof window.hfEscHtml !== 'function') window.hfEscHtml = window.csEscHtml;
+    if (typeof window.saEsc     !== 'function') window.saEsc     = window.csEscHtml;
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.2] — FORMAT RUPIAH
+    // ═══════════════════════════════════════════════════════════
+    window.csFormatRp = function(n) {
+        try {
+            var v = parseInt(n, 10) || 0;
+            return 'Rp ' + v.toLocaleString('id-ID');
+        } catch (e) { return 'Rp 0'; }
+    };
+    window.csFormatRpSingkat = function(n) {
+        try {
+            n = parseFloat(n) || 0;
+            var abs = Math.abs(n);
+            var sign = n < 0 ? '-' : '';
+            if (abs < 1000)       return sign + 'Rp ' + Math.round(abs);
+            if (abs < 1000000)    return sign + 'Rp ' + (abs / 1000).toFixed(1).replace('.0', '') + 'K';
+            if (abs < 1000000000) return sign + 'Rp ' + (abs / 1000000).toFixed(1).replace('.0', '') + 'JT';
+            return sign + 'Rp ' + (abs / 1000000000).toFixed(1).replace('.0', '') + 'M';
+        } catch (e) { return 'Rp 0'; }
+    };
+    if (typeof window.formatRupiahProdukGlobal !== 'function') {
+        window.formatRupiahProdukGlobal = window.csFormatRp;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.3] — HITUNG JARAK (HAVERSINE)
+    // ═══════════════════════════════════════════════════════════
+    window.csHitungJarak = function(lat1, lng1, lat2, lng2) {
+        try {
+            var a1 = parseFloat(lat1), b1 = parseFloat(lng1);
+            var a2 = parseFloat(lat2), b2 = parseFloat(lng2);
+            if ([a1, b1, a2, b2].some(isNaN)) return null;
+            var R = 6371;
+            var dLat = (a2 - a1) * Math.PI / 180;
+            var dLng = (b2 - b1) * Math.PI / 180;
+            var x = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                    Math.cos(a1 * Math.PI / 180) * Math.cos(a2 * Math.PI / 180) *
+                    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+            var c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+            return R * c;
+        } catch (e) { return null; }
+    };
+    window.csFormatJarak = function(km) {
+        var k = parseFloat(km) || 0;
+        if (k < 1) return Math.round(k * 1000) + ' m';
+        return k.toFixed(1).replace('.', ',') + ' km';
+    };
+    if (typeof window.hitungJarakKoordinatGlobal !== 'function') {
+        window.hitungJarakKoordinatGlobal = window.csHitungJarak;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.4] — FORMAT RADIUS KOPDES (A40)
+    // ═══════════════════════════════════════════════════════════
+    // Radius default per tingkat Kopdes:
+    //   PUSAT: seluruh Indonesia (~5000 km)
+    //   KAB:   se-provinsi (~500 km)
+    //   KEC:   sekabupaten (~50 km)
+    //   DESA:  sekecamatan (~10 km)
+    // ═══════════════════════════════════════════════════════════
+    var RADIUS_KOPDES = {
+        'KDMP_PUSAT': { min: 0, max: 5000, label: 'Nasional' },
+        'KDMP_KAB':   { min: 0, max: 500,  label: 'Provinsi' },
+        'KDMP_KEC':   { min: 0, max: 50,   label: 'Kabupaten' },
+        'KDMP_DESA':  { min: 0, max: 10,   label: 'Kecamatan' }
+    };
+
+    window.csFormatRadiusKopdes = function(km, kodeRoleKopdes) {
+        try {
+            var k = parseFloat(km) || 0;
+            var info = RADIUS_KOPDES[kodeRoleKopdes];
+            var label = info ? info.label : 'Umum';
+            var angka;
+            if (k < 1) angka = Math.round(k * 1000) + ' m';
+            else if (k < 100) angka = k.toFixed(1).replace('.', ',') + ' km';
+            else angka = Math.round(k) + ' km';
+            return angka + ' (' + label + ')';
+        } catch (e) { return '0 km'; }
+    };
+
+    window.csGetRadiusKopdes = function(kodeRoleKopdes) {
+        try {
+            return RADIUS_KOPDES[kodeRoleKopdes] || { min: 0, max: 9999, label: 'Umum' };
+        } catch (e) { return { min: 0, max: 9999, label: 'Umum' }; }
+    };
+
+    window.csDalamRadiusKopdes = function(km, kodeRoleKopdes) {
+        try {
+            var k = parseFloat(km) || 0;
+            var info = RADIUS_KOPDES[kodeRoleKopdes];
+            if (!info) return false;
+            return k >= info.min && k <= info.max;
+        } catch (e) { return false; }
+    };
+
+    window.csHitungJarakKopdes = function(lat1, lng1, lat2, lng2, kodeRoleKopdes) {
+        try {
+            var km = window.csHitungJarak(lat1, lng1, lat2, lng2);
+            if (km === null) return null;
+            var info = RADIUS_KOPDES[kodeRoleKopdes];
+            return {
+                km: km,
+                format: window.csFormatRadiusKopdes(km, kodeRoleKopdes),
+                dalamRadius: info ? (km >= info.min && km <= info.max) : false,
+                radiusInfo: info || { min: 0, max: 9999, label: 'Umum' }
+            };
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.5] — FORMAT TANGGAL & WAKTU RELATIF
+    // ═══════════════════════════════════════════════════════════
+    window.csNow = function() { return new Date().toISOString(); };
+
+    window.csFormatTanggal = function(iso, opts) {
+        opts = opts || {};
+        try {
+            if (!iso) return '-';
+            var d = new Date(iso);
+            if (isNaN(d.getTime())) return '-';
+            if (opts.pendek) {
+                return d.toLocaleDateString('id-ID', {
+                    day: '2-digit', month: 'short', year: '2-digit'
+                });
+            }
+            if (opts.lengkap) {
+                return d.toLocaleString('id-ID', {
+                    day: '2-digit', month: 'long', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
+            }
+            return d.toLocaleDateString('id-ID', {
+                day: '2-digit', month: 'long', year: 'numeric'
+            });
+        } catch (e) { return '-'; }
+    };
+
+    window.csUmurHari = function(iso) {
+        try {
+            if (!iso) return 0;
+            var t = new Date(iso).getTime();
+            if (isNaN(t)) return 0;
+            return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
+        } catch (e) { return 0; }
+    };
+
+    window.csWaktuRelatif = function(iso) {
+        try {
+            if (!iso) return '-';
+            var t = new Date(iso).getTime();
+            if (isNaN(t)) return '-';
+            var selisih = Date.now() - t;
+            var detik = Math.floor(selisih / 1000);
+            if (detik < 60)         return 'Baru saja';
+            if (detik < 3600)       return Math.floor(detik / 60) + ' menit lalu';
+            if (detik < 86400)      return Math.floor(detik / 3600) + ' jam lalu';
+            if (detik < 2592000)    return Math.floor(detik / 86400) + ' hari lalu';
+            if (detik < 31536000)   return Math.floor(detik / 2592000) + ' bulan lalu';
+            return Math.floor(detik / 31536000) + ' tahun lalu';
+        } catch (e) { return '-'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.6] — PARSE & TRIM
+    // ═══════════════════════════════════════════════════════════
+    window.csParseInt = function(v, fallback) {
+        var n = parseInt(v, 10);
+        return isNaN(n) ? (fallback || 0) : n;
+    };
+    window.csParseFloat = function(v, fallback) {
+        var n = parseFloat(v);
+        return isNaN(n) ? (fallback || 0) : n;
+    };
+    window.csTrim = function(s, maxLen) {
+        if (s === null || s === undefined) return '';
+        var str = String(s).trim();
+        if (maxLen && str.length > maxLen) str = str.substring(0, maxLen);
+        return str;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.7] — VALIDASI EMAIL, HP, NIK
+    // ═══════════════════════════════════════════════════════════
+    window.csValidasiEmail = function(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ''));
+    };
+    window.csValidasiHp = function(hp) {
+        var s = String(hp || '').replace(/[\s\-\(\)]/g, '');
+        return /^(\+?62|0)8[0-9]{8,12}$/.test(s);
+    };
+    window.csValidasiNik = function(nik) {
+        return /^[0-9]{16}$/.test(String(nik || ''));
+    };
+    window.csNormalisasiHp = function(hp) {
+        try {
+            var s = String(hp || '').replace(/[\s\-\(\)]/g, '');
+            if (/^0/.test(s)) return '+62' + s.substring(1);
+            if (/^62/.test(s)) return '+' + s;
+            if (/^8/.test(s)) return '+62' + s;
+            return s;
+        } catch (e) { return ''; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.8] — VALIDASI NIK 16 (A38)
+    // ═══════════════════════════════════════════════════════════
+    // Validasi NIK 16 digit untuk 15 role verifikasi.
+    // ═══════════════════════════════════════════════════════════
+    window.csValidasiNik16 = function(nik, kodeRole) {
+        try {
+            var n = String(nik || '').replace(/\D/g, '');
+            if (n.length !== 16) {
+                return {
+                    valid: false,
+                    pesan: 'NIK harus 16 digit (anda input: ' + n.length + ' digit)'
+                };
+            }
+            if (kodeRole && typeof window.csRoleButuhNik === 'function') {
+                if (!window.csRoleButuhNik(kodeRole)) {
+                    return {
+                        valid: true,
+                        pesan: 'Role ' + kodeRole + ' tidak butuh NIK'
+                    };
+                }
+            }
+            // Validasi format: digit ke-7-8 = tanggal lahir (01-71)
+            var tgl = parseInt(n.substring(6, 8), 10);
+            if (tgl < 1 || tgl > 71) {
+                return { valid: false, pesan: 'NIK tidak valid (digit tanggal lahir salah)' };
+            }
+            return { valid: true, nik: n };
+        } catch (e) {
+            return { valid: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.9] — VALIDASI KODE ROLE & KODE AWAL (32 role)
+    // ═══════════════════════════════════════════════════════════
+    window.csValidasiKodeRole = function(kodeRole) {
+        try {
+            if (!kodeRole) return { valid: false, pesan: 'Kode role kosong' };
+            if (!window.CS_ROLE_MAP) return { valid: false, pesan: 'CS_ROLE_MAP tidak tersedia' };
+            if (!window.CS_ROLE_MAP[kodeRole]) {
+                return { valid: false, pesan: 'Kode role tidak dikenal: ' + kodeRole };
+            }
+            var info = window.CS_ROLE_MAP[kodeRole];
+            return {
+                valid: true,
+                info: info,
+                kategori: info.kategori,
+                tipe: info.tipe,
+                prefix: info.prefix || kodeRole,
+                kodeAwal: info.kodeAwal || '-'
+            };
+        } catch (e) { return { valid: false, pesan: e.message }; }
+    };
+
+    window.csValidasiKodeAwal = function(kodeAwal) {
+        try {
+            if (!kodeAwal) return { valid: false, pesan: 'Kode awal kosong' };
+            if (!window.CS_ROLE_MAP) return { valid: false, pesan: 'CS_ROLE_MAP tidak tersedia' };
+            var ka = String(kodeAwal).trim();
+            var found = null;
+            Object.keys(window.CS_ROLE_MAP).forEach(function(kode) {
+                var r = window.CS_ROLE_MAP[kode];
+                if (r && r.kodeAwal === ka) {
+                    found = Object.assign({ kode: kode }, r);
+                }
+            });
+            if (!found) return { valid: false, pesan: 'Kode awal tidak dikenal: ' + ka };
+            return {
+                valid: true,
+                kodeRole: found.kode,
+                info: found,
+                kategori: found.kategori
+            };
+        } catch (e) { return { valid: false, pesan: e.message }; }
+    };
+
+    window.csFormatKodeAwal = function(kodeAwal) {
+        try {
+            if (!kodeAwal) return '-';
+            var ka = String(kodeAwal).trim();
+            if (/^10[0-3]$/.test(ka)) {
+                var levelMap = { '100': 'Pusat', '101': 'Kabupaten', '102': 'Kecamatan', '103': 'Desa' };
+                return ka + ' — Kopdes ' + (levelMap[ka] || '?');
+            }
+            if (/^29\.\d+\.1$/.test(ka)) return ka + ' — Kasir';
+            if (/^\d+\.1$/.test(ka)) return ka;
+            return ka;
+        } catch (e) { return kodeAwal; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.10] — HELPER TIPE
+    // ═══════════════════════════════════════════════════════════
+    window.csIsEmpty = function(v) {
+        if (v === null || v === undefined) return true;
+        if (typeof v === 'string' && v.trim() === '') return true;
+        if (Array.isArray(v) && v.length === 0) return true;
+        if (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) return true;
+        return false;
+    };
+    window.csIsArray    = function(v) { return Array.isArray(v); };
+    window.csIsObject   = function(v) { return v && typeof v === 'object' && !Array.isArray(v); };
+    window.csIsFunction = function(v) { return typeof v === 'function'; };
+    window.csIsString   = function(v) { return typeof v === 'string'; };
+    window.csIsNumber   = function(v) { return typeof v === 'number' && !isNaN(v); };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.11] — RANDOM & HASH
+    // ═══════════════════════════════════════════════════════════
+    window.csRandom = function(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    };
+    window.csRandomStr = function(len) {
+        var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        var s = '';
+        for (var i = 0; i < (len || 4); i++) {
+            s += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return s;
+    };
+    window.csHash = function(s) {
+        try {
+            var str = String(s || '');
+            var h = 5381;
+            for (var i = 0; i < str.length; i++) {
+                h = ((h << 5) + h) + str.charCodeAt(i);
+                h = h & h;
+            }
+            return Math.abs(h).toString(36);
+        } catch (e) { return ''; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.12] — DEBOUNCE & THROTTLE
+    // ═══════════════════════════════════════════════════════════
+    window.csDebounce = function(fn, delay) {
+        var timer;
+        return function() {
+            var ctx = this, args = arguments;
+            clearTimeout(timer);
+            timer = setTimeout(function() { fn.apply(ctx, args); }, delay || 300);
+        };
+    };
+    window.csThrottle = function(fn, limit) {
+        var last = 0;
+        return function() {
+            var now = Date.now();
+            if (now - last >= (limit || 300)) {
+                last = now;
+                fn.apply(this, arguments);
+            }
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.13] — HELPER ARRAY & STRING
+    // ═══════════════════════════════════════════════════════════
+    window.csUniqArray = function(arr) {
+        try {
+            if (!Array.isArray(arr)) return [];
+            return arr.filter(function(v, i, a) { return a.indexOf(v) === i; });
+        } catch (e) { return []; }
+    };
+    window.csSortArray = function(arr, key, asc) {
+        try {
+            if (!Array.isArray(arr)) return [];
+            var sorted = arr.slice();
+            sorted.sort(function(a, b) {
+                var va = key ? a[key] : a;
+                var vb = key ? b[key] : b;
+                if (va < vb) return asc !== false ? -1 : 1;
+                if (va > vb) return asc !== false ? 1 : -1;
+                return 0;
+            });
+            return sorted;
+        } catch (e) { return arr; }
+    };
+    window.csGroupBy = function(arr, key) {
+        try {
+            if (!Array.isArray(arr)) return {};
+            var hasil = {};
+            arr.forEach(function(item) {
+                if (!item) return;
+                var k = key ? item[key] : 'lain';
+                if (!hasil[k]) hasil[k] = [];
+                hasil[k].push(item);
+            });
+            return hasil;
+        } catch (e) { return {}; }
+    };
+    window.csPotongTeks = function(teks, maxLen, suffix) {
+        try {
+            var s = String(teks || '');
+            if (s.length <= maxLen) return s;
+            return s.substring(0, maxLen) + (suffix || '...');
+        } catch (e) { return ''; }
+    };
+    window.csBersihkanNomor = function(teks) {
+        try { return String(teks || '').replace(/\D/g, ''); }
+        catch (e) { return ''; }
+    };
+    window.csTitleCase = function(teks) {
+        try {
+            return String(teks || '')
+                .toLowerCase()
+                .replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+        } catch (e) { return teks; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.14a] — DEBUG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    window.debugCS4 = function() {
+        var totalRole = window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0;
+        var info = {
+            blok: 'CS4',
+            versi: '4.0-R2COIN',
+            guard: {
+                v4: window._coreSystem4DoneV4,
+                v3: window._coreSystem4DoneV3,
+                v2: window._coreSystem4DoneV2,
+                alias: window._coreSystem4Done
+            },
+            target32Role: {
+                total: totalRole,
+                target: 32,
+                lengkap: totalRole === 32
+            },
+            sample: {
+                escHtml:        window.csEscHtml('<b>Test</b>'),
+                formatRp:       window.csFormatRp(45000),
+                rpSingkat:      window.csFormatRpSingkat(1250000),
+                jarak:          window.csHitungJarak(-7.45, 108.65, -7.51, 108.58),
+                formatJarak:    window.csFormatJarak(2.5),
+                formatRadius:   window.csFormatRadiusKopdes(5, 'KDMP_DESA'),
+                jarakKopdes:    window.csHitungJarakKopdes(-7.45, 108.65, -7.51, 108.58, 'KDMP_KEC'),
+                tanggal:        window.csFormatTanggal(new Date().toISOString()),
+                waktuRelatif:   window.csWaktuRelatif(new Date(Date.now() - 3600000).toISOString()),
+                validasiEmail:  window.csValidasiEmail('test@mail.com'),
+                validasiHp:     window.csValidasiHp('081234567890'),
+                validasiNik:    window.csValidasiNik('3207012345678901'),
+                validasiNik16:  window.csValidasiNik16('3207012345678901', 'TK'),
+                validasiKodeRole: window.csValidasiKodeRole('TK'),
+                validasiKodeAwal: window.csValidasiKodeAwal('11.1'),
+                formatKodeAwal: window.csFormatKodeAwal('11.1'),
+                normalisasiHp:  window.csNormalisasiHp('081234567890'),
+                titleCase:      window.csTitleCase('toko online r2coin')
+            },
+            cekV4: {
+                adaFormatRadiusKopdes: typeof window.csFormatRadiusKopdes === 'function',
+                adaHitungJarakKopdes:  typeof window.csHitungJarakKopdes === 'function',
+                adaValidasiNik16:      typeof window.csValidasiNik16 === 'function',
+                adaValidasiKodeRole:   typeof window.csValidasiKodeRole === 'function',
+                adaValidasiKodeAwal:   typeof window.csValidasiKodeAwal === 'function',
+                adaFormatKodeAwal:     typeof window.csFormatKodeAwal === 'function',
+                radiusKopdes4Tingkat:  Object.keys(RADIUS_KOPDES).length === 4
+            },
+            fungsi: {
+                csEscHtml:           typeof window.csEscHtml,
+                csEscJs:             typeof window.csEscJs,
+                csFormatRp:          typeof window.csFormatRp,
+                csFormatRpSingkat:   typeof window.csFormatRpSingkat,
+                csHitungJarak:       typeof window.csHitungJarak,
+                csFormatJarak:       typeof window.csFormatJarak,
+                csFormatRadiusKopdes: typeof window.csFormatRadiusKopdes,
+                csGetRadiusKopdes:   typeof window.csGetRadiusKopdes,
+                csDalamRadiusKopdes: typeof window.csDalamRadiusKopdes,
+                csHitungJarakKopdes: typeof window.csHitungJarakKopdes,
+                csNow:               typeof window.csNow,
+                csFormatTanggal:     typeof window.csFormatTanggal,
+                csUmurHari:          typeof window.csUmurHari,
+                csWaktuRelatif:      typeof window.csWaktuRelatif,
+                csParseInt:          typeof window.csParseInt,
+                csParseFloat:        typeof window.csParseFloat,
+                csTrim:              typeof window.csTrim,
+                csValidasiEmail:     typeof window.csValidasiEmail,
+                csValidasiHp:        typeof window.csValidasiHp,
+                csValidasiNik:       typeof window.csValidasiNik,
+                csValidasiNik16:     typeof window.csValidasiNik16,
+                csNormalisasiHp:     typeof window.csNormalisasiHp,
+                csValidasiKodeRole:  typeof window.csValidasiKodeRole,
+                csValidasiKodeAwal:  typeof window.csValidasiKodeAwal,
+                csFormatKodeAwal:    typeof window.csFormatKodeAwal,
+                csIsEmpty:           typeof window.csIsEmpty,
+                csIsArray:           typeof window.csIsArray,
+                csIsObject:          typeof window.csIsObject,
+                csIsFunction:        typeof window.csIsFunction,
+                csRandom:            typeof window.csRandom,
+                csRandomStr:         typeof window.csRandomStr,
+                csHash:              typeof window.csHash,
+                csDebounce:          typeof window.csDebounce,
+                csThrottle:          typeof window.csThrottle,
+                csUniqArray:         typeof window.csUniqArray,
+                csSortArray:         typeof window.csSortArray,
+                csGroupBy:           typeof window.csGroupBy,
+                csPotongTeks:        typeof window.csPotongTeks,
+                csBersihkanNomor:    typeof window.csBersihkanNomor,
+                csTitleCase:         typeof window.csTitleCase
+            }
+        };
+        console.log('🔍 debugCS4 v4.0-R2COIN:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.14b] — AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateBlok === 'function') {
+                window.cpUpdateBlok('CS4', {
+                    status: 'Selesai',
+                    tanggal: new Date().toISOString().substring(0, 10),
+                    nama: 'Utilitas Dasar v4.0'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var ada = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'CS4';
+                });
+                if (!ada) {
+                    window.cpTambahRiwayat({
+                        blok: 'CS4',
+                        nama: 'Utilitas Dasar v4.0',
+                        keterangan: 'Escape · Format Rupiah · Hitung Jarak · ' +
+                                    'Radius Kopdes (A40) · Format Tanggal · ' +
+                                    'Validasi Email/HP/NIK/NIK16 · Validasi Kode Role/Awal · ' +
+                                    'Random · Hash · Debounce · 40+ utility'
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('CS4 auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS4.14c] — LOG TERPASANG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    var _totalRole = window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0;
+    console.log('%c🇮🇩 BLOK CS4 v4.0 — UTILITAS DASAR terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   🔧 Escape (2): csEscHtml, csEscJs');
+    console.log('   💰 Format Rupiah (2): csFormatRp, csFormatRpSingkat');
+    console.log('   📍 Jarak (2): csHitungJarak, csFormatJarak');
+    console.log('   🌳 Radius Kopdes (4): csFormatRadiusKopdes, csGetRadiusKopdes,');
+    console.log('                         csDalamRadiusKopdes, csHitungJarakKopdes');
+    console.log('   📅 Tanggal (4): csNow, csFormatTanggal, csUmurHari, csWaktuRelatif');
+    console.log('   ✅ Validasi (5): Email, Hp, Nik, Nik16, NormalisasiHp');
+    console.log('   🎯 Kode Role (3): csValidasiKodeRole, csValidasiKodeAwal, csFormatKodeAwal');
+    console.log('   🔢 Tipe (6): csIsEmpty, csIsArray, csIsObject, csIsFunction, csIsString, csIsNumber');
+    console.log('   🎲 Random & Hash (3): csRandom, csRandomStr, csHash');
+    console.log('   ⏱️  Debounce & Throttle (2): csDebounce, csThrottle');
+    console.log('   📚 Array & String (6): csUniqArray, csSortArray, csGroupBy,');
+    console.log('                          csPotongTeks, csBersihkanNomor, csTitleCase');
+    console.log('   🇮🇩 Radius Kopdes 4 tingkat (A40):');
+    console.log('      • KDMP_PUSAT : 0-5000 km (Nasional)');
+    console.log('      • KDMP_KAB   : 0-500 km (Provinsi)');
+    console.log('      • KDMP_KEC   : 0-50 km (Kabupaten)');
+    console.log('      • KDMP_DESA  : 0-10 km (Kecamatan)');
+    console.log('   🎯 32 ROLE terdeteksi: ' + _totalRole + '/32 ' +
+                (_totalRole === 32 ? '✅' : '⚠️'));
+    console.log('   🔍 Debug: debugCS4()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK CS4 — UTILITAS DASAR 🇮🇩 v4.0 FINAL ═════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK CS5 — ID GENERATOR 🇮🇩 v4.0 FINAL ═════════════════ -->
+<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
+<!-- ═══ Dependency: CS1 v4.2 + CS2 v4.0 + CS3 v4.0 + CS4 v4.0 -->
+<!-- ═══ Guard: _coreSystem5DoneV4 (UTAMA) + alias V3 + V2 + V1 -->
+<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Prefix) ═══════════ -->
+<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36, A37 -->
+<!-- ═══         A40, A42 ═════════════════════════════════════ -->
+<!-- ═══ Isi: 12 modul [CS5.1]—[CS5.12] ═══════════════════════ -->
+<!-- ═══   [CS5.1]   generateKodeUnik (32 prefix) ═════════════ -->
+<!-- ═══   [CS5.2]   generateKodeKopdes (4 tingkat A40) ═══════ -->
+<!-- ═══   [CS5.3]   csGenerateIdKopdes4Tingkat ═══════════════ -->
+<!-- ═══   [CS5.4]   csGenerateIdKasir6Varian (A42) ═══════════ -->
+<!-- ═══   [CS5.5]   ID Transaksi, Produk, Etalase, Pengajuan ═ -->
+<!-- ═══   [CS5.6]   Kode Toko & Koleksi ══════════════════════ -->
+<!-- ═══   [CS5.7]   csValidasiFormatId ═══════════════════════ -->
+<!-- ═══   [CS5.8]   csEkstrakPrefixId + csDeteksiKodeRoleDariId -->
+<!-- ═══   [CS5.9]   csDeteksiLevelKopdesDariId ═══════════════ -->
+<!-- ═══   [CS5.10]  csGenerateIdBatch32Role ══════════════════ -->
+<!-- ═══   [CS5.11]  csStatistikPrefix32 + Alias hf* ══════════ -->
+<!-- ═══   [CS5.12]  Debug + auto-registry + log ══════════════ -->
+<!-- ═══ ⚠️ Format utama: ID_R2C_{PREFIX}-{6 digit} ═══════════ -->
+<!-- ═══ ⚠️ Kopdes: ID_R2C_{PREFIX}-{WIL}-{6 digit} ══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_CS5_IDGENERATOR_V4() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK + ALIAS
+    // ═══════════════════════════════════════════════════════════
+    if (window._coreSystem5DoneV4) {
+        console.log('ℹ️ CS5 v' + (window._coreSystem5Versi || '?') + ' sudah terpasang.');
+        return;
+    }
+    var cs4Ok = window._coreSystem4DoneV4 || window._coreSystem4DoneV3;
+    if (!cs4Ok) {
+        console.warn('⚠️ CS4 belum terpasang. CS5 v4.0 ditunda.');
+        return;
+    }
+    if (!window.CS_PREFIX_MAP) {
+        console.warn('⚠️ CS_PREFIX_MAP tidak ada. CS5 v4.0 ditunda.');
+        return;
+    }
+    window._coreSystem5DoneV4 = true;
+    window._coreSystem5DoneV3 = true;
+    window._coreSystem5DoneV2 = true;
+    window._coreSystem5DoneV1 = true;
+    window._coreSystem5Done   = true;
+    window._coreSystem5Versi  = '4.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.0] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _getPrefix(kodeRole) {
+        if (window.CS_PREFIX_MAP && window.CS_PREFIX_MAP[kodeRole]) {
+            return window.CS_PREFIX_MAP[kodeRole];
+        }
+        return String(kodeRole || 'XX').toUpperCase().substring(0, 6);
+    }
+
+    function _ambilIdExisting() {
+        var existingIds = {};
+        try {
+            var lu = window.csLoadJSON('dataLoginUser', []);
+            var aa = window.csLoadJSON('dataAkunAktif', []);
+            (lu || []).forEach(function(u) {
+                if (u && u.idUser) existingIds[u.idUser] = true;
+                if (u && u.id) existingIds[u.id] = true;
+            });
+            (aa || []).forEach(function(a) {
+                if (a && a.idUser) existingIds[a.idUser] = true;
+                if (a && a.id) existingIds[a.id] = true;
+            });
+        } catch (e) {}
+        return existingIds;
+    }
+
+    function _randomDigit(n) {
+        var s = String(Math.floor(100000 + Math.random() * 900000));
+        if (n && n < 6) s = s.substring(0, n);
+        return s;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.1] — generateKodeUnik (32 prefix)
+    // ═══════════════════════════════════════════════════════════
+    // [A37] — Format: ID_R2C_{PREFIX}-{6 digit angka}
+    // Contoh: ID_R2C_TK-482915, ID_R2C_KDP-123456
+    // ═══════════════════════════════════════════════════════════
+    window.generateKodeUnik = function(roleKode) {
+        try {
+            var kode = String(roleKode || 'XX').toUpperCase().trim();
+
+            // Validasi kodeRole terhadap 32 role
+            if (window.CS_ROLE_MAP && !window.CS_ROLE_MAP[kode]) {
+                var alias = window.csAliasRoleLama ? window.csAliasRoleLama(kode) : null;
+                if (alias && window.CS_ROLE_MAP[alias]) {
+                    kode = alias;
+                } else {
+                    console.warn('⚠️ generateKodeUnik: kodeRole tidak dikenal:', kode);
+                }
+            }
+
+            var prefix = _getPrefix(kode);
+            var existingIds = _ambilIdExisting();
+
+            // Loop max 50× cari ID yang belum dipakai
+            var idBaru = null;
+            for (var i = 0; i < 50; i++) {
+                var kandidat = 'ID_R2C_' + prefix + '-' + _randomDigit(6);
+                if (!existingIds[kandidat]) {
+                    idBaru = kandidat;
+                    break;
+                }
+            }
+            if (!idBaru) {
+                var fallback = String(Date.now() % 1000000).padStart(6, '0');
+                idBaru = 'ID_R2C_' + prefix + '-' + fallback;
+            }
+            return idBaru;
+        } catch (e) {
+            console.error('generateKodeUnik error:', e);
+            return 'ID_R2C_XX-' + _randomDigit(6);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.2] — generateKodeKopdes (4 tingkat A40)
+    // ═══════════════════════════════════════════════════════════
+    // [A40] — Format khusus Kopdes untuk hierarki:
+    //   KDP  = Pusat (kode awal 100)
+    //   KDK  = Kabupaten (kode awal 101)
+    //   KDKC = Kecamatan (kode awal 102)
+    //   KDD  = Desa (kode awal 103)
+    // Format: ID_R2C_{PREFIX}-{KODE_WILAYAH}-{6 digit}
+    // ═══════════════════════════════════════════════════════════
+    window.generateKodeKopdes = function(level, kodeWilayah) {
+        try {
+            var validLevels = ['KDMP_PUSAT', 'KDMP_KAB', 'KDMP_KEC', 'KDMP_DESA'];
+            if (validLevels.indexOf(level) === -1) {
+                console.warn('⚠️ generateKodeKopdes: level tidak valid:', level);
+                level = 'KDMP_PUSAT';
+            }
+            var prefix = _getPrefix(level);
+            var wil = String(kodeWilayah || 'NAS').toUpperCase().substring(0, 4);
+            var existingIds = _ambilIdExisting();
+
+            var idBaru = null;
+            for (var i = 0; i < 50; i++) {
+                var kandidat = 'ID_R2C_' + prefix + '-' + wil + '-' + _randomDigit(6);
+                if (!existingIds[kandidat]) {
+                    idBaru = kandidat;
+                    break;
+                }
+            }
+            if (!idBaru) {
+                var fallback = String(Date.now() % 1000000).padStart(6, '0');
+                idBaru = 'ID_R2C_' + prefix + '-' + wil + '-' + fallback;
+            }
+            return idBaru;
+        } catch (e) {
+            console.error('generateKodeKopdes error:', e);
+            return 'ID_R2C_KDP-NAS-' + _randomDigit(6);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.3] — csGenerateIdKopdes4Tingkat
+    // ═══════════════════════════════════════════════════════════
+    window.csGenerateIdKopdes4Tingkat = function(kodeRole, kodeWilayah) {
+        try {
+            var validRole = ['KDMP_PUSAT', 'KDMP_KAB', 'KDMP_KEC', 'KDMP_DESA'];
+            if (validRole.indexOf(kodeRole) === -1) {
+                return { sukses: false, pesan: 'Kode role bukan Kopdes: ' + kodeRole };
+            }
+            var id = window.generateKodeKopdes(kodeRole, kodeWilayah);
+            var level = {
+                'KDMP_PUSAT': 1, 'KDMP_KAB': 2, 'KDMP_KEC': 3, 'KDMP_DESA': 4
+            }[kodeRole];
+            return {
+                sukses: true,
+                id: id,
+                kodeRole: kodeRole,
+                level: level,
+                prefix: _getPrefix(kodeRole),
+                wilayah: kodeWilayah || 'NAS'
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.4] — csGenerateIdKasir6Varian (A42)
+    // ═══════════════════════════════════════════════════════════
+    window.csGenerateIdKasir6Varian = function(kodeKasir) {
+        try {
+            var validKasir = ['KSR_TK', 'KSR_PP', 'KSR_PM', 'KSR_DST', 'KSR_GR', 'KSR_KDMP'];
+            if (validKasir.indexOf(kodeKasir) === -1) {
+                return { sukses: false, pesan: 'Kode kasir tidak valid: ' + kodeKasir };
+            }
+            var id = window.generateKodeUnik(kodeKasir);
+            var ownerRole = {
+                'KSR_TK': 'TK', 'KSR_PP': 'PP', 'KSR_PM': 'PM',
+                'KSR_DST': 'DST', 'KSR_GR': 'GR', 'KSR_KDMP': 'KDMP_DESA'
+            }[kodeKasir];
+            return {
+                sukses: true,
+                id: id,
+                kodeKasir: kodeKasir,
+                ownerRole: ownerRole,
+                prefix: _getPrefix(kodeKasir)
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.5] — ID Transaksi, Produk, Etalase, Pengajuan
+    // ═══════════════════════════════════════════════════════════
+    window.csGenerateIdTransaksi = function() {
+        return 'TRX-' + Date.now().toString(36).toUpperCase() + '-' + window.csRandomStr(4);
+    };
+    window.csGenerateIdProduk = function() {
+        return 'PRD-' + Date.now().toString(36).toUpperCase() + '-' + window.csRandomStr(4);
+    };
+    window.csGenerateIdEtalase = function() {
+        return 'ETL-' + Date.now().toString(36).toUpperCase() + '-' + window.csRandomStr(4);
+    };
+    window.csGenerateIdPengajuan = function() {
+        return 'REG-' + Date.now().toString(36).toUpperCase() + '-' + window.csRandomStr(4);
+    };
+    window.csGenerateIdVerifikasi = function(prefix) {
+        var p = String(prefix || 'VERIF').toUpperCase().substring(0, 6);
+        return p + '-' + Date.now().toString(36).toUpperCase() + '-' + window.csRandomStr(4);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.6] — Kode Toko & Koleksi
+    // ═══════════════════════════════════════════════════════════
+    window.csGenerateKodeToko = function(kodeRole, wilayah) {
+        try {
+            var r = String(kodeRole || 'TK').toUpperCase();
+            var w = String(wilayah || 'BJR').toUpperCase().substring(0, 3);
+            var ts = Date.now().toString().slice(-6);
+            return r + '-' + w + '-' + ts;
+        } catch (e) { return 'TK-BJR-000000'; }
+    };
+    window.csGenerateKodeKoleksi = function(prefix) {
+        var p = String(prefix || 'KOL').toUpperCase().substring(0, 6);
+        return p + '-' + Date.now().toString(36).toUpperCase() + '-' + window.csRandomStr(4);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.7] — csValidasiFormatId
+    // ═══════════════════════════════════════════════════════════
+    window.csValidasiFormatId = function(id) {
+        try {
+            if (!id) return { valid: false, pesan: 'ID kosong' };
+            var s = String(id);
+
+            // Format R2C (ID_R2C_...)
+            if (s.indexOf('ID_R2C_') === 0) {
+                // Cek Kopdes (4 bagian)
+                var mKopdes = s.match(/^ID_R2C_([A-Z_]+)-([A-Z]{2,4})-([0-9]{6})$/);
+                if (mKopdes) {
+                    return {
+                        valid: true,
+                        prefix: mKopdes[1],
+                        wilayah: mKopdes[2],
+                        angka: mKopdes[3],
+                        tipe: 'kopdes'
+                    };
+                }
+                // Cek biasa (3 bagian)
+                var mBiasa = s.match(/^ID_R2C_([A-Z_]+)-([0-9]{6})$/);
+                if (mBiasa) {
+                    return {
+                        valid: true,
+                        prefix: mBiasa[1],
+                        angka: mBiasa[2],
+                        tipe: 'user'
+                    };
+                }
+                return { valid: false, pesan: 'Format ID_R2C tidak valid' };
+            }
+
+            // Format lama (backward compat)
+            if (s.indexOf('ID_TK2R_') === 0) {
+                var mOld = s.match(/^ID_TK2R_([A-Z_]+)-([A-Z0-9]+)$/);
+                if (mOld) {
+                    return { valid: true, prefix: mOld[1], bagian: mOld[2], tipe: 'user-lama' };
+                }
+            }
+
+            // Format entitas (XXX-YYY-ZZZ)
+            var mEnt = s.match(/^([A-Z]+)-([A-Z0-9]+)-([A-Z0-9]+)$/);
+            if (mEnt) {
+                return { valid: true, prefix: mEnt[1], ts: mEnt[2], rnd: mEnt[3], tipe: 'entitas' };
+            }
+            return { valid: false, pesan: 'Format ID tidak dikenal' };
+        } catch (e) {
+            return { valid: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.8] — csEkstrakPrefixId + csDeteksiKodeRoleDariId
+    // ═══════════════════════════════════════════════════════════
+    window.csEkstrakPrefixId = function(id) {
+        try {
+            var v = window.csValidasiFormatId(id);
+            return v.valid ? v.prefix : null;
+        } catch (e) { return null; }
+    };
+
+    window.csDeteksiKodeRoleDariId = function(id) {
+        try {
+            var prefix = window.csEkstrakPrefixId(id);
+            if (!prefix || !window.CS_PREFIX_MAP) return null;
+
+            var kodeRole = null;
+            Object.keys(window.CS_PREFIX_MAP).forEach(function(k) {
+                if (window.CS_PREFIX_MAP[k] === prefix && !kodeRole) {
+                    if (window.CS_ROLE_MAP && window.CS_ROLE_MAP[k]) {
+                        kodeRole = k;
+                    } else if (!kodeRole) {
+                        kodeRole = k;
+                    }
+                }
+            });
+            return kodeRole;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.9] — csDeteksiLevelKopdesDariId
+    // ═══════════════════════════════════════════════════════════
+    window.csDeteksiLevelKopdesDariId = function(id) {
+        try {
+            var prefix = window.csEkstrakPrefixId(id);
+            if (!prefix) return null;
+            var map = {
+                'KDP':  { kodeRole: 'KDMP_PUSAT', level: 1, nama: 'Pusat' },
+                'KDK':  { kodeRole: 'KDMP_KAB',   level: 2, nama: 'Kabupaten' },
+                'KDKC': { kodeRole: 'KDMP_KEC',   level: 3, nama: 'Kecamatan' },
+                'KDD':  { kodeRole: 'KDMP_DESA',  level: 4, nama: 'Desa' }
+            };
+            return map[prefix] || null;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.10] — csGenerateIdBatch32Role
+    // ═══════════════════════════════════════════════════════════
+    window.csGenerateIdBatch = function(roleKode, jumlah) {
+        try {
+            var n = parseInt(jumlah, 10) || 1;
+            if (n > 100) n = 100;
+            var hasil = [];
+            for (var i = 0; i < n; i++) {
+                hasil.push(window.generateKodeUnik(roleKode));
+            }
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    window.csGenerateIdBatch32Role = function(kodeRole, jumlah) {
+        try {
+            if (window.CS_ROLE_MAP && !window.CS_ROLE_MAP[kodeRole]) {
+                return { sukses: false, pesan: 'Kode role tidak valid: ' + kodeRole, list: [] };
+            }
+            var n = parseInt(jumlah, 10) || 1;
+            if (n > 100) n = 100;
+            var list = [];
+            for (var i = 0; i < n; i++) {
+                list.push(window.generateKodeUnik(kodeRole));
+            }
+            return {
+                sukses: true,
+                kodeRole: kodeRole,
+                jumlah: n,
+                prefix: _getPrefix(kodeRole),
+                list: list
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message, list: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.11] — csCekPrefixValid + csGetPrefixMap + csGenerateIdStaf/Kasir + Statistik
+    // ═══════════════════════════════════════════════════════════
+    window.csCekPrefixValid = function(kode) {
+        try {
+            if (window.CS_PREFIX_MAP) {
+                return !!window.CS_PREFIX_MAP[String(kode || '').toUpperCase()];
+            }
+            return false;
+        } catch (e) { return false; }
+    };
+
+    window.csGetPrefixMap = function() {
+        return Object.assign({}, window.CS_PREFIX_MAP || {});
+    };
+
+    window.csGenerateIdStaf = function(kodeRole) {
+        try {
+            var rolePrefix = _getPrefix(kodeRole);
+            var existingIds = _ambilIdExisting();
+            for (var i = 0; i < 50; i++) {
+                var kandidat = 'ID_R2C_STF-' + rolePrefix + '-' + _randomDigit(6);
+                if (!existingIds[kandidat]) return kandidat;
+            }
+            return 'ID_R2C_STF-' + rolePrefix + '-' +
+                   String(Date.now() % 1000000).padStart(6, '0');
+        } catch (e) {
+            return 'ID_R2C_STF-XX-' + _randomDigit(6);
+        }
+    };
+
+    window.csGenerateIdKasir = function(kodeKasir) {
+        try {
+            return window.generateKodeUnik(kodeKasir || 'KSR');
+        } catch (e) {
+            return 'ID_R2C_KSR-' + _randomDigit(6);
+        }
+    };
+
+    window.csStatistikPrefix32 = function() {
+        try {
+            var map = window.CS_PREFIX_MAP || {};
+            var keys = Object.keys(map);
+            var unikPrefix = {};
+            var perKategori = {};
+
+            keys.forEach(function(k) {
+                var p = map[k];
+                unikPrefix[p] = (unikPrefix[p] || 0) + 1;
+                if (window.CS_ROLE_MAP && window.CS_ROLE_MAP[k]) {
+                    var kat = window.CS_ROLE_MAP[k].kategori;
+                    perKategori[kat] = (perKategori[kat] || 0) + 1;
+                }
+            });
+
+            var sample32 = {};
+            if (window.CS_ROLE_MAP) {
+                Object.keys(window.CS_ROLE_MAP).forEach(function(k) {
+                    sample32[k] = _getPrefix(k);
+                });
+            }
+
+            return {
+                totalKodeRole: keys.length,
+                totalPrefixUnik: Object.keys(unikPrefix).length,
+                perKategori: perKategori,
+                sample32: sample32,
+                cek32: {
+                    adaKSR_TK:   !!map['KSR_TK'],
+                    adaKSR_PP:   !!map['KSR_PP'],
+                    adaKSR_PM:   !!map['KSR_PM'],
+                    adaKSR_DST:  !!map['KSR_DST'],
+                    adaKSR_GR:   !!map['KSR_GR'],
+                    adaKSR_KDMP: !!map['KSR_KDMP'],
+                    adaKDP:      !!map['KDMP_PUSAT'],
+                    adaKDK:      !!map['KDMP_KAB'],
+                    adaKDKC:     !!map['KDMP_KEC'],
+                    adaKDD:      !!map['KDMP_DESA']
+                }
+            };
+        } catch (e) {
+            return { totalKodeRole: 0, totalPrefixUnik: 0, perKategori: {}, sample32: {}, cek32: {} };
+        }
+    };
+
+    window.csStatistikPrefix = window.csStatistikPrefix32;
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.12a] — DEBUG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    window.debugCS5 = function() {
+        var stat = window.csStatistikPrefix32();
+        var sampleTK  = window.generateKodeUnik('TK');
+        var sampleKSR = window.generateKodeUnik('KSR_TK');
+        var sampleKDP = window.generateKodeKopdes('KDMP_PUSAT', 'NAS');
+        var sampleKDK = window.generateKodeKopdes('KDMP_KAB',   'JTG');
+        var sampleKDD = window.generateKodeKopdes('KDMP_DESA',  'JTG');
+        var sampleStaf = window.csGenerateIdStaf('MKT');
+        var sampleBatch = window.csGenerateIdBatch32Role('TK', 3);
+
+        var info = {
+            blok: 'CS5',
+            versi: '4.0-R2COIN',
+            guard: {
+                v4: window._coreSystem5DoneV4,
+                v3: window._coreSystem5DoneV3,
+                v2: window._coreSystem5DoneV2,
+                alias: window._coreSystem5Done
+            },
+            target32Role: {
+                total: window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0,
+                target: 32,
+                lengkap: (window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0) === 32
+            },
+            statistik: {
+                totalKodeRole: stat.totalKodeRole,
+                totalPrefixUnik: stat.totalPrefixUnik,
+                perKategori: stat.perKategori,
+                cek32: stat.cek32
+            },
+            sample: {
+                tk:              sampleTK,
+                kasirTK:         sampleKSR,
+                kopdesPusat:     sampleKDP,
+                kopdesKab:       sampleKDK,
+                kopdesDesa:      sampleKDD,
+                stafMkt:         sampleStaf,
+                batchTK:         sampleBatch.list.slice(0, 3),
+                transaksi:       window.csGenerateIdTransaksi(),
+                produk:          window.csGenerateIdProduk(),
+                pengajuan:       window.csGenerateIdPengajuan(),
+                kodeToko:        window.csGenerateKodeToko('TK', 'BJR'),
+                validasiTK:      window.csValidasiFormatId(sampleTK),
+                validasiKDD:     window.csValidasiFormatId(sampleKDD),
+                deteksiKodeRole: window.csDeteksiKodeRoleDariId(sampleTK),
+                deteksiLevel:    window.csDeteksiLevelKopdesDariId(sampleKDD),
+                kopdes4Tingkat:  window.csGenerateIdKopdes4Tingkat('KDMP_KEC', 'JTG'),
+                kasir6Varian:    window.csGenerateIdKasir6Varian('KSR_PP')
+            },
+            cekV4: {
+                totalPrefix32:    stat.totalKodeRole,
+                totalPrefixUnik:  stat.totalPrefixUnik,
+                ada6Kasir:        stat.cek32.adaKSR_TK && stat.cek32.adaKSR_PP &&
+                                  stat.cek32.adaKSR_PM && stat.cek32.adaKSR_DST &&
+                                  stat.cek32.adaKSR_GR && stat.cek32.adaKSR_KDMP,
+                ada4Kopdes:       stat.cek32.adaKDP && stat.cek32.adaKDK &&
+                                  stat.cek32.adaKDKC && stat.cek32.adaKDD,
+                tidakAdaMFD:      !(window.CS_PREFIX_MAP && window.CS_PREFIX_MAP['MFD'])
+            },
+            fungsi: {
+                generateKodeUnik:           typeof window.generateKodeUnik,
+                generateKodeKopdes:         typeof window.generateKodeKopdes,
+                csGenerateIdKopdes4Tingkat: typeof window.csGenerateIdKopdes4Tingkat,
+                csGenerateIdKasir6Varian:   typeof window.csGenerateIdKasir6Varian,
+                csGenerateIdTransaksi:      typeof window.csGenerateIdTransaksi,
+                csGenerateIdProduk:         typeof window.csGenerateIdProduk,
+                csGenerateIdEtalase:        typeof window.csGenerateIdEtalase,
+                csGenerateIdPengajuan:      typeof window.csGenerateIdPengajuan,
+                csGenerateIdVerifikasi:     typeof window.csGenerateIdVerifikasi,
+                csGenerateKodeToko:         typeof window.csGenerateKodeToko,
+                csGenerateKodeKoleksi:      typeof window.csGenerateKodeKoleksi,
+                csValidasiFormatId:         typeof window.csValidasiFormatId,
+                csEkstrakPrefixId:          typeof window.csEkstrakPrefixId,
+                csDeteksiKodeRoleDariId:    typeof window.csDeteksiKodeRoleDariId,
+                csDeteksiLevelKopdesDariId: typeof window.csDeteksiLevelKopdesDariId,
+                csGenerateIdBatch:          typeof window.csGenerateIdBatch,
+                csGenerateIdBatch32Role:    typeof window.csGenerateIdBatch32Role,
+                csCekPrefixValid:           typeof window.csCekPrefixValid,
+                csGetPrefixMap:             typeof window.csGetPrefixMap,
+                csGenerateIdStaf:           typeof window.csGenerateIdStaf,
+                csGenerateIdKasir:          typeof window.csGenerateIdKasir,
+                csStatistikPrefix32:        typeof window.csStatistikPrefix32
+            }
+        };
+        console.log('🔍 debugCS5 v4.0-R2COIN:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.12b] — AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateBlok === 'function') {
+                window.cpUpdateBlok('CS5', {
+                    status: 'Selesai',
+                    tanggal: new Date().toISOString().substring(0, 10),
+                    nama: 'ID Generator v4.0 (32 Prefix)'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var ada = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'CS5';
+                });
+                if (!ada) {
+                    window.cpTambahRiwayat({
+                        blok: 'CS5',
+                        nama: 'ID Generator v4.0 (32 Prefix)',
+                        keterangan: 'generateKodeUnik · generateKodeKopdes · ' +
+                                    'csGenerateIdKopdes4Tingkat (A40) · ' +
+                                    'csGenerateIdKasir6Varian (A42) · ' +
+                                    'csValidasiFormatId · csDeteksiKodeRoleDariId · ' +
+                                    'csStatistikPrefix32'
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('CS5 auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS5.12c] — LOG TERPASANG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    var _stat = window.csStatistikPrefix32();
+    console.log('%c🇮🇩 BLOK CS5 v4.0 — ID GENERATOR terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   🆔 Format: ID_R2C_{PREFIX}-{6 digit}');
+    console.log('   🆔 Format Kopdes: ID_R2C_{PREFIX}-{WIL}-{6 digit}');
+    console.log('   🔑 Total kode role: ' + _stat.totalKodeRole);
+    console.log('   🔑 Total prefix unik: ' + _stat.totalPrefixUnik);
+    console.log('   🇮🇩 Kopdes khusus: KDP · KDK · KDKC · KDD (4 tingkat)');
+    console.log('   🇮🇩 Kasir khusus: KSR_TK · KSR_PP · KSR_PM · KSR_DST · KSR_GR · KSR_KDMP');
+    console.log('   🎁 Generator:');
+    console.log('      • generateKodeUnik(kodeRole) — ID user per role');
+    console.log('      • generateKodeKopdes(level, wilayah) — ID Kopdes');
+    console.log('      • csGenerateIdTransaksi() · csGenerateIdProduk()');
+    console.log('      • csGenerateIdEtalase() · csGenerateIdPengajuan()');
+    console.log('      • csGenerateIdVerifikasi() · csGenerateKodeToko()');
+    console.log('   🔍 Validator:');
+    console.log('      • csValidasiFormatId(id) → { valid, prefix, tipe }');
+    console.log('      • csDeteksiKodeRoleDariId(id) → kodeRole');
+    console.log('      • csDeteksiLevelKopdesDariId(id) → { level, nama }');
+    console.log('   🎯 32 ROLE terdeteksi: ' + _stat.totalKodeRole + '/32 ' +
+                (_stat.totalKodeRole >= 32 ? '✅' : '⚠️'));
+    console.log('   🎯 6 Kasir: ' + (_stat.cek32.adaKSR_TK && _stat.cek32.adaKSR_PP &&
+                _stat.cek32.adaKSR_PM && _stat.cek32.adaKSR_DST &&
+                _stat.cek32.adaKSR_GR && _stat.cek32.adaKSR_KDMP ? '✅' : '⚠️'));
+    console.log('   🎯 4 Kopdes: ' + (_stat.cek32.adaKDP && _stat.cek32.adaKDK &&
+                _stat.cek32.adaKDKC && _stat.cek32.adaKDD ? '✅' : '⚠️'));
+    console.log('   ❌ MFD: ' + (window.CS_PREFIX_MAP && window.CS_PREFIX_MAP['MFD']
+                ? '⚠️ ADA' : '✅ TIDAK ADA'));
+    console.log('   🔍 Debug: debugCS5()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK CS5 — ID GENERATOR 🇮🇩 v4.0 FINAL ══════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK CS6 — UI HELPER & TOAST 🇮🇩 v4.0 FINAL ═══════════ -->
+<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
+<!-- ═══ Dependency: CS1—CS5 (semua) ═══════════════════════════ -->
+<!-- ═══ Guard: _coreSystem6DoneV4 (UTAMA) + alias V3 + V2 + V1 -->
+<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Role UI) ══════════ -->
+<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36, A40 -->
+<!-- ═══ Isi: 10 modul [CS6.1]—[CS6.10] ═══════════════════════ -->
+<!-- ═══   [CS6.1]   csToast (standar tema merah) ═════════════ -->
+<!-- ═══   [CS6.2]   csToastMerahPutih + csToastBendera ═══════ -->
+<!-- ═══   [CS6.3]   csKonfirmasi + csKonfirmasiGanda ═════════ -->
+<!-- ═══   [CS6.4]   csShowLoading + csHideLoading ════════════ -->
+<!-- ═══   [CS6.5]   csShowLoadingKopdes (4 tingkat A40) ══════ -->
+<!-- ═══   [CS6.6]   csLoadingFast (bar atas) ═════════════════ -->
+<!-- ═══   [CS6.7]   tampilkanHalaman + kembaliKeDasbor ═══════ -->
+<!-- ═══   [CS6.8]   tutupMenu + tampilkanPlaceholderMenu (3) ═ -->
+<!-- ═══   [CS6.9]   Modal + Scroll + Fokus + Disable ═════════ -->
+<!-- ═══   [CS6.10]  Debug + auto-registry + log ══════════════ -->
+<!-- ═══ ⚠️ Toast 3 tema: standar · MerahPutih · Bendera ═════ -->
+<!-- ═══ ⚠️ Loading 3 varian: standar · Kopdes · Fast ════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_CS6_UIHELPER_V4() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK + ALIAS
+    // ═══════════════════════════════════════════════════════════
+    if (window._coreSystem6DoneV4) {
+        console.log('ℹ️ CS6 v' + (window._coreSystem6Versi || '?') + ' sudah terpasang.');
+        return;
+    }
+    var cs5Ok = window._coreSystem5DoneV4 || window._coreSystem5DoneV3;
+    if (!cs5Ok) {
+        console.warn('⚠️ CS5 belum terpasang. CS6 v4.0 ditunda.');
+        return;
+    }
+    window._coreSystem6DoneV4 = true;
+    window._coreSystem6DoneV3 = true;
+    window._coreSystem6DoneV2 = true;
+    window._coreSystem6DoneV1 = true;
+    window._coreSystem6Done   = true;
+    window._coreSystem6Versi  = '4.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.0] — VARIABEL INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    var _loadingEl = null;
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.1] — csToast (standar tema merah)
+    // ═══════════════════════════════════════════════════════════
+    window.csToast = function(pesan, tipe, opts) {
+        opts = opts || {};
+        try {
+            var warna = {
+                success: '#28A745',
+                danger:  '#DC3545',
+                warning: '#DC3545',
+                info:    '#17A2B8'
+            }[tipe] || '#333';
+
+            var ikon = {
+                success: 'fas fa-check-circle',
+                danger:  'fas fa-times-circle',
+                warning: 'fas fa-exclamation-triangle',
+                info:    'fas fa-info-circle'
+            }[tipe] || 'fas fa-info-circle';
+
+            var el = document.createElement('div');
+            el.className = 'cs-toast';
+            el.innerHTML = '<i class="' + ikon + ' me-2"></i>' +
+                           window.csEscHtml(pesan);
+            el.style.cssText =
+                'position:fixed;bottom:24px;right:24px;' +
+                'background:' + warna + ';color:#fff;' +
+                'padding:12px 20px;border-radius:8px;' +
+                'font-size:14px;font-weight:600;z-index:99999;' +
+                'box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+                'max-width:340px;opacity:0;' +
+                'transform:translateY(20px);' +
+                'transition:all .3s ease;' +
+                'display:flex;align-items:center;' +
+                'border-left:4px solid #FFFFFF;';
+
+            document.body.appendChild(el);
+            requestAnimationFrame(function() {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+            });
+
+            setTimeout(function() {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(20px)';
+                setTimeout(function() {
+                    if (el.parentNode) el.parentNode.removeChild(el);
+                }, 350);
+            }, opts.duration || window.CS_LIMIT.TOAST_DURATION_MS);
+
+            return true;
+        } catch (e) {
+            console.error('csToast error:', e);
+            return false;
+        }
+    };
+
+    if (typeof window.tampilkanToastUser !== 'function') {
+        window.tampilkanToastUser = window.csToast;
+    }
+    if (typeof window.mptToast !== 'function') {
+        window.mptToast = window.csToast;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.2] — csToastMerahPutih + csToastBendera
+    // ═══════════════════════════════════════════════════════════
+    window.csToastMerahPutih = function(pesan, tipe, opts) {
+        opts = opts || {};
+        try {
+            var warna = {
+                success: 'linear-gradient(90deg,#DC3545 0%,#FFFFFF 100%)',
+                danger:  'linear-gradient(90deg,#DC3545 0%,#8B0000 100%)',
+                warning: 'linear-gradient(90deg,#DC3545 0%,#FFC107 100%)',
+                info:    'linear-gradient(90deg,#DC3545 0%,#17A2B8 100%)'
+            }[tipe] || 'linear-gradient(90deg,#DC3545 0%,#B71C1C 100%)';
+
+            var warnaTeks = tipe === 'success' ? '#000' : '#fff';
+
+            var el = document.createElement('div');
+            el.className = 'cs-toast-mp';
+            el.innerHTML =
+                '<div style="display:flex;align-items:center;">' +
+                    '<span style="font-size:18px;margin-right:8px;">🇮🇩</span>' +
+                    '<span>' + window.csEscHtml(pesan) + '</span>' +
+                '</div>';
+            el.style.cssText =
+                'position:fixed;bottom:24px;right:24px;' +
+                'background:' + warna + ';color:' + warnaTeks + ';' +
+                'padding:14px 22px;border-radius:10px;' +
+                'font-size:14px;font-weight:700;z-index:99999;' +
+                'box-shadow:0 8px 24px rgba(220,53,69,0.4);' +
+                'max-width:360px;opacity:0;' +
+                'transform:translateY(20px);' +
+                'transition:all .3s ease;' +
+                'border:2px solid #DC3545;';
+
+            document.body.appendChild(el);
+            requestAnimationFrame(function() {
+                el.style.opacity = '1';
+                el.style.transform = 'translateY(0)';
+            });
+
+            setTimeout(function() {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(20px)';
+                setTimeout(function() {
+                    if (el.parentNode) el.parentNode.removeChild(el);
+                }, 350);
+            }, opts.duration || 3500);
+
+            return true;
+        } catch (e) {
+            console.error('csToastMerahPutih error:', e);
+            return false;
+        }
+    };
+
+    window.csToastBendera = function(pesan, tipe) {
+        return window.csToastMerahPutih(pesan, tipe, { duration: 4000 });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.3] — csKonfirmasi + csKonfirmasiGanda
+    // ═══════════════════════════════════════════════════════════
+    window.csKonfirmasi = function(pesan, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve) {
+            try {
+                var hasil = window.confirm(pesan);
+                resolve(hasil);
+            } catch (e) {
+                resolve(false);
+            }
+        });
+    };
+
+    window.csKonfirmasiGanda = function(pesan, teksWajib, opts) {
+        opts = opts || {};
+        return new Promise(function(resolve) {
+            try {
+                var input = window.prompt(pesan + '\n\nKetik "' + teksWajib + '" untuk konfirmasi:');
+                resolve(input === teksWajib);
+            } catch (e) {
+                resolve(false);
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.4] — csShowLoading + csHideLoading
+    // ═══════════════════════════════════════════════════════════
+    window.csShowLoading = function(pesan) {
+        try {
+            if (_loadingEl) return;
+            _loadingEl = document.createElement('div');
+            _loadingEl.id = 'csLoadingOverlay';
+            _loadingEl.innerHTML =
+                '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.55);' +
+                'z-index:99998;display:flex;align-items:center;justify-content:center;">' +
+                '<div style="background:#fff;padding:24px 40px;border-radius:12px;' +
+                'text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.3);' +
+                'border-top:4px solid #DC3545;">' +
+                '<i class="fas fa-spinner fa-spin fa-3x mb-3" ' +
+                'style="color:#DC3545;"></i>' +
+                '<p class="mb-0 fw-bold">' +
+                window.csEscHtml(pesan || 'Memuat...') + '</p>' +
+                '</div></div>';
+            document.body.appendChild(_loadingEl);
+            return true;
+        } catch (e) {
+            console.error('csShowLoading error:', e);
+            return false;
+        }
+    };
+
+    window.csHideLoading = function() {
+        try {
+            if (_loadingEl && _loadingEl.parentNode) {
+                _loadingEl.parentNode.removeChild(_loadingEl);
+            }
+            _loadingEl = null;
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.5] — csShowLoadingKopdes (4 tingkat A40)
+    // ═══════════════════════════════════════════════════════════
+    window.csShowLoadingKopdes = function(pesan, level) {
+        try {
+            if (_loadingEl) return;
+            var levelInfo = {
+                1: { nama: 'Pusat',      ikon: 'fas fa-flag',           warna: '#8B0000' },
+                2: { nama: 'Kabupaten',  ikon: 'fas fa-building',       warna: '#B71C1C' },
+                3: { nama: 'Kecamatan',  ikon: 'fas fa-map-marker-alt', warna: '#DC3545' },
+                4: { nama: 'Desa',       ikon: 'fas fa-home',           warna: '#FF6B6B' }
+            }[level] || { nama: 'Kopdes', ikon: 'fas fa-flag', warna: '#DC3545' };
+
+            _loadingEl = document.createElement('div');
+            _loadingEl.id = 'csLoadingOverlay';
+            _loadingEl.innerHTML =
+                '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.65);' +
+                'z-index:99998;display:flex;align-items:center;justify-content:center;">' +
+                '<div style="background:#fff;padding:28px 48px;border-radius:14px;' +
+                'text-align:center;box-shadow:0 12px 48px rgba(220,53,69,0.35);' +
+                'border-top:5px solid ' + levelInfo.warna + ';min-width:280px;">' +
+                '<div style="font-size:36px;margin-bottom:8px;">🇮🇩</div>' +
+                '<i class="' + levelInfo.ikon + ' fa-2x mb-3" ' +
+                'style="color:' + levelInfo.warna + ';"></i>' +
+                '<p class="mb-1 fw-bold" style="font-size:15px;">' +
+                window.csEscHtml(pesan || 'Memuat Data Kopdes ' + levelInfo.nama + '...') + '</p>' +
+                '<small class="text-muted">Tingkat ' + level + ' — ' + levelInfo.nama + '</small>' +
+                '</div></div>';
+            document.body.appendChild(_loadingEl);
+            return true;
+        } catch (e) {
+            console.error('csShowLoadingKopdes error:', e);
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.6] — csLoadingFast (bar atas)
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadingFast = function(pesan) {
+        try {
+            if (_loadingEl) return;
+            _loadingEl = document.createElement('div');
+            _loadingEl.id = 'csLoadingOverlay';
+            _loadingEl.innerHTML =
+                '<div style="position:fixed;top:0;left:0;right:0;height:3px;' +
+                'background:#DC3545;z-index:99999;overflow:hidden;">' +
+                '<div style="width:40%;height:100%;background:rgba(255,255,255,0.5);' +
+                'animation:csLoadingBar 1s ease-in-out infinite;"></div></div>' +
+                '<style>@keyframes csLoadingBar{' +
+                '0%{transform:translateX(-100%);}' +
+                '50%{transform:translateX(150%);}' +
+                '100%{transform:translateX(300%);}}</style>';
+            document.body.appendChild(_loadingEl);
+            return true;
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.7] — tampilkanHalaman + kembaliKeDasbor
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanHalaman = function(namaHalaman) {
+        try {
+            document.querySelectorAll('.page-section').forEach(function(el) {
+                el.classList.remove('active');
+            });
+            var mapId = {
+                'login':        'halamanLogin',
+                'daftar':       'halamanDaftar',
+                'lupaPassword': 'halamanLupaPassword',
+                'dasbor':       'halamanDasbor'
+            };
+            var id = mapId[namaHalaman] ||
+                     ('halaman' + namaHalaman.charAt(0).toUpperCase() +
+                      namaHalaman.slice(1));
+            var target = document.getElementById(id);
+            if (target) {
+                target.classList.add('active');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+                window.halamanAktif = namaHalaman;
+                return true;
+            }
+            console.warn('⚠️ Halaman tidak ditemukan:', namaHalaman);
+            return false;
+        } catch (e) {
+            console.error('tampilkanHalaman error:', e);
+            return false;
+        }
+    };
+
+    window.kembaliKeDasbor = function() {
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+            if (window.kontenAsliDasbor) {
+                konten.innerHTML = window.kontenAsliDasbor;
+            } else if (typeof window.renderMenuUntukRole === 'function') {
+                window.renderMenuUntukRole(
+                    window.getKodeRoleUserAktif() || 'SA'
+                );
+            }
+            window.menuAktifSaatIni = null;
+            return true;
+        } catch (e) {
+            console.error('kembaliKeDasbor error:', e);
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.8] — tutupMenu + 3 Placeholder
+    // ═══════════════════════════════════════════════════════════
+    window.tutupMenu = function() {
+        try {
+            var offcanvas = document.getElementById('offcanvasMenu');
+            if (offcanvas && typeof bootstrap !== 'undefined') {
+                var inst = bootstrap.Offcanvas.getInstance(offcanvas);
+                if (inst) inst.hide();
+            }
+            return true;
+        } catch (e) { return false; }
+    };
+
+    // Placeholder standar
+    window.tampilkanPlaceholderMenu = function(namaMenu, kodeBlok) {
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+            konten.innerHTML =
+                '<div class="container-fluid px-4 py-4">' +
+                    '<div class="d-flex justify-content-between align-items-center ' +
+                    'mb-3 flex-wrap gap-2">' +
+                        '<h4 class="fw-bold text-white mb-0">' +
+                            '<i class="fas fa-tools me-2"></i>' +
+                            window.csEscHtml(namaMenu) +
+                        '</h4>' +
+                        '<button class="btn btn-outline-light btn-sm" ' +
+                                'onclick="kembaliKeDasbor()">' +
+                            '<i class="fas fa-arrow-left me-1"></i>Kembali' +
+                        '</button>' +
+                    '</div>' +
+                    '<div class="card border-0 shadow-sm">' +
+                        '<div class="card-body text-center py-5">' +
+                            '<i class="fas fa-tools fa-4x text-muted ' +
+                            'opacity-25 mb-3 d-block"></i>' +
+                            '<h5 class="fw-bold text-muted">Menu Belum Tersedia</h5>' +
+                            '<p class="text-muted small mb-3">' +
+                                'Menu sedang dalam pengembangan.</p>' +
+                            '<div class="d-inline-block text-start small">' +
+                                '<div class="mb-1"><span class="text-muted">Nama:</span> ' +
+                                    '<strong>' + window.csEscHtml(namaMenu) + '</strong></div>' +
+                                '<div><span class="text-muted">Blok:</span> ' +
+                                    '<code>' + window.csEscHtml(kodeBlok || '-') + '</code></div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            return true;
+        } catch (e) {
+            console.error('tampilkanPlaceholderMenu error:', e);
+            return false;
+        }
+    };
+
+    // Placeholder Kopdes (4 tingkat A40)
+    window.tampilkanPlaceholderMenuKopdes = function(namaMenu, kodeBlok, level) {
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+            var levelInfo = {
+                1: { nama: 'Pusat',      ikon: 'fas fa-flag',           warna: '#8B0000' },
+                2: { nama: 'Kabupaten',  ikon: 'fas fa-building',       warna: '#B71C1C' },
+                3: { nama: 'Kecamatan',  ikon: 'fas fa-map-marker-alt', warna: '#DC3545' },
+                4: { nama: 'Desa',       ikon: 'fas fa-home',           warna: '#FF6B6B' }
+            }[level] || { nama: 'Kopdes', ikon: 'fas fa-flag', warna: '#DC3545' };
+
+            konten.innerHTML =
+                '<div class="container-fluid px-4 py-4">' +
+                    '<div class="d-flex justify-content-between align-items-center ' +
+                    'mb-3 flex-wrap gap-2">' +
+                        '<h4 class="fw-bold text-white mb-0">' +
+                            '<i class="' + levelInfo.ikon + ' me-2"></i>' +
+                            window.csEscHtml(namaMenu) +
+                            ' <span class="badge bg-warning text-dark ms-2">' +
+                            '<i class="fas fa-flag me-1"></i>Kopdes ' + levelInfo.nama +
+                            '</span></h4>' +
+                        '<button class="btn btn-outline-light btn-sm" ' +
+                                'onclick="kembaliKeDasbor()">' +
+                            '<i class="fas fa-arrow-left me-1"></i>Kembali</button>' +
+                    '</div>' +
+                    '<div class="card border-0 shadow-sm" ' +
+                    'style="border-left:5px solid ' + levelInfo.warna + ' !important;">' +
+                        '<div class="card-body text-center py-5">' +
+                            '<div style="font-size:56px;margin-bottom:8px;">🇮🇩</div>' +
+                            '<i class="' + levelInfo.ikon + ' fa-4x mb-3 d-block" ' +
+                            'style="color:' + levelInfo.warna + ';opacity:0.4;"></i>' +
+                            '<h5 class="fw-bold" style="color:' + levelInfo.warna + ';">' +
+                            'Menu Kopdes ' + levelInfo.nama + ' Belum Tersedia</h5>' +
+                            '<p class="text-muted small mb-3">' +
+                            'Menu ini sedang dalam pengembangan (Blok ' +
+                            window.csEscHtml(kodeBlok || '45.3') + ').</p>' +
+                            '<div class="d-inline-block text-start small">' +
+                                '<div class="mb-1"><span class="text-muted">Nama:</span> ' +
+                                    '<strong>' + window.csEscHtml(namaMenu) + '</strong></div>' +
+                                '<div class="mb-1"><span class="text-muted">Level:</span> ' +
+                                    '<strong>' + level + ' — ' + levelInfo.nama + '</strong></div>' +
+                                '<div><span class="text-muted">Blok:</span> ' +
+                                    '<code>' + window.csEscHtml(kodeBlok || '45.3') + '</code></div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            return true;
+        } catch (e) {
+            console.error('tampilkanPlaceholderMenuKopdes error:', e);
+            return false;
+        }
+    };
+
+    // Placeholder otomatis per role
+    window.csRenderPlaceholderByRole = function(namaMenu, kodeBlok) {
+        try {
+            var kodeRole = window.getKodeRoleUserAktif();
+            if (!kodeRole) return window.tampilkanPlaceholderMenu(namaMenu, kodeBlok);
+            var levelKopdes = {
+                'KDMP_PUSAT': 1, 'KDMP_KAB': 2, 'KDMP_KEC': 3, 'KDMP_DESA': 4
+            }[kodeRole];
+            if (levelKopdes) {
+                return window.tampilkanPlaceholderMenuKopdes(
+                    namaMenu, kodeBlok, levelKopdes
+                );
+            }
+            return window.tampilkanPlaceholderMenu(namaMenu, kodeBlok);
+        } catch (e) { return false; }
+    };
+
+    // Info role via toast
+    window.csTampilkanInfoRole = function(kodeRole) {
+        try {
+            kodeRole = kodeRole || window.getKodeRoleUserAktif();
+            if (!kodeRole) return false;
+            var info = window.csGetRoleInfo ? window.csGetRoleInfo(kodeRole) : null;
+            if (!info) return false;
+
+            var ikonKategori = {
+                'Sistem':     'fas fa-cog',
+                'Staf':       'fas fa-user-tie',
+                'Organisasi': 'fas fa-users',
+                'Seller':     'fas fa-store',
+                'Customer':   'fas fa-user',
+                'Kopdes':     'fas fa-flag',
+                'Kasir':      'fas fa-cash-register'
+            }[info.kategori] || 'fas fa-user';
+
+            var pesan =
+                '👤 <strong>' + window.csEscHtml(info.nama) + '</strong><br>' +
+                '<small><i class="' + ikonKategori + ' me-1"></i>' +
+                info.kategori + ' · ' + kodeRole +
+                (info.kodeAwal ? ' · Kode Awal: ' + info.kodeAwal : '') +
+                '</small>';
+            return window.csToastMerahPutih(pesan, 'info', { duration: 4000 });
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.9] — Modal + Scroll + Fokus + Disable + Render Error
+    // ═══════════════════════════════════════════════════════════
+    window.csShowModal = function(idModal) {
+        try {
+            var el = document.getElementById(idModal);
+            if (!el) return false;
+            bootstrap.Modal.getOrCreateInstance(el).show();
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csHideModal = function(idModal) {
+        try {
+            var el = document.getElementById(idModal);
+            if (!el) return false;
+            var inst = bootstrap.Modal.getInstance(el);
+            if (inst) inst.hide();
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csScrollKe = function(idEl, opts) {
+        opts = opts || {};
+        try {
+            var el = document.getElementById(idEl);
+            if (!el) return false;
+            el.scrollIntoView({
+                behavior: opts.smooth !== false ? 'smooth' : 'auto',
+                block: opts.block || 'start'
+            });
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csFokusKe = function(idEl) {
+        try {
+            var el = document.getElementById(idEl);
+            if (el) { el.focus(); return true; }
+            return false;
+        } catch (e) { return false; }
+    };
+
+    window.csSetTeks = function(idEl, teks) {
+        try {
+            var el = document.getElementById(idEl);
+            if (el) el.textContent = teks == null ? '' : String(teks);
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csSetHtml = function(idEl, html) {
+        try {
+            var el = document.getElementById(idEl);
+            if (el) el.innerHTML = html || '';
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csShowEl = function(idEl) {
+        try {
+            var el = document.getElementById(idEl);
+            if (el) el.classList.remove('d-none');
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csHideEl = function(idEl) {
+        try {
+            var el = document.getElementById(idEl);
+            if (el) el.classList.add('d-none');
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csDisableBtn = function(idEl, disable) {
+        try {
+            var el = document.getElementById(idEl);
+            if (!el) return false;
+            el.disabled = (disable !== false);
+            return true;
+        } catch (e) { return false; }
+    };
+
+    window.csRenderError = function(pesan, idContainer) {
+        try {
+            var konten = idContainer
+                ? document.getElementById(idContainer)
+                : document.getElementById('kontenDasbor');
+            if (!konten) return false;
+            konten.innerHTML =
+                '<div class="container-fluid px-4 py-4">' +
+                    '<div class="card border-0 shadow-sm">' +
+                        '<div class="card-body text-center py-5">' +
+                            '<i class="fas fa-exclamation-triangle fa-4x ' +
+                            'text-danger opacity-50 mb-3 d-block"></i>' +
+                            '<h5 class="fw-bold text-danger">Terjadi Kesalahan</h5>' +
+                            '<p class="text-muted small mb-3">' +
+                                window.csEscHtml(pesan || 'Unknown error') +
+                            '</p>' +
+                            '<button class="btn btn-outline-secondary btn-sm" ' +
+                                    'onclick="kembaliKeDasbor()">' +
+                                '<i class="fas fa-arrow-left me-1"></i>Kembali' +
+                            '</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            return true;
+        } catch (e) { return false; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.10a] — DEBUG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    window.debugCS6 = function() {
+        var totalRole = window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0;
+        var info = {
+            blok: 'CS6',
+            versi: '4.0-R2COIN',
+            guard: {
+                v4: window._coreSystem6DoneV4,
+                v3: window._coreSystem6DoneV3,
+                v2: window._coreSystem6DoneV2,
+                alias: window._coreSystem6Done
+            },
+            tema: 'Merah Putih 🇮🇩',
+            target32Role: {
+                total: totalRole,
+                target: 32,
+                lengkap: totalRole === 32
+            },
+            halamanAktif: window.halamanAktif || '-',
+            kodeRoleAktif: window.getKodeRoleUserAktif ? window.getKodeRoleUserAktif() : '-',
+            cekV4: {
+                adaToastMerahPutih: typeof window.csToastMerahPutih === 'function',
+                adaToastBendera:    typeof window.csToastBendera === 'function',
+                adaLoadingKopdes:   typeof window.csShowLoadingKopdes === 'function',
+                adaLoadingFast:     typeof window.csLoadingFast === 'function',
+                adaPlaceholderKopdes: typeof window.tampilkanPlaceholderMenuKopdes === 'function',
+                adaRenderPlaceholderByRole: typeof window.csRenderPlaceholderByRole === 'function',
+                adaTampilkanInfoRole: typeof window.csTampilkanInfoRole === 'function'
+            },
+            fungsi: {
+                csToast:                  typeof window.csToast,
+                csToastMerahPutih:        typeof window.csToastMerahPutih,
+                csToastBendera:           typeof window.csToastBendera,
+                csKonfirmasi:             typeof window.csKonfirmasi,
+                csKonfirmasiGanda:        typeof window.csKonfirmasiGanda,
+                csShowLoading:            typeof window.csShowLoading,
+                csHideLoading:            typeof window.csHideLoading,
+                csShowLoadingKopdes:      typeof window.csShowLoadingKopdes,
+                csLoadingFast:            typeof window.csLoadingFast,
+                tampilkanHalaman:         typeof window.tampilkanHalaman,
+                kembaliKeDasbor:          typeof window.kembaliKeDasbor,
+                tutupMenu:                typeof window.tutupMenu,
+                tampilkanPlaceholderMenu: typeof window.tampilkanPlaceholderMenu,
+                tampilkanPlaceholderMenuKopdes: typeof window.tampilkanPlaceholderMenuKopdes,
+                csRenderPlaceholderByRole: typeof window.csRenderPlaceholderByRole,
+                csTampilkanInfoRole:      typeof window.csTampilkanInfoRole,
+                csShowModal:              typeof window.csShowModal,
+                csHideModal:              typeof window.csHideModal,
+                csScrollKe:               typeof window.csScrollKe,
+                csFokusKe:                typeof window.csFokusKe,
+                csSetTeks:                typeof window.csSetTeks,
+                csSetHtml:                typeof window.csSetHtml,
+                csShowEl:                 typeof window.csShowEl,
+                csHideEl:                 typeof window.csHideEl,
+                csDisableBtn:             typeof window.csDisableBtn,
+                csRenderError:            typeof window.csRenderError
+            }
+        };
+        console.log('🔍 debugCS6 v4.0-R2COIN:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.10b] — AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateBlok === 'function') {
+                window.cpUpdateBlok('CS6', {
+                    status: 'Selesai',
+                    tanggal: new Date().toISOString().substring(0, 10),
+                    nama: 'UI Helper & Toast v4.0'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var ada = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'CS6';
+                });
+                if (!ada) {
+                    window.cpTambahRiwayat({
+                        blok: 'CS6',
+                        nama: 'UI Helper & Toast v4.0',
+                        keterangan: 'csToast (3 tema) · csKonfirmasi · ' +
+                                    'csShowLoading (3 varian) · tampilkanHalaman · ' +
+                                    'kembaliKeDasbor · tampilkanPlaceholderMenu (3 varian) · ' +
+                                    'modal · scroll · fokus · disable · render error'
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('CS6 auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS6.10c] — LOG TERPASANG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    var _totalRole = window.CS_ROLE_MAP ? Object.keys(window.CS_ROLE_MAP).length : 0;
+    console.log('%c🇮🇩 BLOK CS6 v4.0 — UI HELPER & TOAST terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   🎨 Tema: Merah Putih (toast warning = Merah)');
+    console.log('   🍞 Toast (3 varian):');
+    console.log('      • csToast — toast standar (merah default)');
+    console.log('      • csToastMerahPutih — toast tema bendera 🇮🇩');
+    console.log('      • csToastBendera — toast dengan emoji bendera');
+    console.log('   ⏳ Loading (3 varian):');
+    console.log('      • csShowLoading — loading standar');
+    console.log('      • csShowLoadingKopdes — loading 4 tingkat Kopdes');
+    console.log('      • csLoadingFast — loading ringan (bar atas)');
+    console.log('   📄 Navigasi: tampilkanHalaman (4 halaman SPA)');
+    console.log('   🎭 Placeholder (3 varian):');
+    console.log('      • tampilkanPlaceholderMenu — standar');
+    console.log('      • tampilkanPlaceholderMenuKopdes — Kopdes 4 tingkat');
+    console.log('      • csRenderPlaceholderByRole — otomatis per role (32)');
+    console.log('   ℹ️  Info Role: csTampilkanInfoRole (32 role)');
+    console.log('   🎭 Modal: csShowModal, csHideModal');
+    console.log('   🔧 Utility: csScrollKe, csFokusKe, csSetTeks, csSetHtml,');
+    console.log('               csShowEl, csHideEl, csDisableBtn, csRenderError');
+    console.log('   🎯 32 ROLE terdeteksi: ' + _totalRole + '/32 ' +
+                (_totalRole === 32 ? '✅' : '⚠️'));
+    console.log('   🔍 Debug: debugCS6()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK CS6 — UI HELPER & TOAST 🇮🇩 v4.0 FINAL ══════ -->
 
 
 
