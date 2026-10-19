@@ -32413,6 +32413,655 @@ setTimeout(function _initBlok01k(isRetry) {
 <!-- ═══ AKHIR BLOK FGD v1.0 — FUNGSI GLOBAL DOMPET R2COIN ══════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FGV v1.0 — FUNGSI GLOBAL VERIFIKASI COIN 🇮🇩 ══════ -->
+<!-- ═══ Layer: L4 (Domain Logic — Verifikasi TopUp & Withdraw) ═ -->
+<!-- ═══ Dependency: CS1, CS2, CS9, CS10, FGD, FSE ═════════════ -->
+<!-- ═══ Guard: _fgvDoneV1 (UTAMA — A32) ═══════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A19, A25, A32, A36 ════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FGV_V1() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD & DEPENDENCY CHECK
+    // ═══════════════════════════════════════════════════════════
+    if (window._fgvDoneV1) {
+        console.log('ℹ️ BLOK FGV v1.0 sudah terpasang.');
+        return;
+    }
+    if (!window.CS_ROLE_MAP || !window.gidIdUser) {
+        console.warn('⚠️ BLOK FGV v1.0: Core System belum siap. Ditunda.');
+        return;
+    }
+    window._fgvDoneV1 = true;
+    window._fgvVersi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.1] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _load(key, def) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, def);
+        try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch (e) { return def; }
+    }
+
+    function _save(key, data) {
+        if (typeof window.csSaveJSON === 'function') return window.csSaveJSON(key, data, { backup: false });
+        try { localStorage.setItem(key, JSON.stringify(data)); return { sukses: true }; } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+
+    function _getUser(idUser) {
+        if (window.gidGetUserById) return window.gidGetUserById(idUser);
+        var users = _load('dataLoginUser', []);
+        return users.find(function(u) { return u && (u.idUser === idUser || u.id === idUser); });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.2] — GETTER & PENCARIAN (Untuk Tabel & Detail UI)
+    // ═══════════════════════════════════════════════════════════
+    
+    window.loadTopUpHistoryGlobal = function() {
+        var data = _load('dataTopUpHistory', []);
+        return Array.isArray(data) ? data : [];
+    };
+
+    window.loadWithdrawalRequestsGlobal = function() {
+        var data = _load('dataWithdrawHistory', []);
+        return Array.isArray(data) ? data : [];
+    };
+
+    window.getTopUpByIdGlobal = function(id) {
+        return window.loadTopUpHistoryGlobal().find(function(x) { return x.id === id; }) || null;
+    };
+
+    window.getWithdrawByIdGlobal = function(id) {
+        return window.loadWithdrawalRequestsGlobal().find(function(x) { return x.id === id; }) || null;
+    };
+
+    // ── Filter Topup ──
+    window.cariTopUpByFilter = function(filter) {
+        filter = filter || {};
+        var list = window.loadTopUpHistoryGlobal();
+
+        if (filter.status) {
+            list = list.filter(function(x) { return x.status === filter.status; });
+        }
+        if (filter.role) {
+            list = list.filter(function(x) { return x.role === filter.role; });
+        }
+        if (filter.tanggal) {
+            list = list.filter(function(x) {
+                var tgl = x.createdAt || x.tanggal || '';
+                return tgl.substring(0, 10) === filter.tanggal;
+            });
+        }
+        if (filter.cari) {
+            var q = filter.cari.toLowerCase();
+            list = list.filter(function(x) {
+                var s = (x.namaPembeli || '') + ' ' + (x.idUser || '') + ' ' + (x.metode || '');
+                return s.toLowerCase().indexOf(q) !== -1;
+            });
+        }
+        return list;
+    };
+
+    // ── Filter Withdraw ──
+    window.cariWithdrawByFilter = function(filter) {
+        filter = filter || {};
+        var list = window.loadWithdrawalRequestsGlobal();
+
+        if (filter.status) {
+            list = list.filter(function(x) { return x.status === filter.status; });
+        }
+        if (filter.role) {
+            list = list.filter(function(x) { return x.role === filter.role; });
+        }
+        if (filter.tanggal) {
+            list = list.filter(function(x) {
+                var tgl = x.createdAt || x.tanggal || '';
+                return tgl.substring(0, 10) === filter.tanggal;
+            });
+        }
+        if (filter.cari) {
+            var q = filter.cari.toLowerCase();
+            list = list.filter(function(x) {
+                var s = (x.namaPemohon || '') + ' ' + (x.idUser || '') + ' ' + (x.rekeningTujuan?.bank || '');
+                return s.toLowerCase().indexOf(q) !== -1;
+            });
+        }
+        return list;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.3] — STATISTIK (4 Kotak di UI 10.47)
+    // ═══════════════════════════════════════════════════════════
+    
+    window.hitungStatistikVerifikasiTopUp = function() {
+        var list = window.loadTopUpHistoryGlobal();
+        var pending = list.filter(function(x) { return x.status === 'Menunggu'; });
+        var totalRp = pending.reduce(function(sum, x) { return sum + (parseInt(x.totalRupiah) || 0); }, 0);
+        return { menunggu: pending.length, totalRupiah: totalRp };
+    };
+
+    window.hitungStatistikVerifikasiWithdraw = function() {
+        var list = window.loadWithdrawalRequestsGlobal();
+        var pending = list.filter(function(x) { return x.status === 'Menunggu'; });
+        var totalRp = pending.reduce(function(sum, x) { return sum + (parseInt(x.totalRupiah) || 0); }, 0);
+        return { menunggu: pending.length, totalRupiah: totalRp };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.4] — MUTATOR: SETUJUI TOP-UP
+    // ═══════════════════════════════════════════════════════════
+    window.prosesSetujuiTopUpGlobal = function(id, catatan) {
+        try {
+            var list = window.loadTopUpHistoryGlobal();
+            var idx = list.findIndex(function(x) { return x.id === id; });
+            if (idx === -1) return { sukses: false, pesan: 'Data tidak ditemukan' };
+            if (list[idx].status !== 'Menunggu') return { sukses: false, pesan: 'Status bukan Menunggu' };
+
+            var t = list[idx];
+            
+            // 1. Tambah Saldo Dompet via FGD
+            if (typeof window.tambahTransaksiDompet !== 'function') {
+                return { sukses: false, pesan: 'Fungsi Dompet (FGD) belum siap' };
+            }
+
+            var resDompet = window.tambahTransaksiDompet(t.idUser, {
+                tipe: 'credit',
+                jumlah: t.jumlahKoin,
+                keterangan: 'TopUp ' + t.id + (catatan ? ' - ' + catatan : ''),
+                kategori: 'topup'
+            });
+
+            if (!resDompet.sukses) return resDompet;
+
+            // 2. Update Status Topup
+            list[idx].status = 'Lunas';
+            list[idx].verifiedBy = window.gidIdUser();
+            list[idx].verifiedAt = new Date().toISOString();
+            list[idx].catatan = catatan || '-';
+            _save('dataTopUpHistory', list);
+
+            // 3. Kirim Notifikasi (CS9)
+            if (window.csNotifSukses) {
+                window.csNotifSukses('Top Up Berhasil', 'Top up ' + t.jumlahKoin + ' Coin telah disetujui.', { idUser: t.idUser });
+            }
+
+            return { sukses: true, pesan: 'TopUp disetujui', saldoBaru: resDompet.saldo };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.5] — MUTATOR: TOLAK TOP-UP
+    // ═══════════════════════════════════════════════════════════
+    window.prosesTolakTopUpGlobal = function(id, alasan) {
+        try {
+            var list = window.loadTopUpHistoryGlobal();
+            var idx = list.findIndex(function(x) { return x.id === id; });
+            if (idx === -1) return { sukses: false, pesan: 'Data tidak ditemukan' };
+            if (list[idx].status !== 'Menunggu') return { sukses: false, pesan: 'Status bukan Menunggu' };
+
+            var t = list[idx];
+
+            // 1. Update Status
+            list[idx].status = 'Ditolak';
+            list[idx].verifiedBy = window.gidIdUser();
+            list[idx].verifiedAt = new Date().toISOString();
+            list[idx].catatan = alasan;
+            _save('dataTopUpHistory', list);
+
+            // 2. Kirim Notifikasi (CS9)
+            if (window.csNotifWarning) {
+                window.csNotifWarning('Top Up Ditolak', 'Maaf, top up Anda ditolak: ' + alasan, { idUser: t.idUser, prioritas: 'high' });
+            }
+
+            return { sukses: true, pesan: 'TopUp ditolak' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.6] — MUTATOR: SETUJUI WITHDRAW
+    // ═══════════════════════════════════════════════════════════
+    window.prosesSetujuiWithdrawGlobal = function(id, catatan) {
+        try {
+            var list = window.loadWithdrawalRequestsGlobal();
+            var idx = list.findIndex(function(x) { return x.id === id; });
+            if (idx === -1) return { sukses: false, pesan: 'Data tidak ditemukan' };
+            if (list[idx].status !== 'Menunggu') return { sukses: false, pesan: 'Status bukan Menunggu' };
+
+            var w = list[idx];
+
+            // 1. Potong Saldo Dompet via FGD
+            if (typeof window.tambahTransaksiDompet !== 'function') {
+                return { sukses: false, pesan: 'Fungsi Dompet (FGD) belum siap' };
+            }
+
+            var resDompet = window.tambahTransaksiDompet(w.idUser, {
+                tipe: 'debit',
+                jumlah: w.jumlahKoin,
+                keterangan: 'Withdraw ' + w.id + (catatan ? ' - ' + catatan : ''),
+                kategori: 'withdraw'
+            });
+
+            if (!resDompet.sukses) {
+                // Gagal potong saldo (kemungkinan saldo tidak cukup)
+                return resDompet;
+            }
+
+            // 2. Update Status Withdraw
+            list[idx].status = 'Disetujui';
+            list[idx].verifiedBy = window.gidIdUser();
+            list[idx].verifiedAt = new Date().toISOString();
+            list[idx].catatan = catatan || '-';
+            _save('dataWithdrawHistory', list);
+
+            // 3. Kirim Notifikasi
+            if (window.csNotifInfo) {
+                window.csNotifInfo('Withdraw Disetujui', 'Withdraw ' + w.jumlahKoin + ' Coin disetujui. Cek rekening Anda.', { idUser: w.idUser });
+            }
+
+            return { sukses: true, pesan: 'Withdraw disetujui', saldoBaru: resDompet.saldo };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.7] — MUTATOR: TOLAK WITHDRAW
+    // ═══════════════════════════════════════════════════════════
+    window.prosesTolakWithdrawGlobal = function(id, alasan) {
+        try {
+            var list = window.loadWithdrawalRequestsGlobal();
+            var idx = list.findIndex(function(x) { return x.id === id; });
+            if (idx === -1) return { sukses: false, pesan: 'Data tidak ditemukan' };
+            if (list[idx].status !== 'Menunggu') return { sukses: false, pesan: 'Status bukan Menunggu' };
+
+            var w = list[idx];
+
+            // 1. Update Status
+            list[idx].status = 'Ditolak';
+            list[idx].verifiedBy = window.gidIdUser();
+            list[idx].verifiedAt = new Date().toISOString();
+            list[idx].catatan = alasan;
+            _save('dataWithdrawHistory', list);
+
+            // 2. Kirim Notifikasi
+            if (window.csNotifWarning) {
+                window.csNotifWarning('Withdraw Ditolak', 'Maaf, withdraw Anda ditolak: ' + alasan, { idUser: w.idUser, prioritas: 'high' });
+            }
+
+            return { sukses: true, pesan: 'Withdraw ditolak' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.8] — EXPORT CSV
+    // ═══════════════════════════════════════════════════════════
+    window.exportVerifikasiCoinCSVGlobal = function(tipe) {
+        try {
+            var rows = [];
+            var namaFile = 'verifikasi_' + tipe + '_' + new Date().toISOString().split('T')[0] + '.csv';
+
+            if (tipe === 'topup') {
+                var listT = window.loadTopUpHistoryGlobal();
+                rows.push(['ID', 'Tanggal', 'User', 'Role', 'Coin', 'Rupiah', 'Metode', 'Status', 'Catatan']);
+                listT.forEach(function(x) {
+                    rows.push([x.id, x.createdAt, x.namaPembeli, x.role, x.jumlahKoin, x.totalRupiah, x.metode, x.status, x.catatan || '-']);
+                });
+            } else {
+                var listW = window.loadWithdrawalRequestsGlobal();
+                rows.push(['ID', 'Tanggal', 'User', 'Role', 'Coin', 'Rupiah', 'Bank', 'No.Rek', 'Status', 'Catatan']);
+                listW.forEach(function(x) {
+                    var rek = x.rekeningTujuan || {};
+                    rows.push([x.id, x.createdAt, x.namaPemohon, x.role, x.jumlahKoin, x.totalRupiah, rek.bank || '-', rek.nomor || '-', x.status, x.catatan || '-']);
+                });
+            }
+
+            if (window.csDownloadCSV) {
+                var res = window.csDownloadCSV(rows, namaFile);
+                return { sukses: res.sukses, namaFile: namaFile, total: rows.length - 1 };
+            }
+            return { sukses: false, pesan: 'CS10 (File Helper) belum terpasang' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.9] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFGV = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: { idUser: window.gidIdUser(), kodeRole: window.gidKodeRoleUser(), menu: 'FGV', blok: 'L4-FGV' },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: window.csNow ? window.csNow() : new Date().toISOString()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaFGV = function(aksiMenu) {
+        try {
+            return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FGV') : [];
+        } catch (e) { return []; }
+    };
+
+    window.ambilFGV = function(filter) {
+        return window.cariTopUpByFilter(filter);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FGV.10] — DEBUG & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debugFGV = function() {
+        var statT = window.hitungStatistikVerifikasiTopUp();
+        var statW = window.hitungStatistikVerifikasiWithdraw();
+        var info = {
+            blok: 'FGV', versi: window._fgvVersi, guard: window._fgvDoneV1,
+            antrean: {
+                topupPending: statT.menunggu,
+                withdrawPending: statW.menunggu
+            },
+            fungsi: {
+                loadTopUpHistoryGlobal: typeof window.loadTopUpHistoryGlobal,
+                loadWithdrawalRequestsGlobal: typeof window.loadWithdrawalRequestsGlobal,
+                getTopUpByIdGlobal: typeof window.getTopUpByIdGlobal,
+                getWithdrawByIdGlobal: typeof window.getWithdrawByIdGlobal,
+                cariTopUpByFilter: typeof window.cariTopUpByFilter,
+                cariWithdrawByFilter: typeof window.cariWithdrawByFilter,
+                hitungStatistikVerifikasiTopUp: typeof window.hitungStatistikVerifikasiTopUp,
+                hitungStatistikVerifikasiWithdraw: typeof window.hitungStatistikVerifikasiWithdraw,
+                prosesSetujuiTopUpGlobal: typeof window.prosesSetujuiTopUpGlobal,
+                prosesTolakTopUpGlobal: typeof window.prosesTolakTopUpGlobal,
+                prosesSetujuiWithdrawGlobal: typeof window.prosesSetujuiWithdrawGlobal,
+                prosesTolakWithdrawGlobal: typeof window.prosesTolakWithdrawGlobal,
+                exportVerifikasiCoinCSVGlobal: typeof window.exportVerifikasiCoinCSVGlobal,
+                kirimFGV: typeof window.kirimFGV,
+                terimaFGV: typeof window.terimaFGV,
+                ambilFGV: typeof window.ambilFGV
+            }
+        };
+        console.log('🔍 debugFGV v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'FGV'; });
+                if (!ada) {
+                    window.cpTambahBlok({ kode: 'FGV', nama: 'Verifikasi Coin v1', layer: 'L4', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('FGV', { status: 'Selesai', nama: 'Verifikasi Coin v1' });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('fgv', { nama: 'Verifikasi Coin (L4)', status: 'Selesai', jumlah: 14 });
+            }
+        } catch (e) {}
+    }, 1000);
+
+    console.log('%c🇮🇩 BLOK FGV v1.0 — FUNGSI GLOBAL VERIFIKASI COIN terpasang.', 
+        'background:#FF9800;color:#fff;padding:3px 8px;font-weight:bold;');
+    console.log('   ✅ A1/A2 Terpenuhi: Delegasi ke FGD (Dompet), CS9 (Notif), CS10 (Export).');
+    console.log('   ✅ 14 Fungsi Utama siap melayani UI 10.47.');
+    console.log('   🚪 3 Pintu: kirimFGV · terimaFGV · ambilFGV');
+    console.log('   🔍 Debug: debugFGV()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK FGV v1.0 — FUNGSI GLOBAL VERIFIKASI COIN ════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FSDU v1.0 — FUNGSI GLOBAL DASBOR UNIVERSAL 🇮🇩 ════ -->
+<!-- ═══ Layer: L4 (Domain Logic — Grid & Profil Toko per Kategori) -->
+<!-- ═══ Dependency: CS1, CS2, GID, FMO, FGD ═══════════════════ -->
+<!-- ═══ Guard: _fsduDoneV1 (UTAMA — A32) ══════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A19, A25, A32, A36, A40 ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FSDU_V1() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD & DEPENDENCY CHECK
+    // ═══════════════════════════════════════════════════════════
+    if (window._fsduDoneV1) {
+        console.log('ℹ️ BLOK FSDU v1.0 sudah terpasang.');
+        return;
+    }
+    if (!window.CS_ROLE_MAP || !window.gidIdUser || !window.fmoListOwner) {
+        console.warn('⚠️ BLOK FSDU v1.0: Core System / FMO belum siap. Ditunda.');
+        return;
+    }
+    window._fsduDoneV1 = true;
+    window._fsduVersi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSDU.1] — STATE MANAGEMENT UI
+    // ═══════════════════════════════════════════════════════════
+    // Menyimpan posisi user saat ini (di grid atau di detail toko)
+    window._fsduState = {
+        tipe: 'seller', // 'kopdes', 'seller', 'ojek', 'devfin', 'jasa'
+        mode: 'grid',   // 'grid' atau 'detail'
+        idOwner: null
+    };
+
+    window.fsduSetState = function(tipe, mode, idOwner) {
+        window._fsduState.tipe = tipe || 'seller';
+        window._fsduState.mode = mode || 'grid';
+        window._fsduState.idOwner = idOwner || null;
+        return window._fsduState;
+    };
+
+    window.fsduGetState = function() {
+        return window._fsduState;
+    };
+
+    window.fsduKembaliKeGrid = function() {
+        window._fsduState.mode = 'grid';
+        window._fsduState.idOwner = null;
+        return true;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSDU.2] — PETA KATEGORI (Router Role)
+    // ═══════════════════════════════════════════════════════════
+    window.FSDU_KATEGORI = {
+        'kopdes': ['KDMP_PUSAT', 'KDMP_KAB', 'KDMP_KEC', 'KDMP_DESA'],
+        'seller': ['TK', 'PP', 'PM', 'COD', 'GR'],
+        'ojek':   ['OJ'],
+        'devfin': ['DST', 'DP', 'DLR', 'FIN'],
+        'jasa':   ['JS']
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSDU.3] — FUNGSI TAHAP 1: GRID DAFTAR TOKO
+    // ═══════════════════════════════════════════════════════════
+    
+    // ── fsduListOwner(tipeDasbor, filter) ──
+    window.fsduListOwner = function(tipeDasbor, filter) {
+        try {
+            // Set state ke grid
+            window.fsduSetState(tipeDasbor, 'grid', null);
+
+            var roles = window.FSDU_KATEGORI[tipeDasbor];
+            if (!roles) return { sukses: false, pesan: 'Kategori dasbor tidak valid', data: [] };
+
+            // Delegasi ke FMO (Manajemen Owner) dengan filter role
+            var res = window.fmoListOwner({
+                status: 'Aktif',
+                cari: filter ? filter.cari : ''
+            });
+
+            if (!res.sukses) return res;
+
+            // Filter berdasarkan array roles di kategori ini
+            var filtered = res.data.filter(function(u) {
+                return roles.indexOf(u.kodeRole) !== -1;
+            });
+
+            return { sukses: true, total: filtered.length, data: filtered };
+        } catch (e) {
+            console.error('fsduListOwner error:', e);
+            return { sukses: false, pesan: e.message, data: [] };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSDU.4] — FUNGSI TAHAP 2: DETAIL & PRODUK TOKO
+    // ═══════════════════════════════════════════════════════════
+    
+    // ── fsduDetailOwner(idOwner) ──
+    window.fsduDetailOwner = function(idOwner) {
+        try {
+            if (!idOwner) return { sukses: false, pesan: 'ID Owner kosong', data: null };
+            
+            // Set state ke detail
+            window.fsduSetState(window._fsduState.tipe, 'detail', idOwner);
+
+            // Delegasi ke FMO
+            var res = window.fmoDetailOwner(idOwner);
+            if (!res.sukses) return res;
+
+            // Tambahan info dompet jika yang melihat adalah SA
+            var isSA = window.gidIsSA ? window.gidIsSA() : false;
+            if (isSA && window.fgdGetDompet) {
+                var dompet = window.fgdGetDompet(idOwner);
+                res.data.saldoDompet = dompet.sukses ? dompet.data.saldo : 0;
+            }
+
+            return res;
+        } catch (e) {
+            return { sukses: false, pesan: e.message, data: null };
+        }
+    };
+
+    // ── fsduProdukOwner(idOwner, filter) ──
+    window.fsduProdukOwner = function(idOwner, filter) {
+        try {
+            if (!idOwner) return { sukses: false, pesan: 'ID kosong', data: [] };
+            
+            // Delegasi ke FMO
+            var res = window.fmoAmbilProdukOwner(idOwner, filter);
+            return res;
+        } catch (e) {
+            return { sukses: false, pesan: e.message, data: [] };
+        }
+    };
+
+    // ── fsduStatistikOwner(idOwner) ──
+    window.fsduStatistikOwner = function(idOwner) {
+        try {
+            if (!idOwner) return { sukses: false, data: null };
+            
+            var produk = window.fsduProdukOwner(idOwner);
+            var totalProduk = produk.sukses ? produk.total : 0;
+
+            // Ambil data transaksi (jika ada di dataOrder)
+            var orders = window.csLoadJSON('dataOrder', []) || [];
+            var totalTrx = orders.filter(function(o) { return o.idOwner === idOwner; }).length;
+
+            // Ambil saldo dompet
+            var saldo = 0;
+            if (window.getSaldoDompet) {
+                saldo = window.getSaldoDompet(idOwner);
+            }
+
+            return {
+                sukses: true,
+                data: {
+                    totalProduk: totalProduk,
+                    totalTransaksi: totalTrx,
+                    saldoDompet: saldo
+                }
+            };
+        } catch (e) { return { sukses: false, pesan: e.message, data: null }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSDU.5] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFSDU = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: { idUser: window.gidIdUser(), kodeRole: window.gidKodeRoleUser(), menu: 'FSDU', blok: 'L4-FSDU' },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: window.csNow ? window.csNow() : new Date().toISOString()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaFSDU = function(aksiMenu) {
+        try {
+            return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FSDU') : [];
+        } catch (e) { return []; }
+    };
+
+    window.ambilFSDU = function(tipeDasbor, filter) {
+        return window.fsduListOwner(tipeDasbor, filter);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSDU.6] — DEBUG & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debugFSDU = function() {
+        var info = {
+            blok: 'FSDU', versi: window._fsduVersi, guard: window._fsduDoneV1,
+            kategori: Object.keys(window.FSDU_KATEGORI),
+            stateSaatIni: window.fsduGetState(),
+            fungsi: {
+                fsduListOwner: typeof window.fsduListOwner,
+                fsduDetailOwner: typeof window.fsduDetailOwner,
+                fsduProdukOwner: typeof window.fsduProdukOwner,
+                fsduStatistikOwner: typeof window.fsduStatistikOwner,
+                fsduKembaliKeGrid: typeof window.fsduKembaliKeGrid,
+                fsduSetState: typeof window.fsduSetState,
+                fsduGetState: typeof window.fsduGetState,
+                kirimFSDU: typeof window.kirimFSDU,
+                terimaFSDU: typeof window.terimaFSDU,
+                ambilFSDU: typeof window.ambilFSDU
+            }
+        };
+        console.log('🔍 debugFSDU v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'FSDU'; });
+                if (!ada) {
+                    window.cpTambahBlok({ kode: 'FSDU', nama: 'Dasbor Universal SA v1', layer: 'L4', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('FSDU', { status: 'Selesai', nama: 'Dasbor Universal SA v1' });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('fsdu', { nama: 'Dasbor Universal SA (L4)', status: 'Selesai', jumlah: 10 });
+            }
+        } catch (e) {}
+    }, 1000);
+
+    console.log('%c🇮🇩 BLOK FSDU v1.0 — FUNGSI GLOBAL DASBOR UNIVERSAL terpasang.', 
+        'background:#FF9800;color:#fff;padding:3px 8px;font-weight:bold;');
+    console.log('   ✅ A1/A2 Terpenuhi: Delegasi ke FMO (Owner) & FGD (Dompet).');
+    console.log('   ✅ 5 Kategori: Kopdes, Seller, Ojek, Dev/Fin, Jasa.');
+    console.log('   🎁 State: fsduSetState, fsduGetState, fsduKembaliKeGrid.');
+    console.log('   🎁 Data: fsduListOwner, fsduDetailOwner, fsduProdukOwner, fsduStatistikOwner.');
+    console.log('   🚪 3 Pintu: kirimFSDU · terimaFSDU · ambilFSDU');
+    console.log('   🔍 Debug: debugFSDU()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK FSDU v1.0 — FUNGSI GLOBAL DASBOR UNIVERSAL ══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK 2 — LOGIN 🇮🇩 v4.0 FINAL ═════════════════════════ -->
 <!-- ═══ Layer: L5 (Halaman Publik) ════════════════════════════ -->
 <!-- ═══ Dependency: CS8 v4.1 (prosesLogin) · CS6 (tampilkanHalaman) -->
@@ -35785,126 +36434,465 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 </script>
 <!-- ═══ AKHIR BLOK DUMMY.d v1.3 ═════════════════════════════ -->
 
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK DUMMY.e v1.3 — DEBUG + REGISTRY 🇮🇩 ═════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 10.8 — SETTING EKONOMI R2COIN SA (HTML V1)         -->
+<!-- 3 Tab: Ekonomi Coin | Tarif Ojek | Sewa Aplikasi          -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div id="settingEkonomiContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ SUB-BLOK 10.8.H1 — HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-sliders-h me-2"></i>Setting Ekonomi R2Coin
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Pengaturan dasar mata uang, tarif ojek, dan biaya sewa aplikasi.
+                </small>
+            </div>
+            <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                <i class="fas fa-arrow-left me-1"></i> Kembali ke Dasbor
+            </button>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.8.H2 — TAB NAV ══════════ -->
+        <ul class="nav nav-pills mb-3 flex-wrap gap-1" id="seTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <a class="nav-link active" href="#" data-se-tab="coin" onclick="event.preventDefault(); seSetTab('coin');">
+                    <i class="fas fa-coins me-1"></i> Ekonomi Coin
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" href="#" data-se-tab="ojek" onclick="event.preventDefault(); seSetTab('ojek');">
+                    <i class="fas fa-motorcycle me-1"></i> Tarif Ojek
+                </a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" href="#" data-se-tab="sewa" onclick="event.preventDefault(); seSetTab('sewa');">
+                    <i class="fas fa-file-invoice-dollar me-1"></i> Sewa Aplikasi
+                </a>
+            </li>
+        </ul>
+
+        <!-- ══════════ SUB-BLOK 10.8.H3 — TAB CONTENT ══════════ -->
+        <div id="seTabContent">
+            <div class="card border-0 shadow">
+                <div class="card-body text-center py-5">
+                    <i class="fas fa-spinner fa-spin fa-2x text-primary"></i>
+                    <p class="mt-2 text-muted">Memuat setting...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════ STICKY NOTIF ══════════ -->
+        <div class="position-fixed" style="bottom:20px;right:20px;z-index:9999;">
+            <div id="seNotifGlobal" class="alert d-none mb-2" style="min-width:250px;"></div>
+        </div>
+
+    </div>
+</div>
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.8 (HTML) ============================ -->
+<!-- ============================================================ -->
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BLOK R 10.8 — SETTING EKONOMI R2COIN SA (JS V1)           -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_DUMMY_E_DEBUG_V13() {
-    if (window._dummyEDoneV13) return;
-    if (!window._dummyDDoneV13 && !window._dummyDDoneV12) {
-        console.warn('⚠️ DUMMY.e v1.3 ditunda — DUMMY.d belum ada.');
+(function BLOK_R_10_8_SETTING_EKONOMI() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD IDEMPOTENCY
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokR108DoneV1) {
+        console.log('ℹ️ BLOK R 10.8 V1 sudah terpasang — dilewati.');
         return;
     }
-    window._dummyEDoneV13 = true;
-    window._dummyEDoneV12 = true;
-    window._dummyDoneV13  = true;
-    window._dummyDoneV12  = true;
+    window._blokR108DoneV1 = true;
 
-    window.debugDummy = function() {
-        var stat = window.dummyCekStatus();
-        var relasi = window.dummyVerifikasiRelasi();
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.1] — STATE & HELPER
+    // ═══════════════════════════════════════════════════════════
+    var seState = { tabAktif: 'coin' };
 
-        var info = {
-            blok: 'DUMMY',
-            versi: window._dummyVersi,
-            guards: {
-                a: window._dummyADoneV13,
-                b: window._dummyBDoneV13,
-                c: window._dummyCDoneV13,
-                d: window._dummyDDoneV13,
-                e: window._dummyEDoneV13
-            },
-            konfig: window.DUMMY_KONFIG,
-            status: stat,
-            relasi: relasi,
-            seedingAktif: stat.seedingAktif,
-            progress: stat.progress,
-            listFunctions: {
-                seedAll:           typeof window.dummySeedAll,
-                seedPerKategori:   typeof window.dummySeedPerKategori,
-                seedPerRole:       typeof window.dummySeedPerRole,
-                cekBeforeSeed:     typeof window.dummyCekBeforeSeed,
-                cekBolehSeedKopdes:typeof window.dummyCekBolehSeedKopdes,
-                cekStatus:         typeof window.dummyCekStatus,
-                listAkun:          typeof window.dummyListAkun,
-                listPerRole:       typeof window.dummyListPerRole,
-                verifikasiRelasi:  typeof window.dummyVerifikasiRelasi,
-                hitungTotal:       typeof window.dummyHitungTotal,
-                hapusSemua:        typeof window.dummyHapusSemua,
-                hapusPerKategori:  typeof window.dummyHapusPerKategori,
-                hapusPerRole:      typeof window.dummyHapusPerRole,
-                hapusByStatus:     typeof window.dummyHapusByStatus
+    function seEsc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    function seRupiah(n) {
+        return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID');
+    }
+
+    function seSetText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = val;
+    }
+
+    function seSetVal(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.value = (val == null) ? '' : val;
+    }
+
+    function seToast(pesan, tipe) {
+        var el = document.getElementById('seNotifGlobal');
+        if (!el) { console.log(pesan); return; }
+        var warna = {
+            success: 'alert-success',
+            danger:  'alert-danger',
+            warning: 'alert-warning',
+            info:    'alert-info'
+        }[tipe] || 'alert-info';
+        el.className = 'alert ' + warna;
+        el.innerHTML = pesan;
+        el.classList.remove('d-none');
+        setTimeout(function() { el.classList.add('d-none'); }, 3500);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.2] — ENTRY POINT (TAMPILKAN HALAMAN)
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanSettingEkonomiSA = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) { console.error('❌ #kontenDasbor tidak ditemukan'); return; }
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            // Cache template
+            if (!window._tplSettingEkonomiV1) {
+                var c = document.getElementById('settingEkonomiContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') {
+                        tampilkanPlaceholderMenu('Setting Ekonomi R2Coin', '10.8');
+                    }
+                    return;
+                }
+                window._tplSettingEkonomiV1 = c.innerHTML;
+                c.remove();
+                console.log('✅ Template Setting Ekonomi di-cache');
+            }
+
+            konten.innerHTML = window._tplSettingEkonomiV1;
+            seState.tabAktif = 'coin';
+
+            setTimeout(function() {
+                seSetTab('coin');
+                console.log('✅ BLOK R 10.8 — Setting Ekonomi rendered');
+            }, 200);
+
+        } catch (e) {
+            console.error('tampilkanSettingEkonomiSA error:', e);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.3] — TAB HANDLER
+    // ═══════════════════════════════════════════════════════════
+    window.seSetTab = function(tab) {
+        seState.tabAktif = tab || 'coin';
+
+        document.querySelectorAll('#seTabs .nav-link').forEach(function(a) {
+            if (a.getAttribute('data-se-tab') === seState.tabAktif) {
+                a.classList.add('active');
+            } else {
+                a.classList.remove('active');
+            }
+        });
+
+        var container = document.getElementById('seTabContent');
+        if (!container) return;
+
+        if (seState.tabAktif === 'coin') {
+            container.innerHTML = seRenderTabCoin();
+            seLoadCoin();
+        } else if (seState.tabAktif === 'ojek') {
+            container.innerHTML = seRenderTabOjek();
+            seLoadOjek();
+        } else if (seState.tabAktif === 'sewa') {
+            container.innerHTML = seRenderTabSewa();
+            seLoadSewa();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.4] — RENDER TAB 1: EKONOMI COIN
+    // ═══════════════════════════════════════════════════════════
+    function seRenderTabCoin() {
+        return '' +
+        '<div class="card border-0 shadow">' +
+            '<div class="card-header text-dark" style="background:#FFC107;">' +
+                '<i class="fas fa-coins me-2"></i>Pengaturan Ekonomi Dasar' +
+            '</div>' +
+            '<div class="card-body">' +
+                '<div id="notifSettingCoin" class="alert d-none"></div>' +
+                '<form onsubmit="return seSimpanCoin(event)">' +
+                    '<div class="row g-3">' +
+                        '<div class="col-md-6">' +
+                            '<label class="fw-bold small">Minimal Belanja (Rp)</label>' +
+                            '<input type="number" id="seInputMinBelanja" class="form-control" min="0" step="1000">' +
+                            '<small class="text-muted">Batas minimal transaksi untuk mendapatkan coin.</small>' +
+                        '</div>' +
+                        '<div class="col-md-6">' +
+                            '<label class="fw-bold small">Coin Wajib per Minimal Belanja</label>' +
+                            '<input type="number" id="seInputCoinWajib" class="form-control" min="1">' +
+                            '<small class="text-muted">Jumlah coin yang didapat pembeli.</small>' +
+                        '</div>' +
+                        '<div class="col-md-6">' +
+                            '<label class="fw-bold small">Harga Jual Coin ke User (Rp)</label>' +
+                            '<input type="number" id="seInputHargaJual" class="form-control" min="1" step="100">' +
+                            '<small class="text-muted">Harga saat user Top-Up / Beli Coin.</small>' +
+                        '</div>' +
+                        '<div class="col-md-6">' +
+                            '<label class="fw-bold small">Harga Beli Coin dari User (Rp)</label>' +
+                            '<input type="number" id="seInputHargaBeli" class="form-control" min="1" step="100">' +
+                            '<small class="text-muted">Harga saat user Withdraw / Jual Coin.</small>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="mt-4 text-end">' +
+                        '<button type="submit" class="btn btn-success fw-bold"><i class="fas fa-save me-1"></i> Simpan Ekonomi Coin</button>' +
+                    '</div>' +
+                '</form>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function seLoadCoin() {
+        var s = window.getSettingEkonomiLengkapGlobal ? window.getSettingEkonomiLengkapGlobal() : {};
+        seSetVal('seInputMinBelanja', s.minimalBelanja || 0);
+        seSetVal('seInputCoinWajib', s.coinWajib || 0);
+        seSetVal('seInputHargaJual', s.hargaJual || 0);
+        seSetVal('seInputHargaBeli', s.hargaBeli || 0);
+    }
+
+    window.seSimpanCoin = function(e) {
+        if (e) e.preventDefault();
+        var min = parseInt(document.getElementById('seInputMinBelanja').value, 10) || 0;
+        var coin = parseInt(document.getElementById('seInputCoinWajib').value, 10) || 0;
+        var jual = parseInt(document.getElementById('seInputHargaJual').value, 10) || 0;
+        var beli = parseInt(document.getElementById('seInputHargaBeli').value, 10) || 0;
+
+        if (min < 0 || coin < 1 || jual < 1 || beli < 1) {
+            seToast('⚠️ Semua nilai harus lebih besar dari 0 (Min Belanja boleh 0).', 'warning');
+            return false;
+        }
+        if (beli > jual) {
+            seToast('⚠️ Harga beli tidak boleh lebih besar dari harga jual.', 'warning');
+            return false;
+        }
+
+        if (window.saveSettingEkonomiGlobal) {
+            var res = window.saveSettingEkonomiGlobal({ minimalBelanja: min, coinWajib: coin, hargaJual: jual, hargaBeli: beli });
+            if (res.sukses) seToast('✅ Ekonomi Coin berhasil disimpan.', 'success');
+            else seToast('❌ ' + res.pesan, 'danger');
+        } else {
+            seToast('❌ Fungsi FSE belum terpasang.', 'danger');
+        }
+        return false;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.5] — RENDER TAB 2: TARIF OJEK
+    // ═══════════════════════════════════════════════════════════
+    function seRenderTabOjek() {
+        return '' +
+        '<div class="card border-0 shadow">' +
+            '<div class="card-header text-white" style="background:#DC3545;">' +
+                '<i class="fas fa-motorcycle me-2"></i>Pengaturan Tarif Ojek' +
+            '</div>' +
+            '<div class="card-body">' +
+                '<div id="notifSettingOjek" class="alert d-none"></div>' +
+                '<form onsubmit="return seSimpanOjek(event)">' +
+                    '<div class="row g-3">' +
+                        '<div class="col-md-4">' +
+                            '<label class="fw-bold small">Tarif per KM (Rp)</label>' +
+                            '<input type="number" id="seInputTarifPerKm" class="form-control" min="0" step="100">' +
+                        '</div>' +
+                        '<div class="col-md-4">' +
+                            '<label class="fw-bold small">Biaya Base (Rp)</label>' +
+                            '<input type="number" id="seInputBiayaBase" class="form-control" min="0" step="100">' +
+                        '</div>' +
+                        '<div class="col-md-4">' +
+                            '<label class="fw-bold small">Tarif Minimum (Rp)</label>' +
+                            '<input type="number" id="seInputTarifMinimum" class="form-control" min="0" step="100">' +
+                        '</div>' +
+                        '<div class="col-md-4">' +
+                            '<label class="fw-bold small">Fee Platform (%)</label>' +
+                            '<input type="number" id="seInputFee" class="form-control" min="0" max="100" step="1">' +
+                        '</div>' +
+                        '<div class="col-md-4">' +
+                            '<label class="fw-bold small">Radius Default (km)</label>' +
+                            '<input type="number" id="seInputRadius" class="form-control" min="1" step="1">' +
+                        '</div>' +
+                        '<div class="col-md-4">' +
+                            '<label class="fw-bold small">Maksimal Jarak Ojek (km)</label>' +
+                            '<input type="number" id="seInputMaxJarak" class="form-control" min="1" step="1">' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="mt-4 text-end">' +
+                        '<button type="submit" class="btn btn-success fw-bold"><i class="fas fa-save me-1"></i> Simpan Tarif Ojek</button>' +
+                    '</div>' +
+                '</form>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function seLoadOjek() {
+        var t = window.getTarifOjekGlobal ? window.getTarifOjekGlobal() : {};
+        seSetVal('seInputTarifPerKm', t.tarifPerKm || 0);
+        seSetVal('seInputBiayaBase', t.biayaBase || 0);
+        seSetVal('seInputTarifMinimum', t.tarifMinimum || 0);
+        seSetVal('seInputFee', t.biayaJasaPersen || 0);
+        seSetVal('seInputRadius', t.radiusDefaultKm || 0);
+        seSetVal('seInputMaxJarak', t.maksimalJarakOjekKm || 0);
+    }
+
+    window.seSimpanOjek = function(e) {
+        if (e) e.preventDefault();
+        var data = {
+            tarifPerKm: parseInt(document.getElementById('seInputTarifPerKm').value, 10) || 0,
+            biayaBase: parseInt(document.getElementById('seInputBiayaBase').value, 10) || 0,
+            tarifMinimum: parseInt(document.getElementById('seInputTarifMinimum').value, 10) || 0,
+            biayaJasaPersen: parseInt(document.getElementById('seInputFee').value, 10) || 0,
+            radiusDefaultKm: parseInt(document.getElementById('seInputRadius').value, 10) || 0,
+            maksimalJarakOjekKm: parseInt(document.getElementById('seInputMaxJarak').value, 10) || 0
+        };
+
+        if (data.biayaJasaPersen < 0 || data.biayaJasaPersen > 100) {
+            seToast('⚠️ Fee platform harus antara 0-100%.', 'warning');
+            return false;
+        }
+
+        if (window.saveTarifOjekGlobal) {
+            var res = window.saveTarifOjekGlobal(data);
+            if (res.sukses) seToast('✅ Tarif Ojek berhasil disimpan.', 'success');
+            else seToast('❌ ' + res.pesan, 'danger');
+        } else {
+            seToast('❌ Fungsi FSE belum terpasang.', 'danger');
+        }
+        return false;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.6] — RENDER TAB 3: SEWA APLIKASI
+    // ═══════════════════════════════════════════════════════════
+    function seRenderTabSewa() {
+        return '' +
+        '<div class="card border-0 shadow">' +
+            '<div class="card-header text-white" style="background:#9C27B0;">' +
+                '<i class="fas fa-file-invoice-dollar me-2"></i>Pengaturan Sewa Aplikasi' +
+            '</div>' +
+            '<div class="card-body">' +
+                '<div id="notifSettingSewa" class="alert d-none"></div>' +
+                '<form onsubmit="return seSimpanSewa(event)">' +
+                    '<h6 class="fw-bold text-primary mb-3"><i class="fas fa-tags me-1"></i>Harga Paket Default (Fallback)</h6>' +
+                    '<div class="row g-3 mb-4">' +
+                        '<div class="col-md-3"><label class="small fw-bold">1 Bulan (Rp)</label><input type="number" id="seSewa1" class="form-control" min="0"></div>' +
+                        '<div class="col-md-3"><label class="small fw-bold">3 Bulan (Rp)</label><input type="number" id="seSewa3" class="form-control" min="0"></div>' +
+                        '<div class="col-md-3"><label class="small fw-bold">6 Bulan (Rp)</label><input type="number" id="seSewa6" class="form-control" min="0"></div>' +
+                        '<div class="col-md-3"><label class="small fw-bold">1 Tahun (Rp)</label><input type="number" id="seSewa12" class="form-control" min="0"></div>' +
+                    '</div>' +
+                    '<div class="alert alert-info small mb-0 py-2">' +
+                        '<i class="fas fa-info-circle me-1"></i>' +
+                        'Pengaturan role mana yang kena sewa & harga khusus per role dapat diatur melalui halaman <b>Detail Sewa</b> (BLOK 10.45).' +
+                    '</div>' +
+                    '<div class="mt-4 text-end">' +
+                        '<button type="submit" class="btn text-white fw-bold" style="background:#9C27B0;"><i class="fas fa-save me-1"></i> Simpan Sewa</button>' +
+                    '</div>' +
+                '</form>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function seLoadSewa() {
+        var s = window.getSewaAplikasiSettingGlobal ? window.getSewaAplikasiSettingGlobal() : {};
+        var p = s.paket || {};
+        seSetVal('seSewa1', p['1_bulan'] ? p['1_bulan'].harga : 0);
+        seSetVal('seSewa3', p['3_bulan'] ? p['3_bulan'].harga : 0);
+        seSetVal('seSewa6', p['6_bulan'] ? p['6_bulan'].harga : 0);
+        seSetVal('seSewa12', p['12_bulan'] ? p['12_bulan'].harga : 0);
+    }
+
+    window.seSimpanSewa = function(e) {
+        if (e) e.preventDefault();
+        var current = window.getSewaAplikasiSettingGlobal ? window.getSewaAplikasiSettingGlobal() : {};
+        
+        var data = {
+            roleKenaSewa: current.roleKenaSewa || [],
+            paketPerRole: current.paketPerRole || {},
+            tanggalTerbitTagihan: current.tanggalTerbitTagihan || 5,
+            tanggalSuspend: current.tanggalSuspend || 10,
+            paket: {
+                '1_bulan': { label: '1 Bulan', durasiHari: 30, harga: parseInt(document.getElementById('seSewa1').value, 10) || 0 },
+                '3_bulan': { label: '3 Bulan', durasiHari: 90, harga: parseInt(document.getElementById('seSewa3').value, 10) || 0 },
+                '6_bulan': { label: '6 Bulan', durasiHari: 180, harga: parseInt(document.getElementById('seSewa6').value, 10) || 0 },
+                '12_bulan': { label: '1 Tahun', durasiHari: 365, harga: parseInt(document.getElementById('seSewa12').value, 10) || 0 }
             }
         };
-        console.log('🔍 debugDummy v1.3:', info);
+
+        if (window.saveSewaAplikasiSettingGlobal) {
+            var res = window.saveSewaAplikasiSettingGlobal(data);
+            if (res.sukses) seToast('✅ Setting Sewa berhasil disimpan.', 'success');
+            else seToast('❌ ' + res.pesan, 'danger');
+        } else {
+            seToast('❌ Fungsi FSE belum terpasang.', 'danger');
+        }
+        return false;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.7] — HANDLER MENU & REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['tampilkanSettingEkonomiSA'] = function() {
+        window.tampilkanSettingEkonomiSA();
+    };
+    window.menuHandlers['settingEkonomiSA'] = window.menuHandlers['tampilkanSettingEkonomiSA'];
+    window.menuHandlers['pengaturanEkonomi'] = window.menuHandlers['tampilkanSettingEkonomiSA'];
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.8.8] — DEBUG & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debug108 = function() {
+        var info = {
+            blok: '10.8',
+            versi: '1.0',
+            guard: window._blokR108DoneV1,
+            tabAktif: seState.tabAktif,
+            fungsi: {
+                tampilkanSettingEkonomiSA: typeof window.tampilkanSettingEkonomiSA,
+                seSetTab: typeof window.seSetTab,
+                seSimpanCoin: typeof window.seSimpanCoin,
+                seSimpanOjek: typeof window.seSimpanOjek,
+                seSimpanSewa: typeof window.seSimpanSewa
+            }
+        };
+        console.log('🔍 debug108:', info);
         return info;
     };
 
     setTimeout(function() {
         try {
             if (typeof window.cpTambahBlok === 'function') {
-                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
-                    return b && b.kode === 'DUMMY';
-                });
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '10.8'; });
                 if (!ada) {
-                    window.cpTambahBlok({
-                        kode: 'DUMMY',
-                        nama: 'Akun Dummy All Role v1.3 (91 akun)',
-                        layer: 'L2', status: 'Selesai',
-                        tanggal: new Date().toISOString().substring(0, 10)
-                    });
+                    window.cpTambahBlok({ kode: '10.8', nama: 'Setting Ekonomi R2Coin SA', layer: 'L5', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
                 }
             }
-            if (typeof window.cpUpdateFungsi === 'function') {
-                window.cpUpdateFungsi('dummy', {
-                    nama: 'Akun Dummy All Role (L2)',
-                    status: 'Selesai', jumlah: 16
-                });
-            }
-            if (typeof window.cpTambahRiwayat === 'function') {
-                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
-                    return r && r.blok === 'DUMMY' &&
-                           r.nama && r.nama.indexOf('v1.3') !== -1;
-                });
-                if (!adaR) {
-                    window.cpTambahRiwayat({
-                        blok: 'DUMMY',
-                        nama: 'BLOK DUMMY v1.3 FIXED — Akun Dummy All Role (91 akun)',
-                        keterangan: 'FIX v1.3: _gen3 robust (guard semua field opsional), ' +
-                            'cek return save (silent bug fixed), validasi parent dependency ' +
-                            'di seedPerRole & seedPerKategori, guard Pusat=1 di seedAll, ' +
-                            '+dummyVerifikasiRelasi. 91 akun: 3 SA_STAF + 18 Staf + 6 Org + ' +
-                            '33 Seller + 3 CT + 10 Kopdes (1+1+3+5) + 18 Kasir. Password=123456.'
-                    });
-                }
-            }
-        } catch (e) { console.warn('DUMMY.e registry:', e.message); }
-    }, 800);
+        } catch (e) {}
+    }, 1000);
 
-    console.log('%c🇮🇩 BLOK DUMMY v1.3 FINAL FIXED — AKUN DUMMY ALL ROLE terpasang.',
-        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
-        'color:#000;padding:6px 12px;font-weight:bold;border:3px solid #DC3545;font-size:14px;');
-    console.log('   🎯 91 akun siap di-seed · Password: 123456');
-    console.log('');
-    console.log('   ✅ SEMUA BUG v1.2 SUDAH DIPERBAIKI:');
-    console.log('      [P0] _gen3 crash → FIXED (guard semua field opsional)');
-    console.log('      [P1] _seedSatuAkun abaikan return save → FIXED (cek 3 save)');
-    console.log('      [P2] dummySeedPerRole tanpa validasi parent → FIXED (PARENT_MAP)');
-    console.log('      [P3] dummySeedAll tanpa guard Pusat=1 → FIXED (auto-skip)');
-    console.log('      [+]  dummyVerifikasiRelasi() — cek kasir owner & kopdes induk');
-    console.log('');
-    console.log('   🚀 ALUR PAKAI:');
-    console.log('      1. dummyCekBeforeSeed()      — pre-flight');
-    console.log('      2. dummySeedAll()            — seed 91 akun (urutan otomatis)');
-    console.log('      3. dummyCekStatus()          — verifikasi jumlah');
-    console.log('      4. dummyVerifikasiRelasi()   — ⭐ cek kasir/kopdes relasi');
-    console.log('      5. debugDummy()              — debug lengkap');
-    console.log('      6. dummyHapusSemua()         — reset jika perlu');
-    console.log('');
-    console.log('   🔍 Setelah seed, cek relasi OK sebelum coba login.');
+    console.log('✅ BLOK R 10.8 V1 — Setting Ekonomi R2Coin SA terpasang.');
+    console.log('   📦 3 Tab: Coin, Ojek, Sewa');
+    console.log('   🔍 Debug: debug108()');
 })();
 </script>
-<!-- ═══ AKHIR BLOK DUMMY.e v1.3 ═════════════════════════════ -->
+<!-- ============================================================ -->
+<!-- ===== AKHIR BLOK R 10.8 (JS) ============================== -->
+<!-- ============================================================ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ SISTEM LOGO APP (UPLOAD & SIMPAN) ═════════════════════ -->
