@@ -36440,6 +36440,237 @@ setTimeout(function _initBlok01k(isRetry) {
 <!-- ═══ AKHIR BLOK FCHATU-BRIDGE v2.0 ══════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FCHAT v1.0 — FUNGSI GLOBAL CHAT SUPERADMIN 🇮🇩 ═══ -->
+<!-- ═══ Layer: L4 (Domain Logic — Komunikasi & Broadcast SA) ══ -->
+<!-- ═══ Dependency: CS1—CS3, MN, GID ══════════════════════════ -->
+<!-- ═══ Guard: _fchatDoneV1 (UTAMA — A32) ═════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11—A13, A18, A19, A25, A32—A34 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FCHAT_V1() {
+    // [A32] — GUARD UTAMA
+    if (window._fchatDoneV1) return;
+    if (!window.csLoadJSON || !window.csSaveJSON || !window.CS_ROLE_MAP) return;
+    
+    window._fchatDoneV1 = true;
+    window._fchatVersi  = '1.0';
+
+    // [A18] — Register CS_KEY
+    if (window.CS_KEY) {
+        window.CS_KEY.CHAT_SA   = window.CS_KEY.CHAT_SA   || 'dataChatSA';
+        window.CS_KEY.KONTAK_SA = window.CS_KEY.KONTAK_SA || 'dataKontakSA';
+    }
+
+    function _load(key, def) {
+        try {
+            var v = window.csLoadJSON(key, def);
+            if (Array.isArray(def) && !Array.isArray(v)) return def;
+            return v;
+        } catch (e) { return def; }
+    }
+    function _save(key, data) {
+        try { return window.csSaveJSON(key, data, { backup: false }); } catch (e) { return { sukses: false }; }
+    }
+    function _now() { return window.csNow ? window.csNow() : new Date().toISOString(); }
+    function _getKeyChat() { return (window.CS_KEY && window.CS_KEY.CHAT_SA) ? window.CS_KEY.CHAT_SA : 'dataChatSA'; }
+    function _getKeyKontak() { return (window.CS_KEY && window.CS_KEY.KONTAK_SA) ? window.CS_KEY.KONTAK_SA : 'dataKontakSA'; }
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.1] — AMBIL KONTAK (Semua Role)
+    // ═══════════════════════════════════════════════════════════
+    window.fchatGetKontak = function(filter) {
+        filter = filter || {};
+        try {
+            var users = _load('dataLoginUser', []);
+            var kontakTersimpan = _load(_getKeyKontak(), []);
+            
+            // Filter
+            if (filter.kodeRole) users = users.filter(function(u) { return u.kodeRole === filter.kodeRole; });
+            if (filter.cari) {
+                var q = filter.cari.toLowerCase();
+                users = users.filter(function(u) { return (u.nama && u.nama.toLowerCase().includes(q)) || (u.username && u.username.toLowerCase().includes(q)); });
+            }
+
+            // Urutkan: Yang disimpan di atas
+            return users.map(function(u) {
+                var info = window.csGetRoleInfo ? window.csGetRoleInfo(u.kodeRole) : null;
+                return {
+                    idUser: u.idUser || u.id,
+                    nama: u.nama || u.namaLengkap || 'Anonim',
+                    username: u.username,
+                    kodeRole: u.kodeRole,
+                    namaRole: info ? info.nama : u.kodeRole,
+                    fotoUrl: u.fotoUrl || '',
+                    isTersimpan: kontakTersimpan.indexOf(u.idUser || u.id) !== -1
+                };
+            }).sort(function(a, b) {
+                if (a.isTersimpan && !b.isTersimpan) return -1;
+                if (!a.isTersimpan && b.isTersimpan) return 1;
+                return a.nama.localeCompare(b.nama);
+            });
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.2] — SIMPAN / HAPUS KONTAK FAVORIT
+    // ═══════════════════════════════════════════════════════════
+    window.fchatSimpanKontak = function(idUser) {
+        try {
+            var kontak = _load(_getKeyKontak(), []);
+            var idx = kontak.indexOf(idUser);
+            var action = '';
+            
+            if (idx !== -1) { kontak.splice(idx, 1); action = 'dihapus'; }
+            else { kontak.push(idUser); action = 'disimpan'; }
+            
+            _save(_getKeyKontak(), kontak);
+            return { sukses: true, action: action };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.3] — KIRIM PESAN (1-on-1)
+    // ═══════════════════════════════════════════════════════════
+    window.fchatKirimPesan = function(opts) {
+        try {
+            if (!opts.idTarget) return { sukses: false, pesan: 'Target kosong' };
+            if (!opts.teks && !opts.mediaUrl) return { sukses: false, pesan: 'Pesan kosong' };
+
+            var sa = window.getUserAktif ? window.getUserAktif() : null;
+            var idSA = sa ? (sa.idUser || sa.id) : 'SA';
+
+            var pesanBaru = {
+                id: 'MSG-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                idPengirim: idSA,
+                idPenerima: opts.idTarget,
+                tipeMedia: opts.tipeMedia || 'text', // 'text', 'image', 'video', 'doc', 'gif'
+                teks: opts.teks || '',
+                mediaUrl: opts.mediaUrl || '',
+                bolehBalas: opts.bolehBalas !== undefined ? opts.bolehBalas : false, // Default: User tidak bisa balas
+                waktu: _now()
+            };
+
+            // 1. Simpan ke database Chat SA
+            var chats = _load(_getKeyChat(), []);
+            chats.unshift(pesanBaru);
+            _save(_getKeyChat(), chats);
+
+            // 2. Kirim ke User via MN (A12/A13)
+            if (typeof window.mnKirimKeMenu === 'function') {
+                window.mnKirimKeMenu({
+                    tipe: 'chat_sa',
+                    dari: { idUser: idSA, kodeRole: 'SA', menu: 'FCHAT' },
+                    ke: { menu: 'chat_user', idUserTarget: opts.idTarget },
+                    data: { pesan: pesanBaru },
+                    idRef: pesanBaru.id,
+                    timestamp: _now()
+                });
+            }
+
+            return { sukses: true, pesan: 'Pesan terkirim', data: pesanBaru };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.4] — BROADCAST (PESAN MASAL)
+    // ═══════════════════════════════════════════════════════════
+    window.fchatKirimBroadcast = function(opts) {
+        try {
+            var users = _load('dataLoginUser', []);
+            var targetUsers = [];
+            
+            // Filter Target
+            if (opts.kodeRole) {
+                targetUsers = users.filter(function(u) { return u.kodeRole === opts.kodeRole; });
+            } else if (opts.kategori) {
+                targetUsers = users.filter(function(u) { 
+                    var info = window.csGetRoleInfo ? window.csGetRoleInfo(u.kodeRole) : null;
+                    return info && info.kategori === opts.kategori;
+                });
+            } else {
+                targetUsers = users; // Semua user
+            }
+
+            var berhasil = 0;
+            targetUsers.forEach(function(u) {
+                var res = window.fchatKirimPesan({
+                    idTarget: u.idUser || u.id,
+                    teks: opts.teks,
+                    tipeMedia: opts.tipeMedia,
+                    mediaUrl: opts.mediaUrl,
+                    bolehBalas: false // Broadcast tidak bisa dibalas
+                });
+                if (res.sukses) berhasil++;
+            });
+
+            return { sukses: true, totalTarget: targetUsers.length, terkirim: berhasil };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.5] — AMBIL RIWAYAT CHAT
+    // ═══════════════════════════════════════════════════════════
+    window.fchatAmbilRiwayat = function(idTarget) {
+        try {
+            var chats = _load(_getKeyChat(), []);
+            // Ambil chat antara SA dan target
+            var sa = window.getUserAktif ? window.getUserAktif() : null;
+            var idSA = sa ? (sa.idUser || sa.id) : 'SA';
+            
+            var filtered = chats.filter(function(c) {
+                return (c.idPengirim === idSA && c.idPenerima === idTarget) || 
+                       (c.idPengirim === idTarget && c.idPenerima === idSA);
+            });
+            
+            return filtered.sort(function(a, b) { return new Date(a.waktu) - new Date(b.waktu); });
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.6] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFCHAT = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'FCHAT' }, ke: ke || { menu: 'FCHAT' }, data: data || {}, idRef: idRef || null, timestamp: _now() });
+    };
+    window.terimaFCHAT = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FCHAT') : [];
+    };
+    window.ambilFCHAT = function(filter) {
+        return { kontak: window.fchatGetKontak(filter || {}) };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHAT.7] — DEBUG & REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debugFCHAT = function() {
+        var info = {
+            blok: 'FCHAT', versi: window._fchatVersi, guard: window._fchatDoneV1,
+            totalKontak: window.fchatGetKontak().length,
+            totalChat: _load(_getKeyChat(), []).length,
+            cekAturan: { A11_3Pintu: true, A25_DelegasiMN: true }
+        };
+        console.log('🔍 debugFCHAT v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'FCHAT'; });
+                if (!ada) window.cpTambahBlok({ kode: 'FCHAT', nama: 'Chat SuperAdmin & Broadcast', layer: 'L4', status: 'Selesai', tanggal: _now().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: _now().substring(0, 10), blok: 'FCHAT', nama: 'Fungsi Global Chat SuperAdmin v1.0', keterangan: 'Kontak 32 Role, Chat 1-on-1 (No Reply), Broadcast (All/Role)' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK FCHAT v1.0 — FUNGSI GLOBAL CHAT SUPERADMIN ══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK 2 — LOGIN 🇮🇩 v4.0 FINAL ═════════════════════════ -->
 <!-- ═══ Layer: L5 (Halaman Publik) ════════════════════════════ -->
 <!-- ═══ Dependency: CS8 v4.1 (prosesLogin) · CS6 (tampilkanHalaman) -->
@@ -52352,6 +52583,509 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 <!-- ═══ AKHIR BLOK R 10.10 — DOMPET R2COIN SA (JS) v2.0 ═══════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.20 — UI PUSAT CHAT SUPERADMIN (HTML) 🇮🇩 v1.0 ═ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi & Broadcast SA) ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="chatSAContainer" style="display:none;">
+    <style>
+        .csa-wrapper {
+            display: flex;
+            height: 100vh;
+            background: #e5ddd5; /* Background khas WhatsApp */
+            margin-top: -60px;
+            padding-top: 60px;
+            overflow: hidden;
+        }
+        /* PANEL KIRI (KONTAK) */
+        .csa-sidebar {
+            width: 350px;
+            background: #fff;
+            border-right: 1px solid #ddd;
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+            transition: transform 0.3s ease;
+        }
+        .csa-sidebar-header { padding: 15px; background: #f0f2f5; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd; }
+        .csa-search { padding: 10px; border-bottom: 1px solid #eee; }
+        .csa-kontak-list { flex-grow: 1; overflow-y: auto; }
+        .csa-kontak-item { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f5f5f5; transition: background 0.2s; }
+        .csa-kontak-item:hover, .csa-kontak-item.active { background: #f0f2f5; }
+        .csa-kontak-avatar { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; margin-right: 15px; background: #ddd; }
+        .csa-kontak-info { flex-grow: 1; overflow: hidden; }
+        .csa-kontak-info h6 { margin: 0; font-size: 15px; font-weight: 600; color: #111; }
+        .csa-kontak-info small { color: #667781; font-size: 12px; display: block; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        
+        /* PANEL KANAN (CHAT) */
+        .csa-chat-area {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            background: #efeae2;
+            background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); /* Pattern WA */
+            background-size: cover;
+        }
+        .csa-chat-header { padding: 10px 20px; background: #f0f2f5; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; z-index: 5; }
+        .csa-chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        /* BUBBLE CHAT */
+        .csa-bubble { max-width: 65%; padding: 10px 15px; border-radius: 10px; font-size: 14px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .csa-bubble-sa { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .csa-bubble-user { background: #fff; align-self: flex-start; border-top-left-radius: 0; }
+        .csa-time { font-size: 10px; color: #667781; margin-top: 5px; text-align: right; display: block; }
+        
+        /* INPUT AREA */
+        .csa-input-area { padding: 15px; background: #f0f2f5; display: flex; align-items: center; gap: 10px; border-top: 1px solid #ddd; z-index: 5; }
+        .csa-input { flex-grow: 1; border-radius: 20px; padding: 10px 15px; border: none; outline: none; background: #fff; resize: none; height: 45px; max-height: 100px; }
+        
+        /* RESPONSIVE (MOBILE) */
+        @media (max-width: 768px) {
+            .csa-sidebar { position: absolute; width: 100%; height: 100%; }
+            .csa-sidebar.hide { transform: translateX(-100%); }
+            .csa-chat-area { width: 100%; }
+        }
+    </style>
+
+    <div class="csa-wrapper">
+        
+        <!-- ═══ PANEL KIRI (KONTAK) ═══ -->
+        <div class="csa-sidebar" id="csaSidebar">
+            <div class="csa-sidebar-header">
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-sm btn-link text-dark d-md-none p-0" onclick="csaToggleSidebar()">
+                        <i class="fas fa-bars fa-lg"></i>
+                    </button>
+                    <h5 class="mb-0 fw-bold text-dark"><i class="fas fa-comments text-success"></i> Chat SA</h5>
+                </div>
+                <div class="d-flex gap-1">
+                    <button class="btn btn-sm btn-warning fw-bold" onclick="csaBukaModalBroadcast()" title="Pesan Masal">
+                        <i class="fas fa-bullhorn"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="kembaliKeDasbor()" title="Tutup">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <div class="csa-search">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-light border-end-0"><i class="fas fa-search text-muted"></i></span>
+                    <input type="text" id="csaInputSearch" class="form-control bg-light border-start-0" placeholder="Cari kontak 32 role..." oninput="csaRenderKontak()">
+                </div>
+            </div>
+
+            <div class="csa-kontak-list" id="csaKontakList">
+                <!-- Diisi via JS -->
+            </div>
+        </div>
+
+        <!-- ═══ PANEL KANAN (AREA CHAT) ═══ -->
+        <div class="csa-chat-area" id="csaChatArea">
+            <!-- Empty State (Sebelum kontak dipilih) -->
+            <div class="h-100 d-flex flex-column align-items-center justify-content-center text-muted" id="csaEmptyState">
+                <i class="fas fa-comments fa-5x mb-3 opacity-25"></i>
+                <h4 class="fw-bold">Pusat Komunikasi SuperAdmin</h4>
+                <p>Pilih kontak di sebelah kiri untuk mulai mengirim pesan.</p>
+            </div>
+
+            <!-- Area Chat Aktif (Hidden by default) -->
+            <div class="d-none h-100 flex-column" id="csaActiveChat">
+                <!-- Header Chat -->
+                <div class="csa-chat-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-link text-dark d-md-none p-0 me-2" onclick="csaToggleSidebar()">
+                            <i class="fas fa-arrow-left fa-lg"></i>
+                        </button>
+                        <img id="csaChatAvatar" src="" class="rounded-circle" style="width:40px;height:40px;object-fit:cover;">
+                        <div>
+                            <h6 class="mb-0 fw-bold" id="csaChatNama">Nama</h6>
+                            <small class="text-muted" id="csaChatRole">Role</small>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger" onclick="csaToggleSimpanKontak()" id="csaBtnSimpanKontak">
+                        <i class="fas fa-bookmark"></i> Simpan
+                    </button>
+                </div>
+
+                <!-- Pesan -->
+                <div class="csa-chat-messages" id="csaChatMessages">
+                    <!-- Diisi via JS -->
+                </div>
+
+                <!-- Input -->
+                <div class="csa-input-area">
+                    <button class="btn btn-light rounded-circle shadow-sm" onclick="csaBukaInputMedia()" title="Lampirkan Media">
+                        <i class="fas fa-paperclip fa-lg text-muted"></i>
+                    </button>
+                    <input type="file" id="csaInputFile" style="display:none;" accept="image/*,video/*,.pdf,.doc,.docx" onchange="csaProsesKirimMedia(this)">
+                    
+                    <textarea id="csaInputPesan" class="csa-input" placeholder="Ketik pesan (User tidak bisa balas)..." onkeypress="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();csaKirimPesan();}"></textarea>
+                    
+                    <button class="btn btn-success rounded-circle shadow-sm" onclick="csaKirimPesan()">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- MODAL BROADCAST -->
+<div class="modal fade" id="csaModalBroadcast" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-warning">
+                <h5 class="modal-title fw-bold text-dark"><i class="fas fa-bullhorn me-2"></i>Pesan Masal (Broadcast)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning small py-2">
+                    <i class="fas fa-info-circle me-1"></i> Pesan masal tidak dapat dibalas oleh user.
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Target Penerima</label>
+                    <select id="csaBroadcastTarget" class="form-select">
+                        <option value="all">Semua Pengguna (32 Role)</option>
+                        <optgroup label="Berdasarkan Kategori">
+                            <option value="kat:Seller">Semua Seller</option>
+                            <option value="kat:Kopdes">Semua Kopdes</option>
+                            <option value="kat:Customer">Semua Customer</option>
+                        </optgroup>
+                        <optgroup label="Berdasarkan Role Spesifik">
+                            <option value="role:TK">Toko (TK)</option>
+                            <option value="role:OJ">Ojek (OJ)</option>
+                            <option value="role:KDMP_DESA">Kopdes Desa</option>
+                            <option value="role:KSR_TK">Kasir Toko</option>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Isi Pesan Broadcast</label>
+                    <textarea id="csaBroadcastPesan" class="form-control" rows="4" placeholder="Ketik pengumuman penting..." required></textarea>
+                </div>
+                <button class="btn btn-warning w-100 fw-bold" onclick="csaProsesBroadcast()">
+                    <i class="fas fa-paper-plane me-1"></i> Kirim ke Target
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.20 — UI PUSAT CHAT SUPERADMIN (JS) 🇮🇩 v1.0 ══ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi & Broadcast SA) ═══════ -->
+<!-- ═══ Guard: _blokR1020DoneV1 (UTAMA — A32) ══════════════════ -->
+<!-- ═══ Aturan: A1—A3, A5, A10, A11—A14, A19, A25, A29—A34 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_10_20_CHAT_SA_V1() {
+    // [A32] — GUARD UTAMA
+    if (window._blokR1020DoneV1) return;
+    if (!window._fchatDoneV1) {
+        console.warn('⚠️ BLOK R 10.20: FCHAT belum terpasang. Ditunda.');
+        return;
+    }
+    
+    window._blokR1020DoneV1 = true;
+    window._blokR1020Versi   = '1.0';
+
+    var csaState = { idTarget: null, namaTarget: '', roleTarget: '' };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _now() { return window.csNow ? window.csNow() : new Date().toISOString(); }
+    function _formatJam(iso) {
+        try { return new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }); }
+        catch (e) { return ''; }
+    }
+
+    // [10.20.1] — ENTRY POINT
+    window.tampilkanChatSuperadmin = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplChatSA) {
+                var c = document.getElementById('chatSAContainer');
+                if (!c) return;
+                window._tplChatSA = c.innerHTML;
+                c.remove();
+            }
+            
+            konten.innerHTML = window._tplChatSA;
+            csaRenderKontak();
+
+        } catch (e) {}
+    };
+
+    // [10.20.2] — RENDER DAFTAR KONTAK (A1/A2 Delegasi FCHAT)
+    window.csaRenderKontak = function() {
+        var container = document.getElementById('csaKontakList');
+        if (!container) return;
+
+        var search = document.getElementById('csaInputSearch') ? document.getElementById('csaInputSearch').value : '';
+        var kontak = window.fchatGetKontak({ cari: search });
+
+        if (kontak.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Kontak tidak ditemukan.</div>';
+            return;
+        }
+
+        var html = '';
+        kontak.forEach(function(u) {
+            var foto = u.fotoUrl || 'https://ui-avatars.com/api/?name=' + u.nama;
+            var badgeSimpan = u.isTersimpan ? '<i class="fas fa-bookmark text-warning ms-1" style="font-size:10px;"></i>' : '';
+            
+            html += `
+            <div class="csa-kontak-item" onclick="csaBukaChat('${u.idUser}', '${_esc(u.nama)}', '${_esc(u.namaRole)}', '${foto}')">
+                <img src="${foto}" class="csa-kontak-avatar">
+                <div class="csa-kontak-info">
+                    <h6>${_esc(u.nama)} ${badgeSimpan}</h6>
+                    <small><i class="fas fa-user-tag me-1"></i>${_esc(u.namaRole)} (${u.kodeRole})</small>
+                </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+    };
+
+    // [10.20.3] — BUKA RUANG CHAT
+    window.csaBukaChat = function(idUser, nama, role, foto) {
+        csaState.idTarget = idUser;
+        csaState.namaTarget = nama;
+        csaState.roleTarget = role;
+
+        // Tampilkan Panel Chat
+        document.getElementById('csaEmptyState').classList.add('d-none');
+        var activeChat = document.getElementById('csaActiveChat');
+        activeChat.classList.remove('d-none');
+        activeChat.classList.add('d-flex');
+
+        // Set Header
+        document.getElementById('csaChatAvatar').src = foto;
+        document.getElementById('csaChatNama').textContent = nama;
+        document.getElementById('csaChatRole').textContent = role + ' (' + idUser + ')';
+
+        // Cek Status Simpan Kontak
+        csaUpdateBtnSimpan();
+
+        // Render Pesan
+        csaRenderPesan();
+
+        // Mobile: Sembunyikan Sidebar
+        if (window.innerWidth <= 768) {
+            document.getElementById('csaSidebar').classList.add('hide');
+        }
+    };
+
+    window.csaToggleSidebar = function() {
+        document.getElementById('csaSidebar').classList.toggle('hide');
+    };
+
+    // [10.20.4] — RENDER PESAN
+    window.csaRenderPesan = function() {
+        var container = document.getElementById('csaChatMessages');
+        if (!container || !csaState.idTarget) return;
+
+        var chats = window.fchatAmbilRiwayat(csaState.idTarget);
+        
+        var html = '';
+        chats.forEach(function(c) {
+            var isSA = c.idPengirim !== csaState.idTarget;
+            var bubbleClass = isSA ? 'csa-bubble-sa' : 'csa-bubble-user';
+            
+            var kontenMedia = '';
+            if (c.tipeMedia === 'image') kontenMedia = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;">`;
+            else if (c.tipeMedia === 'video') kontenMedia = `<video src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;" controls></video>`;
+            else if (c.tipeMedia === 'doc') kontenMedia = `<a href="${_esc(c.mediaUrl)}" target="_blank" class="btn btn-sm btn-outline-primary mb-2"><i class="fas fa-file-alt me-1"></i>Buka Dokumen</a>`;
+            else if (c.tipeMedia === 'gif') kontenMedia = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:150px;">`;
+
+            var labelNoReply = (isSA && c.bolehBalas === false) ? `<div class="small text-muted mt-1" style="font-size:10px;"><i class="fas fa-lock me-1"></i>User tidak bisa membalas pesan ini.</div>` : '';
+
+            html += `
+            <div class="csa-bubble ${bubbleClass}">
+                ${kontenMedia}
+                <div>${_esc(c.teks)}</div>
+                ${labelNoReply}
+                <span class="csa-time">${_formatJam(c.waktu)}</span>
+            </div>`;
+        });
+
+        if (chats.length === 0) {
+            html = '<div class="text-center text-muted py-4 small bg-white rounded shadow-sm mx-auto mt-4" style="max-width:300px;">Belum ada riwayat pesan.<br>Kirim pesan pertama Anda.</div>';
+        }
+
+        container.innerHTML = html;
+        container.scrollTop = container.scrollHeight; // Scroll ke bawah
+    };
+
+    // [10.20.5] — KIRIM PESAN TEKS
+    window.csaKirimPesan = function() {
+        var input = document.getElementById('csaInputPesan');
+        var teks = input.value.trim();
+        if (!teks || !csaState.idTarget) return;
+
+        // Delegasi FCHAT
+        var res = window.fchatKirimPesan({
+            idTarget: csaState.idTarget,
+            teks: teks,
+            tipeMedia: 'text'
+        });
+
+        if (res.sukses) {
+            input.value = '';
+            csaRenderPesan();
+        } else {
+            _toast('❌ ' + res.pesan, 'danger');
+        }
+    };
+
+    // [10.20.6] — KIRIM MEDIA (IMAGE, VIDEO, DOC)
+    window.csaBukaInputMedia = function() {
+        document.getElementById('csaInputFile').click();
+    };
+
+    window.csaProsesKirimMedia = function(input) {
+        if (!input.files || !input.files[0] || !csaState.idTarget) return;
+
+        var file = input.files[0];
+        var reader = new FileReader();
+        
+        // Batasan ukuran (max 2MB untuk localstorage)
+        if (file.size > 2 * 1024 * 1024) {
+            _toast('⚠️ File terlalu besar (Maks 2MB)', 'warning');
+            input.value = '';
+            return;
+        }
+
+        reader.onload = function(e) {
+            var base64 = e.target.result;
+            var tipe = 'doc';
+            if (file.type.indexOf('image') !== -1) tipe = 'image';
+            else if (file.type.indexOf('video') !== -1) tipe = 'video';
+
+            var res = window.fchatKirimPesan({
+                idTarget: csaState.idTarget,
+                teks: '📎 Mengirim ' + (tipe === 'image' ? 'Foto' : (tipe === 'video' ? 'Video' : 'Dokumen')),
+                tipeMedia: tipe,
+                mediaUrl: base64
+            });
+
+            if (res.sukses) {
+                input.value = '';
+                csaRenderPesan();
+            } else {
+                _toast('❌ Gagal kirim media: ' + res.pesan, 'danger');
+            }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // [10.20.7] — BROADCAST (PESAN MASAL)
+    window.csaBukaModalBroadcast = function() {
+        document.getElementById('csaBroadcastPesan').value = '';
+        document.getElementById('csaBroadcastTarget').value = 'all';
+        new bootstrap.Modal(document.getElementById('csaModalBroadcast')).show();
+    };
+
+    window.csaProsesBroadcast = function() {
+        var target = document.getElementById('csaBroadcastTarget').value;
+        var pesan = document.getElementById('csaBroadcastPesan').value.trim();
+
+        if (!pesan) { _toast('⚠️ Pesan tidak boleh kosong', 'warning'); return; }
+
+        if (!confirm('Kirim pesan masal ke target terpilih?')) return;
+
+        var opts = { teks: pesan, tipeMedia: 'text' };
+        if (target.indexOf('kat:') === 0) opts.kategori = target.replace('kat:', '');
+        else if (target.indexOf('role:') === 0) opts.kodeRole = target.replace('role:', '');
+        
+        // Delegasi FCHAT
+        var res = window.fchatKirimBroadcast(opts);
+
+        if (res.sukses) {
+            _toast('✅ Broadcast terkirim ke ' + res.terkirim + ' user', 'success');
+            bootstrap.Modal.getInstance(document.getElementById('csaModalBroadcast')).hide();
+        } else {
+            _toast('❌ Gagal broadcast: ' + res.pesan, 'danger');
+        }
+    };
+
+    // [10.20.8] — SIMPAN KONTAK
+    function csaUpdateBtnSimpan() {
+        var btn = document.getElementById('csaBtnSimpanKontak');
+        if (!btn || !csaState.idTarget) return;
+
+        var kontak = window.fchatGetKontak({});
+        var target = kontak.find(function(k) { return k.idUser === csaState.idTarget; });
+        var isSimpan = target ? target.isTersimpan : false;
+
+        if (isSimpan) {
+            btn.className = 'btn btn-sm btn-warning';
+            btn.innerHTML = '<i class="fas fa-bookmark"></i> Tersimpan';
+        } else {
+            btn.className = 'btn btn-sm btn-outline-danger';
+            btn.innerHTML = '<i class="fas fa-bookmark"></i> Simpan';
+        }
+    }
+
+    window.csaToggleSimpanKontak = function() {
+        if (!csaState.idTarget) return;
+        var res = window.fchatSimpanKontak(csaState.idTarget);
+        if (res.sukses) {
+            csaUpdateBtnSimpan();
+            csaRenderKontak(); // Re-render list untuk update badge
+            _toast('Kontak ' + res.action, 'success');
+        }
+    };
+
+    // [10.20.9] — REGISTER MENU HANDLER & 3 PINTU (A11)
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['chatSuperadmin'] = function() { return window.tampilkanChatSuperadmin(); };
+
+    window.kirimChatSA = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'ChatSA' }, ke: ke || { menu: 'ChatSA' }, data: data || {}, idRef: idRef || null, timestamp: _now() });
+    };
+    window.terimaChatSA = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'ChatSA') : [];
+    };
+    window.ambilChatSA = function() {
+        return { kontak: window.fchatGetKontak({}), state: csaState };
+    };
+
+    // [10.20.10] — DEBUG & REGISTRY
+    window.debugChatSA = function() {
+        var info = {
+            blok: '10.20', versi: window._blokR1020Versi, guard: window._blokR1020DoneV1,
+            cekA11: typeof window.kirimChatSA === 'function' && typeof window.terimaChatSA === 'function' && typeof window.ambilChatSA === 'function',
+            cekA14: true, cekA25: true
+        };
+        console.log('🔍 debugChatSA v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '10.20'; });
+                if (!ada) window.cpTambahBlok({ kode: '10.20', nama: 'Chat Superadmin & Broadcast', layer: 'L5', status: 'Selesai', tanggal: _now().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: _now().substring(0, 10), blok: '10.20', nama: 'Chat Superadmin UI', keterangan: 'WA Web Style, Kontak 32 Role, Broadcast, Media (Img/Vid/Doc), No Reply' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.20 — UI PUSAT CHAT SUPERADMIN 🇮🇩 v1.0 ═ -->
+
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.25 — DASBOR KOPDES SELLER SA (HTML) 🇮🇩 ══════ -->
 <!-- ═══ Layer: L5 (Blok UI — Katalog KDD & Checkout) ══════════ -->
 <!-- ═══ Dependency: FKS, FGD, CS6 ═════════════════════════════ -->
@@ -59192,6 +59926,1486 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 <!-- ═══ AKHIR BLOK R 10.83 STUB UI — Quick Unblock v2.0.1 ═════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 11.20 — UI CHAT TOKO (HTML) 🇮🇩 v1.0 ═══════════ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi Penjual & Pembeli) ═════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="chatTokoContainer" style="display:none;">
+    <style>
+        .ct-wrapper { display: flex; height: 100vh; background: #e5ddd5; margin-top: -60px; padding-top: 60px; overflow: hidden; }
+        .ct-sidebar { width: 350px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .ct-sidebar-header { padding: 15px; background: #f0f2f5; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .ct-search { padding: 10px; border-bottom: 1px solid #eee; }
+        .ct-room-list { flex-grow: 1; overflow-y: auto; }
+        .ct-room-item { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+        .ct-room-item:hover, .ct-room-item.active { background: #f0f2f5; }
+        .ct-room-avatar { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; margin-right: 15px; background: #ddd; }
+        .ct-room-info h6 { margin: 0; font-size: 15px; font-weight: 600; color: #111; }
+        .ct-room-info small { color: #667781; font-size: 12px; display: block; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        
+        .ct-chat-area { flex-grow: 1; display: flex; flex-direction: column; background: #efeae2; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-size: cover; }
+        .ct-chat-header { padding: 10px 20px; background: #f0f2f5; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; }
+        .ct-chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        .ct-bubble { max-width: 65%; padding: 10px 15px; border-radius: 10px; font-size: 14px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .ct-bubble-saya { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .ct-bubble-lawan { background: #fff; align-self: flex-start; border-top-left-radius: 0; }
+        .ct-time { font-size: 10px; color: #667781; margin-top: 5px; text-align: right; display: block; }
+        
+        .ct-input-area { padding: 15px; background: #f0f2f5; display: flex; align-items: center; gap: 10px; border-top: 1px solid #ddd; }
+        .ct-input { flex-grow: 1; border-radius: 20px; padding: 10px 15px; border: none; outline: none; background: #fff; height: 45px; }
+        
+        @media (max-width: 768px) {
+            .ct-sidebar { position: absolute; width: 100%; height: 100%; z-index: 10; }
+            .ct-sidebar.hide { transform: translateX(-100%); }
+            .ct-chat-area { width: 100%; }
+        }
+    </style>
+
+    <div class="ct-wrapper">
+        <!-- SIDEBAR KONTAK -->
+        <div class="ct-sidebar" id="ctSidebar">
+            <div class="ct-sidebar-header">
+                <h5 class="mb-0 fw-bold text-dark"><i class="fas fa-comments text-primary"></i> Chat Toko</h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="kembaliKeDasbor()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="ct-search">
+                <input type="text" id="ctInputSearch" class="form-control form-control-sm" placeholder="Cari kontak pembeli..." oninput="ctRenderRooms()">
+            </div>
+            <div class="ct-room-list" id="ctRoomList">
+                <!-- Diisi via JS -->
+            </div>
+        </div>
+
+        <!-- AREA CHAT -->
+        <div class="ct-chat-area" id="ctChatArea">
+            <div class="h-100 d-flex flex-column align-items-center justify-content-center text-muted" id="ctEmptyState">
+                <i class="fas fa-store fa-5x mb-3 opacity-25"></i>
+                <h4 class="fw-bold">Pusat Chat Toko</h4>
+                <p>Pilih kontak pembeli di kiri untuk membalas pesanan.</p>
+            </div>
+
+            <div class="d-none h-100 flex-column" id="ctActiveChat">
+                <div class="ct-chat-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-link text-dark d-md-none p-0 me-2" onclick="ctToggleSidebar()"><i class="fas fa-arrow-left fa-lg"></i></button>
+                        <img id="ctChatAvatar" src="" class="rounded-circle" style="width:40px;height:40px;object-fit:cover;">
+                        <div>
+                            <h6 class="mb-0 fw-bold" id="ctChatNama">Nama</h6>
+                            <small class="text-muted" id="ctChatRole">Role</small>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-warning" onclick="ctSimpanKontak()" id="ctBtnSimpanKontak"><i class="fas fa-bookmark"></i> Simpan</button>
+                </div>
+                <div class="ct-chat-messages" id="ctChatMessages"></div>
+                <div class="ct-input-area">
+                    <button class="btn btn-light rounded-circle" onclick="document.getElementById('ctInputFile').click()"><i class="fas fa-paperclip text-muted"></i></button>
+                    <input type="file" id="ctInputFile" style="display:none;" accept="image/*,video/*,.pdf,.doc,.docx" onchange="ctProsesKirimMedia(this)">
+                    <input type="text" id="ctInputPesan" class="ct-input" placeholder="Ketik balasan..." onkeypress="if(event.key==='Enter')ctKirimPesan()">
+                    <button class="btn btn-primary rounded-circle" onclick="ctKirimPesan()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function BLOK_R_11_20_CHAT_TOKO_V1() {
+    if (window._blokR1120DoneV1) return;
+    if (!window._fchatuDoneV2) { console.warn('⚠️ 11.20: FCHATU belum siap.'); return; }
+    window._blokR1120DoneV1 = true;
+
+    var ctState = { idRoomAktif: null, idTarget: null, namaTarget: '', roleTarget: '', fotoTarget: '' };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _formatJam(iso) { try { return new Date(iso).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}); } catch(e) { return ''; } }
+
+    window.tampilkanChatToko = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplChatToko) {
+                var c = document.getElementById('chatTokoContainer');
+                if (!c) return;
+                window._tplChatToko = c.innerHTML;
+                c.remove();
+            }
+            konten.innerHTML = window._tplChatToko;
+            ctRenderRooms();
+        } catch (e) {}
+    };
+
+    window.ctRenderRooms = function() {
+        var container = document.getElementById('ctRoomList');
+        var search = document.getElementById('ctInputSearch') ? document.getElementById('ctInputSearch').value.toLowerCase() : '';
+        var rooms = window.fchatuGetRooms ? window.fchatuGetRooms() : [];
+
+        if (rooms.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Belum ada obrolan.<br>Pesanan dari pembeli akan muncul di sini.</div>';
+            return;
+        }
+
+        var html = '';
+        rooms.forEach(function(r) {
+            // Ambil info lawan chat
+            var idSaya = window.gidIdUser();
+            var idLawan = (r.idUser1 === idSaya) ? r.idUser2 : r.idUser1;
+            var lawan = window.gidGetUserById ? window.gidGetUserById(idLawan) : null;
+            if (!lawan) return;
+
+            var nama = lawan.nama || lawan.namaLengkap;
+            if (search && !nama.toLowerCase().includes(search)) return;
+
+            var foto = lawan.fotoUrl || 'https://ui-avatars.com/api/?name=' + nama;
+            var infoRole = window.csGetRoleInfo ? window.csGetRoleInfo(lawan.kodeRole) : null;
+            var namaRole = infoRole ? infoRole.nama : lawan.kodeRole;
+
+            html += `
+            <div class="ct-room-item" onclick="ctBukaChat('${r.idRoom}', '${idLawan}', '${_esc(nama)}', '${_esc(namaRole)}', '${foto}')">
+                <img src="${foto}" class="ct-room-avatar">
+                <div class="ct-room-info">
+                    <h6>${_esc(nama)}</h6>
+                    <small><i class="fas fa-user-tag me-1"></i>${_esc(namaRole)}</small>
+                </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+    };
+
+    window.ctToggleSidebar = function() { document.getElementById('ctSidebar').classList.toggle('hide'); };
+
+    window.ctBukaChat = function(idRoom, idTarget, nama, role, foto) {
+        ctState.idRoomAktif = idRoom;
+        ctState.idTarget = idTarget;
+        ctState.namaTarget = nama;
+        ctState.roleTarget = role;
+        ctState.fotoTarget = foto;
+
+        document.getElementById('ctEmptyState').classList.add('d-none');
+        var active = document.getElementById('ctActiveChat');
+        active.classList.remove('d-none'); active.classList.add('d-flex');
+
+        document.getElementById('ctChatAvatar').src = foto;
+        document.getElementById('ctChatNama').textContent = nama;
+        document.getElementById('ctChatRole').textContent = role + ' (' + idTarget + ')';
+
+        if (window.innerWidth <= 768) document.getElementById('ctSidebar').classList.add('hide');
+
+        ctRenderPesan();
+    };
+
+    window.ctRenderPesan = function() {
+        var container = document.getElementById('ctChatMessages');
+        if (!container || !ctState.idRoomAktif) return;
+
+        var chats = window.fchatuAmbilRiwayat ? window.fchatuAmbilRiwayat(ctState.idRoomAktif) : [];
+        var idSaya = window.gidIdUser();
+
+        var html = '';
+        chats.forEach(function(c) {
+            var isSaya = c.idPengirim === idSaya;
+            var bubbleClass = isSaya ? 'ct-bubble-saya' : 'ct-bubble-lawan';
+            
+            var media = '';
+            if (c.tipeMedia === 'image') media = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;">`;
+            else if (c.tipeMedia === 'video') media = `<video src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" controls></video>`;
+            else if (c.tipeMedia === 'doc') media = `<a href="${_esc(c.mediaUrl)}" target="_blank" class="btn btn-sm btn-outline-primary mb-2"><i class="fas fa-file-alt me-1"></i>Buka Dokumen</a>`;
+
+            html += `
+            <div class="ct-bubble ${bubbleClass}">
+                ${media}
+                <div>${_esc(c.teks)}</div>
+                <span class="ct-time">${_formatJam(c.waktu)}</span>
+            </div>`;
+        });
+        container.innerHTML = html || '<div class="text-center text-muted py-4 small">Belum ada pesan.</div>';
+        container.scrollTop = container.scrollHeight;
+    };
+
+    window.ctKirimPesan = function() {
+        var input = document.getElementById('ctInputPesan');
+        var teks = input.value.trim();
+        if (!teks || !ctState.idRoomAktif) return;
+
+        var res = window.fchatuKirimPesan(ctState.idRoomAktif, { teks: teks, tipeMedia: 'text' });
+        if (res.sukses) { input.value = ''; ctRenderPesan(); }
+        else { _toast('❌ ' + res.pesan, 'danger'); }
+    };
+
+    window.ctProsesKirimMedia = function(input) {
+        if (!input.files || !input.files[0] || !ctState.idRoomAktif) return;
+        var file = input.files[0];
+        if (file.size > 2 * 1024 * 1024) { _toast('⚠️ Maks 2MB', 'warning'); input.value = ''; return; }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var base64 = e.target.result;
+            var tipe = 'doc';
+            if (file.type.includes('image')) tipe = 'image';
+            else if (file.type.includes('video')) tipe = 'video';
+
+            var res = window.fchatuKirimPesan(ctState.idRoomAktif, { teks: '📎 Mengirim file', tipeMedia: tipe, mediaUrl: base64 });
+            if (res.sukses) { input.value = ''; ctRenderPesan(); }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    window.ctSimpanKontak = function() {
+        if (!ctState.idTarget) return;
+        var res = window.fchatuSimpanKontak(ctState.idTarget);
+        if (res.sukses) _toast('✅ Kontak disimpan', 'success');
+        else _toast('❌ ' + res.pesan, 'danger');
+    };
+
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['chatSaya'] = function() { return window.tampilkanChatToko(); }; // Alias untuk Toko
+    window.menuHandlers['chatSeller'] = function() { return window.tampilkanChatToko(); };
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 11.20 — UI CHAT TOKO 🇮🇩 v1.0 ═════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 29.20.11 — UI CHAT KASIR TOKO (HTML) 🇮🇩 v1.0 ═══ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi Kasir & Pembeli) ══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="chatKasirContainer" style="display:none;">
+    <style>
+        .ck-wrapper { display: flex; height: 100vh; background: #e5ddd5; margin-top: -60px; padding-top: 60px; overflow: hidden; }
+        .ck-sidebar { width: 350px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .ck-sidebar-header { padding: 15px; background: #e8f5e9; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .ck-search { padding: 10px; border-bottom: 1px solid #eee; }
+        .ck-room-list { flex-grow: 1; overflow-y: auto; }
+        .ck-room-item { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+        .ck-room-item:hover, .ck-room-item.active { background: #e8f5e9; }
+        .ck-room-avatar { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; margin-right: 15px; background: #ddd; }
+        .ck-room-info h6 { margin: 0; font-size: 15px; font-weight: 600; color: #111; }
+        .ck-room-info small { color: #667781; font-size: 12px; display: block; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        
+        .ck-chat-area { flex-grow: 1; display: flex; flex-direction: column; background: #efeae2; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-size: cover; }
+        .ck-chat-header { padding: 10px 20px; background: #e8f5e9; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; }
+        .ck-chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        .ck-bubble { max-width: 65%; padding: 10px 15px; border-radius: 10px; font-size: 14px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .ck-bubble-saya { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .ck-bubble-lawan { background: #fff; align-self: flex-start; border-top-left-radius: 0; }
+        .ck-time { font-size: 10px; color: #667781; margin-top: 5px; text-align: right; display: block; }
+        
+        .ck-input-area { padding: 15px; background: #e8f5e9; display: flex; align-items: center; gap: 10px; border-top: 1px solid #ddd; }
+        .ck-input { flex-grow: 1; border-radius: 20px; padding: 10px 15px; border: none; outline: none; background: #fff; height: 45px; }
+        
+        @media (max-width: 768px) {
+            .ck-sidebar { position: absolute; width: 100%; height: 100%; z-index: 10; }
+            .ck-sidebar.hide { transform: translateX(-100%); }
+            .ck-chat-area { width: 100%; }
+        }
+    </style>
+
+    <div class="ck-wrapper">
+        <!-- SIDEBAR KONTAK -->
+        <div class="ck-sidebar" id="ckSidebar">
+            <div class="ck-sidebar-header">
+                <h5 class="mb-0 fw-bold text-success"><i class="fas fa-cash-register"></i> Chat Kasir</h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="kembaliKeDasbor()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="ck-search">
+                <input type="text" id="ckInputSearch" class="form-control form-control-sm" placeholder="Cari kontak pembeli..." oninput="ckRenderRooms()">
+            </div>
+            <div class="ck-room-list" id="ckRoomList">
+                <!-- Diisi via JS -->
+            </div>
+        </div>
+
+        <!-- AREA CHAT -->
+        <div class="ck-chat-area" id="ckChatArea">
+            <div class="h-100 d-flex flex-column align-items-center justify-content-center text-muted" id="ckEmptyState">
+                <i class="fas fa-cash-register fa-5x mb-3 opacity-25"></i>
+                <h4 class="fw-bold">Pusat Chat Kasir</h4>
+                <p>Pilih kontak pembeli di kiri untuk membalas pesanan.</p>
+            </div>
+
+            <div class="d-none h-100 flex-column" id="ckActiveChat">
+                <div class="ck-chat-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-link text-dark d-md-none p-0 me-2" onclick="ckToggleSidebar()"><i class="fas fa-arrow-left fa-lg"></i></button>
+                        <img id="ckChatAvatar" src="" class="rounded-circle" style="width:40px;height:40px;object-fit:cover;">
+                        <div>
+                            <h6 class="mb-0 fw-bold" id="ckChatNama">Nama</h6>
+                            <small class="text-muted" id="ckChatRole">Role</small>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-success" onclick="ckSimpanKontak()" id="ckBtnSimpanKontak"><i class="fas fa-bookmark"></i> Simpan</button>
+                </div>
+                <div class="ck-chat-messages" id="ckChatMessages"></div>
+                <div class="ck-input-area">
+                    <button class="btn btn-light rounded-circle" onclick="document.getElementById('ckInputFile').click()"><i class="fas fa-paperclip text-muted"></i></button>
+                    <input type="file" id="ckInputFile" style="display:none;" accept="image/*,video/*,.pdf,.doc,.docx" onchange="ckProsesKirimMedia(this)">
+                    <input type="text" id="ckInputPesan" class="ck-input" placeholder="Ketik balasan..." onkeypress="if(event.key==='Enter')ckKirimPesan()">
+                    <button class="btn btn-success rounded-circle" onclick="ckKirimPesan()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function BLOK_R_29_20_11_CHAT_KASIR_V1() {
+    if (window._blokR292011DoneV1) return;
+    if (!window._fchatuDoneV2) { console.warn('⚠️ 29.20.11: FCHATU belum siap.'); return; }
+    window._blokR292011DoneV1 = true;
+
+    var ckState = { idRoomAktif: null, idTarget: null, namaTarget: '', roleTarget: '', fotoTarget: '' };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _formatJam(iso) { try { return new Date(iso).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}); } catch(e) { return ''; } }
+
+    window.tampilkanChatKasirToko = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplChatKasir) {
+                var c = document.getElementById('chatKasirContainer');
+                if (!c) return;
+                window._tplChatKasir = c.innerHTML;
+                c.remove();
+            }
+            konten.innerHTML = window._tplChatKasir;
+            ckRenderRooms();
+        } catch (e) {}
+    };
+
+    window.ckRenderRooms = function() {
+        var container = document.getElementById('ckRoomList');
+        var search = document.getElementById('ckInputSearch') ? document.getElementById('ckInputSearch').value.toLowerCase() : '';
+        var rooms = window.fchatuGetRooms ? window.fchatuGetRooms() : [];
+
+        if (rooms.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Belum ada obrolan.<br>Pesanan dari pembeli akan muncul di sini.</div>';
+            return;
+        }
+
+        var html = '';
+        rooms.forEach(function(r) {
+            var idSaya = window.gidIdUser();
+            var idLawan = (r.idUser1 === idSaya) ? r.idUser2 : r.idUser1;
+            var lawan = window.gidGetUserById ? window.gidGetUserById(idLawan) : null;
+            if (!lawan) return;
+
+            var nama = lawan.nama || lawan.namaLengkap;
+            if (search && !nama.toLowerCase().includes(search)) return;
+
+            var foto = lawan.fotoUrl || 'https://ui-avatars.com/api/?name=' + nama;
+            var infoRole = window.csGetRoleInfo ? window.csGetRoleInfo(lawan.kodeRole) : null;
+            var namaRole = infoRole ? infoRole.nama : lawan.kodeRole;
+
+            html += `
+            <div class="ck-room-item" onclick="ckBukaChat('${r.idRoom}', '${idLawan}', '${_esc(nama)}', '${_esc(namaRole)}', '${foto}')">
+                <img src="${foto}" class="ck-room-avatar">
+                <div class="ck-room-info">
+                    <h6>${_esc(nama)}</h6>
+                    <small><i class="fas fa-user-tag me-1"></i>${_esc(namaRole)}</small>
+                </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+    };
+
+    window.ckToggleSidebar = function() { document.getElementById('ckSidebar').classList.toggle('hide'); };
+
+    window.ckBukaChat = function(idRoom, idTarget, nama, role, foto) {
+        ckState.idRoomAktif = idRoom;
+        ckState.idTarget = idTarget;
+        ckState.namaTarget = nama;
+        ckState.roleTarget = role;
+        ckState.fotoTarget = foto;
+
+        document.getElementById('ckEmptyState').classList.add('d-none');
+        var active = document.getElementById('ckActiveChat');
+        active.classList.remove('d-none'); active.classList.add('d-flex');
+
+        document.getElementById('ckChatAvatar').src = foto;
+        document.getElementById('ckChatNama').textContent = nama;
+        document.getElementById('ckChatRole').textContent = role + ' (' + idTarget + ')';
+
+        if (window.innerWidth <= 768) document.getElementById('ckSidebar').classList.add('hide');
+
+        ckRenderPesan();
+    };
+
+    window.ckRenderPesan = function() {
+        var container = document.getElementById('ckChatMessages');
+        if (!container || !ckState.idRoomAktif) return;
+
+        var chats = window.fchatuAmbilRiwayat ? window.fchatuAmbilRiwayat(ckState.idRoomAktif) : [];
+        var idSaya = window.gidIdUser();
+
+        var html = '';
+        chats.forEach(function(c) {
+            var isSaya = c.idPengirim === idSaya;
+            var bubbleClass = isSaya ? 'ck-bubble-saya' : 'ck-bubble-lawan';
+            
+            var media = '';
+            if (c.tipeMedia === 'image') media = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;">`;
+            else if (c.tipeMedia === 'video') media = `<video src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" controls></video>`;
+            else if (c.tipeMedia === 'doc') media = `<a href="${_esc(c.mediaUrl)}" target="_blank" class="btn btn-sm btn-outline-primary mb-2"><i class="fas fa-file-alt me-1"></i>Buka Dokumen</a>`;
+
+            html += `
+            <div class="ck-bubble ${bubbleClass}">
+                ${media}
+                <div>${_esc(c.teks)}</div>
+                <span class="ck-time">${_formatJam(c.waktu)}</span>
+            </div>`;
+        });
+        container.innerHTML = html || '<div class="text-center text-muted py-4 small">Belum ada pesan.</div>';
+        container.scrollTop = container.scrollHeight;
+    };
+
+    window.ckKirimPesan = function() {
+        var input = document.getElementById('ckInputPesan');
+        var teks = input.value.trim();
+        if (!teks || !ckState.idRoomAktif) return;
+
+        var res = window.fchatuKirimPesan(ckState.idRoomAktif, { teks: teks, tipeMedia: 'text' });
+        if (res.sukses) { input.value = ''; ckRenderPesan(); }
+        else { _toast('❌ ' + res.pesan, 'danger'); }
+    };
+
+    window.ckProsesKirimMedia = function(input) {
+        if (!input.files || !input.files[0] || !ckState.idRoomAktif) return;
+        var file = input.files[0];
+        if (file.size > 2 * 1024 * 1024) { _toast('⚠️ Maks 2MB', 'warning'); input.value = ''; return; }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var base64 = e.target.result;
+            var tipe = 'doc';
+            if (file.type.includes('image')) tipe = 'image';
+            else if (file.type.includes('video')) tipe = 'video';
+
+            var res = window.fchatuKirimPesan(ckState.idRoomAktif, { teks: '📎 Mengirim file', tipeMedia: tipe, mediaUrl: base64 });
+            if (res.sukses) { input.value = ''; ckRenderPesan(); }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    window.ckSimpanKontak = function() {
+        if (!ckState.idTarget) return;
+        var res = window.fchatuSimpanKontak(ckState.idTarget);
+        if (res.sukses) _toast('✅ Kontak disimpan', 'success');
+        else _toast('❌ ' + res.pesan, 'danger');
+    };
+
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['chatKasirToko'] = function() { return window.tampilkanChatKasirToko(); };
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 29.20.11 — UI CHAT KASIR TOKO 🇮🇩 v1.0 ════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 15.20 — UI CHAT OJEK (HTML) 🇮🇩 v1.0 ═══════════ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi Ojek & Pemesan) ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="chatOjekContainer" style="display:none;">
+    <style>
+        .co-wrapper { display: flex; height: 100vh; background: #e5ddd5; margin-top: -60px; padding-top: 60px; overflow: hidden; }
+        .co-sidebar { width: 350px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .co-sidebar-header { padding: 15px; background: #fff3e0; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .co-search { padding: 10px; border-bottom: 1px solid #eee; }
+        .co-room-list { flex-grow: 1; overflow-y: auto; }
+        .co-room-item { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+        .co-room-item:hover, .co-room-item.active { background: #fff3e0; }
+        .co-room-avatar { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; margin-right: 15px; background: #ddd; }
+        .co-room-info h6 { margin: 0; font-size: 15px; font-weight: 600; color: #111; }
+        .co-room-info small { color: #667781; font-size: 12px; display: block; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        
+        .co-chat-area { flex-grow: 1; display: flex; flex-direction: column; background: #efeae2; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-size: cover; }
+        .co-chat-header { padding: 10px 20px; background: #fff3e0; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; }
+        .co-chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        .co-bubble { max-width: 65%; padding: 10px 15px; border-radius: 10px; font-size: 14px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .co-bubble-saya { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .co-bubble-lawan { background: #fff; align-self: flex-start; border-top-left-radius: 0; }
+        .co-time { font-size: 10px; color: #667781; margin-top: 5px; text-align: right; display: block; }
+        
+        .co-input-area { padding: 15px; background: #fff3e0; display: flex; align-items: center; gap: 10px; border-top: 1px solid #ddd; }
+        .co-input { flex-grow: 1; border-radius: 20px; padding: 10px 15px; border: none; outline: none; background: #fff; height: 45px; }
+        
+        @media (max-width: 768px) {
+            .co-sidebar { position: absolute; width: 100%; height: 100%; z-index: 10; }
+            .co-sidebar.hide { transform: translateX(-100%); }
+            .co-chat-area { width: 100%; }
+        }
+    </style>
+
+    <div class="co-wrapper">
+        <!-- SIDEBAR PESANAN -->
+        <div class="co-sidebar" id="coSidebar">
+            <div class="co-sidebar-header">
+                <h5 class="mb-0 fw-bold text-warning"><i class="fas fa-motorcycle"></i> Chat Ojek</h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="kembaliKeDasbor()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="co-search">
+                <input type="text" id="coInputSearch" class="form-control form-control-sm" placeholder="Cari pemesan..." oninput="coRenderRooms()">
+            </div>
+            <div class="co-room-list" id="coRoomList">
+                <!-- Diisi via JS -->
+            </div>
+        </div>
+
+        <!-- AREA CHAT -->
+        <div class="co-chat-area" id="coChatArea">
+            <div class="h-100 d-flex flex-column align-items-center justify-content-center text-muted" id="coEmptyState">
+                <i class="fas fa-motorcycle fa-5x mb-3 opacity-25"></i>
+                <h4 class="fw-bold">Pusat Pesanan Ojek</h4>
+                <p>Pilih pesanan pembeli di kiri untuk melihat detail dan membalas.</p>
+            </div>
+
+            <div class="d-none h-100 flex-column" id="coActiveChat">
+                <div class="co-chat-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-link text-dark d-md-none p-0 me-2" onclick="coToggleSidebar()"><i class="fas fa-arrow-left fa-lg"></i></button>
+                        <img id="coChatAvatar" src="" class="rounded-circle" style="width:40px;height:40px;object-fit:cover;">
+                        <div>
+                            <h6 class="mb-0 fw-bold" id="coChatNama">Nama</h6>
+                            <small class="text-muted" id="coChatRole">Role</small>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-1">
+                        <button class="btn btn-sm btn-outline-warning" onclick="coBukaLokasi()" title="Lihat Peta"><i class="fas fa-map-marker-alt"></i></button>
+                        <button class="btn btn-sm btn-outline-warning" onclick="coSimpanKontak()" id="coBtnSimpanKontak"><i class="fas fa-bookmark"></i></button>
+                    </div>
+                </div>
+                <div class="co-chat-messages" id="coChatMessages"></div>
+                <div class="co-input-area">
+                    <button class="btn btn-light rounded-circle" onclick="document.getElementById('coInputFile').click()"><i class="fas fa-camera text-muted"></i></button>
+                    <input type="file" id="coInputFile" style="display:none;" accept="image/*,video/*" onchange="coProsesKirimMedia(this)">
+                    <input type="text" id="coInputPesan" class="co-input" placeholder="Ketik pesan..." onkeypress="if(event.key==='Enter')coKirimPesan()">
+                    <button class="btn btn-warning rounded-circle text-white" onclick="coKirimPesan()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 15.20 — UI CHAT OJEK (JS) 🇮🇩 v1.0 ════════════ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi Ojek & Pemesan) ═══════ -->
+<!-- ═══ Guard: _blokR1520DoneV1 (UTAMA — A32) ══════════════════ -->
+<!-- ═══ Aturan: A1—A3, A5, A10, A11—A14, A19, A25, A29—A34 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_15_20_CHAT_OJEK_V1() {
+    // [A32] — GUARD UTAMA
+    if (window._blokR1520DoneV1) return;
+    if (!window._fchatuDoneV2) { 
+        console.warn('⚠️ 15.20: FCHATU belum siap.'); 
+        return; 
+    }
+    window._blokR1520DoneV1 = true;
+
+    var coState = { idRoomAktif: null, idTarget: null, namaTarget: '', roleTarget: '', fotoTarget: '' };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _formatJam(iso) { try { return new Date(iso).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}); } catch(e) { return ''; } }
+
+    // [15.20.1] — ENTRY POINT
+    window.tampilkanChatOjek = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplChatOjek) {
+                var c = document.getElementById('chatOjekContainer');
+                if (!c) return;
+                window._tplChatOjek = c.innerHTML;
+                c.remove();
+            }
+            konten.innerHTML = window._tplChatOjek;
+            coRenderRooms();
+        } catch (e) {}
+    };
+
+    // [15.20.2] — RENDER DAFTAR ROOM
+    window.coRenderRooms = function() {
+        var container = document.getElementById('coRoomList');
+        var search = document.getElementById('coInputSearch') ? document.getElementById('coInputSearch').value.toLowerCase() : '';
+        var rooms = window.fchatuGetRooms ? window.fchatuGetRooms() : [];
+
+        if (rooms.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Belum ada pesanan.<br>Pesanan dari pembeli akan muncul di sini.</div>';
+            return;
+        }
+
+        var html = '';
+        rooms.forEach(function(r) {
+            var idSaya = window.gidIdUser();
+            var idLawan = (r.idUser1 === idSaya) ? r.idUser2 : r.idUser1;
+            var lawan = window.gidGetUserById ? window.gidGetUserById(idLawan) : null;
+            if (!lawan) return;
+
+            var nama = lawan.nama || lawan.namaLengkap;
+            if (search && !nama.toLowerCase().includes(search)) return;
+
+            var foto = lawan.fotoUrl || 'https://ui-avatars.com/api/?name=' + nama;
+            var infoRole = window.csGetRoleInfo ? window.csGetRoleInfo(lawan.kodeRole) : null;
+            var namaRole = infoRole ? infoRole.nama : lawan.kodeRole;
+
+            html += `
+            <div class="co-room-item" onclick="coBukaChat('${r.idRoom}', '${idLawan}', '${_esc(nama)}', '${_esc(namaRole)}', '${foto}')">
+                <img src="${foto}" class="co-room-avatar">
+                <div class="co-room-info">
+                    <h6>${_esc(nama)}</h6>
+                    <small><i class="fas fa-user-tag me-1"></i>${_esc(namaRole)}</small>
+                </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+    };
+
+    window.coToggleSidebar = function() { document.getElementById('coSidebar').classList.toggle('hide'); };
+
+    // [15.20.3] — BUKA ROOM CHAT
+    window.coBukaChat = function(idRoom, idTarget, nama, role, foto) {
+        coState.idRoomAktif = idRoom;
+        coState.idTarget = idTarget;
+        coState.namaTarget = nama;
+        coState.roleTarget = role;
+        coState.fotoTarget = foto;
+
+        document.getElementById('coEmptyState').classList.add('d-none');
+        var active = document.getElementById('coActiveChat');
+        active.classList.remove('d-none'); active.classList.add('d-flex');
+
+        document.getElementById('coChatAvatar').src = foto;
+        document.getElementById('coChatNama').textContent = nama;
+        document.getElementById('coChatRole').textContent = role + ' (' + idTarget + ')';
+
+        if (window.innerWidth <= 768) document.getElementById('coSidebar').classList.add('hide');
+
+        coRenderPesan();
+    };
+
+    // [15.20.4] — RENDER PESAN
+    window.coRenderPesan = function() {
+        var container = document.getElementById('coChatMessages');
+        if (!container || !coState.idRoomAktif) return;
+
+        var chats = window.fchatuAmbilRiwayat ? window.fchatuAmbilRiwayat(coState.idRoomAktif) : [];
+        var idSaya = window.gidIdUser();
+
+        var html = '';
+        chats.forEach(function(c) {
+            var isSaya = c.idPengirim === idSaya;
+            var bubbleClass = isSaya ? 'co-bubble-saya' : 'co-bubble-lawan';
+            
+            var media = '';
+            if (c.tipeMedia === 'image') media = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;">`;
+            else if (c.tipeMedia === 'video') media = `<video src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" controls></video>`;
+
+            html += `
+            <div class="co-bubble ${bubbleClass}">
+                ${media}
+                <div>${_esc(c.teks)}</div>
+                <span class="co-time">${_formatJam(c.waktu)}</span>
+            </div>`;
+        });
+        container.innerHTML = html || '<div class="text-center text-muted py-4 small">Belum ada pesan.</div>';
+        container.scrollTop = container.scrollHeight;
+    };
+
+    // [15.20.5] — KIRIM PESAN & MEDIA
+    window.coKirimPesan = function() {
+        var input = document.getElementById('coInputPesan');
+        var teks = input.value.trim();
+        if (!teks || !coState.idRoomAktif) return;
+
+        var res = window.fchatuKirimPesan(coState.idRoomAktif, { teks: teks, tipeMedia: 'text' });
+        if (res.sukses) { input.value = ''; coRenderPesan(); }
+        else { _toast('❌ ' + res.pesan, 'danger'); }
+    };
+
+    window.coProsesKirimMedia = function(input) {
+        if (!input.files || !input.files[0] || !coState.idRoomAktif) return;
+        var file = input.files[0];
+        if (file.size > 2 * 1024 * 1024) { _toast('⚠️ Maks 2MB', 'warning'); input.value = ''; return; }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var base64 = e.target.result;
+            var tipe = 'doc';
+            if (file.type.includes('image')) tipe = 'image';
+            else if (file.type.includes('video')) tipe = 'video';
+
+            var res = window.fchatuKirimPesan(coState.idRoomAktif, { teks: '📎 Mengirim file', tipeMedia: tipe, mediaUrl: base64 });
+            if (res.sukses) { input.value = ''; coRenderPesan(); }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // [15.20.6] — FITUR KHUSUS OJEK (PETA & SIMPAN)
+    window.coBukaLokasi = function() {
+        // Delegasi ke fitur peta (10.78) atau tampilkan modal peta sederhana
+        if (typeof window.tampilkanPetaInteraktifSA === 'function') {
+            _toast('Membuka peta interaktif...', 'info');
+            window.tampilkanPetaInteraktifSA();
+        } else {
+            _toast('Fitur peta akan segera hadir', 'info');
+        }
+    };
+
+    window.coSimpanKontak = function() {
+        if (!coState.idTarget) return;
+        var res = window.fchatuSimpanKontak(coState.idTarget);
+        if (res.sukses) _toast('✅ Kontak Pemesan disimpan', 'success');
+        else _toast('❌ ' + res.pesan, 'danger');
+    };
+
+    // [15.20.7] — REGISTER MENU HANDLER & 3 PINTU (A11)
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['chatOjek'] = function() { return window.tampilkanChatOjek(); };
+
+    window.kirimChatOjek = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'ChatOjek' }, ke: ke || { menu: 'ChatOjek' }, data: data || {}, idRef: idRef || null, timestamp: new Date().toISOString() });
+    };
+    window.terimaChatOjek = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'ChatOjek') : [];
+    };
+    window.ambilChatOjek = function() {
+        return { rooms: window.fchatuGetRooms ? window.fchatuGetRooms() : [] };
+    };
+
+    // [15.20.8] — DEBUG & REGISTRY
+    window.debugChatOjek = function() {
+        var info = {
+            blok: '15.20', versi: '1.0', guard: window._blokR1520DoneV1,
+            cekA11: typeof window.kirimChatOjek === 'function' && typeof window.terimaChatOjek === 'function' && typeof window.ambilChatOjek === 'function',
+            cekA14: true, cekA25: true
+        };
+        console.log('🔍 debugChatOjek v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '15.20'; });
+                if (!ada) window.cpTambahBlok({ kode: '15.20', nama: 'Chat Ojek (Pesanan)', layer: 'L5', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: new Date().toISOString().substring(0, 10), blok: '15.20', nama: 'Chat Ojek UI', keterangan: 'Menerima Pesanan, Kirim Media, Peta, Gembok Relasi' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 15.20 — UI CHAT OJEK 🇮🇩 v1.0 ════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 19.20 — UI CHAT CUSTOMER (HTML) 🇮🇩 v1.0 ═══════ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi Customer & Penjual) ════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="chatCustomerContainer" style="display:none;">
+    <style>
+        .cc-wrapper { display: flex; height: 100vh; background: #e5ddd5; margin-top: -60px; padding-top: 60px; overflow: hidden; }
+        .cc-sidebar { width: 350px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .cc-sidebar-header { padding: 15px; background: #e3f2fd; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .cc-search { padding: 10px; border-bottom: 1px solid #eee; }
+        .cc-room-list { flex-grow: 1; overflow-y: auto; }
+        .cc-room-item { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+        .cc-room-item:hover, .cc-room-item.active { background: #e3f2fd; }
+        .cc-room-avatar { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; margin-right: 15px; background: #ddd; }
+        .cc-room-info h6 { margin: 0; font-size: 15px; font-weight: 600; color: #111; }
+        .cc-room-info small { color: #667781; font-size: 12px; display: block; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        
+        .cc-chat-area { flex-grow: 1; display: flex; flex-direction: column; background: #efeae2; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-size: cover; }
+        .cc-chat-header { padding: 10px 20px; background: #e3f2fd; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; }
+        .cc-chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        .cc-bubble { max-width: 65%; padding: 10px 15px; border-radius: 10px; font-size: 14px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .cc-bubble-saya { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .cc-bubble-lawan { background: #fff; align-self: flex-start; border-top-left-radius: 0; }
+        .cc-time { font-size: 10px; color: #667781; margin-top: 5px; text-align: right; display: block; }
+        
+        .cc-input-area { padding: 15px; background: #e3f2fd; display: flex; align-items: center; gap: 10px; border-top: 1px solid #ddd; }
+        .cc-input { flex-grow: 1; border-radius: 20px; padding: 10px 15px; border: none; outline: none; background: #fff; height: 45px; }
+        
+        @media (max-width: 768px) {
+            .cc-sidebar { position: absolute; width: 100%; height: 100%; z-index: 10; }
+            .cc-sidebar.hide { transform: translateX(-100%); }
+            .cc-chat-area { width: 100%; }
+        }
+    </style>
+
+    <div class="cc-wrapper">
+        <!-- SIDEBAR KONTAK -->
+        <div class="cc-sidebar" id="ccSidebar">
+            <div class="cc-sidebar-header">
+                <h5 class="mb-0 fw-bold text-primary"><i class="fas fa-headset"></i> Chat Saya</h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="kembaliKeDasbor()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="cc-search">
+                <input type="text" id="ccInputSearch" class="form-control form-control-sm" placeholder="Cari kontak (CS / Toko)..." oninput="ccRenderRooms()">
+            </div>
+            <div class="cc-room-list" id="ccRoomList">
+                <!-- Diisi via JS -->
+            </div>
+        </div>
+
+        <!-- AREA CHAT -->
+        <div class="cc-chat-area" id="ccChatArea">
+            <div class="h-100 d-flex flex-column align-items-center justify-content-center text-muted" id="ccEmptyState">
+                <i class="fas fa-comments fa-5x mb-3 opacity-25"></i>
+                <h4 class="fw-bold">Pusat Chat Customer</h4>
+                <p>Pilih kontak di kiri untuk mulai mengobrol.</p>
+            </div>
+
+            <div class="d-none h-100 flex-column" id="ccActiveChat">
+                <div class="cc-chat-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-link text-dark d-md-none p-0 me-2" onclick="ccToggleSidebar()"><i class="fas fa-arrow-left fa-lg"></i></button>
+                        <img id="ccChatAvatar" src="" class="rounded-circle" style="width:40px;height:40px;object-fit:cover;">
+                        <div>
+                            <h6 class="mb-0 fw-bold" id="ccChatNama">Nama</h6>
+                            <small class="text-muted" id="ccChatRole">Role</small>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-primary" onclick="ccSimpanKontak()" id="ccBtnSimpanKontak"><i class="fas fa-bookmark"></i> Simpan</button>
+                </div>
+                <div class="cc-chat-messages" id="ccChatMessages"></div>
+                <div class="cc-input-area">
+                    <button class="btn btn-light rounded-circle" onclick="document.getElementById('ccInputFile').click()"><i class="fas fa-paperclip text-muted"></i></button>
+                    <input type="file" id="ccInputFile" style="display:none;" accept="image/*,video/*,.pdf,.doc,.docx" onchange="ccProsesKirimMedia(this)">
+                    <input type="text" id="ccInputPesan" class="cc-input" placeholder="Ketik pesan..." onkeypress="if(event.key==='Enter')ccKirimPesan()">
+                    <button class="btn btn-primary rounded-circle" onclick="ccKirimPesan()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 19.20 — UI CHAT CUSTOMER (JS) 🇮🇩 v1.0 ═════════ -->
+<!-- ═══ Layer: L5 (Blok UI — Komunikasi Customer & Penjual) ════ -->
+<!-- ═══ Guard: _blokR1920DoneV1 (UTAMA — A32) ══════════════════ -->
+<!-- ═══ Aturan: A1—A3, A5, A10, A11—A14, A19, A25, A29—A34 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_19_20_CHAT_CUSTOMER_V1() {
+    // [A32] — GUARD UTAMA
+    if (window._blokR1920DoneV1) return;
+    if (!window._fchatuDoneV2) { 
+        console.warn('⚠️ 19.20: FCHATU belum siap.'); 
+        return; 
+    }
+    window._blokR1920DoneV1 = true;
+
+    var ccState = { idRoomAktif: null, idTarget: null, namaTarget: '', roleTarget: '', fotoTarget: '' };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _formatJam(iso) { try { return new Date(iso).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}); } catch(e) { return ''; } }
+
+    // [19.20.1] — ENTRY POINT
+    window.tampilkanChatCustomer = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplChatCustomer) {
+                var c = document.getElementById('chatCustomerContainer');
+                if (!c) return;
+                window._tplChatCustomer = c.innerHTML;
+                c.remove();
+            }
+            konten.innerHTML = window._tplChatCustomer;
+            ccRenderRooms();
+        } catch (e) {}
+    };
+
+    // [19.20.2] — RENDER DAFTAR ROOM
+    window.ccRenderRooms = function() {
+        var container = document.getElementById('ccRoomList');
+        var search = document.getElementById('ccInputSearch') ? document.getElementById('ccInputSearch').value.toLowerCase() : '';
+        var rooms = window.fchatuGetRooms ? window.fchatuGetRooms() : [];
+
+        if (rooms.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Belum ada obrolan.<br>Hubungi CS atau lakukan pesanan.</div>';
+            return;
+        }
+
+        var html = '';
+        rooms.forEach(function(r) {
+            var idSaya = window.gidIdUser();
+            var idLawan = (r.idUser1 === idSaya) ? r.idUser2 : r.idUser1;
+            var lawan = window.gidGetUserById ? window.gidGetUserById(idLawan) : null;
+            if (!lawan) return;
+
+            var nama = lawan.nama || lawan.namaLengkap;
+            if (search && !nama.toLowerCase().includes(search)) return;
+
+            var foto = lawan.fotoUrl || 'https://ui-avatars.com/api/?name=' + nama;
+            var infoRole = window.csGetRoleInfo ? window.csGetRoleInfo(lawan.kodeRole) : null;
+            var namaRole = infoRole ? infoRole.nama : lawan.kodeRole;
+
+            html += `
+            <div class="cc-room-item" onclick="ccBukaChat('${r.idRoom}', '${idLawan}', '${_esc(nama)}', '${_esc(namaRole)}', '${foto}')">
+                <img src="${foto}" class="cc-room-avatar">
+                <div class="cc-room-info">
+                    <h6>${_esc(nama)}</h6>
+                    <small><i class="fas fa-user-tag me-1"></i>${_esc(namaRole)}</small>
+                </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+    };
+
+    window.ccToggleSidebar = function() { document.getElementById('ccSidebar').classList.toggle('hide'); };
+
+    // [19.20.3] — BUKA ROOM CHAT
+    window.ccBukaChat = function(idRoom, idTarget, nama, role, foto) {
+        ccState.idRoomAktif = idRoom;
+        ccState.idTarget = idTarget;
+        ccState.namaTarget = nama;
+        ccState.roleTarget = role;
+        ccState.fotoTarget = foto;
+
+        document.getElementById('ccEmptyState').classList.add('d-none');
+        var active = document.getElementById('ccActiveChat');
+        active.classList.remove('d-none'); active.classList.add('d-flex');
+
+        document.getElementById('ccChatAvatar').src = foto;
+        document.getElementById('ccChatNama').textContent = nama;
+        document.getElementById('ccChatRole').textContent = role + ' (' + idTarget + ')';
+
+        if (window.innerWidth <= 768) document.getElementById('ccSidebar').classList.add('hide');
+
+        ccRenderPesan();
+    };
+
+    // [19.20.4] — RENDER PESAN
+    window.ccRenderPesan = function() {
+        var container = document.getElementById('ccChatMessages');
+        if (!container || !ccState.idRoomAktif) return;
+
+        var chats = window.fchatuAmbilRiwayat ? window.fchatuAmbilRiwayat(ccState.idRoomAktif) : [];
+        var idSaya = window.gidIdUser();
+
+        var html = '';
+        chats.forEach(function(c) {
+            var isSaya = c.idPengirim === idSaya;
+            var bubbleClass = isSaya ? 'cc-bubble-saya' : 'cc-bubble-lawan';
+            
+            var media = '';
+            if (c.tipeMedia === 'image') media = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;">`;
+            else if (c.tipeMedia === 'video') media = `<video src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" controls></video>`;
+            else if (c.tipeMedia === 'doc') media = `<a href="${_esc(c.mediaUrl)}" target="_blank" class="btn btn-sm btn-outline-primary mb-2"><i class="fas fa-file-alt me-1"></i>Buka Dokumen</a>`;
+
+            html += `
+            <div class="cc-bubble ${bubbleClass}">
+                ${media}
+                <div>${_esc(c.teks)}</div>
+                <span class="cc-time">${_formatJam(c.waktu)}</span>
+            </div>`;
+        });
+        container.innerHTML = html || '<div class="text-center text-muted py-4 small">Belum ada pesan.</div>';
+        container.scrollTop = container.scrollHeight;
+    };
+
+    // [19.20.5] — KIRIM PESAN & MEDIA
+    window.ccKirimPesan = function() {
+        var input = document.getElementById('ccInputPesan');
+        var teks = input.value.trim();
+        if (!teks || !ccState.idRoomAktif) return;
+
+        var res = window.fchatuKirimPesan(ccState.idRoomAktif, { teks: teks, tipeMedia: 'text' });
+        if (res.sukses) { input.value = ''; ccRenderPesan(); }
+        else { _toast('❌ ' + res.pesan, 'danger'); }
+    };
+
+    window.ccProsesKirimMedia = function(input) {
+        if (!input.files || !input.files[0] || !ccState.idRoomAktif) return;
+        var file = input.files[0];
+        if (file.size > 2 * 1024 * 1024) { _toast('⚠️ Maks 2MB', 'warning'); input.value = ''; return; }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var base64 = e.target.result;
+            var tipe = 'doc';
+            if (file.type.includes('image')) tipe = 'image';
+            else if (file.type.includes('video')) tipe = 'video';
+
+            var res = window.fchatuKirimPesan(ccState.idRoomAktif, { teks: '📎 Mengirim file', tipeMedia: tipe, mediaUrl: base64 });
+            if (res.sukses) { input.value = ''; ccRenderPesan(); }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // [19.20.6] — SIMPAN KONTAK
+    window.ccSimpanKontak = function() {
+        if (!ccState.idTarget) return;
+        var res = window.fchatuSimpanKontak(ccState.idTarget);
+        if (res.sukses) _toast('✅ Kontak berhasil disimpan', 'success');
+        else _toast('❌ ' + res.pesan, 'danger');
+    };
+
+    // [19.20.7] — REGISTER MENU HANDLER & 3 PINTU (A11)
+    window.menuHandlers = window.menuHandlers || {};
+    
+    // Handler Dispatcher untuk `chatSaya`
+    // Karena role CT, Toko, Kasir dll menggunakan menu 'chatSaya', kita arahkan berdasarkan role aktif
+    window.menuHandlers['chatSaya'] = function() {
+        var role = window.gidKodeRoleUser ? window.gidKodeRoleUser() : null;
+        if (role === 'CT') return window.tampilkanChatCustomer();
+        if (role && role.indexOf('KSR_') === 0) return window.tampilkanChatKasirToko();
+        return window.tampilkanChatToko(); // Default fallback untuk Seller
+    };
+    
+    window.menuHandlers['chatCustomer'] = function() { return window.tampilkanChatCustomer(); };
+
+    window.kirimChatCustomer = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'ChatCustomer' }, ke: ke || { menu: 'ChatCustomer' }, data: data || {}, idRef: idRef || null, timestamp: new Date().toISOString() });
+    };
+    window.terimaChatCustomer = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'ChatCustomer') : [];
+    };
+    window.ambilChatCustomer = function() {
+        return { rooms: window.fchatuGetRooms ? window.fchatuGetRooms() : [] };
+    };
+
+    // [19.20.8] — DEBUG & REGISTRY
+    window.debugChatCustomer = function() {
+        var info = {
+            blok: '19.20', versi: '1.0', guard: window._blokR1920DoneV1,
+            cekA11: typeof window.kirimChatCustomer === 'function' && typeof window.terimaChatCustomer === 'function' && typeof window.ambilChatCustomer === 'function',
+            cekA14: true, cekA25: true
+        };
+        console.log('🔍 debugChatCustomer v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '19.20'; });
+                if (!ada) window.cpTambahBlok({ kode: '19.20', nama: 'Chat Customer', layer: 'L5', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: new Date().toISOString().substring(0, 10), blok: '19.20', nama: 'Chat Customer UI', keterangan: 'UI Chat 19.20, Dispatcher Handler chatSaya (CT, Toko, Kasir)' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 19.20 — UI CHAT CUSTOMER 🇮🇩 v1.0 ═════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 23.20 — UI CHAT CUSTOMER SERVICE (HTML) 🇮🇩 v1.0 -->
+<!-- ═══ Layer: L5 (Blok UI — Pusat Layanan Pelanggan) ═════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="chatCSContainer" style="display:none;">
+    <style>
+        .cs-wrapper { display: flex; height: 100vh; background: #e5ddd5; margin-top: -60px; padding-top: 60px; overflow: hidden; }
+        .cs-sidebar { width: 350px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .cs-sidebar-header { padding: 15px; background: #e0f7fa; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .cs-search { padding: 10px; border-bottom: 1px solid #eee; }
+        .cs-room-list { flex-grow: 1; overflow-y: auto; }
+        .cs-room-item { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+        .cs-room-item:hover, .cs-room-item.active { background: #e0f7fa; }
+        .cs-room-avatar { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; margin-right: 15px; background: #ddd; }
+        .cs-room-info h6 { margin: 0; font-size: 15px; font-weight: 600; color: #111; }
+        .cs-room-info small { color: #667781; font-size: 12px; display: block; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        
+        .cs-chat-area { flex-grow: 1; display: flex; flex-direction: column; background: #efeae2; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-size: cover; }
+        .cs-chat-header { padding: 10px 20px; background: #e0f7fa; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; }
+        .cs-chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        .cs-bubble { max-width: 65%; padding: 10px 15px; border-radius: 10px; font-size: 14px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .cs-bubble-saya { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .cs-bubble-lawan { background: #fff; align-self: flex-start; border-top-left-radius: 0; }
+        .cs-time { font-size: 10px; color: #667781; margin-top: 5px; text-align: right; display: block; }
+        
+        .cs-input-area { padding: 15px; background: #e0f7fa; display: flex; align-items: center; gap: 10px; border-top: 1px solid #ddd; }
+        .cs-input { flex-grow: 1; border-radius: 20px; padding: 10px 15px; border: none; outline: none; background: #fff; height: 45px; }
+        
+        @media (max-width: 768px) {
+            .cs-sidebar { position: absolute; width: 100%; height: 100%; z-index: 10; }
+            .cs-sidebar.hide { transform: translateX(-100%); }
+            .cs-chat-area { width: 100%; }
+        }
+    </style>
+
+    <div class="cs-wrapper">
+        <!-- SIDEBAR KONTAK -->
+        <div class="cs-sidebar" id="csSidebar">
+            <div class="cs-sidebar-header">
+                <h5 class="mb-0 fw-bold text-info"><i class="fas fa-headset"></i> Pusat Layanan CS</h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="kembaliKeDasbor()"><i class="fas fa-times"></i></button>
+            </div>
+            
+            <!-- Filter Tab -->
+            <div class="d-flex border-bottom">
+                <button class="btn btn-sm btn-light flex-fill fw-bold active" id="csTabPelanggan" onclick="csGantiTab('pelanggan')">Pelanggan</button>
+                <button class="btn btn-sm btn-light flex-fill fw-bold" id="csTabInternal" onclick="csGantiTab('internal')">Internal (SA/Staf)</button>
+            </div>
+
+            <div class="cs-search">
+                <input type="text" id="csInputSearch" class="form-control form-control-sm" placeholder="Cari kontak..." oninput="csRenderRooms()">
+            </div>
+            <div class="cs-room-list" id="csRoomList">
+                <!-- Diisi via JS -->
+            </div>
+        </div>
+
+        <!-- AREA CHAT -->
+        <div class="cs-chat-area" id="csChatArea">
+            <div class="h-100 d-flex flex-column align-items-center justify-content-center text-muted" id="csEmptyState">
+                <i class="fas fa-headset fa-5x mb-3 opacity-25"></i>
+                <h4 class="fw-bold">Pusat Layanan CS</h4>
+                <p>Pilih pelanggan di kiri untuk menangani keluhan.</p>
+            </div>
+
+            <div class="d-none h-100 flex-column" id="csActiveChat">
+                <div class="cs-chat-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-link text-dark d-md-none p-0 me-2" onclick="csToggleSidebar()"><i class="fas fa-arrow-left fa-lg"></i></button>
+                        <img id="csChatAvatar" src="" class="rounded-circle" style="width:40px;height:40px;object-fit:cover;">
+                        <div>
+                            <h6 class="mb-0 fw-bold" id="csChatNama">Nama</h6>
+                            <small class="text-muted" id="csChatRole">Role</small>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-1">
+                        <!-- Tombol Eskalasi ke SA -->
+                        <button class="btn btn-sm btn-outline-danger" onclick="csEskalasiKeSA()" title="Laporkan ke SA/Staf">
+                            <i class="fas fa-exclamation-triangle"></i> Eskalasi
+                        </button>
+                        <button class="btn btn-sm btn-outline-info" onclick="csSimpanKontak()" id="csBtnSimpanKontak"><i class="fas fa-bookmark"></i></button>
+                    </div>
+                </div>
+                <div class="cs-chat-messages" id="csChatMessages"></div>
+                <div class="cs-input-area">
+                    <button class="btn btn-light rounded-circle" onclick="document.getElementById('csInputFile').click()"><i class="fas fa-paperclip text-muted"></i></button>
+                    <input type="file" id="csInputFile" style="display:none;" accept="image/*,video/*,.pdf,.doc,.docx" onchange="csProsesKirimMedia(this)">
+                    <input type="text" id="csInputPesan" class="cs-input" placeholder="Ketik balasan ke pelanggan..." onkeypress="if(event.key==='Enter')csKirimPesan()">
+                    <button class="btn btn-info rounded-circle text-white" onclick="csKirimPesan()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL ESKALASI -->
+<div class="modal fade" id="csModalEskalasi" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title fw-bold"><i class="fas fa-exclamation-triangle me-2"></i>Eskalasi Kendala</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning small py-2">
+                    <i class="fas fa-info-circle me-1"></i> Gunakan form ini jika kendala pelanggan membutuhkan tindakan SuperAdmin atau Staf Admin.
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Kirim Ke:</label>
+                    <select id="csEskalasiTarget" class="form-select">
+                        <option value="SA">SuperAdmin (SA)</option>
+                        <option value="SA_STAF">Staf Admin (SA_STAF)</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small">Detail Kendala:</label>
+                    <textarea id="csEskalasiPesan" class="form-control" rows="3" placeholder="Jelaskan kendala pelanggan secara detail..."></textarea>
+                </div>
+                <button class="btn btn-danger w-100 fw-bold" onclick="csProsesEskalasi()">Kirim Laporan</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 23.20 — UI CHAT CUSTOMER SERVICE (JS) 🇮🇩 v1.0 ═ -->
+<!-- ═══ Layer: L5 (Blok UI — Pusat Layanan Pelanggan) ═════════ -->
+<!-- ═══ Guard: _blokR2320DoneV1 (UTAMA — A32) ══════════════════ -->
+<!-- ═══ Aturan: A1—A3, A5, A10, A11—A14, A19, A25, A29—A34 ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_23_20_CHAT_CS_V1() {
+    // [A32] — GUARD UTAMA
+    if (window._blokR2320DoneV1) return;
+    if (!window._fchatuDoneV2) { console.warn('⚠️ 23.20: FCHATU belum siap.'); return; }
+    window._blokR2320DoneV1 = true;
+
+    var csState = { idRoomAktif: null, idTarget: null, namaTarget: '', roleTarget: '', fotoTarget: '', tabAktif: 'pelanggan' };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _formatJam(iso) { try { return new Date(iso).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}); } catch(e) { return ''; } }
+
+    // [23.20.1] — ENTRY POINT
+    window.tampilkanChatCS = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplChatCS) {
+                var c = document.getElementById('chatCSContainer');
+                if (!c) return;
+                window._tplChatCS = c.innerHTML;
+                c.remove();
+            }
+            konten.innerHTML = window._tplChatCS;
+            csGantiTab('pelanggan');
+        } catch (e) {}
+    };
+
+    // [23.20.2] — GANTI TAB (PELANGGAN / INTERNAL)
+    window.csGantiTab = function(tab) {
+        csState.tabAktif = tab;
+        document.getElementById('csTabPelanggan').classList.toggle('active', tab === 'pelanggan');
+        document.getElementById('csTabInternal').classList.toggle('active', tab === 'internal');
+        csRenderRooms();
+    };
+
+    // [23.20.3] — RENDER DAFTAR ROOM
+    window.csRenderRooms = function() {
+        var container = document.getElementById('csRoomList');
+        var search = document.getElementById('csInputSearch') ? document.getElementById('csInputSearch').value.toLowerCase() : '';
+        var rooms = window.fchatuGetRooms ? window.fchatuGetRooms() : [];
+
+        if (rooms.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Belum ada obrolan.</div>';
+            return;
+        }
+
+        var html = '';
+        var adaData = false;
+        rooms.forEach(function(r) {
+            var idSaya = window.gidIdUser();
+            var idLawan = (r.idUser1 === idSaya) ? r.idUser2 : r.idUser1;
+            var lawan = window.gidGetUserById ? window.gidGetUserById(idLawan) : null;
+            if (!lawan) return;
+
+            var infoRole = window.csGetRoleInfo ? window.csGetRoleInfo(lawan.kodeRole) : null;
+            var isInternal = (lawan.kodeRole === 'SA' || lawan.kodeRole === 'SA_STAF');
+
+            // Filter Berdasarkan Tab
+            if (csState.tabAktif === 'pelanggan' && isInternal) return;
+            if (csState.tabAktif === 'internal' && !isInternal) return;
+
+            var nama = lawan.nama || lawan.namaLengkap;
+            if (search && !nama.toLowerCase().includes(search)) return;
+            adaData = true;
+
+            var foto = lawan.fotoUrl || 'https://ui-avatars.com/api/?name=' + nama;
+            var namaRole = infoRole ? infoRole.nama : lawan.kodeRole;
+            var warnaBadge = isInternal ? 'bg-danger' : 'bg-info';
+
+            html += `
+            <div class="cs-room-item" onclick="csBukaChat('${r.idRoom}', '${idLawan}', '${_esc(nama)}', '${_esc(namaRole)}', '${foto}')">
+                <img src="${foto}" class="cs-room-avatar">
+                <div class="cs-room-info">
+                    <h6>${_esc(nama)}</h6>
+                    <small><span class="badge ${warnaBadge}" style="font-size:9px;">${_esc(namaRole)}</span></small>
+                </div>
+            </div>`;
+        });
+
+        if (!adaData) {
+            container.innerHTML = '<div class="text-center text-muted py-4 small">Tidak ada obrolan di kategori ini.</div>';
+        } else {
+            container.innerHTML = html;
+        }
+    };
+
+    window.csToggleSidebar = function() { document.getElementById('csSidebar').classList.toggle('hide'); };
+
+    // [23.20.4] — BUKA ROOM CHAT
+    window.csBukaChat = function(idRoom, idTarget, nama, role, foto) {
+        csState.idRoomAktif = idRoom;
+        csState.idTarget = idTarget;
+        csState.namaTarget = nama;
+        csState.roleTarget = role;
+        csState.fotoTarget = foto;
+
+        document.getElementById('csEmptyState').classList.add('d-none');
+        var active = document.getElementById('csActiveChat');
+        active.classList.remove('d-none'); active.classList.add('d-flex');
+
+        document.getElementById('csChatAvatar').src = foto;
+        document.getElementById('csChatNama').textContent = nama;
+        document.getElementById('csChatRole').textContent = role + ' (' + idTarget + ')';
+
+        if (window.innerWidth <= 768) document.getElementById('csSidebar').classList.add('hide');
+
+        csRenderPesan();
+    };
+
+    // [23.20.5] — RENDER PESAN
+    window.csRenderPesan = function() {
+        var container = document.getElementById('csChatMessages');
+        if (!container || !csState.idRoomAktif) return;
+
+        var chats = window.fchatuAmbilRiwayat ? window.fchatuAmbilRiwayat(csState.idRoomAktif) : [];
+        var idSaya = window.gidIdUser();
+
+        var html = '';
+        chats.forEach(function(c) {
+            var isSaya = c.idPengirim === idSaya;
+            var bubbleClass = isSaya ? 'cs-bubble-saya' : 'cs-bubble-lawan';
+            
+            var media = '';
+            if (c.tipeMedia === 'image') media = `<img src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" style="max-height:200px;">`;
+            else if (c.tipeMedia === 'video') media = `<video src="${_esc(c.mediaUrl)}" class="img-fluid rounded mb-2" controls></video>`;
+            else if (c.tipeMedia === 'doc') media = `<a href="${_esc(c.mediaUrl)}" target="_blank" class="btn btn-sm btn-outline-primary mb-2"><i class="fas fa-file-alt me-1"></i>Buka Dokumen</a>`;
+
+            html += `
+            <div class="cs-bubble ${bubbleClass}">
+                ${media}
+                <div>${_esc(c.teks)}</div>
+                <span class="cs-time">${_formatJam(c.waktu)}</span>
+            </div>`;
+        });
+        container.innerHTML = html || '<div class="text-center text-muted py-4 small">Belum ada pesan.</div>';
+        container.scrollTop = container.scrollHeight;
+    };
+
+    // [23.20.6] — KIRIM PESAN & MEDIA
+    window.csKirimPesan = function() {
+        var input = document.getElementById('csInputPesan');
+        var teks = input.value.trim();
+        if (!teks || !csState.idRoomAktif) return;
+
+        var res = window.fchatuKirimPesan(csState.idRoomAktif, { teks: teks, tipeMedia: 'text' });
+        if (res.sukses) { input.value = ''; csRenderPesan(); }
+        else { _toast('❌ ' + res.pesan, 'danger'); }
+    };
+
+    window.csProsesKirimMedia = function(input) {
+        if (!input.files || !input.files[0] || !csState.idRoomAktif) return;
+        var file = input.files[0];
+        if (file.size > 2 * 1024 * 1024) { _toast('⚠️ Maks 2MB', 'warning'); input.value = ''; return; }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var base64 = e.target.result;
+            var tipe = 'doc';
+            if (file.type.includes('image')) tipe = 'image';
+            else if (file.type.includes('video')) tipe = 'video';
+
+            var res = window.fchatuKirimPesan(csState.idRoomAktif, { teks: '📎 Mengirim file', tipeMedia: tipe, mediaUrl: base64 });
+            if (res.sukses) { input.value = ''; csRenderPesan(); }
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // [23.20.7] — FITUR ESKALASI (CS Ke SA/Staf)
+    window.csEskalasiKeSA = function() {
+        if (!csState.idRoomAktif || !csState.idTarget) return;
+        document.getElementById('csEskalasiPesan').value = 'Kendala dari ' + csState.namaTarget + ' (' + csState.roleTarget + '):\n';
+        new bootstrap.Modal(document.getElementById('csModalEskalasi')).show();
+    };
+
+    window.csProsesEskalasi = function() {
+        var targetRole = document.getElementById('csEskalasiTarget').value;
+        var pesan = document.getElementById('csEskalasiPesan').value.trim();
+        if (!pesan) { _toast('⚠️ Detail kendala wajib diisi', 'warning'); return; }
+
+        // Cari ID SA atau Staf SA
+        var users = window.csLoadJSON ? window.csLoadJSON('dataLoginUser', []) : [];
+        var targetUser = users.find(function(u) { return u.kodeRole === targetRole; });
+
+        if (!targetUser) {
+            _toast('❌ Akun ' + targetRole + ' tidak ditemukan.', 'danger');
+            return;
+        }
+
+        // Buat Room CS dengan SA/Staf
+        var roomRes = window.fchatuBuatRoom(targetUser.idUser, null, 'internal');
+        if (!roomRes.sukses) { _toast('❌ Gagal buat room eskalasi', 'danger'); return; }
+
+        // Kirim Pesan
+        var kirimRes = window.fchatuKirimPesan(roomRes.room.idRoom, { teks: pesan, tipeMedia: 'text' });
+        
+        if (kirimRes.sukses) {
+            _toast('✅ Laporan berhasil dieskalasi ke ' + targetRole, 'success');
+            bootstrap.Modal.getInstance(document.getElementById('csModalEskalasi')).hide();
+            csGantiTab('internal'); // Pindah ke tab internal
+            setTimeout(function() { csBukaChat(roomRes.room.idRoom, targetUser.idUser, targetUser.nama, targetRole, targetUser.fotoUrl); }, 500);
+        } else {
+            _toast('❌ Gagal kirim: ' + kirimRes.pesan, 'danger');
+        }
+    };
+
+    window.csSimpanKontak = function() {
+        if (!csState.idTarget) return;
+        var res = window.fchatuSimpanKontak(csState.idTarget);
+        if (res.sukses) _toast('✅ Kontak disimpan', 'success');
+        else _toast('❌ ' + res.pesan, 'danger');
+    };
+
+    // [23.20.8] — REGISTER MENU HANDLER & 3 PINTU (A11)
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['chatCS'] = function() { return window.tampilkanChatCS(); };
+
+    window.kirimChatCS = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'ChatCS' }, ke: ke || { menu: 'ChatCS' }, data: data || {}, idRef: idRef || null, timestamp: new Date().toISOString() });
+    };
+    window.terimaChatCS = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'ChatCS') : [];
+    };
+    window.ambilChatCS = function() {
+        return { rooms: window.fchatuGetRooms ? window.fchatuGetRooms() : [] };
+    };
+
+    // [23.20.9] — DEBUG & REGISTRY
+    window.debugChatCS = function() {
+        var info = {
+            blok: '23.20', versi: '1.0', guard: window._blokR2320DoneV1,
+            cekA11: typeof window.kirimChatCS === 'function' && typeof window.terimaChatCS === 'function' && typeof window.ambilChatCS === 'function',
+            cekA14: true, cekA25: true
+        };
+        console.log('🔍 debugChatCS v1.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '23.20'; });
+                if (!ada) window.cpTambahBlok({ kode: '23.20', nama: 'Chat Customer Service', layer: 'L5', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: new Date().toISOString().substring(0, 10), blok: '23.20', nama: 'Chat CS UI', keterangan: 'Layanan Pelanggan, Filter Tab, Eskalasi ke SA/Staf, Kirim Media' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 23.20 — UI CHAT CUSTOMER SERVICE 🇮🇩 v1.0 ═ -->
+
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ SISTEM LOGO APP (UPLOAD & SIMPAN) ═════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
@@ -59282,6 +61496,6 @@ body.role-kopdes .offcanvas.offcanvas-shell {
     });
 })();
 </script>
-
+<!-- ═══ AKHIR SISTEM LOGO APP (UPLOAD & SIMPAN) ═════════════════════ -->
 </body>
 </html>
