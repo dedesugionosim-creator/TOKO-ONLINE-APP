@@ -33209,6 +33209,222 @@ setTimeout(function _initBlok01k(isRetry) {
 <!-- ═══ AKHIR BLOK FG-GIF v1.0 — FUNGSI GLOBAL EKONOMI GIF 🇮🇩 ═══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FKS v1.0 — FUNGSI GLOBAL KOPDES SELLER 🇮🇩 ═══════ -->
+<!-- ═══ Layer: L4 (Domain Logic — Katalog KDD & Checkout Chat) ═ -->
+<!-- ═══ Dependency: CS1, CS2, CS11, FGD, KDMP, MN ═════════════ -->
+<!-- ═══ Guard: _fksDoneV1 (UTAMA — A32) ═══════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A19, A25, A32, A36, A40 ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FKS_V1() {
+    // [A32] — GUARD
+    if (window._fksDoneV1) return;
+    if (!window.CS_ROLE_MAP || !window.gidIdUser) return;
+    window._fksDoneV1 = true;
+    window._fksVersi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [FKS.1] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _load(key, def) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, def);
+        try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch (e) { return def; }
+    }
+    function _save(key, data) {
+        if (typeof window.csSaveJSON === 'function') return window.csSaveJSON(key, data, { backup: false });
+        try { localStorage.setItem(key, JSON.stringify(data)); return { sukses: true }; } catch (e) { return { sukses: false }; }
+    }
+    
+    function _getKeranjangKey() {
+        var idUser = window.gidIdUser ? window.gidIdUser() : 'GUEST';
+        return 'dataKeranjang_' + idUser;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [FKS.2] — KATALOG KDD & PRODUK
+    // ═══════════════════════════════════════════════════════════
+    window.fksGetDaftarKDD = function() {
+        try {
+            var users = _load('dataLoginUser', []) || [];
+            var listKDD = users.filter(function(u) { 
+                return u && u.kodeRole === 'KDMP_DESA' && (u.status === 'Aktif' || u.statusVerifikasi === 'Aktif'); 
+            });
+            
+            return listKDD.map(function(u) {
+                var profil = _load('profil_' + u.idUser, {});
+                return {
+                    idUser: u.idUser,
+                    namaToko: profil.namaToko || u.nama || 'Kopdes Desa',
+                    wilayah: u.kodeWilayah || 'Ciamis',
+                    fotoUrl: profil.fotoUrl || u.fotoUrl || '',
+                    rating: profil.rating || 5.0
+                };
+            });
+        } catch (e) { return []; }
+    };
+
+    window.fksGetProdukKDD = function(idKDD) {
+        try {
+            if (!idKDD) return [];
+            var produk = _load('dataProduk', []) || [];
+            return produk.filter(function(p) { return p.idOwner === idKDD; });
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FKS.3] — MANAJEMEN KERANJANG
+    // ═══════════════════════════════════════════════════════════
+    window.fksGetKeranjang = function() {
+        return _load(_getKeranjangKey(), []);
+    };
+
+    window.fksTambahKeranjang = function(idProduk, qty) {
+        try {
+            var produkList = _load('dataProduk', []) || [];
+            var prod = produkList.find(function(p) { return p.id === idProduk || p.idProduk === idProduk; });
+            if (!prod) return { sukses: false, pesan: 'Produk tidak ditemukan' };
+
+            var cart = window.fksGetKeranjang();
+            var existing = cart.find(function(c) { return c.idProduk === idProduk; });
+
+            if (existing) {
+                existing.qty += (qty || 1);
+                existing.subtotal = existing.qty * existing.harga;
+            } else {
+                cart.push({
+                    idProduk: idProduk,
+                    idKDD: prod.idOwner,
+                    nama: prod.nama || prod.namaProduk,
+                    harga: parseFloat(prod.harga) || 0,
+                    qty: qty || 1,
+                    subtotal: (parseFloat(prod.harga) || 0) * (qty || 1)
+                });
+            }
+            _save(_getKeranjangKey(), cart);
+            return { sukses: true, cart: cart };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fksKosongkanKeranjang = function() {
+        _save(_getKeranjangKey(), []);
+        return { sukses: true };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FKS.4] — CHECKOUT KE CHAT KASIR (45.20)
+    // ═══════════════════════════════════════════════════════════
+    window.fksCheckoutKeChat = function(idKDD, metode) {
+        try {
+            var cart = window.fksGetKeranjang().filter(function(c) { return c.idKDD === idKDD; });
+            if (cart.length === 0) return { sukses: false, pesan: 'Keranjang kosong' };
+
+            var total = cart.reduce(function(sum, item) { return sum + item.subtotal; }, 0);
+            
+            // Cari Kasir KDD (KSR_KDMP)
+            var users = _load('dataLoginUser', []) || [];
+            var kasir = users.find(function(u) { 
+                return u.kodeRole === 'KSR_KDMP' && (u.idOwner === idKDD || u.idInduk === idKDD); 
+            });
+
+            if (!kasir) return { sukses: false, pesan: 'Kasir KDD belum dibuat. Hubungi Admin KDD.' };
+
+            // Susun paket pesan
+            var paketPesan = {
+                tipe: 'order_kopdes',
+                dari: {
+                    idUser: window.gidIdUser(),
+                    nama: window.getNamaUserAktif ? window.getNamaUserAktif() : 'User',
+                    kodeRole: window.gidKodeRoleUser()
+                },
+                ke: {
+                    menu: '45.20',
+                    idUserTarget: kasir.idUser,
+                    kodeRoleTarget: 'KSR_KDMP'
+                },
+                data: {
+                    idKDD: idKDD,
+                    items: cart,
+                    total: total,
+                    metode: metode || 'Belum Dipilih', // Transfer, COD, Ojek, Ambil Sendiri
+                    catatan: 'Mohon konfirmasi pesanan ini.'
+                },
+                timestamp: new Date().toISOString()
+            };
+
+            // Kirim via Event Bus MN
+            if (typeof window.mnKirimKeMenu === 'function') {
+                window.mnKirimKeMenu(paketPesan);
+            } else {
+                // Fallback jika MN belum terpasang
+                var inboxKey = 'r2c_mn_inbox_45.20';
+                var inbox = _load(inboxKey, []);
+                inbox.unshift(paketPesan);
+                _save(inboxKey, inbox);
+            }
+
+            // Hapus keranjang KDD ini
+            var newCart = window.fksGetKeranjang().filter(function(c) { return c.idKDD !== idKDD; });
+            _save(_getKeranjangKey(), newCart);
+
+            return { sukses: true, pesan: 'Pesanan dikirim ke Kasir KDD', kasir: kasir.nama, total: total };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FKS.5] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFKS = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: { idUser: window.gidIdUser(), kodeRole: window.gidKodeRoleUser(), menu: 'FKS', blok: 'L4-FKS' },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaFKS = function(aksiMenu) {
+        try { return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FKS') : []; } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FKS.6] — DEBUG & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debugFKS = function() {
+        console.log('🔍 debugFKS v1.0:', {
+            totalKDD: window.fksGetDaftarKDD().length,
+            isiKeranjang: window.fksGetKeranjang().length,
+            fungsi: {
+                fksGetDaftarKDD: typeof window.fksGetDaftarKDD,
+                fksGetProdukKDD: typeof window.fksGetProdukKDD,
+                fksTambahKeranjang: typeof window.fksTambahKeranjang,
+                fksCheckoutKeChat: typeof window.fksCheckoutKeChat,
+                kirimFKS: typeof window.kirimFKS,
+                terimaFKS: typeof window.terimaFKS
+            }
+        });
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'FKS'; });
+                if (!ada) {
+                    window.cpTambahBlok({ kode: 'FKS', nama: 'Kopdes Seller & Transaksi Chat v1', layer: 'L4', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+                }
+            }
+        } catch (e) {}
+    }, 1000);
+
+    console.log('%c🇮🇩 BLOK FKS v1.0 — FUNGSI GLOBAL KOPDES SELLER terpasang.', 'background:#DC3545;color:#fff;padding:3px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK FKS v1.0 — FUNGSI GLOBAL KOPDES SELLER 🇮🇩 ═══ -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK 2 — LOGIN 🇮🇩 v4.0 FINAL ═════════════════════════ -->
 <!-- ═══ Layer: L5 (Halaman Publik) ════════════════════════════ -->
 <!-- ═══ Dependency: CS8 v4.1 (prosesLogin) · CS6 (tampilkanHalaman) -->
@@ -38131,6 +38347,466 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 })();
 </script>
 <!-- ═══ AKHIR BLOK R 10.10 — DOMPET R2COIN SA (JS) 🇮🇩 v1.0 ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.25 — DASBOR KOPDES SELLER SA (HTML) 🇮🇩 ══════ -->
+<!-- ═══ Layer: L5 (Blok UI — Katalog KDD & Checkout) ══════════ -->
+<!-- ═══ Dependency: FKS, FGD, CS6 ═════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="dasborKopdesSellerContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ SUB-BLOK 10.25.H1 — HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-store-alt me-2"></i>Dasbor Kopdes Seller
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Akses cepat untuk melihat daftar Kopdes Desa (KDD) dan berbelanja langsung.
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-light btn-sm" id="fksBtnKembali" onclick="fksKembaliKeDaftarKDD()" style="display:none;">
+                    <i class="fas fa-arrow-left me-1"></i> Kembali ke Daftar
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-home me-1"></i> Dasbor Utama
+                </button>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.25.H2 — VIEW 1: DAFTAR KDD ══════════ -->
+        <div id="fksViewDaftarKDD">
+            <div class="row g-3" id="fksGridKDD">
+                <!-- Diisi via JS -->
+            </div>
+            <div id="fksEmptyKDD" class="text-center py-5 text-white-50" style="display:none;">
+                <i class="fas fa-store-slash fa-3x mb-3 opacity-50"></i>
+                <p>Belum ada Kopdes Desa (KDD) yang aktif.</p>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.25.H3 — VIEW 2: DETAIL & PRODUK ══════════ -->
+        <div id="fksViewDetailKDD" style="display:none;">
+            <!-- Profil KDD -->
+            <div class="card border-0 shadow mb-4">
+                <div class="card-body p-3 d-flex align-items-center gap-3">
+                    <div id="fksDetailFoto" class="bg-white rounded-circle shadow-sm d-flex align-items-center justify-content-center" style="width:70px;height:70px;font-size:1.5rem;color:#FF9800;">
+                        <i class="fas fa-store"></i>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h5 class="fw-bold mb-1" id="fksDetailNama">Nama Kopdes</h5>
+                        <div class="small text-muted" id="fksDetailWilayah">Wilayah</div>
+                        <div class="small text-warning"><i class="fas fa-star"></i> <span id="fksDetailRating">5.0</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Grid Produk -->
+            <h6 class="text-white fw-bold mb-3"><i class="fas fa-box-open me-2"></i>Katalog Produk</h6>
+            <div class="row g-3" id="fksGridProduk">
+                <!-- Diisi via JS -->
+            </div>
+            <div id="fksEmptyProduk" class="text-center py-4 text-white-50" style="display:none;">
+                <p>Kopdes ini belum menjual produk.</p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ══════════ SUB-BLOK 10.25.H4 — FLOATING CART ══════════ -->
+    <div id="fksFloatingCart" class="position-fixed bottom-0 end-0 m-4 shadow-lg" style="z-index: 1000; display:none;">
+        <button class="btn btn-warning btn-lg rounded-circle fw-bold position-relative p-3 shadow" onclick="fksBukaModalKeranjang()" style="width: 65px; height: 65px;">
+            <i class="fas fa-shopping-cart fa-lg" style="color:#000;"></i>
+            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="fksCartCount" style="font-size:0.8rem;">0</span>
+        </button>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ══════════ SUB-BLOK 10.25.H5 — MODAL KERANJANG ══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="fksModalKeranjang" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#FF9800;">
+                <h5 class="modal-title"><i class="fas fa-shopping-cart me-2"></i>Keranjang Belanja</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-0">
+                <ul class="list-group list-group-flush" id="fksListKeranjang">
+                    <!-- Diisi via JS -->
+                </ul>
+                <div id="fksEmptyKeranjang" class="text-center py-5 text-muted" style="display:none;">
+                    <i class="fas fa-box-open fa-3x mb-3 opacity-25"></i>
+                    <p>Keranjang masih kosong.</p>
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between bg-light">
+                <div>
+                    <small class="text-muted d-block">Total Harga</small>
+                    <h4 class="fw-bold mb-0 text-danger" id="fksTotalKeranjang">Rp 0</h4>
+                </div>
+                <button type="button" class="btn btn-success fw-bold px-4" onclick="fksBukaModalTransaksi()">
+                    <i class="fas fa-arrow-right me-1"></i> Checkout
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.25.H6 — MODAL METODE TRANSAKSI ══════════ -->
+<div class="modal fade" id="fksModalTransaksi" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title"><i class="fas fa-truck me-2"></i>Pilih Metode Transaksi</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-3">Pesanan Anda akan dikirim ke Kasir KDD melalui Live Chat. Pilih bagaimana Anda ingin menerima pesanan:</p>
+                
+                <div class="d-grid gap-2">
+                    <button class="btn btn-outline-primary text-start p-3" onclick="fksProsesCheckout('Transfer')">
+                        <i class="fas fa-university me-2 fa-lg"></i> <strong>Transfer Bank</strong><br>
+                        <small class="text-muted ms-4">Bayar via transfer ke rekening KDD.</small>
+                    </button>
+                    
+                    <button class="btn btn-outline-success text-start p-3" onclick="fksProsesCheckout('COD')">
+                        <i class="fas fa-money-bill-wave me-2 fa-lg"></i> <strong>COD (Bayar di Tempat)</strong><br>
+                        <small class="text-muted ms-4">Bayar tunai saat barang diterima.</small>
+                    </button>
+                    
+                    <button class="btn btn-outline-warning text-start p-3" onclick="fksProsesCheckout('Ojek')">
+                        <i class="fas fa-motorcycle me-2 fa-lg"></i> <strong>Jasa Antar (Ojek)</strong><br>
+                        <small class="text-muted ms-4">Barang diantar oleh Mitra Ojek.</small>
+                    </button>
+                    
+                    <button class="btn btn-outline-secondary text-start p-3" onclick="fksProsesCheckout('Ambil Sendiri')">
+                        <i class="fas fa-walking me-2 fa-lg"></i> <strong>Ambil Sendiri</strong><br>
+                        <small class="text-muted ms-4">Ambil pesanan langsung di kantor KDD.</small>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══ AKHIR BLOK R 10.25 — DASBOR KOPDES SELLER SA (HTML) 🇮🇩 ═ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.25 — DASBOR KOPDES SELLER SA (JS) 🇮🇩 v1.0 ══ -->
+<!-- ═══ Dependency: FKS, FGD, CS6 ═════════════════════════════ -->
+<!-- ═══ Guard: _blokR1025DoneV1 (UTAMA — A32) ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_10_25_DASBOR_KOPDES_SELLER() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD IDEMPOTENCY
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokR1025DoneV1) {
+        console.log('ℹ️ BLOK R 10.25 sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR1025DoneV1 = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.25.1] — STATE & HELPER
+    // ═══════════════════════════════════════════════════════════
+    var fksState = { idKDD: null };
+
+    function fksEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function fksRupiah(n) { return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID'); }
+    
+    function fksToast(pesan, tipe) {
+        // Menggunakan toast bawaan CS6 jika ada
+        if (typeof window.csToast === 'function') {
+            window.csToast(pesan, tipe);
+        } else {
+            alert(pesan);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.25.2] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanDasborKopdesSeller = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplDasborKopdes) {
+                var c = document.getElementById('dasborKopdesSellerContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') tampilkanPlaceholderMenu('Dasbor Kopdes Seller', '10.25');
+                    return;
+                }
+                window._tplDasborKopdes = c.innerHTML;
+                c.remove();
+            }
+
+            konten.innerHTML = window._tplDasborKopdes;
+            fksState.idKDD = null;
+            
+            // Render daftar KDD awal
+            fksRenderDaftarKDD();
+            fksUpdateCartBadge();
+
+        } catch (e) { console.error('tampilkanDasborKopdesSeller error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.25.3] — VIEW 1: DAFTAR KDD
+    // ═══════════════════════════════════════════════════════════
+    function fksRenderDaftarKDD() {
+        document.getElementById('fksViewDaftarKDD').style.display = 'block';
+        document.getElementById('fksViewDetailKDD').style.display = 'none';
+        document.getElementById('fksBtnKembali').style.display = 'none';
+
+        var grid = document.getElementById('fksGridKDD');
+        var empty = document.getElementById('fksEmptyKDD');
+        grid.innerHTML = '';
+
+        // Memanggil Fungsi Global FKS
+        var listKDD = (typeof window.fksGetDaftarKDD === 'function') ? window.fksGetDaftarKDD() : [];
+
+        if (listKDD.length === 0) {
+            empty.style.display = 'block';
+            return;
+        }
+        empty.style.display = 'none';
+
+        var html = '';
+        listKDD.forEach(function(kdd) {
+            var fotoHtml = kdd.fotoUrl 
+                ? `<img src="${kdd.fotoUrl}" class="rounded-circle mb-3" style="width:80px;height:80px;object-fit:cover;">`
+                : `<div class="rounded-circle mb-3 d-inline-flex align-items-center justify-content-center" style="width:80px;height:80px;background:#FFF3E0;color:#FF9800;font-size:2rem;"><i class="fas fa-store"></i></div>`;
+
+            html += `
+            <div class="col-md-6 col-lg-4 col-xl-3">
+                <div class="card border-0 shadow-sm h-100 text-center card-hover-effect" style="border-radius:16px;">
+                    <div class="card-body p-4">
+                        ${fotoHtml}
+                        <h6 class="fw-bold mb-1 text-dark">${fksEsc(kdd.namaToko)}</h6>
+                        <div class="small text-muted mb-2"><i class="fas fa-map-marker-alt me-1"></i>${fksEsc(kdd.wilayah)}</div>
+                        <div class="text-warning small mb-3"><i class="fas fa-star"></i> ${kdd.rating}</div>
+                        <button class="btn btn-outline-warning w-100 fw-bold" onclick="fksBukaDetailKDD('${kdd.idUser}')">
+                            <i class="fas fa-eye me-1"></i> Lihat Produk
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+        });
+        grid.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.25.4] — VIEW 2: DETAIL & PRODUK
+    // ═══════════════════════════════════════════════════════════
+    window.fksBukaDetailKDD = function(idKDD) {
+        try {
+            fksState.idKDD = idKDD;
+            document.getElementById('fksViewDaftarKDD').style.display = 'none';
+            document.getElementById('fksViewDetailKDD').style.display = 'block';
+            document.getElementById('fksBtnKembali').style.display = 'inline-block';
+
+            // Ambil Profil KDD dari list (karena tidak ada fungsi getbyId di FKS, kita filter)
+            var listKDD = (typeof window.fksGetDaftarKDD === 'function') ? window.fksGetDaftarKDD() : [];
+            var kdd = listKDD.find(function(k) { return k.idUser === idKDD; });
+            
+            if (kdd) {
+                document.getElementById('fksDetailNama').textContent = kdd.namaToko;
+                document.getElementById('fksDetailWilayah').textContent = kdd.wilayah;
+                document.getElementById('fksDetailRating').textContent = kdd.rating;
+                if (kdd.fotoUrl) {
+                    document.getElementById('fksDetailFoto').innerHTML = `<img src="${kdd.fotoUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+                }
+            }
+
+            // Render Produk
+            fksRenderProdukKDD(idKDD);
+        } catch (e) { console.error('fksBukaDetailKDD error:', e); }
+    };
+
+    window.fksKembaliKeDaftarKDD = function() {
+        fksState.idKDD = null;
+        fksRenderDaftarKDD();
+    };
+
+    function fksRenderProdukKDD(idKDD) {
+        var grid = document.getElementById('fksGridProduk');
+        var empty = document.getElementById('fksEmptyProduk');
+        grid.innerHTML = '';
+
+        // Memanggil Fungsi Global FKS
+        var listProduk = (typeof window.fksGetProdukKDD === 'function') ? window.fksGetProdukKDD(idKDD) : [];
+
+        if (listProduk.length === 0) {
+            empty.style.display = 'block';
+            return;
+        }
+        empty.style.display = 'none';
+
+        var html = '';
+        listProduk.forEach(function(p) {
+            var fotoHtml = p.fotoUrl 
+                ? `<img src="${p.fotoUrl}" class="card-img-top" style="height:150px;object-fit:cover;">`
+                : `<div class="bg-light d-flex align-items-center justify-content-center" style="height:150px;color:#CCC;font-size:3rem;"><i class="fas fa-box"></i></div>`;
+
+            html += `
+            <div class="col-md-4 col-6">
+                <div class="card border-0 shadow-sm h-100" style="border-radius:12px;overflow:hidden;">
+                    ${fotoHtml}
+                    <div class="card-body p-2 d-flex flex-column">
+                        <h6 class="fw-bold text-dark text-truncate mb-1" style="font-size:13px;">${fksEsc(p.nama || p.namaProduk)}</h6>
+                        <div class="text-danger fw-bold small mb-2">${fksRupiah(p.harga)}</div>
+                        <div class="mt-auto">
+                            <button class="btn btn-sm btn-warning w-100 fw-bold" onclick="fksAksiTambahKeranjang('${p.id || p.idProduk}')">
+                                <i class="fas fa-cart-plus"></i> Tambah
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        });
+        grid.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.25.5] — KERANJANG & CHECKOUT
+    // ═══════════════════════════════════════════════════════════
+    window.fksAksiTambahKeranjang = function(idProduk) {
+        var res = window.fksTambahKeranjang(idProduk, 1);
+        if (res.sukses) {
+            fksToast('✅ Produk masuk keranjang', 'success');
+            fksUpdateCartBadge();
+        } else {
+            fksToast('❌ ' + res.pesan, 'danger');
+        }
+    };
+
+    function fksUpdateCartBadge() {
+        var cart = (typeof window.fksGetKeranjang === 'function') ? window.fksGetKeranjang() : [];
+        var totalQty = cart.reduce(function(sum, item) { return sum + item.qty; }, 0);
+        
+        var badge = document.getElementById('fksCartCount');
+        var floatingBtn = document.getElementById('fksFloatingCart');
+
+        if (totalQty > 0) {
+            badge.textContent = totalQty;
+            floatingBtn.style.display = 'block';
+        } else {
+            floatingBtn.style.display = 'none';
+        }
+    }
+
+    window.fksBukaModalKeranjang = function() {
+        var cart = (typeof window.fksGetKeranjang === 'function') ? window.fksGetKeranjang() : [];
+        var listEl = document.getElementById('fksListKeranjang');
+        var emptyEl = document.getElementById('fksEmptyKeranjang');
+        
+        listEl.innerHTML = '';
+        
+        if (cart.length === 0) {
+            emptyEl.style.display = 'block';
+            document.getElementById('fksTotalKeranjang').textContent = 'Rp 0';
+        } else {
+            emptyEl.style.display = 'none';
+            var total = 0;
+            var html = '';
+            
+            cart.forEach(function(item) {
+                total += item.subtotal;
+                html += `
+                <li class="list-group-item d-flex justify-content-between align-items-center p-3">
+                    <div>
+                        <h6 class="fw-bold mb-1 text-dark">${fksEsc(item.nama)}</h6>
+                        <div class="small text-muted">${fksRupiah(item.harga)} x ${item.qty}</div>
+                    </div>
+                    <div class="text-end">
+                        <div class="fw-bold text-danger mb-1">${fksRupiah(item.subtotal)}</div>
+                    </div>
+                </li>`;
+            });
+            listEl.innerHTML = html;
+            document.getElementById('fksTotalKeranjang').textContent = fksRupiah(total);
+        }
+
+        new bootstrap.Modal(document.getElementById('fksModalKeranjang')).show();
+    };
+
+    window.fksBukaModalTransaksi = function() {
+        // Tutup modal keranjang
+        var mCart = bootstrap.Modal.getInstance(document.getElementById('fksModalKeranjang'));
+        if (mCart) mCart.hide();
+
+        // Buka modal metode
+        setTimeout(function() {
+            new bootstrap.Modal(document.getElementById('fksModalTransaksi')).show();
+        }, 300);
+    };
+
+    window.fksProsesCheckout = function(metode) {
+        try {
+            // Panggil Fungsi Global FKS
+            var res = window.fksCheckoutKeChat(fksState.idKDD, metode);
+            
+            if (res.sukses) {
+                // Tutup modal
+                var m = bootstrap.Modal.getInstance(document.getElementById('fksModalTransaksi'));
+                if (m) m.hide();
+
+                fksToast(`✅ Pesanan (${metode}) terkirim ke Kasir KDD!`, 'success');
+                fksUpdateCartBadge();
+                
+                // Arahkan ke Chat Kasir (45.20)
+                setTimeout(function() {
+                    if (typeof window.tampilkanChatKasir === 'function') {
+                        window.tampilkanChatKasir();
+                    } else {
+                        // Fallback jika UI Chat belum dibuat
+                        if (typeof window.tampilkanPlaceholderMenu === 'function') {
+                            window.tampilkanPlaceholderMenu('Chat Kasir KDD (45.20)', '45.20');
+                        }
+                    }
+                }, 1500);
+
+            } else {
+                fksToast('❌ ' + res.pesan, 'danger');
+            }
+        } catch (e) {
+            console.error('fksProsesCheckout error:', e);
+            fksToast('❌ Terjadi kesalahan sistem', 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.25.6] — REGISTRASI HANDLER & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    var handler = function() { window.tampilkanDasborKopdesSeller(); };
+    window.menuHandlers['dasborKopdes'] = handler;
+    window.menuHandlers['tampilkanDasborKopdesSeller'] = handler;
+    window.menuHandlers['dasborKopdesSeller'] = handler;
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '10.25'; });
+                if (!ada) {
+                    window.cpTambahBlok({ kode: '10.25', nama: 'Dasbor Kopdes Seller', layer: 'L5', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+                }
+            }
+        } catch (e) {}
+    }, 1000);
+
+    console.log('✅ BLOK R 10.25 — Dasbor Kopdes Seller (UI) terpasang.');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.25 — DASBOR KOPDES SELLER SA (JS) 🇮🇩 v1.0 ═ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ SISTEM LOGO APP (UPLOAD & SIMPAN) ═════════════════════ -->
