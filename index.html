@@ -57664,21 +57664,47 @@ body.role-kopdes .offcanvas.offcanvas-shell {
         return { list: list };
     }
 
+       // ═══════════════════════════════════════════════════════════
+    // [10.83.8] — CLASSIFIER PER BLOK (v2.0.1 FIX)
     // ═══════════════════════════════════════════════════════════
-    // [10.83.8] — CLASSIFIER PER BLOK
+    // 🔴 v2.0.1 FIX (dari v2.0):
+    //   [1] +STATIC_BLOK_NO_GUARD — 1.1/1.2/2/3/3.1/4/0.1.h = HTML statis
+    //       (tidak punya guard flag, normal — bukan error)
+    //   [2] _tebakKodeBlokDariFlag: regex /^_f([a-z]{2,5})Done/ →
+    //       /^_(f[a-z]{2,5})Done/ (F masuk capture group)
+    //       Sebelumnya: _fgdDone → 'GD' ❌ (bukan 'FGD')
+    //       Sekarang  : _fgdDone → 'FGD' ✅
+    //   [3] +Special cases: FD-U, Profil-Universal, FG-GIF, 5, FHF, FCHATU
     // ═══════════════════════════════════════════════════════════
-    // Input: blok dari registry + guardMap + debugMap + placeholderSet
-    // Output: 'active' | 'pending' | 'error' | 'placeholder' | 'unknown'
-    // ═══════════════════════════════════════════════════════════
+
+    // ── Whitelist: HTML statis (tanpa guard flag — NORMAL) ──
+    // Blok-blok ini murni HTML+CSS+JS statis, tidak punya _blokXDone.
+    // Status di registry 'Selesai' + tidak ada guard = AKTIF (bukan error).
+    var STATIC_BLOK_NO_GUARD = {
+        '1.1':   true,  // Meta & Library — HTML statis
+        '1.2':   true,  // CSS Merah Putih — HTML statis
+        '2':     true,  // Halaman Login — HTML statis
+        '3':     true,  // Halaman Daftar — HTML statis
+        '3.1':   true,  // Auto-Init Role Select — HTML statis
+        '4':     true,  // Lupa Password — HTML statis
+        '0.1.h': true   // HTML Template Catatan — HTML statis
+    };
+
+    // ── Classifier: tentukan status runtime per blok ──
     function _classifyBlok(blok, guardMap, debugMap, placeholderSet, funcPrefixSet) {
         try {
             var kode = blok.kode;
             var reg = blok.statusRegistry;
 
-            // Kalau blok sendiri adalah placeholder di menuHandler
+            // ── [1] Static HTML blocks → SELALU active (kalau reg Selesai) ──
+            if (STATIC_BLOK_NO_GUARD[kode] && reg === 'Selesai') {
+                return 'active';
+            }
+
+            // ── [2] Kalau blok sendiri adalah placeholder di menuHandler ──
             if (placeholderSet[kode]) return 'placeholder';
 
-            // Cek guard flag terkait
+            // ── [3] Cek guard flag terkait ──
             var guardKeys = guardMap[kode] || [];
             var hasGuard = false, guardTrue = false;
             guardKeys.forEach(function(g) {
@@ -57686,17 +57712,16 @@ body.role-kopdes .offcanvas.offcanvas-shell {
                 if (g.value === true) guardTrue = true;
             });
 
-            // Kalau registry Selesai tapi guard tidak ada / false → error
+            // ── [4] Registry Selesai tapi guard tidak ada / false → error ──
             if (reg === 'Selesai') {
                 if (!hasGuard) return 'error';
                 if (hasGuard && !guardTrue) return 'error';
                 return 'active';
             }
 
-            // Kalau registry Pending
+            // ── [5] Registry Pending ──
             if (reg === 'Pending') {
                 if (!hasGuard) return 'pending';
-                // Pending tapi guard true = sudah dibangun tapi registry belum update
                 if (hasGuard && guardTrue) return 'active';
                 return 'pending';
             }
@@ -57707,18 +57732,11 @@ body.role-kopdes .offcanvas.offcanvas-shell {
         }
     }
 
-    // Helper: map guard flags ke blok kode
-    // Heuristik: exact match blok kode → flag, atau pattern umum
+    // ── Map guard flags ke kode blok ──
     function _buildGuardMap(guardList, blokList) {
         var map = {};
-        // Map exact: kode blok → list guard flags yang terkait
-        var blokKodeSet = {};
-        blokList.forEach(function(b) { blokKodeSet[b.kode] = true; });
-
         guardList.forEach(function(g) {
-            var flag = g.flag;
-            // Heuristik pemetaan flag → blok kode
-            var kodeTebakan = _tebakKodeBlokDariFlag(flag);
+            var kodeTebakan = _tebakKodeBlokDariFlag(g.flag);
             if (kodeTebakan) {
                 if (!map[kodeTebakan]) map[kodeTebakan] = [];
                 map[kodeTebakan].push(g);
@@ -57727,78 +57745,80 @@ body.role-kopdes .offcanvas.offcanvas-shell {
         return map;
     }
 
-    // Heuristik tebak kode blok dari nama flag
+    // ── Heuristik: nama flag → kode blok (v2.0.1 FIX regex) ──
     function _tebakKodeBlokDariFlag(flag) {
         if (!flag) return null;
         var f = String(flag);
 
-        // CS: _coreSystem1DoneV4_2 → CS1
+        // ── CS: _coreSystem1DoneV4_2 → CS1 ──
         var mCS = f.match(/^_coreSystem(\d+)Done/);
         if (mCS) return 'CS' + mCS[1];
 
-        // 0.1.x: _blok01aDone → 0.1.a
+        // ── 0.1.x: _blok01aDone → 0.1.a ──
         var m01 = f.match(/^_blok01([a-z])Done/i);
         if (m01) return '0.1.' + m01[1].toLowerCase();
 
-        // VG, SA-HARD
+        // ── VG / SA-HARD ──
         if (f === '_blokVGDone') return 'VG';
         if (f.indexOf('_saHardDone') === 0) return 'SA-HARD';
 
-        // 9.3.1: _blok931_1_DoneV5 → 9.3.1(1)
-        var m931 = f.match(/^_blok931_(\d+)_Done/);
+        // ── 5 Dasbor Shell: _blok5DoneV52 → 5 ──
+        if (/^_blok5Done/i.test(f)) return '5';
+
+        // ── 9.3.1: _blok931_1_DoneV5 OR _blok931_1DoneV5 → 9.3.1(1) ──
+        var m931 = f.match(/^_blok931_(\d+)_?Done/);
         if (m931) return '9.3.1(' + m931[1] + ')';
 
-        // 9.3.2: _blok932_0_DoneV62 → 9.3.2(0)
-        var m932 = f.match(/^_blok932_(\d+)_Done/);
+        // ── 9.3.2: _blok932_0_DoneV62 OR _blok932_7DoneV1 → 9.3.2(0) ──
+        var m932 = f.match(/^_blok932_(\d+)_?Done/);
         if (m932) return '9.3.2(' + m932[1] + ')';
 
-        // 50.x: _blokR50xxDoneV → 50.xx
+        // ── 50.x: _blokR5010DoneV20 → 50.10 ──
         var m50 = f.match(/^_blokR50(\d+)([A-Z]*)Done/i);
-        if (m50) {
-            var sub = m50[1];
-            // _blokR5010DoneV20 → 50.10
-            // _blokR502DoneV1 → 50.2
-            // _blokR5011DoneV → 50.11
-            return '50.' + sub;
-        }
+        if (m50) return '50.' + m50[1];
 
-        // 10.x: _blokR10xxDoneV → 10.xx
+        // ── 10.x: _blokR10xxDoneV → 10.xx ──
         var m10 = f.match(/^_blokR10(\d+)Done/i);
         if (m10) return '10.' + m10[1];
 
-        // _blokMN_DoneV41 → MN
+        // ── MN: _blokMN_DoneV41 → MN ──
         if (f.indexOf('_blokMN_Done') === 0) return 'MN';
 
-        // _gidV6DoneFinal → GID
+        // ── GID: _gidV6DoneFinal OR _gidV5Done → GID ──
         if (f.indexOf('_gidV') === 0) return 'GID';
 
-        // _role32V5Done → ROLE-MANAGER
+        // ── ROLE-MANAGER: _role32V5Done → ROLE-MANAGER ──
         if (f.indexOf('_role32V') === 0 || f.indexOf('_role27V') === 0) {
             return 'ROLE-MANAGER';
         }
 
-        // _kdmpV4Done → KDMP
+        // ── KDMP: _kdmpV5DoneFinal → KDMP ──
         if (f.indexOf('_kdmpV') === 0) return 'KDMP';
 
-        // _fgdDoneV1 → FGD
-        var mFG = f.match(/^_f([a-z]{2,4})Done/i);
+        // ── Special cases (prefix unik) ──
+        if (f.indexOf('_fdUnivV') === 0)       return 'FD-U';
+        if (f.indexOf('_profilUnivV') === 0)   return 'Profil-Universal';
+        if (f.indexOf('_fggifDone') === 0)     return 'FG-GIF';
+        if (f.indexOf('_fhfDone') === 0)       return 'FHF';
+        if (f.indexOf('_fchatuBridgeDone') === 0) return 'FCHATU';
+
+        // ── F-prefix domain umum (FGD, FGV, FSE, FSDU, FKS, ...) ──
+        // 🔴 FIX v2.0.1: 'f' masuk capture group (bukan di-consume luar)
+        //    OLD: /^_f([a-z]{2,4})Done/ → _fgdDone → 'gd' → 'GD' ❌
+        //    NEW: /^_(f[a-z]{2,5})Done/ → _fgdDone → 'fgd' → 'FGD' ✅
+        var mFG = f.match(/^_(f[a-z]{2,5})Done/i);
         if (mFG) {
             var kode = mFG[1].toUpperCase();
-            // Whitelist domain yang umum
-            var knownDomains = ['FGD','FGV','FSE','FSDU','FKS','FSS','FSO',
-                                'FSF','FJS','FDS','FHF','FBA','FKA','FVD',
-                                'FMO','FGKA','FGPA','FGDA','FGBA','FKA'];
+            var knownDomains = [
+                'FGD', 'FGV', 'FSE', 'FSDU', 'FKS', 'FSS', 'FSO',
+                'FSF', 'FJS', 'FDS', 'FHF', 'FBA', 'FKA', 'FVD',
+                'FMO', 'FGKA', 'FGPA', 'FGDA', 'FGBA', 'FVU',
+                'FKMK', 'FPV', 'FKVD'
+            ];
             if (knownDomains.indexOf(kode) !== -1) return kode;
         }
 
-        // _blok01iDoneV4 → 0.1.i (sub-block 0.1)
-        var m01i = f.match(/^_blok01([a-z])DoneV/i);
-        if (m01i) return '0.1.' + m01i[1].toLowerCase();
-
-        // _fchatuBridgeDone → FCHATU
-        if (f.indexOf('_fchatuBridgeDone') === 0) return 'FCHATU';
-
-        // _dummyADone → DUMMY.a
+        // ── DUMMY: _dummyADoneV13 → DUMMY.a ──
         var mDummy = f.match(/^_dummy([A-Z])Done/);
         if (mDummy) return 'DUMMY.' + mDummy[1].toLowerCase();
 
