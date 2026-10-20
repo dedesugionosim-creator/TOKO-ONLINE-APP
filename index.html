@@ -36440,6 +36440,257 @@ setTimeout(function _initBlok01k(isRetry) {
 <!-- ═══ AKHIR BLOK FCHATU-BRIDGE v2.0 ══════════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FCHATU v2.0 — FUNGSI GLOBAL CHAT USER 🇮🇩 ════════ -->
+<!-- ═══ Layer: L4 (Domain Logic — Chat Antara User/Order) ══════ -->
+<!-- ═══ Dependency: CS1—CS3, MN, GID ══════════════════════════ -->
+<!-- ═══ Guard: _fchatuDoneV2 (UTAMA — A32) ════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11—A13, A18, A19, A25, A32—A36 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FCHATU_V2() {
+    // [A32] — GUARD UTAMA
+    if (window._fchatuDoneV2) return;
+    if (!window.csLoadJSON || !window.csSaveJSON || !window.CS_ROLE_MAP) return;
+    
+    window._fchatuDoneV2 = true;
+    window._fchatuVersi  = '2.0';
+
+    // [A18] — Register CS_KEY
+    if (window.CS_KEY) {
+        window.CS_KEY.CHAT_ROOMS     = window.CS_KEY.CHAT_ROOMS     || 'dataChatRooms';
+        window.CS_KEY.CHAT_MESSAGES  = window.CS_KEY.CHAT_MESSAGES  || 'dataChatMessages';
+        window.CS_KEY.CHAT_KONTAK_USR= window.CS_KEY.CHAT_KONTAK_USR|| 'dataChatKontakUser';
+    }
+
+    function _load(key, def) {
+        try {
+            var v = window.csLoadJSON(key, def);
+            if (Array.isArray(def) && !Array.isArray(v)) return def;
+            return v;
+        } catch (e) { return def; }
+    }
+    function _save(key, data) {
+        try { return window.csSaveJSON(key, data, { backup: false }); } catch (e) { return { sukses: false }; }
+    }
+    function _now() { return window.csNow ? window.csNow() : new Date().toISOString(); }
+    
+    function _getKeyRooms() { return (window.CS_KEY && window.CS_KEY.CHAT_ROOMS) ? window.CS_KEY.CHAT_ROOMS : 'dataChatRooms'; }
+    function _getKeyMsgs() { return (window.CS_KEY && window.CS_KEY.CHAT_MESSAGES) ? window.CS_KEY.CHAT_MESSAGES : 'dataChatMessages'; }
+    function _getKeyKontak() { return (window.CS_KEY && window.CS_KEY.CHAT_KONTAK_USR) ? window.CS_KEY.CHAT_KONTAK_USR : 'dataChatKontakUser'; }
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHATU.1] — VALIDASI GEMBOK RELASI
+    // ═══════════════════════════════════════════════════════════
+    window.fchatuCekRelasi = function(idTarget) {
+        try {
+            var idSaya = window.gidIdUser ? window.gidIdUser() : null;
+            if (!idSaya) return { boleh: false, pesan: 'Harus login' };
+            if (idSaya === idTarget) return { boleh: false, pesan: 'Tidak bisa chat dengan diri sendiri' };
+
+            // 1. Cek apakah target adalah CS
+            var targetUser = window.gidGetUserById ? window.gidGetUserById(idTarget) : null;
+            if (targetUser && targetUser.kodeRole === 'CS') {
+                return { boleh: true, tipe: 'cs' };
+            }
+
+            // 2. Cek apakah sudah disimpan di kontak
+            var kontakList = _load(_getKeyKontak(), []);
+            var isSaved = kontakList.some(function(k) { return k.idPemilik === idSaya && k.idKontak === idTarget; });
+            if (isSaved) return { boleh: true, tipe: 'kontak' };
+
+            // 3. Cek apakah ada riwayat pesanan (Order)
+            var orders = _load('dataOrder', []);
+            var adaOrder = orders.some(function(o) {
+                return (o.idPembeli === idSaya && o.idPenjual === idTarget) || 
+                       (o.idPembeli === idTarget && o.idPenjual === idSaya);
+            });
+            if (adaOrder) return { boleh: true, tipe: 'order' };
+
+            // 4. Blokir
+            return { boleh: false, pesan: 'Anda belum memiliki relasi pesanan dengan user ini. Lakukan Checkout atau hubungi CS.' };
+        } catch (e) { return { boleh: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHATU.2] — SIMPAN KONTAK
+    // ═══════════════════════════════════════════════════════════
+    window.fchatuSimpanKontak = function(idTarget) {
+        try {
+            var cek = window.fchatuCekRelasi(idTarget);
+            if (!cek.boleh && cek.tipe !== 'cs') {
+                return { sukses: false, pesan: 'Tidak bisa menyimpan kontak tanpa relasi.' };
+            }
+
+            var idSaya = window.gidIdUser();
+            var kontakList = _load(_getKeyKontak(), []);
+            
+            var sudahAda = kontakList.some(function(k) { return k.idPemilik === idSaya && k.idKontak === idTarget; });
+            if (sudahAda) return { sukses: true, pesan: 'Kontak sudah tersimpan' };
+
+            kontakList.push({ idPemilik: idSaya, idKontak: idTarget, waktu: _now() });
+            _save(_getKeyKontak(), kontakList);
+            return { sukses: true, pesan: 'Kontak berhasil disimpan' };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHATU.3] — BUAT / AMBIL ROOM
+    // ═══════════════════════════════════════════════════════════
+    window.fchatuBuatRoom = function(idTarget, idOrder, tipeRelasi) {
+        try {
+            var idSaya = window.gidIdUser ? window.gidIdUser() : null;
+            if (!idSaya) return { sukses: false, pesan: 'Harus login' };
+
+            var cek = window.fchatuCekRelasi(idTarget);
+            if (!cek.boleh) return { sukses: false, pesan: cek.pesan };
+
+            var rooms = _load(_getKeyRooms(), []);
+            // Cari room yang melibatkan kedua user
+            var existing = rooms.find(function(r) {
+                return (r.idUser1 === idSaya && r.idUser2 === idTarget) || 
+                       (r.idUser1 === idTarget && r.idUser2 === idSaya);
+            });
+
+            if (existing) return { sukses: true, room: existing };
+
+            // Jika belum ada, buat baru (Urutkan ID agar konsisten)
+            var idRoom = 'ROOM-' + (idSaya < idTarget ? idSaya + '-' + idTarget : idTarget + '-' + idSaya);
+            var newRoom = {
+                idRoom: idRoom,
+                idUser1: idSaya,
+                idUser2: idTarget,
+                idOrder: idOrder || null,
+                tipeRelasi: tipeRelasi || cek.tipe,
+                createdAt: _now(),
+                lastUpdate: _now()
+            };
+            rooms.push(newRoom);
+            _save(_getKeyRooms(), rooms);
+            return { sukses: true, room: newRoom };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fchatuGetRooms = function() {
+        try {
+            var idSaya = window.gidIdUser ? window.gidIdUser() : null;
+            if (!idSaya) return [];
+            
+            var rooms = _load(_getKeyRooms(), []);
+            return rooms.filter(function(r) { return r.idUser1 === idSaya || r.idUser2 === idSaya; })
+                        .sort(function(a, b) { return new Date(b.lastUpdate) - new Date(a.lastUpdate); });
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHATU.4] — KIRIM PESAN & MEDIA
+    // ═══════════════════════════════════════════════════════════
+    window.fchatuKirimPesan = function(idRoom, opts) {
+        try {
+            var idSaya = window.gidIdUser ? window.gidIdUser() : null;
+            if (!idSaya) return { sukses: false, pesan: 'Harus login' };
+            if (!opts.teks && !opts.mediaUrl) return { sukses: false, pesan: 'Pesan kosong' };
+
+            var rooms = _load(_getKeyRooms(), []);
+            var roomIdx = rooms.findIndex(function(r) { return r.idRoom === idRoom; });
+            if (roomIdx === -1) return { sukses: false, pesan: 'Room tidak ditemukan' };
+
+            var room = rooms[roomIdx];
+            var idTarget = (room.idUser1 === idSaya) ? room.idUser2 : room.idUser1;
+
+            // Cek Relasi (antisipasi jika room dibuat manual)
+            var cek = window.fchatuCekRelasi(idTarget);
+            if (!cek.boleh && cek.tipe !== 'cs') {
+                return { sukses: false, pesan: 'Relasi terputus. Tidak bisa mengirim pesan.' };
+            }
+
+            var pesanBaru = {
+                id: 'MSG-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                idRoom: idRoom,
+                idPengirim: idSaya,
+                idPenerima: idTarget,
+                tipeMedia: opts.tipeMedia || 'text', // 'text', 'image', 'video', 'doc', 'gif'
+                teks: opts.teks || '',
+                mediaUrl: opts.mediaUrl || '',
+                waktu: _now()
+            };
+
+            // 1. Simpan pesan
+            var msgs = _load(_getKeyMsgs(), []);
+            msgs.push(pesanBaru);
+            _save(_getKeyMsgs(), msgs);
+
+            // 2. Update lastUpdate room
+            rooms[roomIdx].lastUpdate = _now();
+            _save(_getKeyRooms(), rooms);
+
+            // 3. Kirim Event MN (A12/A13)
+            if (typeof window.mnKirimKeMenu === 'function') {
+                window.mnKirimKeMenu({
+                    tipe: 'chat_user_pesan',
+                    dari: { idUser: idSaya, menu: 'FCHATU' },
+                    ke: { menu: 'chat_user', idUserTarget: idTarget },
+                    data: { pesan: pesanBaru },
+                    idRef: pesanBaru.id,
+                    timestamp: _now()
+                });
+            }
+
+            return { sukses: true, data: pesanBaru };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fchatuAmbilRiwayat = function(idRoom) {
+        try {
+            var msgs = _load(_getKeyMsgs(), []);
+            return msgs.filter(function(m) { return m.idRoom === idRoom; })
+                       .sort(function(a, b) { return new Date(a.waktu) - new Date(b.waktu); });
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHATU.5] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFCHATU = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'FCHATU' }, ke: ke || { menu: 'FCHATU' }, data: data || {}, idRef: idRef || null, timestamp: _now() });
+    };
+    window.terimaFCHATU = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FCHATU') : [];
+    };
+    window.ambilFCHATU = function() {
+        return { rooms: window.fchatuGetRooms() };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FCHATU.6] — DEBUG & REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debugFCHATU = function() {
+        var info = {
+            blok: 'FCHATU', versi: window._fchatuVersi, guard: window._fchatuDoneV2,
+            totalRoom: window.fchatuGetRooms().length,
+            cekAturan: { A11_3Pintu: true, A25_DelegasiMN: true, A36_GembokRelasi: true }
+        };
+        console.log('🔍 debugFCHATU v2.0:', info);
+        return info;
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'FCHATU'; });
+                if (!ada) window.cpTambahBlok({ kode: 'FCHATU', nama: 'Chat User & Relasi', layer: 'L4', status: 'Selesai', tanggal: _now().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: _now().substring(0, 10), blok: 'FCHATU', nama: 'Fungsi Global Chat User v2.0', keterangan: 'Gembok Relasi (Order/Simpan Kontak), Chat CS, Kirim Media' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK FCHATU v2.0 — FUNGSI GLOBAL CHAT USER 🇮🇩 ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK FCHAT v1.0 — FUNGSI GLOBAL CHAT SUPERADMIN 🇮🇩 ═══ -->
 <!-- ═══ Layer: L4 (Domain Logic — Komunikasi & Broadcast SA) ══ -->
 <!-- ═══ Dependency: CS1—CS3, MN, GID ══════════════════════════ -->
