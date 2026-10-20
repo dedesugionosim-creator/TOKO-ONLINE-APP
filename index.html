@@ -34825,6 +34825,196 @@ setTimeout(function _initBlok01k(isRetry) {
 <!-- ═══ AKHIR BLOK FSF v1.2 — FUNGSI GLOBAL DASBOR DEVFIN 🇮🇩 ══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FJS v1.0 — FUNGSI GLOBAL DASBOR JASA 🇮🇩 ═════════ -->
+<!-- ═══ Layer: L4 (Domain Logic — Katalog Jasa & Checkout) ════ -->
+<!-- ═══ Dependency: CS1, CS2, CS3, CS11, GID, MN, FGD ═════════ -->
+<!-- ═══ Guard: _fjsDoneV1 (UTAMA — A32) ═══════════════════════ -->
+<!-- ═══ Aturan: A1, A2, A3, A5, A11—A13, A18, A19, A25, A29—A34 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FJS_V1() {
+    if (window._fjsDoneV1) return;
+    if (!window.CS_ROLE_MAP || !window.csLoadJSON || !window.csSaveJSON) return;
+
+    window._fjsDoneV1 = true;
+    window._fjsVersi  = '1.0';
+
+    if (window.CS_KEY) {
+        window.CS_KEY.KERANJANG_JASA_PREFIX = window.CS_KEY.KERANJANG_JASA_PREFIX || 'dataKeranjangJasa_';
+    }
+
+    function _load(key, def) {
+        try {
+            var v = window.csLoadJSON(key, def);
+            if (Array.isArray(def) && !Array.isArray(v)) return def;
+            return v;
+        } catch (e) { return def; }
+    }
+    function _save(key, data) { try { return window.csSaveJSON(key, data, { backup: false }); } catch (e) { return { sukses: false }; } }
+    function _getKeranjangKey() {
+        var prefix = (window.CS_KEY && window.CS_KEY.KERANJANG_JASA_PREFIX) ? window.CS_KEY.KERANJANG_JASA_PREFIX : 'dataKeranjangJasa_';
+        var idUser = window.gidIdUser ? window.gidIdUser() : 'GUEST';
+        return prefix + idUser;
+    }
+    function _now() { return window.csNow ? window.csNow() : new Date().toISOString(); }
+
+    var ROLE_JASA = ['JS'];
+    window.FJS_ROLE_JASA = ROLE_JASA.slice();
+
+    function _isRoleJasaValid(kodeRole) {
+        if (!kodeRole) return false;
+        if (ROLE_JASA.indexOf(kodeRole) === -1) return false;
+        return !!(window.CS_ROLE_MAP && window.CS_ROLE_MAP[kodeRole]);
+    }
+
+    window.fjsGetDaftarJasa = function(filter) {
+        filter = filter || {};
+        try {
+            var users = _load('dataLoginUser', []);
+            var list = users.filter(function(u) {
+                if (!u || !u.kodeRole) return false;
+                if (!_isRoleJasaValid(u.kodeRole)) return false;
+                var st = u.status || u.statusVerifikasi || 'Aktif';
+                return st === 'Aktif';
+            });
+            if (filter.cari) {
+                var q = String(filter.cari).toLowerCase();
+                list = list.filter(function(u) { return String(u.nama || u.namaLengkap || '').toLowerCase().indexOf(q) !== -1; });
+            }
+            return list.map(function(u) {
+                var profil = _load('profil_' + u.idUser, {});
+                return {
+                    idUser: u.idUser || u.id,
+                    namaToko: profil.namaToko || u.nama || u.namaLengkap || 'Jasa Servis',
+                    kodeRole: u.kodeRole,
+                    wilayah: u.alamat || 'Indonesia',
+                    fotoUrl: profil.fotoUrl || u.fotoUrl || '',
+                    rating: profil.rating || 5.0
+                };
+            });
+        } catch (e) { return []; }
+    };
+
+    window.fjsGetLayananJasa = function(idJasa) {
+        try {
+            if (!idJasa) return [];
+            var produk = _load('dataProduk', []);
+            return produk.filter(function(p) { return p && (p.idOwner === idJasa || p.idUser === idJasa); });
+        } catch (e) { return []; }
+    };
+
+    window.fjsCekJasaValid = function(idUser) {
+        try {
+            if (!idUser) return { valid: false, pesan: 'ID kosong' };
+            var users = _load('dataLoginUser', []);
+            var u = users.find(function(x) { return x && (x.idUser === idUser || x.id === idUser); });
+            if (!u) return { valid: false, pesan: 'User tidak ditemukan' };
+            if (!_isRoleJasaValid(u.kodeRole)) return { valid: false, pesan: 'Role bukan Jasa' };
+            var st = u.status || u.statusVerifikasi || 'Aktif';
+            if (st !== 'Aktif') return { valid: false, pesan: 'Jasa tidak aktif' };
+            return { valid: true, data: u };
+        } catch (e) { return { valid: false, pesan: e.message }; }
+    };
+
+    window.fjsGetKeranjang = function() {
+        try { var cart = _load(_getKeranjangKey(), []); return Array.isArray(cart) ? cart : []; } catch (e) { return []; }
+    };
+
+    window.fjsTambahKeranjang = function(idProduk, qty) {
+        try {
+            if (!idProduk) return { sukses: false, pesan: 'ID kosong' };
+            var n = parseInt(qty, 10) || 1;
+            var produk = _load('dataProduk', []);
+            var prod = produk.find(function(p) { return p && (p.id === idProduk || p.idProduk === idProduk); });
+            if (!prod) return { sukses: false, pesan: 'Layanan tidak ditemukan' };
+
+            var idOwner = prod.idOwner || prod.idUser;
+            var cek = window.fjsCekJasaValid(idOwner);
+            if (!cek.valid) return { sukses: false, pesan: cek.pesan };
+
+            var cart = window.fjsGetKeranjang();
+            var existing = cart.find(function(c) { return c.idProduk === idProduk; });
+
+            if (existing) {
+                existing.qty += n;
+                existing.subtotal = existing.qty * existing.harga;
+            } else {
+                cart.push({ idProduk: idProduk, idJasa: idOwner, nama: prod.nama || prod.namaProduk || '-', harga: parseFloat(prod.harga) || 0, qty: n, subtotal: (parseFloat(prod.harga) || 0) * n });
+            }
+            var r = _save(_getKeranjangKey(), cart);
+            return { sukses: r.sukses, cart: cart };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fjsHapusItemKeranjang = function(idProduk) {
+        try {
+            var cart = window.fjsGetKeranjang().filter(function(c) { return c.idProduk !== idProduk; });
+            var r = _save(_getKeranjangKey(), cart);
+            return { sukses: r.sukses, cart: cart };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fjsKosongkanKeranjang = function() {
+        try { var r = _save(_getKeranjangKey(), []); return { sukses: r.sukses }; } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fjsCheckoutKeChat = function(idJasa, metode) {
+        try {
+            if (!idJasa) return { sukses: false, pesan: 'ID jasa kosong' };
+            var cekJasa = window.fjsCekJasaValid(idJasa);
+            if (!cekJasa.valid) return { sukses: false, pesan: 'Jasa tidak valid: ' + cekJasa.pesan };
+
+            var cart = window.fjsGetKeranjang().filter(function(c) { return c.idJasa === idJasa; });
+            if (cart.length === 0) return { sukses: false, pesan: 'Keranjang kosong' };
+            var total = cart.reduce(function(s, i) { return s + (i.subtotal || 0); }, 0);
+
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum terpasang' };
+
+            var paketPesan = {
+                tipe: 'order_jasa',
+                dari: { idUser: window.gidIdUser ? window.gidIdUser() : null, kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null, menu: 'FJS' },
+                ke: { menu: 'chat_seller', idUserTarget: idJasa, kodeRoleTarget: cekJasa.data.kodeRole },
+                data: { idJasa: idJasa, items: cart, total: total, metode: metode || 'Transfer' },
+                idRef: 'ORDER-' + Date.now(),
+                timestamp: _now()
+            };
+
+            window.mnKirimKeMenu(paketPesan);
+            var newCart = window.fjsGetKeranjang().filter(function(c) { return c.idJasa !== idJasa; });
+            _save(_getKeranjangKey(), newCart);
+
+            return { sukses: true, pesan: 'Pesanan dikirim ke Penyedia Jasa', idRef: paketPesan.idRef };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.kirimFJS = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'FJS' }, ke: ke, data: data, idRef: idRef, timestamp: _now() });
+    };
+    window.terimaFJS = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FJS') : [];
+    };
+    window.ambilFJS = function(filter) {
+        var daftarJasa = window.fjsGetDaftarJasa(filter || {});
+        var keranjang = window.fjsGetKeranjang();
+        return { totalJasa: daftarJasa.length, daftarJasa: daftarJasa, totalKeranjang: keranjang.length, keranjang: keranjang };
+    };
+
+    window.debugFJS = function() {
+        var info = {
+            blok: 'FJS', versi: window._fjsVersi, guard: window._fjsDoneV1, roleJasa: ROLE_JASA,
+            cekAturan: { A11_3Pintu: typeof window.kirimFJS === 'function' && typeof window.terimaFJS === 'function' && typeof window.ambilFJS === 'function' }
+        };
+        console.log('🔍 debugFJS v1.0:', info);
+        return info;
+    };
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK FJS v1.0 — FUNGSI GLOBAL DASBOR JASA 🇮🇩 ═══ -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK 2 — LOGIN 🇮🇩 v4.0 FINAL ═════════════════════════ -->
 <!-- ═══ Layer: L5 (Halaman Publik) ════════════════════════════ -->
 <!-- ═══ Dependency: CS8 v4.1 (prosesLogin) · CS6 (tampilkanHalaman) -->
@@ -42426,6 +42616,391 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 })();
 </script>
 <!-- ═══ AKHIR BLOK R 10.28 — DASBOR DEV/DEALER/FIN SA (JS) 🇮🇩 ═ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.29 — DASBOR JASA SA (HTML) 🇮🇩 v1.0 ═════════ -->
+<!-- ═══ Layer: L5 (Blok UI — Katalog Jasa & Checkout) ═════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="dasborJasaContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+        <!-- [10.29.H2] HEADER -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0"><i class="fas fa-tools me-2"></i>Dasbor Jasa Servis</h4>
+                <small class="text-white-50"><i class="fas fa-info-circle me-1"></i>Akses cepat untuk melihat daftar Penyedia Jasa Servis.</small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-light btn-sm" id="fjsBtnKembali" onclick="fjsKembaliKeDaftarJasa()" style="display:none;"><i class="fas fa-arrow-left me-1"></i> Kembali</button>
+                <button class="btn btn-outline-light btn-sm" onclick="if(typeof kembaliKeDasbor==='function')kembaliKeDasbor();"><i class="fas fa-home me-1"></i> Dasbor Utama</button>
+            </div>
+        </div>
+
+        <!-- [10.29.H3] VIEW 1: DAFTAR JASA -->
+        <div id="fjsViewDaftarJasa">
+            <div class="row g-3" id="fjsGridJasa"></div>
+            <div id="fjsEmptyJasa" class="text-center py-5 text-white-50" style="display:none;">
+                <i class="fas fa-tools fa-3x mb-3 opacity-50"></i><p>Belum ada Penyedia Jasa Servis yang aktif.</p>
+            </div>
+        </div>
+
+        <!-- [10.29.H4] VIEW 2: DETAIL JASA -->
+        <div id="fjsViewDetailJasa" style="display:none;">
+            <div class="card border-0 shadow mb-3">
+                <div class="card-body p-3 d-flex align-items-center gap-3">
+                    <div id="fjsDetailFoto" class="bg-white rounded-circle shadow-sm d-flex align-items-center justify-content-center" style="width:70px;height:70px;font-size:1.5rem;color:#FF9800;"><i class="fas fa-tools"></i></div>
+                    <div class="flex-grow-1">
+                        <h5 class="fw-bold mb-1 text-dark" id="fjsDetailNama">Nama Jasa</h5>
+                        <div class="small text-muted" id="fjsDetailWilayah">Wilayah</div>
+                        <div class="small text-warning"><i class="fas fa-star"></i> <span id="fjsDetailRating">5.0</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-2 mb-4">
+                <div class="col-md-4"><button class="btn btn-outline-light w-100 py-2 fw-bold" onclick="fjsAksiBukaChatJasa()"><i class="fas fa-comments me-1"></i> Chat Jasa</button></div>
+                <div class="col-md-4"><button class="btn btn-outline-light w-100 py-2 fw-bold" onclick="fjsAksiBukaChatOjek()"><i class="fas fa-motorcycle me-1"></i> Panggil Ojek</button></div>
+                <div class="col-md-4"><button class="btn btn-warning w-100 py-2 fw-bold" onclick="fjsBukaModalKeranjang()"><i class="fas fa-shopping-cart me-1"></i> Keranjang (<span id="fjsCartCountDetail">0</span>)</button></div>
+            </div>
+            <h6 class="text-white fw-bold mb-3"><i class="fas fa-list me-2"></i>Katalog Layanan</h6>
+            <div class="row g-3" id="fjsGridLayanan"></div>
+            <div id="fjsEmptyLayanan" class="text-center py-4 text-white-50" style="display:none;"><i class="fas fa-box-open fa-3x mb-3 opacity-50"></i><p>Penyedia jasa ini belum menambahkan layanan.</p></div>
+        </div>
+    </div>
+
+    <!-- [10.29.H5] FLOATING CART -->
+    <div id="fjsFloatingCart" class="position-fixed bottom-0 end-0 m-4 shadow-lg" style="z-index:1000;display:none;">
+        <button class="btn btn-warning btn-lg rounded-circle fw-bold position-relative p-3 shadow" onclick="fjsBukaModalKeranjang()" style="width:65px;height:65px;">
+            <i class="fas fa-shopping-cart fa-lg" style="color:#000;"></i>
+            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="fjsCartCount" style="font-size:0.8rem;">0</span>
+        </button>
+    </div>
+</div>
+
+<!-- [10.29.H6] MODAL KERANJANG -->
+<div class="modal fade" id="fjsModalKeranjang" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#FF9800;">
+                <h5 class="modal-title"><i class="fas fa-shopping-cart me-2"></i>Keranjang Layanan</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-0">
+                <ul class="list-group list-group-flush" id="fjsListKeranjang"></ul>
+                <div id="fjsEmptyKeranjang" class="text-center py-5 text-muted" style="display:none;"><i class="fas fa-box-open fa-3x mb-3 opacity-25"></i><p>Keranjang masih kosong.</p></div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between bg-light">
+                <div><small class="text-muted d-block">Total</small><h4 class="fw-bold mb-0 text-danger" id="fjsTotalKeranjang">Rp 0</h4></div>
+                <button type="button" class="btn btn-success fw-bold px-4" onclick="fjsBukaModalTransaksi()"><i class="fas fa-arrow-right me-1"></i> Checkout</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- [10.29.H7] MODAL TRANSAKSI -->
+<div class="modal fade" id="fjsModalTransaksi" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title"><i class="fas fa-truck me-2"></i>Pilih Metode Transaksi</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-3">Pesanan akan dikirim ke Chat Penyedia Jasa.</p>
+                <div class="d-grid gap-2">
+                    <button class="btn btn-outline-primary text-start p-3" onclick="fjsProsesCheckout('Transfer')"><i class="fas fa-university me-2 fa-lg"></i> <strong>Transfer Bank</strong></button>
+                    <button class="btn btn-outline-success text-start p-3" onclick="fjsProsesCheckout('COD')"><i class="fas fa-money-bill-wave me-2 fa-lg"></i> <strong>COD (Bayar di Tempat)</strong></button>
+                    <button class="btn btn-outline-warning text-start p-3" onclick="fjsProsesCheckout('Ojek')"><i class="fas fa-motorcycle me-2 fa-lg"></i> <strong>Jasa Antar (Ojek)</strong></button>
+                    <button class="btn btn-outline-secondary text-start p-3" onclick="fjsProsesCheckout('Ambil Sendiri')"><i class="fas fa-walking me-2 fa-lg"></i> <strong>Ambil Sendiri</strong></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══ AKHIR BLOK FJS v1.0 — FUNGSI GLOBAL DASBOR HTML 🇮🇩 ═══ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.29 — DASBOR JASA SA (JS) 🇮🇩 v1.0 ═══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_10_29_DASBOR_JASA_V1() {
+    if (window._blokR1029DoneV1) return;
+    if (!window._fjsDoneV1) { console.warn('⚠️ BLOK R 10.29: FJS belum terpasang.'); return; }
+    
+    window._blokR1029DoneV1 = true;
+    window._blokR1029Versi   = '1.0';
+    var fjsState = { idJasa: null };
+
+    function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function _rupiah(n) { if (window.csFormatRp) return window.csFormatRp(n); return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID'); }
+    function _toast(msg, tipe) { if (window.csToast) window.csToast(msg, tipe); }
+    function _now() { return window.csNow ? window.csNow() : new Date().toISOString(); }
+
+    window.tampilkanDasborJasa = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!window.kontenAsliDasbor) window.kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplDasborJasa) {
+                var c = document.getElementById('dasborJasaContainer');
+                if (!c) return;
+                window._tplDasborJasa = c.innerHTML;
+                c.remove();
+            }
+            konten.innerHTML = window._tplDasborJasa;
+            fjsState.idJasa = null;
+            fjsRenderDaftarJasa();
+            fjsUpdateCartBadge();
+        } catch (e) {}
+    };
+
+    function fjsRenderDaftarJasa() {
+        var elDaftar = document.getElementById('fjsViewDaftarJasa');
+        var elDetail = document.getElementById('fjsViewDetailJasa');
+        var elBtn    = document.getElementById('fjsBtnKembali');
+        if (elDaftar) elDaftar.style.display = 'block';
+        if (elDetail) elDetail.style.display = 'none';
+        if (elBtn)    elBtn.style.display    = 'none';
+
+        var grid  = document.getElementById('fjsGridJasa');
+        var empty = document.getElementById('fjsEmptyJasa');
+        if (!grid) return;
+        grid.innerHTML = '';
+
+        var listJasa = window.fjsGetDaftarJasa({});
+        if (listJasa.length === 0) { if (empty) empty.style.display = 'block'; return; }
+        if (empty) empty.style.display = 'none';
+
+        var html = '';
+        listJasa.forEach(function(s) {
+            var fotoHtml = s.fotoUrl ? '<img src="' + _esc(s.fotoUrl) + '" class="rounded-circle mb-3" style="width:80px;height:80px;object-fit:cover;">' : '<div class="rounded-circle mb-3 d-inline-flex align-items-center justify-content-center" style="width:80px;height:80px;background:#FFF3E0;color:#FF9800;font-size:2rem;"><i class="fas fa-tools"></i></div>';
+            html += '<div class="col-md-6 col-lg-4 col-xl-3"><div class="card border-0 shadow-sm h-100 text-center card-hover-effect" style="border-radius:16px;"><div class="card-body p-4">' +
+                fotoHtml +
+                '<h6 class="fw-bold mb-1 text-dark">' + _esc(s.namaToko) + '</h6>' +
+                '<div class="small text-muted mb-2"><i class="fas fa-map-marker-alt me-1"></i>' + _esc(s.wilayah) + '</div>' +
+                '<div class="text-warning small mb-3"><i class="fas fa-star"></i> ' + _esc(s.rating) + '</div>' +
+                '<button class="btn btn-outline-warning w-100 fw-bold" onclick="fjsBukaDetailJasa(\'' + _esc(s.idUser) + '\')"><i class="fas fa-eye me-1"></i> Lihat Layanan</button>' +
+            '</div></div></div>';
+        });
+        grid.innerHTML = html;
+    }
+
+    window.fjsBukaDetailJasa = function(idJasa) {
+        try {
+            if (!idJasa) return;
+            var cek = window.fjsCekJasaValid(idJasa);
+            if (!cek.valid) { _toast('⚠️ ' + cek.pesan, 'warning'); return; }
+            fjsState.idJasa = idJasa;
+
+            var elDaftar = document.getElementById('fjsViewDaftarJasa');
+            var elDetail = document.getElementById('fjsViewDetailJasa');
+            var elBtn    = document.getElementById('fjsBtnKembali');
+            if (elDaftar) elDaftar.style.display = 'none';
+            if (elDetail) elDetail.style.display = 'block';
+            if (elBtn)    elBtn.style.display    = 'inline-block';
+
+            var listJasa = window.fjsGetDaftarJasa({});
+            var jasa = listJasa.find(function(k) { return k.idUser === idJasa; });
+            if (jasa) {
+                var elNama = document.getElementById('fjsDetailNama');
+                var elWil = document.getElementById('fjsDetailWilayah');
+                var elRate = document.getElementById('fjsDetailRating');
+                var elFoto = document.getElementById('fjsDetailFoto');
+                if (elNama) elNama.textContent = jasa.namaToko;
+                if (elWil) elWil.textContent = jasa.wilayah;
+                if (elRate) elRate.textContent = jasa.rating;
+                if (elFoto && jasa.fotoUrl) elFoto.innerHTML = '<img src="' + _esc(jasa.fotoUrl) + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">';
+            }
+            fjsRenderLayananJasa(idJasa);
+        } catch (e) {}
+    };
+
+    function fjsRenderLayananJasa(idJasa) {
+        var grid  = document.getElementById('fjsGridLayanan');
+        var empty = document.getElementById('fjsEmptyLayanan');
+        if (!grid) return;
+        grid.innerHTML = '';
+
+        var listLayanan = window.fjsGetLayananJasa(idJasa);
+        if (listLayanan.length === 0) { if (empty) empty.style.display = 'block'; return; }
+        if (empty) empty.style.display = 'none';
+
+        var html = '';
+        listLayanan.forEach(function(p) {
+            var fotoHtml = p.fotoUrl ? '<img src="' + _esc(p.fotoUrl) + '" class="card-img-top" style="height:150px;object-fit:cover;">' : '<div class="bg-light d-flex align-items-center justify-content-center" style="height:150px;color:#CCC;font-size:3rem;"><i class="fas fa-tools"></i></div>';
+            html += '<div class="col-md-4 col-6"><div class="card border-0 shadow-sm h-100" style="border-radius:12px;overflow:hidden;">' +
+                fotoHtml +
+                '<div class="card-body p-2 d-flex flex-column">' +
+                    '<h6 class="fw-bold text-dark text-truncate mb-1" style="font-size:13px;">' + _esc(p.nama || p.namaProduk || '-') + '</h6>' +
+                    '<div class="text-danger fw-bold small mb-2">' + _rupiah(p.harga) + '</div>' +
+                    '<div class="mt-auto"><button class="btn btn-sm btn-warning w-100 fw-bold" onclick="fjsAksiTambahKeranjang(\'' + _esc(p.id || p.idProduk) + '\')"><i class="fas fa-cart-plus"></i> Pesan</button></div>' +
+                '</div></div></div>';
+        });
+        grid.innerHTML = html;
+    }
+
+    window.fjsKembaliKeDaftarJasa = function() {
+        fjsState.idJasa = null;
+        fjsRenderDaftarJasa();
+    };
+
+    window.fjsAksiTambahKeranjang = function(idProduk) {
+        var res = window.fjsTambahKeranjang(idProduk, 1);
+        if (res.sukses) { _toast('✅ Layanan masuk keranjang', 'success'); fjsUpdateCartBadge(); }
+        else { _toast('❌ ' + (res.pesan || 'Gagal'), 'danger'); }
+    };
+
+    window.fjsUpdateCartBadge = function() {
+        var cart = window.fjsGetKeranjang();
+        var totalQty = cart.reduce(function(sum, item) { return sum + (item.qty || 0); }, 0);
+        var badge = document.getElementById('fjsCartCount');
+        var floatingBtn = document.getElementById('fjsFloatingCart');
+        if (badge) badge.textContent = totalQty;
+        if (floatingBtn) floatingBtn.style.display = totalQty > 0 ? 'block' : 'none';
+        var badgeDetail = document.getElementById('fjsCartCountDetail');
+        if (badgeDetail) badgeDetail.textContent = totalQty;
+    };
+
+    window.fjsBukaModalKeranjang = function() {
+        var cart = window.fjsGetKeranjang();
+        var listEl = document.getElementById('fjsListKeranjang');
+        var emptyEl = document.getElementById('fjsEmptyKeranjang');
+        if (!listEl) return;
+        listEl.innerHTML = '';
+
+        if (cart.length === 0) {
+            if (emptyEl) emptyEl.style.display = 'block';
+            var totEl = document.getElementById('fjsTotalKeranjang');
+            if (totEl) totEl.textContent = 'Rp 0';
+        } else {
+            if (emptyEl) emptyEl.style.display = 'none';
+            var total = 0;
+            var html = '';
+            cart.forEach(function(item) {
+                total += item.subtotal || 0;
+                html += '<li class="list-group-item d-flex justify-content-between align-items-center p-3"><div><h6 class="fw-bold mb-1 text-dark">' + _esc(item.nama) + '</h6><div class="small text-muted">' + _rupiah(item.harga) + ' × ' + item.qty + '</div></div><div class="text-end"><div class="fw-bold text-danger mb-1">' + _rupiah(item.subtotal) + '</div><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="fjsAksiHapusItem(\'' + _esc(item.idProduk) + '\')"><i class="fas fa-trash"></i></button></div></li>';
+            });
+            listEl.innerHTML = html;
+            var totalEl = document.getElementById('fjsTotalKeranjang');
+            if (totalEl) totalEl.textContent = _rupiah(total);
+        }
+        var modalEl = document.getElementById('fjsModalKeranjang');
+        if (modalEl && typeof bootstrap !== 'undefined') bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    };
+
+    window.fjsAksiHapusItem = function(idProduk) {
+        var res = window.fjsHapusItemKeranjang(idProduk);
+        if (res.sukses) { fjsUpdateCartBadge(); fjsBukaModalKeranjang(); }
+    };
+
+    window.fjsBukaModalTransaksi = function() {
+        var mCart = document.getElementById('fjsModalKeranjang');
+        if (mCart && typeof bootstrap !== 'undefined') {
+            var inst = bootstrap.Modal.getInstance(mCart);
+            if (inst) inst.hide();
+        }
+        setTimeout(function() {
+            var modalEl = document.getElementById('fjsModalTransaksi');
+            if (modalEl && typeof bootstrap !== 'undefined') bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        }, 300);
+    };
+
+    window.fjsProsesCheckout = function(metode) {
+        try {
+            if (!fjsState.idJasa) { _toast('⚠️ Jasa belum dipilih', 'warning'); return; }
+            var res = window.fjsCheckoutKeChat(fjsState.idJasa, metode);
+            if (!res.sukses) { _toast('❌ ' + (res.pesan || 'Gagal checkout'), 'danger'); return; }
+
+            var modalEl = document.getElementById('fjsModalTransaksi');
+            if (modalEl && typeof bootstrap !== 'undefined') {
+                var inst = bootstrap.Modal.getInstance(modalEl);
+                if (inst) inst.hide();
+            }
+            _toast('✅ Pesanan (' + metode + ') terkirim ke Jasa', 'success');
+            fjsUpdateCartBadge();
+            setTimeout(function() { fjsAksiBukaChatJasa(); }, 1500);
+        } catch (e) {}
+    };
+
+    window.fjsAksiBukaChatJasa = function() {
+        try {
+            if (!fjsState.idJasa) return;
+            if (typeof window.mnKirimKeMenu !== 'function') return;
+
+            var paket = {
+                tipe: 'buka_chat_jasa',
+                dari: { idUser: window.gidIdUser ? window.gidIdUser() : null, idOwner: window.gidIdOwner ? window.gidIdOwner() : null, kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null, menu: 'DasborJasa' },
+                ke: { menu: 'chat_seller', idUserTarget: fjsState.idJasa, kodeRoleTarget: 'JS' },
+                data: { idJasa: fjsState.idJasa, aksi: 'buka_chat' },
+                idRef: 'CHAT-' + Date.now(), timestamp: _now()
+            };
+            window.mnKirimKeMenu(paket);
+            if (window.menuHandlers && typeof window.menuHandlers['chatSeller'] === 'function') {
+                window.menuHandlers['chatSeller'](paket.data);
+            }
+        } catch (e) {}
+    };
+
+    window.fjsAksiBukaChatOjek = function() {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return;
+            var paket = {
+                tipe: 'buka_chat_ojek',
+                dari: { idUser: window.gidIdUser ? window.gidIdUser() : null, idOwner: window.gidIdOwner ? window.gidIdOwner() : null, kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null, menu: 'DasborJasa' },
+                ke: { menu: 'chat_ojek', kodeRoleTarget: 'OJ' },
+                data: { aksi: 'panggil_ojek', idJasaKonteks: fjsState.idJasa },
+                idRef: 'OJEK-' + Date.now(), timestamp: _now()
+            };
+            window.mnKirimKeMenu(paket);
+            if (window.menuHandlers && typeof window.menuHandlers['chatOjek'] === 'function') {
+                window.menuHandlers['chatOjek'](paket.data);
+            }
+        } catch (e) {}
+    };
+
+    window.kirimDasborJasa = function(tipe, ke, data, idRef) {
+        if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum terpasang' };
+        return window.mnKirimKeMenu({ tipe: tipe || 'pesan', dari: { menu: 'DasborJasa' }, ke: ke || { menu: 'DasborJasa' }, data: data || {}, idRef: idRef || null, timestamp: _now() });
+    };
+    window.terimaDasborJasa = function(aksiMenu) {
+        return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'DasborJasa') : [];
+    };
+    window.ambilDasborJasa = function(filter) {
+        var daftarJasa = window.fjsGetDaftarJasa(filter || {});
+        var keranjang = window.fjsGetKeranjang();
+        return { totalJasa: daftarJasa.length, daftarJasa: daftarJasa, totalKeranjang: keranjang.length, keranjang: keranjang, idJasaAktif: fjsState.idJasa || null };
+    };
+
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['dasborJasa'] = function() { return window.tampilkanDasborJasa(); };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '10.29'; });
+                if (!ada) window.cpTambahBlok({ kode: '10.29', nama: 'Dasbor Jasa v1.0', layer: 'L5', status: 'Selesai', tanggal: _now().substring(0, 10) });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                window.cpTambahRiwayat({ tanggal: _now().substring(0, 10), blok: '10.29', nama: 'Dasbor Jasa v1.0', keterangan: 'Sesuai aturan A11, A14, A25' });
+            }
+        } catch (e) {}
+    }, 1000);
+
+    window.debugDasborJasa = function() {
+        var info = {
+            blok: '10.29', versi: window._blokR1029Versi, guard: window._blokR1029DoneV1,
+            cekA11: typeof window.kirimDasborJasa === 'function' && typeof window.terimaDasborJasa === 'function' && typeof window.ambilDasborJasa === 'function',
+            cekA14: true, cekA25: true
+        };
+        console.log('🔍 debugDasborJasa v1.0:', info);
+        return info;
+    };
+
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.29 — DASBOR JASA SA 🇮🇩 v1.0 ═════════ -->
+
+
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ SISTEM LOGO APP (UPLOAD & SIMPAN) ═════════════════════ -->
