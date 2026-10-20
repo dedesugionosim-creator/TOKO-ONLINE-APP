@@ -33423,6 +33423,244 @@ setTimeout(function _initBlok01k(isRetry) {
 </script>
 <!-- ═══ AKHIR BLOK FKS v1.0 — FUNGSI GLOBAL KOPDES SELLER 🇮🇩 ═══ -->
 
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK FSS v1.0 — FUNGSI GLOBAL SELLER 🇮🇩 ═══════════════ -->
+<!-- ═══ Layer: L4 (Domain Logic — Katalog Seller & Checkout) ═══ -->
+<!-- ═══ Dependency: CS1, CS2, CS11, FGD, FMO, MN ═════════════ -->
+<!-- ═══ Guard: _fssDoneV1 (UTAMA — A32) ═══════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_FSS_V1() {
+    // [A32] — GUARD
+    if (window._fssDoneV1) return;
+    if (!window.CS_ROLE_MAP || !window.gidIdUser) return;
+    window._fssDoneV1 = true;
+    window._fssVersi  = '1.0';
+
+    // Daftar Role Seller yang dilayani
+    var ROLE_SELLER = ['TK', 'PP', 'PM', 'COD', 'OJ', 'GR', 'DST', 'DP', 'DLR', 'JS', 'FIN'];
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSS.1] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _load(key, def) {
+        if (typeof window.csLoadJSON === 'function') return window.csLoadJSON(key, def);
+        try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch (e) { return def; }
+    }
+    function _save(key, data) {
+        if (typeof window.csSaveJSON === 'function') return window.csSaveJSON(key, data, { backup: false });
+        try { localStorage.setItem(key, JSON.stringify(data)); return { sukses: true }; } catch (e) { return { sukses: false }; }
+    }
+    
+    function _getKeranjangKey() {
+        var idUser = window.gidIdUser ? window.gidIdUser() : 'GUEST';
+        return 'dataKeranjangSeller_' + idUser;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSS.2] — KATALOG & PROFIL SELLER
+    // ═══════════════════════════════════════════════════════════
+    window.fssGetDaftarSeller = function(filter) {
+        try {
+            filter = filter || {};
+            var users = _load('dataLoginUser', []) || [];
+            
+            var listSeller = users.filter(function(u) { 
+                return u && ROLE_SELLER.indexOf(u.kodeRole) !== -1 && 
+                       (u.status === 'Aktif' || u.statusVerifikasi === 'Aktif'); 
+            });
+
+            if (filter.kodeRole) {
+                listSeller = listSeller.filter(function(u) { return u.kodeRole === filter.kodeRole; });
+            }
+            if (filter.cari) {
+                var q = filter.cari.toLowerCase();
+                listSeller = listSeller.filter(function(u) { 
+                    return (u.nama || '').toLowerCase().indexOf(q) !== -1; 
+                });
+            }
+            
+            return listSeller.map(function(u) {
+                var profil = _load('profil_' + u.idUser, {});
+                return {
+                    idUser: u.idUser,
+                    namaToko: profil.namaToko || u.nama || 'Seller',
+                    kodeRole: u.kodeRole,
+                    wilayah: u.alamat || 'Indonesia',
+                    fotoUrl: profil.fotoUrl || u.fotoUrl || '',
+                    rating: profil.rating || 5.0
+                };
+            });
+        } catch (e) { return []; }
+    };
+
+    window.fssGetProdukSeller = function(idSeller) {
+        try {
+            if (!idSeller) return [];
+            var produk = _load('dataProduk', []) || [];
+            return produk.filter(function(p) { return p.idOwner === idSeller; });
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSS.3] — MANAJEMEN KERANJANG
+    // ═══════════════════════════════════════════════════════════
+    window.fssGetKeranjang = function() {
+        return _load(_getKeranjangKey(), []);
+    };
+
+    window.fssTambahKeranjang = function(idProduk, qty) {
+        try {
+            var produkList = _load('dataProduk', []) || [];
+            var prod = produkList.find(function(p) { return p.id === idProduk || p.idProduk === idProduk; });
+            if (!prod) return { sukses: false, pesan: 'Produk tidak ditemukan' };
+
+            var cart = window.fssGetKeranjang();
+            var existing = cart.find(function(c) { return c.idProduk === idProduk; });
+
+            if (existing) {
+                existing.qty += (qty || 1);
+                existing.subtotal = existing.qty * existing.harga;
+            } else {
+                cart.push({
+                    idProduk: idProduk,
+                    idSeller: prod.idOwner,
+                    nama: prod.nama || prod.namaProduk,
+                    harga: parseFloat(prod.harga) || 0,
+                    qty: qty || 1,
+                    subtotal: (parseFloat(prod.harga) || 0) * (qty || 1)
+                });
+            }
+            _save(_getKeranjangKey(), cart);
+            return { sukses: true, cart: cart };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.fssKosongkanKeranjang = function() {
+        _save(_getKeranjangKey(), []);
+        return { sukses: true };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSS.4] — CHECKOUT KE CHAT KASIR
+    // ═══════════════════════════════════════════════════════════
+    window.fssCheckoutKeChat = function(idSeller, metode) {
+        try {
+            var cart = window.fssGetKeranjang().filter(function(c) { return c.idSeller === idSeller; });
+            if (cart.length === 0) return { sukses: false, pesan: 'Keranjang kosong' };
+
+            var total = cart.reduce(function(sum, item) { return sum + item.subtotal; }, 0);
+            
+            // Cari Kasir dari Seller tersebut
+            var users = _load('dataLoginUser', []) || [];
+            
+            // Tentukan role kasir berdasarkan role seller
+            var sellerInfo = users.find(function(u) { return u.idUser === idSeller; });
+            var kodeRoleKasir = 'KSR_' + (sellerInfo ? sellerInfo.kodeRole : 'TK');
+            
+            // Cari user dengan role kasir tersebut yang terikat ke idSeller
+            var kasir = users.find(function(u) { 
+                return u.kodeRole === kodeRoleKasir && (u.idOwner === idSeller || u.idInduk === idSeller); 
+            });
+
+            // Jika tidak ada kasir, arahkan langsung ke Owner (Seller)
+            var targetChat = kasir ? kasir.idUser : idSeller;
+            var targetRole = kasir ? kodeRoleKasir : (sellerInfo ? sellerInfo.kodeRole : 'TK');
+            var menuTarget = 'chat_seller'; // Nanti disesuaikan dengan UI chat seller
+
+            // Susun paket pesan
+            var paketPesan = {
+                tipe: 'order_seller',
+                dari: {
+                    idUser: window.gidIdUser(),
+                    nama: window.getNamaUserAktif ? window.getNamaUserAktif() : 'User',
+                    kodeRole: window.gidKodeRoleUser()
+                },
+                ke: {
+                    menu: menuTarget,
+                    idUserTarget: targetChat,
+                    kodeRoleTarget: targetRole
+                },
+                data: {
+                    idSeller: idSeller,
+                    items: cart,
+                    total: total,
+                    metode: metode || 'Belum Dipilih',
+                    catatan: 'Mohon konfirmasi pesanan ini.'
+                },
+                timestamp: new Date().toISOString()
+            };
+
+            // Kirim via Event Bus MN
+            if (typeof window.mnKirimKeMenu === 'function') {
+                window.mnKirimKeMenu(paketPesan);
+            } else {
+                // Fallback
+                var inboxKey = 'r2c_mn_inbox_' + menuTarget;
+                var inbox = _load(inboxKey, []);
+                inbox.unshift(paketPesan);
+                _save(inboxKey, inbox);
+            }
+
+            // Hapus keranjang seller ini
+            var newCart = window.fssGetKeranjang().filter(function(c) { return c.idSeller !== idSeller; });
+            _save(_getKeranjangKey(), newCart);
+
+            return { sukses: true, pesan: 'Pesanan dikirim ke Seller', target: targetChat, total: total };
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSS.5] — 3 PINTU STANDAR (A11—A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimFSS = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') return { sukses: false, pesan: 'MN belum ada' };
+            return window.mnKirimKeMenu({
+                tipe: tipe,
+                dari: { idUser: window.gidIdUser(), kodeRole: window.gidKodeRoleUser(), menu: 'FSS', blok: 'L4-FSS' },
+                ke: ke, data: data || {}, idRef: idRef || null,
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaFSS = function(aksiMenu) {
+        try { return typeof window.mnInboxMenu === 'function' ? window.mnInboxMenu(aksiMenu || 'FSS') : []; } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [FSS.6] — DEBUG & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.debugFSS = function() {
+        console.log('🔍 debugFSS v1.0:', {
+            totalSeller: window.fssGetDaftarSeller().length,
+            isiKeranjang: window.fssGetKeranjang().length,
+            fungsi: {
+                fssGetDaftarSeller: typeof window.fssGetDaftarSeller,
+                fssGetProdukSeller: typeof window.fssGetProdukSeller,
+                fssTambahKeranjang: typeof window.fssTambahKeranjang,
+                fssCheckoutKeChat: typeof window.fssCheckoutKeChat
+            }
+        });
+    };
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === 'FSS'; });
+                if (!ada) {
+                    window.cpTambahBlok({ kode: 'FSS', nama: 'Seller Store & Transaksi v1', layer: 'L4', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+                }
+            }
+        } catch (e) {}
+    }, 1000);
+
+    console.log('%c🇮🇩 BLOK FSS v1.0 — FUNGSI GLOBAL SELLER terpasang.', 'background:#FF9800;color:#fff;padding:3px 8px;font-weight:bold;');
+})();
+</script>
+<!-- ═══ AKHIR BLOK FSS v1.0 — FUNGSI GLOBAL SELLER 🇮🇩 ═════════ -->
+
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK 2 — LOGIN 🇮🇩 v4.0 FINAL ═════════════════════════ -->
@@ -38926,6 +39164,543 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 })();
 </script>
 <!-- ═══ AKHIR BLOK R 10.25 — DASBOR KOPDES SELLER SA (JS) 🇮🇩 v1.0 ═ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.26 — DASBOR SELLER SA (HTML) 🇮🇩 v1.0 ═══════ -->
+<!-- ═══ Layer: L5 (Blok UI — Katalog Seller & Checkout) ═══════ -->
+<!-- ═══ Dependency: FSS, FGD, CS6 ═════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="dasborSellerContainer" style="display:none;">
+    <div class="container-fluid px-4 py-4">
+
+        <!-- ══════════ SUB-BLOK 10.26.H1 — HEADER ══════════ -->
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h4 class="fw-bold text-white mb-0">
+                    <i class="fas fa-store me-2"></i>Dasbor Seller (Toko)
+                </h4>
+                <small class="text-white-50">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Akses cepat untuk melihat daftar Seller dan berbelanja langsung.
+                </small>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-light btn-sm" id="fssBtnKembali" onclick="fssKembaliKeDaftarSeller()" style="display:none;">
+                    <i class="fas fa-arrow-left me-1"></i> Kembali ke Daftar
+                </button>
+                <button class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">
+                    <i class="fas fa-home me-1"></i> Dasbor Utama
+                </button>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.26.H2 — VIEW 1: DAFTAR SELLER ══════════ -->
+        <div id="fssViewDaftarSeller">
+            <div class="row g-3" id="fssGridSeller">
+                <!-- Diisi via JS -->
+            </div>
+            <div id="fssEmptySeller" class="text-center py-5 text-white-50" style="display:none;">
+                <i class="fas fa-store-slash fa-3x mb-3 opacity-50"></i>
+                <p>Belum ada Seller yang aktif.</p>
+            </div>
+        </div>
+
+        <!-- ══════════ SUB-BLOK 10.26.H3 — VIEW 2: DETAIL & PRODUK ══════════ -->
+        <div id="fssViewDetailSeller" style="display:none;">
+            <!-- Profil Seller -->
+            <div class="card border-0 shadow mb-3">
+                <div class="card-body p-3 d-flex align-items-center gap-3">
+                    <div id="fssDetailFoto" class="bg-white rounded-circle shadow-sm d-flex align-items-center justify-content-center" style="width:70px;height:70px;font-size:1.5rem;color:#FF9800;">
+                        <i class="fas fa-store"></i>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h5 class="fw-bold mb-1 text-dark" id="fssDetailNama">Nama Seller</h5>
+                        <div class="small text-muted" id="fssDetailWilayah">Wilayah</div>
+                        <div class="small text-warning"><i class="fas fa-star"></i> <span id="fssDetailRating">5.0</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══ ACTION BAR ═══ -->
+            <div class="row g-2 mb-4">
+                <div class="col-md-4">
+                    <button class="btn btn-outline-light w-100 py-2 fw-bold" onclick="fssBukaChatSeller()">
+                        <i class="fas fa-comments me-1"></i> Chat Seller
+                    </button>
+                </div>
+                <div class="col-md-4">
+                    <button class="btn btn-outline-light w-100 py-2 fw-bold" onclick="fssBukaChatOjek()">
+                        <i class="fas fa-motorcycle me-1"></i> Panggil Ojek
+                    </button>
+                </div>
+                <div class="col-md-4">
+                    <button class="btn btn-warning w-100 py-2 fw-bold" onclick="fssBukaModalKeranjang()">
+                        <i class="fas fa-shopping-cart me-1"></i> Keranjang (<span id="fssCartCountDetail">0</span>)
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Grid Produk -->
+            <h6 class="text-white fw-bold mb-3"><i class="fas fa-box-open me-2"></i>Katalog Produk</h6>
+            <div class="row g-3" id="fssGridProduk">
+                <!-- Diisi via JS -->
+            </div>
+            <div id="fssEmptyProduk" class="text-center py-4 text-white-50" style="display:none;">
+                <i class="fas fa-box-open fa-3x mb-3 opacity-50"></i>
+                <p>Seller ini belum menjual produk.</p>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ══════════ SUB-BLOK 10.26.H4 — FLOATING CART ══════════ -->
+    <div id="fssFloatingCart" class="position-fixed bottom-0 end-0 m-4 shadow-lg" style="z-index: 1000; display:none;">
+        <button class="btn btn-warning btn-lg rounded-circle fw-bold position-relative p-3 shadow" onclick="fssBukaModalKeranjang()" style="width: 65px; height: 65px;">
+            <i class="fas fa-shopping-cart fa-lg" style="color:#000;"></i>
+            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="fssCartCount" style="font-size:0.8rem;">0</span>
+        </button>
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.26.H5 — MODAL KERANJANG ══════════ -->
+<div class="modal fade" id="fssModalKeranjang" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#FF9800;">
+                <h5 class="modal-title"><i class="fas fa-shopping-cart me-2"></i>Keranjang Belanja</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-0">
+                <ul class="list-group list-group-flush" id="fssListKeranjang"></ul>
+                <div id="fssEmptyKeranjang" class="text-center py-5 text-muted" style="display:none;">
+                    <i class="fas fa-box-open fa-3x mb-3 opacity-25"></i>
+                    <p>Keranjang masih kosong.</p>
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between bg-light">
+                <div>
+                    <small class="text-muted d-block">Total Harga</small>
+                    <h4 class="fw-bold mb-0 text-danger" id="fssTotalKeranjang">Rp 0</h4>
+                </div>
+                <button type="button" class="btn btn-success fw-bold px-4" onclick="fssBukaModalTransaksi()">
+                    <i class="fas fa-arrow-right me-1"></i> Checkout
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════ SUB-BLOK 10.26.H6 — MODAL METODE TRANSAKSI ══════════ -->
+<div class="modal fade" id="fssModalTransaksi" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header text-white" style="background:#28A745;">
+                <h5 class="modal-title"><i class="fas fa-truck me-2"></i>Pilih Metode Transaksi</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-3">Pesanan Anda akan dikirim ke Chat Seller. Pilih bagaimana Anda ingin menerima pesanan:</p>
+                
+                <div class="d-grid gap-2">
+                    <button class="btn btn-outline-primary text-start p-3" onclick="fssProsesCheckout('Transfer')">
+                        <i class="fas fa-university me-2 fa-lg"></i> <strong>Transfer Bank</strong><br>
+                        <small class="text-muted ms-4">Bayar via transfer ke rekening Seller.</small>
+                    </button>
+                    <button class="btn btn-outline-success text-start p-3" onclick="fssProsesCheckout('COD')">
+                        <i class="fas fa-money-bill-wave me-2 fa-lg"></i> <strong>COD (Bayar di Tempat)</strong><br>
+                        <small class="text-muted ms-4">Bayar tunai saat barang diterima.</small>
+                    </button>
+                    <button class="btn btn-outline-warning text-start p-3" onclick="fssProsesCheckout('Ojek')">
+                        <i class="fas fa-motorcycle me-2 fa-lg"></i> <strong>Jasa Antar (Ojek)</strong><br>
+                        <small class="text-muted ms-4">Barang diantar oleh Mitra Ojek.</small>
+                    </button>
+                    <button class="btn btn-outline-secondary text-start p-3" onclick="fssProsesCheckout('Ambil Sendiri')">
+                        <i class="fas fa-walking me-2 fa-lg"></i> <strong>Ambil Sendiri</strong><br>
+                        <small class="text-muted ms-4">Ambil pesanan langsung di lokasi Seller.</small>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ═══ AKHIR BLOK R 10.26 — DASBOR SELLER SA (HTML) 🇮🇩 ═══════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK R 10.26 — DASBOR SELLER SA (JS) 🇮🇩 v1.0 ═════════ -->
+<!-- ═══ Dependency: FSS, FGD, CS6 ═════════════════════════════ -->
+<!-- ═══ Guard: _blokR1026DoneV1 (UTAMA — A32) ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_R_10_26_DASBOR_SELLER() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD IDEMPOTENCY
+    // ═══════════════════════════════════════════════════════════
+    if (window._blokR1026DoneV1) {
+        console.log('ℹ️ BLOK R 10.26 sudah terpasang — dilewati.');
+        return;
+    }
+    window._blokR1026DoneV1 = true;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.1] — STATE & HELPER
+    // ═══════════════════════════════════════════════════════════
+    var fssState = { idSeller: null };
+
+    function fssEsc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function fssRupiah(n) { return 'Rp ' + (parseInt(n, 10) || 0).toLocaleString('id-ID'); }
+    
+    function fssToast(pesan, tipe) {
+        if (typeof window.csToast === 'function') { window.csToast(pesan, tipe); } else { alert(pesan); }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.2] — ENTRY POINT
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanDasborSeller = function() {
+        try {
+            if (typeof tutupMenu === 'function') tutupMenu();
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return;
+            if (!kontenAsliDasbor) kontenAsliDasbor = konten.innerHTML;
+
+            if (!window._tplDasborSeller) {
+                var c = document.getElementById('dasborSellerContainer');
+                if (!c) {
+                    if (typeof tampilkanPlaceholderMenu === 'function') tampilkanPlaceholderMenu('Dasbor Seller', '10.26');
+                    return;
+                }
+                window._tplDasborSeller = c.innerHTML;
+                c.remove();
+            }
+
+            konten.innerHTML = window._tplDasborSeller;
+            fssState.idSeller = null;
+            
+            fssRenderDaftarSeller();
+            fssUpdateCartBadge();
+
+        } catch (e) { console.error('tampilkanDasborSeller error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.3] — VIEW 1: DAFTAR SELLER
+    // ═══════════════════════════════════════════════════════════
+    function fssRenderDaftarSeller() {
+        var elDaftar = document.getElementById('fssViewDaftarSeller');
+        var elDetail = document.getElementById('fssViewDetailSeller');
+        var elBtn = document.getElementById('fssBtnKembali');
+
+        if (elDaftar) elDaftar.style.display = 'block';
+        if (elDetail) elDetail.style.display = 'none';
+        if (elBtn) elBtn.style.display = 'none';
+
+        var grid = document.getElementById('fssGridSeller');
+        var empty = document.getElementById('fssEmptySeller');
+        if (!grid) return;
+        grid.innerHTML = '';
+
+        // Memanggil Fungsi Global FSS
+        var listSeller = (typeof window.fssGetDaftarSeller === 'function') ? window.fssGetDaftarSeller() : [];
+
+        if (listSeller.length === 0) {
+            if (empty) empty.style.display = 'block';
+            return;
+        }
+        if (empty) empty.style.display = 'none';
+
+        var html = '';
+        listSeller.forEach(function(s) {
+            var fotoHtml = s.fotoUrl 
+                ? `<img src="${s.fotoUrl}" class="rounded-circle mb-3" style="width:80px;height:80px;object-fit:cover;">`
+                : `<div class="rounded-circle mb-3 d-inline-flex align-items-center justify-content-center" style="width:80px;height:80px;background:#FFF3E0;color:#FF9800;font-size:2rem;"><i class="fas fa-store"></i></div>`;
+
+            html += `
+            <div class="col-md-6 col-lg-4 col-xl-3">
+                <div class="card border-0 shadow-sm h-100 text-center card-hover-effect" style="border-radius:16px;">
+                    <div class="card-body p-4">
+                        ${fotoHtml}
+                        <h6 class="fw-bold mb-1 text-dark">${fssEsc(s.namaToko)}</h6>
+                        <div class="small text-muted mb-2"><i class="fas fa-map-marker-alt me-1"></i>${fssEsc(s.wilayah)}</div>
+                        <div class="text-warning small mb-3"><i class="fas fa-star"></i> ${s.rating}</div>
+                        <button class="btn btn-outline-warning w-100 fw-bold" onclick="fssBukaDetailSeller('${s.idUser}')">
+                            <i class="fas fa-eye me-1"></i> Lihat Produk
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+        });
+        grid.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.4] — VIEW 2: DETAIL & PRODUK
+    // ═══════════════════════════════════════════════════════════
+    window.fssBukaDetailSeller = function(idSeller) {
+        try {
+            fssState.idSeller = idSeller;
+            
+            var elDaftar = document.getElementById('fssViewDaftarSeller');
+            var elDetail = document.getElementById('fssViewDetailSeller');
+            var elBtn = document.getElementById('fssBtnKembali');
+
+            if (elDaftar) elDaftar.style.display = 'none';
+            if (elDetail) elDetail.style.display = 'block';
+            if (elBtn) elBtn.style.display = 'inline-block';
+
+            // Ambil Profil Seller
+            var listSeller = (typeof window.fssGetDaftarSeller === 'function') ? window.fssGetDaftarSeller() : [];
+            var seller = listSeller.find(function(k) { return k.idUser === idSeller; });
+            
+            if (seller) {
+                var elNama = document.getElementById('fssDetailNama');
+                var elWilayah = document.getElementById('fssDetailWilayah');
+                var elRating = document.getElementById('fssDetailRating');
+                var elFoto = document.getElementById('fssDetailFoto');
+
+                if (elNama) elNama.textContent = seller.namaToko;
+                if (elWilayah) elWilayah.textContent = seller.wilayah;
+                if (elRating) elRating.textContent = seller.rating;
+                
+                if (elFoto && seller.fotoUrl) {
+                    elFoto.innerHTML = `<img src="${seller.fotoUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+                }
+            }
+
+            fssRenderProdukSeller(idSeller);
+        } catch (e) { console.error('fssBukaDetailSeller error:', e); }
+    };
+
+    window.fssKembaliKeDaftarSeller = function() {
+        fssState.idSeller = null;
+        fssRenderDaftarSeller();
+    };
+
+    function fssRenderProdukSeller(idSeller) {
+        var grid = document.getElementById('fssGridProduk');
+        var empty = document.getElementById('fssEmptyProduk');
+        if (!grid) return;
+        grid.innerHTML = '';
+
+        // Memanggil Fungsi Global FSS
+        var listProduk = (typeof window.fssGetProdukSeller === 'function') ? window.fssGetProdukSeller(idSeller) : [];
+
+        if (listProduk.length === 0) {
+            if (empty) empty.style.display = 'block';
+            return;
+        }
+        if (empty) empty.style.display = 'none';
+
+        var html = '';
+        listProduk.forEach(function(p) {
+            var fotoHtml = p.fotoUrl 
+                ? `<img src="${p.fotoUrl}" class="card-img-top" style="height:150px;object-fit:cover;">`
+                : `<div class="bg-light d-flex align-items-center justify-content-center" style="height:150px;color:#CCC;font-size:3rem;"><i class="fas fa-box"></i></div>`;
+
+            html += `
+            <div class="col-md-4 col-6">
+                <div class="card border-0 shadow-sm h-100" style="border-radius:12px;overflow:hidden;">
+                    ${fotoHtml}
+                    <div class="card-body p-2 d-flex flex-column">
+                        <h6 class="fw-bold text-dark text-truncate mb-1" style="font-size:13px;">${fssEsc(p.nama || p.namaProduk)}</h6>
+                        <div class="text-danger fw-bold small mb-2">${fssRupiah(p.harga)}</div>
+                        <div class="mt-auto">
+                            <button class="btn btn-sm btn-warning w-100 fw-bold" onclick="fssAksiTambahKeranjang('${p.id || p.idProduk}')">
+                                <i class="fas fa-cart-plus"></i> Tambah
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        });
+        grid.innerHTML = html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.5] — KERANJANG & CHECKOUT
+    // ═══════════════════════════════════════════════════════════
+    window.fssAksiTambahKeranjang = function(idProduk) {
+        var res = window.fssTambahKeranjang(idProduk, 1);
+        if (res.sukses) {
+            fssToast('✅ Produk masuk keranjang', 'success');
+            fssUpdateCartBadge();
+        } else {
+            fssToast('❌ ' + res.pesan, 'danger');
+        }
+    };
+
+    window.fssUpdateCartBadge = function() {
+        var cart = (typeof window.fssGetKeranjang === 'function') ? window.fssGetKeranjang() : [];
+        var totalQty = cart.reduce(function(sum, item) { return sum + item.qty; }, 0);
+        
+        var badge = document.getElementById('fssCartCount');
+        var floatingBtn = document.getElementById('fssFloatingCart');
+        if (badge) badge.textContent = totalQty;
+        if (floatingBtn) {
+            if (totalQty > 0) floatingBtn.style.display = 'block';
+            else floatingBtn.style.display = 'none';
+        }
+
+        var badgeDetail = document.getElementById('fssCartCountDetail');
+        if (badgeDetail) badgeDetail.textContent = totalQty;
+    };
+
+    window.fssBukaModalKeranjang = function() {
+        var cart = (typeof window.fssGetKeranjang === 'function') ? window.fssGetKeranjang() : [];
+        var listEl = document.getElementById('fssListKeranjang');
+        var emptyEl = document.getElementById('fssEmptyKeranjang');
+        if (!listEl) return;
+        
+        listEl.innerHTML = '';
+        
+        if (cart.length === 0) {
+            if (emptyEl) emptyEl.style.display = 'block';
+            document.getElementById('fssTotalKeranjang').textContent = 'Rp 0';
+        } else {
+            if (emptyEl) emptyEl.style.display = 'none';
+            var total = 0;
+            var html = '';
+            
+            cart.forEach(function(item) {
+                total += item.subtotal;
+                html += `
+                <li class="list-group-item d-flex justify-content-between align-items-center p-3">
+                    <div>
+                        <h6 class="fw-bold mb-1 text-dark">${fssEsc(item.nama)}</h6>
+                        <div class="small text-muted">${fssRupiah(item.harga)} x ${item.qty}</div>
+                    </div>
+                    <div class="text-end">
+                        <div class="fw-bold text-danger mb-1">${fssRupiah(item.subtotal)}</div>
+                    </div>
+                </li>`;
+            });
+            listEl.innerHTML = html;
+            document.getElementById('fssTotalKeranjang').textContent = fssRupiah(total);
+        }
+
+        new bootstrap.Modal(document.getElementById('fssModalKeranjang')).show();
+    };
+
+    window.fssBukaModalTransaksi = function() {
+        var mCart = bootstrap.Modal.getInstance(document.getElementById('fssModalKeranjang'));
+        if (mCart) mCart.hide();
+
+        setTimeout(function() {
+            new bootstrap.Modal(document.getElementById('fssModalTransaksi')).show();
+        }, 300);
+    };
+
+    window.fssProsesCheckout = function(metode) {
+        try {
+            var res = window.fssCheckoutKeChat(fssState.idSeller, metode);
+            
+            if (res.sukses) {
+                var m = bootstrap.Modal.getInstance(document.getElementById('fssModalTransaksi'));
+                if (m) m.hide();
+
+                fssToast(`✅ Pesanan (${metode}) terkirim ke Chat Seller!`, 'success');
+                fssUpdateCartBadge();
+                
+                // Buka Chat Seller
+                setTimeout(function() {
+                    window.fssBukaChatSeller();
+                }, 1500);
+
+            } else {
+                fssToast('❌ ' + res.pesan, 'danger');
+            }
+        } catch (e) {
+            console.error('fssProsesCheckout error:', e);
+            fssToast('❌ Terjadi kesalahan sistem', 'danger');
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.6] — AKSI CEPAT: CHAT & OJEK (KUSTOM)
+    // ═══════════════════════════════════════════════════════════
+    function fssRenderChatKustom(targetId, targetName, isOjek) {
+        var konten = document.getElementById('kontenDasbor');
+        if (!konten) return;
+        var icon = isOjek ? 'fas fa-motorcycle' : 'fas fa-comments';
+        var warna = isOjek ? '#FF9800' : '#17A2B8';
+        
+        konten.innerHTML = `
+        <div class="container-fluid px-4 py-4" style="max-width: 800px; margin: 0 auto;">
+            <div class="card border-0 shadow-lg h-100 d-flex flex-column" style="min-height: 75vh; border-radius: 16px; overflow: hidden;">
+                <div class="card-header text-white d-flex align-items-center gap-3 p-3" style="background: ${warna};">
+                    <button class="btn btn-outline-light btn-sm rounded-circle" onclick="fssKembaliKeKatalog()">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <div class="bg-white rounded-circle d-flex align-items-center justify-content-center" style="width: 40px; height: 40px; color: ${warna};">
+                        <i class="${icon}"></i>
+                    </div>
+                    <div>
+                        <h6 class="mb-0 fw-bold">${targetName}</h6>
+                        <small class="opacity-75" style="font-size: 11px;"><i class="fas fa-circle text-success me-1" style="font-size: 8px;"></i> Online</small>
+                    </div>
+                </div>
+                <div class="card-body bg-light flex-grow-1 p-3">
+                    <div class="text-center text-muted small my-4">
+                        <i class="fas fa-lock mb-2 fa-2x opacity-50"></i><br>Pesan dienkripsi.
+                    </div>
+                    <div class="alert alert-warning small text-center">
+                        UI Chat ini masih dalam tahap pengembangan.
+                    </div>
+                </div>
+                <div class="card-footer bg-white p-3">
+                    <input type="text" class="form-control" placeholder="Ketik pesan..." disabled>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    window.fssKembaliKeKatalog = function() {
+        if (typeof window.tampilkanDasborSeller === 'function') {
+            window.tampilkanDasborSeller();
+        }
+        if (fssState.idSeller) {
+            setTimeout(function() {
+                window.fssBukaDetailSeller(fssState.idSeller);
+            }, 100);
+        }
+    };
+
+    window.fssBukaChatSeller = function() {
+        try {
+            if (!fssState.idSeller) return;
+            fssRenderChatKustom(fssState.idSeller, 'Chat Seller', false);
+        } catch (e) { console.error('fssBukaChatSeller error:', e); }
+    };
+
+    window.fssBukaChatOjek = function() {
+        try {
+            if (!fssState.idSeller) return;
+            fssRenderChatKustom('OJEK', 'Panggil Ojek Terdekat', true);
+        } catch (e) { console.error('fssBukaChatOjek error:', e); }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.26.7] — REGISTRASI HANDLER & AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    window.menuHandlers = window.menuHandlers || {};
+    var handler = function() { window.tampilkanDasborSeller(); };
+    window.menuHandlers['dasborSeller'] = handler;
+    window.menuHandlers['tampilkanDasborSeller'] = handler;
+
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) { return b && b.kode === '10.26'; });
+                if (!ada) {
+                    window.cpTambahBlok({ kode: '10.26', nama: 'Dasbor Seller', layer: 'L5', status: 'Selesai', tanggal: new Date().toISOString().substring(0, 10) });
+                }
+            }
+        } catch (e) {}
+    }, 1000);
+
+    console.log('✅ BLOK R 10.26 — Dasbor Seller (UI) terpasang.');
+})();
+</script>
+<!-- ═══ AKHIR BLOK R 10.26 — DASBOR SELLER SA (JS) 🇮🇩 v1.0 ═══ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ SISTEM LOGO APP (UPLOAD & SIMPAN) ═════════════════════ -->
