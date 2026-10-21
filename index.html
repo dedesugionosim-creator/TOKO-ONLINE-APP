@@ -61973,6 +61973,741 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 <!-- ═══ AKHIR BLOK 10.58-PSM BRIDGE v1.0 ═════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK OM — ORPHAN MANAGEMENT v2.0 FINAL ═══════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain — Orphan Management) ══ -->
+<!-- ═══ Guard: _omDoneV2 (A32) · Versi: 2.0 ═══════════════════ -->
+<!-- ═══ Dep: CS1, CS2, CS4, CS7, GID, MN, PSM (opsional) ══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Aturan yang DIPATUHI (20):                                -->
+<!-- ═══   A1, A2, A3, A5, A11, A12, A13, A18, A19, A25, A26,    -->
+<!-- ═══   A28, A29, A30, A31, A32, A33, A34, A35 ══════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ 7 Tipe orphan:                                            -->
+<!-- ═══   produk · order · chat · notif · kasir · rekening · media -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ 25 Fungsi publik + 3 Pintu + 3 Helper ═════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_OM_V2() {
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.0] — GUARD + DEPENDENCY CHECK (A32)
+    // ═══════════════════════════════════════════════════════════
+    if (window._omDoneV2) {
+        console.log('ℹ️ BLOK OM v2.0 sudah terpasang.');
+        return;
+    }
+    if (!window.csLoadJSON || !window.csSaveJSON) {
+        console.warn('⚠️ OM v2.0: CS2 belum siap. Ditunda.');
+        return;
+    }
+    window._omDoneV2 = true;
+    window._omVersi  = '2.0';
+
+    // Register CS_KEY prefix (A18)
+    if (window.CS_KEY) {
+        window.CS_KEY.OM_LOG      = window.CS_KEY.OM_LOG      || 'om_log_cleanup';
+        window.CS_KEY.OM_SNAPSHOT = window.CS_KEY.OM_SNAPSHOT || 'om_snapshot';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.1] — KONSTANTA 7 TIPE ORPHAN
+    // ═══════════════════════════════════════════════════════════
+    var TIPE_ORPHAN = {
+        'produk': {
+            label: 'Produk', ikon: 'fas fa-box', warna: 'warning',
+            storageKey: 'dataProduk',
+            idFields: ['idOwner', 'idUser'],
+            indukField: 'owner',
+            deskripsi: 'Produk dengan owner tidak ada di dataLoginUser'
+        },
+        'order': {
+            label: 'Order', ikon: 'fas fa-shopping-cart', warna: 'primary',
+            storageKey: 'dataOrder',
+            idFields: ['idCustomer', 'idKasir', 'idOwner'],
+            indukField: 'customer',
+            deskripsi: 'Order dengan customer/kasir/owner tidak valid'
+        },
+        'chat': {
+            label: 'Chat', ikon: 'fas fa-comments', warna: 'info',
+            storageKey: 'dataChat',
+            idFields: ['idUser', 'idPengirim', 'idPenerima'],
+            indukField: 'user',
+            deskripsi: 'Chat ke user yang sudah tidak ada'
+        },
+        'notif': {
+            label: 'Notifikasi', ikon: 'fas fa-bell', warna: 'secondary',
+            storageKey: 'dataNotifikasi',
+            idFields: ['idUser', 'idPenerima'],
+            indukField: 'user',
+            deskripsi: 'Notifikasi ke user yang sudah dihapus'
+        },
+        'kasir': {
+            label: 'Kasir', ikon: 'fas fa-cash-register', warna: 'success',
+            storageKey: 'dataKasir',
+            idFields: ['idOwner', 'idUser'],
+            indukField: 'owner',
+            deskripsi: 'Kasir tanpa owner (owner user dihapus)'
+        },
+        'rekening': {
+            label: 'Rekening', ikon: 'fas fa-university', warna: 'danger',
+            storageKey: 'dataRekening',
+            idFields: ['idUser', 'idOwner'],
+            indukField: 'user',
+            deskripsi: 'Rekening tanpa pemilik user'
+        },
+        'media': {
+            label: 'Media', ikon: 'fas fa-image', warna: 'dark',
+            storageKey: 'dataMediaIndex',
+            idFields: ['idOwner'],
+            indukField: 'owner',
+            delegasiPSM: true,
+            deskripsi: 'Media dengan metadata ada tapi content hilang (delegasi PSM)'
+        }
+    };
+
+    window.OM_TIPE = TIPE_ORPHAN;
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _load(key, def) {
+        try {
+            var v = window.csLoadJSON(key, def);
+            if (Array.isArray(def) && !Array.isArray(v)) return def;
+            if (def && typeof def === 'object' && !Array.isArray(def) &&
+                (!v || typeof v !== 'object' || Array.isArray(v))) return def;
+            return v;
+        } catch (e) { return def; }
+    }
+    function _save(key, data) {
+        try { return window.csSaveJSON(key, data, { backup: false }); }
+        catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+    function _now() {
+        return window.csNow ? window.csNow() : new Date().toISOString();
+    }
+    function _catatLog(aksi, detail, opts) {
+        try {
+            opts = opts || {};
+            var key = (window.CS_KEY && window.CS_KEY.OM_LOG) || 'om_log_cleanup';
+            var logs = _load(key, []);
+            if (!Array.isArray(logs)) logs = [];
+            logs.unshift({
+                id:       'OMLOG-' + Date.now(),
+                idUser:   window.gidIdUser ? window.gidIdUser() : 'SYSTEM',
+                kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                aksi:     String(aksi || '-').substring(0, 80),
+                detail:   String(detail || '-').substring(0, 300),
+                hasil:    opts.hasil || null,
+                waktu:    _now()
+            });
+            if (logs.length > 300) logs = logs.slice(0, 300);
+            _save(key, logs);
+        } catch (e) {}
+    }
+    function _ambilSetUserId() {
+        try {
+            var users = _load('dataLoginUser', []);
+            var set = {};
+            if (Array.isArray(users)) {
+                users.forEach(function(u) {
+                    if (!u) return;
+                    var id = u.idUser || u.id;
+                    if (id) set[id] = true;
+                });
+            }
+            return set;
+        } catch (e) { return {}; }
+    }
+    function _cekIdAdaDiSet(id, set) {
+        if (!id) return false;
+        return set[id] === true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.3] — TIPE: DAFTAR + INFO
+    // ═══════════════════════════════════════════════════════════
+    window.omDaftarTipe = function() {
+        try {
+            return Object.keys(TIPE_ORPHAN).map(function(k) {
+                var t = TIPE_ORPHAN[k];
+                return {
+                    tipe:      k,
+                    label:     t.label,
+                    ikon:      t.ikon,
+                    warna:     t.warna,
+                    deskripsi: t.deskripsi,
+                    storageKey: t.storageKey
+                };
+            });
+        } catch (e) { return []; }
+    };
+
+    window.omGetTipeInfo = function(tipe) {
+        try {
+            if (!tipe) return null;
+            var t = TIPE_ORPHAN[tipe];
+            if (!t) return null;
+            return Object.assign({ tipe: tipe }, t);
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.4] — SCAN: 7 tipe + gabungan (omScanSemua)
+    // ═══════════════════════════════════════════════════════════
+    function _scanTipe(tipe) {
+        try {
+            var t = TIPE_ORPHAN[tipe];
+            if (!t) return { sukses: false, pesan: 'Tipe tidak dikenal', list: [] };
+
+            // Delegasi PSM untuk media
+            if (t.delegasiPSM) {
+                if (typeof window.psmCleanupOrphan === 'function') {
+                    // Dry run — jangan hapus, cukup deteksi
+                    var dryRun = typeof window.psmDedupe === 'function';
+                    // Pakai fungsi yang ada tanpa hapus — manual scan
+                    var media = window.mdListSemua
+                        ? window.mdListSemua({ limit: 9999 }) : [];
+                    var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX)
+                        || 'md_content_';
+                    var orphanMedia = [];
+                    if (Array.isArray(media)) {
+                        media.forEach(function(m) {
+                            if (!m || !m._hasContent) return;
+                            var c = null;
+                            try {
+                                c = localStorage.getItem(prefix + m.id);
+                            } catch (e) {}
+                            if (!c) {
+                                orphanMedia.push({
+                                    id: m.id, nama: m.nama,
+                                    kategori: m.kategori,
+                                    alasan: 'Content base64 hilang',
+                                    data: m
+                                });
+                            }
+                        });
+                    }
+                    return {
+                        sukses: true,
+                        tipe: tipe,
+                        total: orphanMedia.length,
+                        list: orphanMedia
+                    };
+                }
+                return {
+                    sukses: true, tipe: tipe, total: 0, list: [],
+                    pesan: 'PSM tidak tersedia — scan media dilewati'
+                };
+            }
+
+            // Scan reguler via storageKey
+            var data = _load(t.storageKey, []);
+            if (!Array.isArray(data)) return { sukses: true, tipe: tipe, total: 0, list: [] };
+
+            var userSet = _ambilSetUserId();
+            var list = [];
+
+            data.forEach(function(item, idx) {
+                if (!item) return;
+                var orphan = false;
+                var alasan = [];
+                var idItem = item.id || item.idUser || ('idx-' + idx);
+
+                // Cek semua idFields
+                t.idFields.forEach(function(field) {
+                    var val = item[field];
+                    if (!val) return;
+                    if (!_cekIdAdaDiSet(val, userSet)) {
+                        orphan = true;
+                        alasan.push(field + '=' + val + ' tidak ada');
+                    }
+                });
+
+                if (orphan) {
+                    list.push({
+                        id: idItem,
+                        index: idx,
+                        alasan: alasan.join('; '),
+                        data: item
+                    });
+                }
+            });
+
+            return { sukses: true, tipe: tipe, total: list.length, list: list };
+        } catch (e) {
+            return { sukses: false, pesan: e.message, list: [] };
+        }
+    }
+
+    // Scan per tipe (8 fungsi wrapper)
+    window.omScanProduk = function()   { return _scanTipe('produk'); };
+    window.omScanOrder = function()    { return _scanTipe('order'); };
+    window.omScanChat = function()     { return _scanTipe('chat'); };
+    window.omScanNotif = function()    { return _scanTipe('notif'); };
+    window.omScanKasir = function()    { return _scanTipe('kasir'); };
+    window.omScanRekening = function() { return _scanTipe('rekening'); };
+    window.omScanMedia = function()    { return _scanTipe('media'); };
+
+    window.omScanSemua = function() {
+        try {
+            var perTipe = {};
+            var totalSemua = 0;
+            var listSemua = [];
+            Object.keys(TIPE_ORPHAN).forEach(function(tipe) {
+                var r = _scanTipe(tipe);
+                perTipe[tipe] = { total: r.total || 0, list: r.list || [] };
+                totalSemua += (r.total || 0);
+                (r.list || []).forEach(function(item) {
+                    listSemua.push(Object.assign({ tipe: tipe }, item));
+                });
+            });
+            return {
+                sukses:     true,
+                totalSemua: totalSemua,
+                perTipe:    perTipe,
+                list:       listSemua,
+                timestamp:  _now()
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message, totalSemua: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.5] — DETEKSI: cek 1 item + statistik + list
+    // ═══════════════════════════════════════════════════════════
+    window.omCekOrphan = function(tipe, idItem) {
+        try {
+            if (!tipe || !idItem) return { orphan: false, pesan: 'Parameter kosong' };
+            var scan = _scanTipe(tipe);
+            if (!scan.sukses) return { orphan: false, pesan: scan.pesan };
+            var found = (scan.list || []).find(function(x) {
+                return x.id === idItem;
+            });
+            if (found) return { orphan: true, detail: found };
+            return { orphan: false };
+        } catch (e) {
+            return { orphan: false, pesan: e.message };
+        }
+    };
+
+    window.omStatistikOrphan = function() {
+        try {
+            var scan = window.omScanSemua();
+            if (!scan.sukses) return null;
+            var perTipe = {};
+            var total = 0;
+            var tipeTerbesar = null;
+            var maxCount = 0;
+            Object.keys(scan.perTipe).forEach(function(tipe) {
+                var jml = scan.perTipe[tipe].total || 0;
+                perTipe[tipe] = {
+                    total: jml,
+                    label: TIPE_ORPHAN[tipe].label,
+                    ikon:  TIPE_ORPHAN[tipe].ikon,
+                    warna: TIPE_ORPHAN[tipe].warna
+                };
+                total += jml;
+                if (jml > maxCount) {
+                    maxCount = jml;
+                    tipeTerbesar = tipe;
+                }
+            });
+            return {
+                totalSemua:   total,
+                perTipe:      perTipe,
+                tipeTerbesar: tipeTerbesar,
+                totalTipeDicek: Object.keys(scan.perTipe).length,
+                timestamp:    _now()
+            };
+        } catch (e) { return null; }
+    };
+
+    window.omListOrphan = function(tipe, opts) {
+        try {
+            opts = opts || {};
+            var scan;
+            if (tipe) {
+                scan = _scanTipe(tipe);
+            } else {
+                scan = window.omScanSemua();
+            }
+            if (!scan.sukses) return [];
+            var list = tipe ? (scan.list || []) : (scan.list || []);
+            var limit = parseInt(opts.limit, 10) || 200;
+            return list.slice(0, limit);
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.6] — CLEANUP: hapus + batch + per tipe + semua
+    // ═══════════════════════════════════════════════════════════
+    window.omHapusOrphan = function(tipe, idItem) {
+        try {
+            if (!tipe || !idItem) return { sukses: false, pesan: 'Parameter kosong' };
+            var t = TIPE_ORPHAN[tipe];
+            if (!t) return { sukses: false, pesan: 'Tipe tidak dikenal' };
+
+            // Delegasi PSM
+            if (t.delegasiPSM) {
+                if (typeof window.mdHapus === 'function') {
+                    var r = window.mdHapus(idItem);
+                    if (r.sukses) _catatLog('Hapus orphan', tipe + ':' + idItem, { hasil: 'ok' });
+                    return r;
+                }
+                return { sukses: false, pesan: 'MD tidak tersedia' };
+            }
+
+            var data = _load(t.storageKey, []);
+            if (!Array.isArray(data)) return { sukses: false, pesan: 'Data tidak valid' };
+
+            var idx = data.findIndex(function(item) {
+                if (!item) return false;
+                var id = item.id || item.idUser;
+                return id === idItem;
+            });
+
+            if (idx === -1) return { sukses: false, pesan: 'Item tidak ditemukan' };
+
+            data.splice(idx, 1);
+            var saveRes = _save(t.storageKey, data);
+
+            if (saveRes.sukses) {
+                _catatLog('Hapus orphan', tipe + ':' + idItem, { hasil: 'ok' });
+                // Audit CS7
+                try {
+                    if (typeof window.catatAktivitasGlobal === 'function') {
+                        window.catatAktivitasGlobal(
+                            window.gidIdUser ? window.gidIdUser() : 'SYSTEM',
+                            'Hapus Orphan',
+                            tipe + ' — ' + idItem,
+                            { kategori: 'Sistem', idRef: idItem, level: 'warning' }
+                        );
+                    }
+                } catch (e) {}
+            }
+
+            return saveRes;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.omHapusBatchOrphan = function(tipe, idList) {
+        try {
+            if (!tipe || !Array.isArray(idList)) {
+                return { sukses: false, pesan: 'Parameter tidak valid' };
+            }
+            if (idList.length > 200) {
+                return { sukses: false, pesan: 'Maksimal 200 ID per batch' };
+            }
+            var berhasil = 0, gagal = 0, listGagal = [];
+            idList.forEach(function(id) {
+                var r = window.omHapusOrphan(tipe, id);
+                if (r.sukses) berhasil++;
+                else { gagal++; listGagal.push({ id: id, pesan: r.pesan }); }
+            });
+            return {
+                sukses: true,
+                tipe: tipe,
+                berhasil: berhasil,
+                gagal: gagal,
+                listGagal: listGagal
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.omCleanupPerTipe = function(tipe, opts) {
+        try {
+            opts = opts || {};
+            if (!tipe) return { sukses: false, pesan: 'Tipe kosong' };
+            var scan = _scanTipe(tipe);
+            if (!scan.sukses) return scan;
+            if (scan.total === 0) {
+                return { sukses: true, tipe: tipe, dihapus: 0, pesan: 'Tidak ada orphan' };
+            }
+            var listId = scan.list.map(function(x) { return x.id; });
+            if (opts.dryRun) {
+                return {
+                    sukses: true, tipe: tipe, dryRun: true,
+                    akanDihapus: listId.length, listId: listId
+                };
+            }
+            var r = window.omHapusBatchOrphan(tipe, listId);
+            _catatLog('Cleanup per tipe', tipe + ' — ' + r.berhasil + ' dihapus', { hasil: 'ok' });
+            return {
+                sukses: true, tipe: tipe,
+                dihapus: r.berhasil, gagal: r.gagal,
+                listId: listId
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.omCleanupSemua = function(opts) {
+        try {
+            opts = opts || {};
+            var perTipe = {};
+            var totalDihapus = 0;
+            var totalGagal = 0;
+
+            Object.keys(TIPE_ORPHAN).forEach(function(tipe) {
+                var r = window.omCleanupPerTipe(tipe, { dryRun: opts.dryRun });
+                perTipe[tipe] = {
+                    dihapus: r.dihapus || 0,
+                    gagal: r.gagal || 0,
+                    akanDihapus: r.akanDihapus || 0,
+                    pesan: r.pesan || null
+                };
+                if (!opts.dryRun) {
+                    totalDihapus += (r.dihapus || 0);
+                    totalGagal += (r.gagal || 0);
+                }
+            });
+
+            if (opts.dryRun) {
+                var totalAkanDihapus = Object.keys(perTipe).reduce(function(s, k) {
+                    return s + (perTipe[k].akanDihapus || 0);
+                }, 0);
+                return {
+                    sukses: true, dryRun: true,
+                    totalAkanDihapus: totalAkanDihapus,
+                    perTipe: perTipe
+                };
+            }
+
+            _catatLog('Cleanup semua', totalDihapus + ' dihapus', { hasil: 'ok' });
+            return {
+                sukses: true,
+                totalDihapus: totalDihapus,
+                totalGagal: totalGagal,
+                perTipe: perTipe
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.7] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimOM = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') {
+                return { sukses: false, pesan: 'MN belum terpasang' };
+            }
+            return window.mnKirimKeMenu({
+                tipe: tipe || 'om',
+                dari: {
+                    idUser:   window.gidIdUser ? window.gidIdUser() : null,
+                    kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:     'OM', blok: 'L4-OM'
+                },
+                ke: ke || { menu: 'OM' },
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _now()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaOM = function(aksiMenu) {
+        try {
+            if (typeof window.mnInboxMenu !== 'function') return [];
+            return window.mnInboxMenu(aksiMenu || 'OM');
+        } catch (e) { return []; }
+    };
+
+    window.ambilOM = function(filter) {
+        try {
+            filter = filter || {};
+            switch (filter.tipe || 'statistik') {
+                case 'tipe':      return window.omDaftarTipe();
+                case 'info-tipe': return window.omGetTipeInfo(filter.tipeKode);
+                case 'scan':      return filter.tipeKode
+                                        ? _scanTipe(filter.tipeKode)
+                                        : window.omScanSemua();
+                case 'statistik': return window.omStatistikOrphan();
+                case 'list':      return window.omListOrphan(filter.tipeKode, filter);
+                case 'log':       return _ambilLog(filter.limit);
+                default:          return null;
+            }
+        } catch (e) { return null; }
+    };
+
+    function _ambilLog(limit) {
+        try {
+            var key = (window.CS_KEY && window.CS_KEY.OM_LOG) || 'om_log_cleanup';
+            var logs = _load(key, []);
+            if (!Array.isArray(logs)) return [];
+            return logs.slice(0, parseInt(limit, 10) || 50);
+        } catch (e) { return []; }
+    }
+
+    window.cekPintuOM = function() {
+        var skor = (typeof window.kirimOM  === 'function' ? 1 : 0)
+                 + (typeof window.terimaOM === 'function' ? 1 : 0)
+                 + (typeof window.ambilOM  === 'function' ? 1 : 0);
+        return {
+            blok: 'OM',
+            kirim:  typeof window.kirimOM  === 'function',
+            terima: typeof window.terimaOM === 'function',
+            ambil:  typeof window.ambilOM  === 'function',
+            skor:   skor + '/3',
+            lengkap: skor === 3
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.8] — DELEGASI OA (helper opsional)
+    // ═══════════════════════════════════════════════════════════
+    window.omDelegasiOA = function() {
+        try {
+            var oaFunctions = Object.keys(window).filter(function(k) {
+                return /^oa[A-Z]/.test(k) && typeof window[k] === 'function';
+            });
+            return {
+                total: oaFunctions.length,
+                list: oaFunctions,
+                tersedia: oaFunctions.length > 0,
+                psm: typeof window.psmCleanupOrphan === 'function',
+                md: typeof window.mdListSemua === 'function'
+            };
+        } catch (e) {
+            return { total: 0, list: [], tersedia: false };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.9] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugOM = function() {
+        var pintu = window.cekPintuOM();
+        var stat = window.omStatistikOrphan();
+        var delegasi = window.omDelegasiOA();
+        var info = {
+            blok: 'OM', versi: window._omVersi, guard: window._omDoneV2,
+            deskripsi: 'Orphan Management — 7 tipe orphan',
+            totalTipe: Object.keys(TIPE_ORPHAN).length,
+            tipeList: Object.keys(TIPE_ORPHAN),
+            statistik: stat,
+            pintu: pintu,
+            delegasiOA: delegasi,
+            dependency: {
+                cs2: typeof window.csLoadJSON === 'function',
+                cs7: typeof window.catatAktivitasGlobal === 'function',
+                gid: typeof window.gidIdUser === 'function',
+                mn:  typeof window.mnKirimKeMenu === 'function',
+                psm: typeof window.psmCleanupOrphan === 'function',
+                md:  typeof window.mdListSemua === 'function'
+            },
+            cekAturan: {
+                A11_lengkap3Pintu: pintu.lengkap,
+                A19_tipeArray:     Array.isArray(window.omDaftarTipe()),
+                A25_delegasiCS:    typeof window.csLoadJSON === 'function',
+                A32_guardUnik:     window._omDoneV2 === true
+            },
+            fungsi: {
+                omDaftarTipe:        typeof window.omDaftarTipe,
+                omGetTipeInfo:       typeof window.omGetTipeInfo,
+                omScanSemua:         typeof window.omScanSemua,
+                omScanProduk:        typeof window.omScanProduk,
+                omScanOrder:         typeof window.omScanOrder,
+                omScanChat:          typeof window.omScanChat,
+                omScanNotif:         typeof window.omScanNotif,
+                omScanKasir:         typeof window.omScanKasir,
+                omScanRekening:      typeof window.omScanRekening,
+                omScanMedia:         typeof window.omScanMedia,
+                omCekOrphan:         typeof window.omCekOrphan,
+                omStatistikOrphan:   typeof window.omStatistikOrphan,
+                omListOrphan:        typeof window.omListOrphan,
+                omHapusOrphan:       typeof window.omHapusOrphan,
+                omHapusBatchOrphan:  typeof window.omHapusBatchOrphan,
+                omCleanupPerTipe:    typeof window.omCleanupPerTipe,
+                omCleanupSemua:      typeof window.omCleanupSemua,
+                kirimOM:             typeof window.kirimOM,
+                terimaOM:            typeof window.terimaOM,
+                ambilOM:             typeof window.ambilOM,
+                cekPintuOM:          typeof window.cekPintuOM,
+                omDelegasiOA:        typeof window.omDelegasiOA
+            }
+        };
+        console.log('🔍 debugOM v2.0:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.10] — AUTO-REGISTRY (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'OM';
+                });
+                var namaBlok = 'Orphan Management v2.0 (7 Tipe)';
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'OM', nama: namaBlok,
+                        layer: 'L4', status: 'Selesai',
+                        tanggal: _now().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('OM', { status: 'Selesai', nama: namaBlok });
+                }
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'OM' && r.nama && r.nama.indexOf('v2.0') !== -1;
+                });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        tanggal: _now().substring(0, 10),
+                        blok: 'OM',
+                        nama: 'Orphan Management v2.0',
+                        keterangan: '7 tipe orphan: produk/order/chat/notif/kasir/rekening/media · ' +
+                                    '25 fungsi publik · 3 pintu (A11) · ' +
+                                    'Delegasi PSM untuk media · ' +
+                                    'Dry-run mode · Batch cleanup · ' +
+                                    'Audit log (CS7) · Auto-registry'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('om', {
+                    nama: 'Orphan Management (L4)',
+                    status: 'Selesai',
+                    jumlah: 25
+                });
+            }
+        } catch (e) {
+            console.warn('[OM v2.0] Auto-registry error:', e.message);
+        }
+    }, 900);
+
+    // ═══════════════════════════════════════════════════════════
+    // [OM.11] — LOG TERPASANG (A5)
+    // ═══════════════════════════════════════════════════════════
+    console.log(
+        '%c🇮🇩 BLOK OM v2.0 — ORPHAN MANAGEMENT (7 Tipe) terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
+        'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
+    );
+    console.log(
+        '   🧹 7 Tipe (produk/order/chat/notif/kasir/rekening/media) · ' +
+        '25 fungsi publik · 3 pintu · Delegasi PSM · ' +
+        'Dry-run + batch cleanup · Audit log CS7 · debugOM()'
+    );
+})();
+</script>
+<!-- ═══ AKHIR BLOK OM — ORPHAN MANAGEMENT v2.0 FINAL ═════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.63 — UI CHAT DENGAN AI SA (HTML) 🇮🇩 v1.0 ════ -->
 <!-- ═══ Layer: L5 (Blok UI — AI Asisten & Data Retrieval) ══════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
