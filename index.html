@@ -26766,6 +26766,796 @@ window.csGenerateQRKopdes = function(idCanvas, teks, level) {
 <!-- ═══ AKHIR BLOK PSM — PENYIMPANAN MEDIA HELPER 🇮🇩 v1.0 ═════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK 10.58-PSM BRIDGE — INTEGRASI DASHBOARD v1.0 ═════ -->
+<!-- ═══ Layer: L5 (UI Extension — Health Panel + Cleanup Buttons) -->
+<!-- ═══ Guard: _blok1058PsmDoneV1 (A32) · Versi: 1.0 ═════════ -->
+<!-- ═══ Dep: 10.58 (harus sudah ada) · PSM (harus sudah ada) ══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Auto-inject ke dashboard 10.58:                           -->
+<!-- ═══   [1] Health Panel (quota bar + status) — di bawah stat   -->
+<!-- ═══   [2] Dropdown "Storage" — di header: Health, Cleanup    -->
+<!-- ═══       LRU/Orphan/Older, Dedupe, Optimize, Backup         -->
+<!-- ═══   [3] Health Modal — detail lengkap (per kategori/umur)  -->
+<!-- ═══   [4] MutationObserver — re-inject saat filter/search    -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ 8 Action Handlers:                                       -->
+<!-- ═══   md58HealthCheck · md58CleanupLRU · md58CleanupOrphan   -->
+<!-- ═══   md58CleanupOlder · md58Dedupe · md58OptimizeAll        -->
+<!-- ═══   md58Backup · md58BackupRestore                         -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_1058_PSM_BRIDGE_V1() {
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.0] — GUARD + RETRY (wait for 10.58 + PSM)
+    // ═══════════════════════════════════════════════════════════
+    if (window._blok1058PsmDoneV1) return;
+
+    if (!window._blok1058DoneV1 || typeof window.tampilkanPenyimpananMediaSA !== 'function') {
+        var r1 = (window._psmBridgeRetry1 || 0) + 1;
+        window._psmBridgeRetry1 = r1;
+        if (r1 < 20) { setTimeout(BLOK_1058_PSM_BRIDGE_V1, 500); return; }
+        console.warn('⚠️ 10.58-PSM Bridge: 10.58 tidak terpasang setelah 20 retry.');
+        return;
+    }
+    if (typeof window.psmCekQuota !== 'function' || typeof window.psmCleanupLRU !== 'function') {
+        var r2 = (window._psmBridgeRetry2 || 0) + 1;
+        window._psmBridgeRetry2 = r2;
+        if (r2 < 20) { setTimeout(BLOK_1058_PSM_BRIDGE_V1, 500); return; }
+        console.warn('⚠️ 10.58-PSM Bridge: PSM tidak terpasang setelah 20 retry.');
+        return;
+    }
+
+    window._blok1058PsmDoneV1 = true;
+    window._blok1058PsmVersi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.1] — WRAP ENTRY POINT 10.58
+    // ═══════════════════════════════════════════════════════════
+    var _origTampil = window.tampilkanPenyimpananMediaSA;
+    window.tampilkanPenyimpananMediaSA = function() {
+        var r = _origTampil.apply(this, arguments);
+        setTimeout(_injectAll, 200);
+        return r;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.2] — MUTATION OBSERVER (re-inject saat filter/cari)
+    // ═══════════════════════════════════════════════════════════
+    var _injectTimer = null;
+    function _scheduleInject() {
+        clearTimeout(_injectTimer);
+        _injectTimer = setTimeout(_injectAll, 150);
+    }
+
+    try {
+        var observer = new MutationObserver(function() {
+            // Trigger hanya kalau upload button ada (10.58 dashboard aktif)
+            var uploadBtn = document.querySelector(
+                '#kontenDasbor button[onclick*="md58BukaUpload"]'
+            );
+            if (!uploadBtn) return;
+            // Cek apakah inject sudah ada
+            var panel = document.getElementById('md58PsmPanel');
+            var dropdown = document.querySelector('.psm-header-btn');
+            if (!panel || !dropdown) {
+                _scheduleInject();
+            }
+        });
+        setTimeout(function() {
+            var target = document.getElementById('kontenDasbor') || document.body;
+            if (target) {
+                observer.observe(target, { childList: true, subtree: true });
+            }
+        }, 500);
+    } catch (e) {
+        console.warn('[10.58-PSM] MutationObserver error:', e.message);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.3] — INJECT ALL (header buttons + health panel)
+    // ═══════════════════════════════════════════════════════════
+    function _injectAll() {
+        try {
+            _injectHeaderButtons();
+            _injectHealthPanel();
+        } catch (e) {
+            console.warn('[10.58-PSM] inject error:', e.message);
+        }
+    }
+
+    // ── 3.1 Inject dropdown "Storage" di header dashboard ──
+    function _injectHeaderButtons() {
+        // Cari container tombol — anchor: tombol dengan onclick md58BukaUpload
+        var uploadBtn = document.querySelector(
+            '#kontenDasbor button[onclick*="md58BukaUpload"]'
+        );
+        if (!uploadBtn) return;
+        var container = uploadBtn.parentNode;
+        if (!container) return;
+
+        // Sudah ada? skip
+        if (container.querySelector('.psm-header-btn')) return;
+
+        var dropdown = document.createElement('div');
+        dropdown.className = 'dropdown psm-header-btn';
+        dropdown.innerHTML = ''
+            + '<button class="btn btn-outline-light btn-sm dropdown-toggle" '
+            +   'type="button" data-bs-toggle="dropdown" aria-expanded="false">'
+            +   '<i class="fas fa-hdd me-1"></i>Storage'
+            + '</button>'
+            + '<ul class="dropdown-menu dropdown-menu-end shadow">'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-heartbeat me-1"></i>Health</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58HealthCheck();">'
+            +     '<i class="fas fa-chart-pie me-2 text-danger"></i>Lihat Health Storage</a></li>'
+            +   '<li><hr class="dropdown-divider"></li>'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-broom me-1"></i>Cleanup</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58CleanupLRU();">'
+            +     '<i class="fas fa-clock me-2 text-warning"></i>Cleanup LRU (bebas N KB)</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58CleanupOlder();">'
+            +     '<i class="fas fa-calendar-times me-2 text-warning"></i>Cleanup &gt; N hari</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58CleanupOrphan();">'
+            +     '<i class="fas fa-unlink me-2 text-warning"></i>Cleanup Orphan</a></li>'
+            +   '<li><hr class="dropdown-divider"></li>'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-tools me-1"></i>Optimize</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58Dedupe();">'
+            +     '<i class="fas fa-copy me-2 text-info"></i>Dedupe (deteksi duplikat)</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58OptimizeAll();">'
+            +     '<i class="fas fa-compress-alt me-2 text-info"></i>Optimize semua gambar</a></li>'
+            +   '<li><hr class="dropdown-divider"></li>'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-database me-1"></i>Backup</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58Backup();">'
+            +     '<i class="fas fa-download me-2 text-success"></i>Backup semua media</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58BackupRestore();">'
+            +     '<i class="fas fa-upload me-2 text-success"></i>Restore dari file</a></li>'
+            + '</ul>';
+
+        container.insertBefore(dropdown, container.firstChild);
+    }
+
+    // ── 3.2 Inject health panel setelah stat cards ──
+    function _injectHealthPanel() {
+        // Sudah ada? skip
+        if (document.getElementById('md58PsmPanel')) return;
+
+        // Cari stat cards row — anchor: cari row yang berisi card "Total Media"
+        var rows = document.querySelectorAll('#kontenDasbor .row.g-2.mb-3');
+        var statRow = null;
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].textContent.indexOf('Total Media') !== -1) {
+                statRow = rows[i];
+                break;
+            }
+        }
+        if (!statRow) return;
+
+        var panel = document.createElement('div');
+        panel.id = 'md58PsmPanel';
+        panel.className = 'mb-3';
+        panel.innerHTML = ''
+            + '<div class="card border-0 shadow-sm">'
+            +   '<div class="card-body py-2">'
+            +     '<div class="d-flex align-items-center gap-2">'
+            +       '<i class="fas fa-spinner fa-spin text-muted"></i>'
+            +       '<small class="text-muted">Mengecek health storage...</small>'
+            +     '</div>'
+            +   '</div>'
+            + '</div>';
+
+        statRow.parentNode.insertBefore(panel, statRow.nextSibling);
+
+        // Async fill
+        _fillHealthPanel();
+    }
+
+    // ── 3.3 Fill health panel async ──
+    function _fillHealthPanel() {
+        var panel = document.getElementById('md58PsmPanel');
+        if (!panel) return;
+
+        if (typeof window.psmCekQuota !== 'function') {
+            panel.innerHTML = '<div class="alert alert-warning small mb-0">'
+                + 'PSM tidak tersedia</div>';
+            return;
+        }
+
+        window.psmCekQuota().then(function(q) {
+            if (!q.sukses) {
+                panel.innerHTML = '<div class="alert alert-warning small mb-0">'
+                    + 'Gagal cek storage: ' + (q.pesan || '-') + '</div>';
+                return;
+            }
+
+            var warna = q.status === 'critical' ? 'danger'
+                      : q.status === 'danger'   ? 'danger'
+                      : q.status === 'warning'  ? 'warning'
+                      : 'success';
+            var ikon  = q.status === 'critical' ? 'fa-exclamation-triangle'
+                      : q.status === 'danger'   ? 'fa-exclamation-circle'
+                      : q.status === 'warning'  ? 'fa-exclamation-triangle'
+                      : 'fa-check-circle';
+            var label = q.status === 'critical' ? 'KRITIS'
+                      : q.status === 'danger'   ? 'DANGER'
+                      : q.status === 'warning'  ? 'WARNING'
+                      : 'SEHAT';
+
+            var needsCleanup = q.persen >= 80;
+
+            var html = ''
+                + '<div class="card border-0 shadow-sm" '
+                +   'style="border-left:4px solid var(--bs-' + warna + ') !important;">'
+                +   '<div class="card-body py-2">'
+                +     '<div class="d-flex justify-content-between align-items-center '
+                +       'mb-2 flex-wrap gap-2">'
+                +       '<div>'
+                +         '<i class="fas ' + ikon + ' text-' + warna + ' me-1"></i>'
+                +         '<strong>Storage ' + label + '</strong>'
+                +         '<small class="text-muted ms-2">'
+                +           q.usageLabel + ' / ' + q.quotaLabel
+                +         '</small>'
+                +       '</div>'
+                +       '<div class="d-flex gap-1">'
+                +         '<button class="btn btn-outline-' + warna + ' btn-sm" '
+                +           'onclick="md58HealthCheck()" title="Detail Health">'
+                +           '<i class="fas fa-info-circle me-1"></i>Detail</button>'
+                +         (needsCleanup
+                            ? '<button class="btn btn-danger btn-sm" '
+                            + 'onclick="md58CleanupLRU()" title="Bebaskan ruang">'
+                            + '<i class="fas fa-broom me-1"></i>Cleanup</button>'
+                            : '')
+                +       '</div>'
+                +     '</div>'
+                +     '<div class="progress" style="height:8px;">'
+                +       '<div class="progress-bar bg-' + warna + '" '
+                +         'style="width:' + Math.min(q.persen, 100) + '%;"></div>'
+                +     '</div>'
+                +     '<div class="d-flex justify-content-between mt-1" '
+                +       'style="font-size:10px;color:#999;">'
+                +       '<span>' + q.persen + '% terpakai</span>'
+                +       '<span>' + q.sisaLabel + ' tersisa</span>'
+                +     '</div>'
+                +   '</div>'
+                + '</div>';
+            panel.innerHTML = html;
+        }).catch(function(err) {
+            panel.innerHTML = '<div class="alert alert-warning small mb-0">'
+                + 'Error: ' + err.message + '</div>';
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.4] — ACTION HANDLERS (8 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 4.1 Health Check Modal ──
+    window.md58HealthCheck = function() {
+        if (typeof window.psmGetInfo !== 'function') {
+            if (typeof window.csToast === 'function') window.csToast('PSM tidak tersedia', 'warning');
+            return;
+        }
+        window.psmGetInfo().then(function(info) {
+            if (!info.sukses) {
+                if (typeof window.csToast === 'function') window.csToast('❌ ' + (info.pesan || '-'), 'danger');
+                return;
+            }
+            _renderHealthModal(info);
+        });
+    };
+
+    function _renderHealthModal(info) {
+        var q = info.quota || {};
+        var stat = info.statistik || {};
+        var perKat = info.perKategori || {};
+        var perUmur = info.perUmur || {};
+        var rek = info.rekomendasi || [];
+
+        var statusColor = (q.status === 'critical' || q.status === 'danger') ? 'danger'
+                        : q.status === 'warning' ? 'warning' : 'success';
+
+        var kategoriHtml = Object.keys(perKat)
+            .filter(function(k) { return perKat[k].total > 0; })
+            .map(function(k) {
+                var p = perKat[k];
+                return '<tr>'
+                    + '<td><strong>' + k + '</strong></td>'
+                    + '<td>' + p.total + '</td>'
+                    + '<td>' + p.sizeLabel + '</td>'
+                    + '</tr>';
+            }).join('');
+        if (!kategoriHtml) {
+            kategoriHtml = '<tr><td colspan="3" class="text-center text-muted">Belum ada data</td></tr>';
+        }
+
+        var umurHtml = Object.keys(perUmur).map(function(k) {
+            var p = perUmur[k];
+            return '<tr>'
+                + '<td>' + k + '</td>'
+                + '<td>' + p.total + '</td>'
+                + '<td>' + (p.sizeLabel || '-') + '</td>'
+                + '</tr>';
+        }).join('');
+
+        var rekHtml = rek.length > 0
+            ? rek.map(function(r) {
+                var warna = r.prioritas === 'tinggi' ? 'danger'
+                          : r.prioritas === 'sedang' ? 'warning' : 'info';
+                return '<li class="small mb-1">'
+                    + '<span class="badge bg-' + warna + ' me-1">' + r.prioritas + '</span>'
+                    + r.pesan + '</li>';
+            }).join('')
+            : '<li class="small text-muted">Tidak ada rekomendasi</li>';
+
+        var html = ''
+            + '<div class="modal fade" id="md58HealthModal" tabindex="-1" aria-hidden="true">'
+            +   '<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">'
+            +     '<div class="modal-content border-0 shadow-lg">'
+            +       '<div class="modal-header text-white" '
+            +         'style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
+            +         '<h5 class="modal-title">'
+            +           '<i class="fas fa-heartbeat me-2"></i>Health Storage Media'
+            +         '</h5>'
+            +         '<button type="button" class="btn-close btn-close-white" '
+            +           'data-bs-dismiss="modal"></button>'
+            +       '</div>'
+            +       '<div class="modal-body">'
+
+            +         '<div class="alert alert-' + statusColor + ' small mb-3">'
+            +           '<div class="d-flex justify-content-between">'
+            +             '<span><strong>' + (info.healthLabel || '-') + '</strong></span>'
+            +             '<span>Score: ' + (info.health || 0) + '/100</span>'
+            +           '</div>'
+            +           '<div class="progress mt-2" style="height:10px;">'
+            +             '<div class="progress-bar bg-' + statusColor + '" '
+            +               'style="width:' + (info.health || 0) + '%;"></div>'
+            +           '</div>'
+            +           '<div class="d-flex justify-content-between mt-1" '
+            +             'style="font-size:10px;">'
+            +             '<span>' + q.usageLabel + ' / ' + q.quotaLabel + '</span>'
+            +             '<span>' + q.persen + '% terpakai</span>'
+            +           '</div>'
+            +         '</div>'
+
+            +         '<div class="row g-2 mb-3">'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold">' + (stat.totalMedia || 0) + '</h5>'
+            +             '<small class="text-muted">Media</small>'
+            +           '</div></div></div>'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold">' + (stat.base64Count || 0) + '</h5>'
+            +             '<small class="text-muted">Base64</small>'
+            +           '</div></div></div>'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold">' + (stat.urlCount || 0) + '</h5>'
+            +             '<small class="text-muted">URL</small>'
+            +           '</div></div></div>'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold" style="font-size:14px;">' 
+            +               (stat.totalSizeFileLabel || '0 B') + '</h5>'
+            +             '<small class="text-muted">Ukuran</small>'
+            +           '</div></div></div>'
+            +         '</div>'
+
+            +         '<h6 class="fw-bold mt-3">Per Kategori</h6>'
+            +         '<table class="table table-sm mb-3">'
+            +           '<thead><tr><th>Kategori</th><th>Jumlah</th><th>Ukuran</th></tr></thead>'
+            +           '<tbody>' + kategoriHtml + '</tbody>'
+            +         '</table>'
+
+            +         '<h6 class="fw-bold">Per Umur</h6>'
+            +         '<table class="table table-sm mb-3">'
+            +           '<thead><tr><th>Umur</th><th>Jumlah</th><th>Ukuran</th></tr></thead>'
+            +           '<tbody>' + umurHtml + '</tbody>'
+            +         '</table>'
+
+            +         '<h6 class="fw-bold">Rekomendasi</h6>'
+            +         '<ul class="mb-0 ps-3">' + rekHtml + '</ul>'
+
+            +       '</div>'
+            +       '<div class="modal-footer flex-wrap gap-1">'
+            +         '<button class="btn btn-outline-warning btn-sm" onclick="md58Dedupe()">'
+            +           '<i class="fas fa-copy me-1"></i>Dedupe</button>'
+            +         '<button class="btn btn-outline-info btn-sm" onclick="md58OptimizeAll()">'
+            +           '<i class="fas fa-compress-alt me-1"></i>Optimize</button>'
+            +         '<button class="btn btn-outline-secondary btn-sm" onclick="md58CleanupOrphan()">'
+            +           '<i class="fas fa-unlink me-1"></i>Orphan</button>'
+            +         '<button class="btn btn-danger btn-sm" onclick="md58CleanupLRU()">'
+            +           '<i class="fas fa-broom me-1"></i>Cleanup LRU</button>'
+            +         '<button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            + '</div>';
+
+        var existing = document.getElementById('md58HealthModal');
+        if (existing) existing.remove();
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+        document.body.appendChild(wrapper.firstElementChild);
+
+        try {
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                bootstrap.Modal.getOrCreateInstance(
+                    document.getElementById('md58HealthModal')
+                ).show();
+            }
+        } catch (e) {}
+    }
+
+    // ── 4.2 Cleanup LRU ──
+    window.md58CleanupLRU = function() {
+        var targetKB = prompt(
+            'Bebaskan berapa KB?\n\n' +
+            'Contoh: 500 = 500 KB, 1000 = 1 MB, 5000 = 5 MB',
+            '1000'
+        );
+        if (targetKB === null) return;
+        var n = parseInt(targetKB, 10);
+        if (!n || n <= 0) {
+            if (typeof window.csToast === 'function') window.csToast('Nilai invalid', 'warning');
+            return;
+        }
+        if (!confirm('Hapus media TERLAMA sampai bebas ' + n + ' KB?\n\n'
+                    + '⚠️ Tidak bisa dibatalkan.')) return;
+
+        if (typeof window.psmCleanupLRU !== 'function') {
+            if (typeof window.csToast === 'function') window.csToast('PSM tidak tersedia', 'warning');
+            return;
+        }
+        var r = window.psmCleanupLRU(n);
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '🧹 Cleanup: ' + r.dihapus + ' file · freed ' + r.freedLabel,
+                    r.dihapus > 0 ? 'success' : 'info'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        } else {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + r.pesan, 'danger');
+        }
+    };
+
+    // ── 4.3 Cleanup Orphan ──
+    window.md58CleanupOrphan = function() {
+        if (!confirm('Hapus media ORPHAN?\n\n'
+                    + '(metadata ada, tapi content sudah hilang)')) return;
+        if (typeof window.psmCleanupOrphan !== 'function') return;
+        var r = window.psmCleanupOrphan();
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    r.dihapus > 0
+                        ? '🧹 ' + r.dihapus + ' media orphan dihapus'
+                        : '✅ Tidak ada orphan',
+                    r.dihapus > 0 ? 'success' : 'info'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        }
+    };
+
+    // ── 4.4 Cleanup Older Than ──
+    window.md58CleanupOlder = function() {
+        var hari = prompt('Hapus media yang lebih tua dari berapa hari?', '30');
+        if (hari === null) return;
+        var n = parseInt(hari, 10);
+        if (!n || n <= 0) {
+            if (typeof window.csToast === 'function') window.csToast('Nilai invalid', 'warning');
+            return;
+        }
+        if (!confirm('Hapus semua media > ' + n + ' hari?\n\n'
+                    + '⚠️ Tidak bisa dibatalkan.')) return;
+
+        if (typeof window.psmCleanupOlderThan !== 'function') return;
+        var r = window.psmCleanupOlderThan(n);
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '🧹 Cleanup: ' + r.dihapus + ' file · freed ' + r.freedLabel,
+                    r.dihapus > 0 ? 'success' : 'info'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        }
+    };
+
+    // ── 4.5 Dedupe ──
+    window.md58Dedupe = function() {
+        if (typeof window.psmDedupe !== 'function') return;
+        if (typeof window.csToast === 'function') window.csToast('🔍 Scanning duplikat...', 'info');
+
+        var dry = window.psmDedupe({ dryRun: true });
+        if (!dry.sukses) {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + (dry.pesan || '-'), 'danger');
+            return;
+        }
+        if (dry.totalGrup === 0) {
+            if (typeof window.csToast === 'function') window.csToast('✅ Tidak ada duplikat', 'success');
+            return;
+        }
+        if (!confirm(
+            'Ditemukan ' + dry.totalGrup + ' grup duplikat.\n\n' +
+            'Perkiraan: ' + dry.perkiraanHapus + ' file bisa dihapus\n' +
+            '(akan menyisakan yang paling lama)\n\n' +
+            'Lanjutkan?'
+        )) return;
+
+        var r = window.psmDedupe({ dryRun: false });
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '🧹 Dedupe: ' + r.dihapus + ' file dihapus · freed ' + r.freedLabel,
+                    'success'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        }
+    };
+
+    // ── 4.6 Optimize All Images ──
+    window.md58OptimizeAll = function() {
+        if (typeof window.psmOptimizeImage !== 'function') return;
+
+        var list = window.mdListSemua({ limit: 9999 }).filter(function(m) {
+            return m._hasContent &&
+                ['foto','icon','banner','thumbnail','avatar','logo','stiker']
+                    .indexOf(m.kategori) !== -1;
+        });
+        if (list.length === 0) {
+            if (typeof window.csToast === 'function') {
+                window.csToast('Tidak ada gambar untuk dioptimasi', 'info');
+            }
+            return;
+        }
+
+        var preset = prompt(
+            'Pilih preset kompres untuk ' + list.length + ' gambar:\n\n' +
+            'thumb  — 200px,  q60% (paling kecil)\n' +
+            'small  — 400px,  q70%\n' +
+            'medium — 800px,  q75% (recommended)\n' +
+            'large  — 1200px, q80%\n\n' +
+            'Ketik: thumb / small / medium / large',
+            'medium'
+        );
+        if (!preset) return;
+        if (['thumb','small','medium','large','hq','ultra'].indexOf(preset) === -1) {
+            if (typeof window.csToast === 'function') window.csToast('Preset invalid', 'warning');
+            return;
+        }
+
+        if (typeof window.csToast === 'function') {
+            window.csToast('⏳ Mengoptimasi ' + list.length + ' gambar (preset: ' + preset + ')...', 'info');
+        }
+
+        var done = 0, sukses = 0, totalSaved = 0;
+        var promises = list.map(function(m) {
+            return window.psmOptimizeImage(m.id, preset).then(function(r) {
+                if (r.sukses) {
+                    sukses++;
+                    totalSaved += r.saved || 0;
+                }
+                done++;
+            }).catch(function() { done++; });
+        });
+
+        Promise.all(promises).then(function() {
+            var savedLabel = totalSaved < 1024 ? totalSaved + ' B'
+                           : totalSaved < 1048576 ? (totalSaved / 1024).toFixed(1) + ' KB'
+                           : (totalSaved / 1048576).toFixed(2) + ' MB';
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '✅ Optimize: ' + sukses + '/' + list.length +
+                    ' gambar · saved ' + savedLabel,
+                    'success'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 800);
+        });
+    };
+
+    // ── 4.7 Backup ──
+    window.md58Backup = function() {
+        if (typeof window.psmBackup !== 'function') return;
+        var r = window.psmBackup({ includeContent: true });
+        if (!r.sukses) {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + (r.pesan || '-'), 'danger');
+            return;
+        }
+        if (typeof window.csDownloadJSON === 'function') {
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            window.csDownloadJSON(r.paket, 'md_backup_' + ts + '.json');
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '💾 Backup: ' + r.totalMedia + ' media diunduh',
+                    'success'
+                );
+            }
+        }
+    };
+
+    // ── 4.8 Backup Restore ──
+    window.md58BackupRestore = function() {
+        // File picker
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.onchange = function(e) {
+            var file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (typeof window.csBacaFileAsJSON !== 'function') {
+                if (typeof window.csToast === 'function') window.csToast('CS10 tidak tersedia', 'warning');
+                return;
+            }
+            window.csBacaFileAsJSON(file).then(function(baca) {
+                if (!baca.sukses) {
+                    if (typeof window.csToast === 'function') window.csToast('❌ File invalid', 'danger');
+                    return;
+                }
+                if (!confirm('Restore ' + ((baca.data._meta && baca.data._meta.totalMedia) || 0) +
+                            ' media dari backup?\n\n(File existing tidak akan tertimpa)')) return;
+                if (typeof window.psmRestore !== 'function') return;
+                var r = window.psmRestore(baca.data, { overwrite: false });
+                if (r.sukses) {
+                    if (typeof window.csToast === 'function') {
+                        window.csToast(
+                            '✅ Restore: ' + r.berhasil + ' dipulihkan · ' + r.skip + ' skip',
+                            'success'
+                        );
+                    }
+                    setTimeout(function() {
+                        if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                    }, 500);
+                }
+            });
+        };
+        input.click();
+    };
+
+    function _closeHealthModal() {
+        try {
+            var modal = document.getElementById('md58HealthModal');
+            if (!modal) return;
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                var inst = bootstrap.Modal.getInstance(modal);
+                if (inst) inst.hide();
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.5] — AUTO-REFRESH HEALTH PANEL setelah event
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:media-baru', function() {
+        if (document.getElementById('md58PsmPanel')) {
+            setTimeout(_fillHealthPanel, 300);
+        }
+    });
+    window.addEventListener('r2coin:media-hapus', function() {
+        if (document.getElementById('md58PsmPanel')) {
+            setTimeout(_fillHealthPanel, 300);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.6] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugPsmBridge = function() {
+        var info = {
+            blok: '10.58-PSM-BRIDGE',
+            versi: window._blok1058PsmVersi,
+            guard: window._blok1058PsmDoneV1,
+            dependency: {
+                blok1058: !!window._blok1058DoneV1,
+                psm:      typeof window.psmCekQuota === 'function',
+                tampilkan: typeof window.tampilkanPenyimpananMediaSA === 'function'
+            },
+            statusPanel: {
+                headerDropdown: !!document.querySelector('.psm-header-btn'),
+                healthPanel:    !!document.getElementById('md58PsmPanel')
+            },
+            fungsi: {
+                md58HealthCheck:     typeof window.md58HealthCheck,
+                md58CleanupLRU:      typeof window.md58CleanupLRU,
+                md58CleanupOrphan:   typeof window.md58CleanupOrphan,
+                md58CleanupOlder:    typeof window.md58CleanupOlder,
+                md58Dedupe:          typeof window.md58Dedupe,
+                md58OptimizeAll:     typeof window.md58OptimizeAll,
+                md58Backup:          typeof window.md58Backup,
+                md58BackupRestore:   typeof window.md58BackupRestore
+            }
+        };
+        console.log('🔍 debugPsmBridge v1.0:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.7] — AUTO-REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === '10.58.1';
+                });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: '10.58.1',
+                        nama: 'PSM Bridge — Health + Cleanup (10.58 extension)',
+                        layer: 'L5',
+                        status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                }
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === '10.58.1';
+                });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        tanggal: new Date().toISOString().substring(0, 10),
+                        blok: '10.58.1',
+                        nama: 'PSM Bridge v1.0 — Integrasi 10.58',
+                        keterangan: 'Wrap tampilkanPenyimpananMediaSA · ' +
+                                    'MutationObserver re-inject · ' +
+                                    'Health panel (async quota) + Storage dropdown · ' +
+                                    '8 action handlers (Health/LRU/Orphan/Older/Dedupe/Optimize/Backup/Restore)'
+                    });
+                }
+            }
+        } catch (e) {}
+    }, 1200);
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.8] — LOG TERPASANG
+    // ═══════════════════════════════════════════════════════════
+    console.log(
+        '%c🇮🇩 BLOK 10.58.1 — PSM BRIDGE terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
+        'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
+    );
+    console.log(
+        '   💾 Auto-inject ke dashboard 10.58: ' +
+        'Health Panel (progress bar quota) + Storage Dropdown (8 actions) · ' +
+        'MutationObserver re-inject · debugPsmBridge()'
+    );
+})();
+</script>
+<!-- ═══ AKHIR BLOK 10.58-PSM BRIDGE v1.0 ═════════════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 9.3.1 (0) — HELPER MENU CONFIG 🇮🇩 v3.0 FINAL ══ -->
 <!-- ═══ Layer: L3a (Menu Config — Helper Builder) ══════════════ -->
 <!-- ═══ Dependency: CS1 v4.2+ (CS_ROLE_MAP) ═══════════════════ -->
@@ -61181,796 +61971,6 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 })();
 </script>
 <!-- ═══ AKHIR BLOK R 10.29 — DASBOR JASA SA 🇮🇩 v1.0 ═════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK 10.58-PSM BRIDGE — INTEGRASI DASHBOARD v1.0 ═════ -->
-<!-- ═══ Layer: L5 (UI Extension — Health Panel + Cleanup Buttons) -->
-<!-- ═══ Guard: _blok1058PsmDoneV1 (A32) · Versi: 1.0 ═════════ -->
-<!-- ═══ Dep: 10.58 (harus sudah ada) · PSM (harus sudah ada) ══ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ Auto-inject ke dashboard 10.58:                           -->
-<!-- ═══   [1] Health Panel (quota bar + status) — di bawah stat   -->
-<!-- ═══   [2] Dropdown "Storage" — di header: Health, Cleanup    -->
-<!-- ═══       LRU/Orphan/Older, Dedupe, Optimize, Backup         -->
-<!-- ═══   [3] Health Modal — detail lengkap (per kategori/umur)  -->
-<!-- ═══   [4] MutationObserver — re-inject saat filter/search    -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ 8 Action Handlers:                                       -->
-<!-- ═══   md58HealthCheck · md58CleanupLRU · md58CleanupOrphan   -->
-<!-- ═══   md58CleanupOlder · md58Dedupe · md58OptimizeAll        -->
-<!-- ═══   md58Backup · md58BackupRestore                         -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_1058_PSM_BRIDGE_V1() {
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.0] — GUARD + RETRY (wait for 10.58 + PSM)
-    // ═══════════════════════════════════════════════════════════
-    if (window._blok1058PsmDoneV1) return;
-
-    if (!window._blok1058DoneV1 || typeof window.tampilkanPenyimpananMediaSA !== 'function') {
-        var r1 = (window._psmBridgeRetry1 || 0) + 1;
-        window._psmBridgeRetry1 = r1;
-        if (r1 < 20) { setTimeout(BLOK_1058_PSM_BRIDGE_V1, 500); return; }
-        console.warn('⚠️ 10.58-PSM Bridge: 10.58 tidak terpasang setelah 20 retry.');
-        return;
-    }
-    if (typeof window.psmCekQuota !== 'function' || typeof window.psmCleanupLRU !== 'function') {
-        var r2 = (window._psmBridgeRetry2 || 0) + 1;
-        window._psmBridgeRetry2 = r2;
-        if (r2 < 20) { setTimeout(BLOK_1058_PSM_BRIDGE_V1, 500); return; }
-        console.warn('⚠️ 10.58-PSM Bridge: PSM tidak terpasang setelah 20 retry.');
-        return;
-    }
-
-    window._blok1058PsmDoneV1 = true;
-    window._blok1058PsmVersi  = '1.0';
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.1] — WRAP ENTRY POINT 10.58
-    // ═══════════════════════════════════════════════════════════
-    var _origTampil = window.tampilkanPenyimpananMediaSA;
-    window.tampilkanPenyimpananMediaSA = function() {
-        var r = _origTampil.apply(this, arguments);
-        setTimeout(_injectAll, 200);
-        return r;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.2] — MUTATION OBSERVER (re-inject saat filter/cari)
-    // ═══════════════════════════════════════════════════════════
-    var _injectTimer = null;
-    function _scheduleInject() {
-        clearTimeout(_injectTimer);
-        _injectTimer = setTimeout(_injectAll, 150);
-    }
-
-    try {
-        var observer = new MutationObserver(function() {
-            // Trigger hanya kalau upload button ada (10.58 dashboard aktif)
-            var uploadBtn = document.querySelector(
-                '#kontenDasbor button[onclick*="md58BukaUpload"]'
-            );
-            if (!uploadBtn) return;
-            // Cek apakah inject sudah ada
-            var panel = document.getElementById('md58PsmPanel');
-            var dropdown = document.querySelector('.psm-header-btn');
-            if (!panel || !dropdown) {
-                _scheduleInject();
-            }
-        });
-        setTimeout(function() {
-            var target = document.getElementById('kontenDasbor') || document.body;
-            if (target) {
-                observer.observe(target, { childList: true, subtree: true });
-            }
-        }, 500);
-    } catch (e) {
-        console.warn('[10.58-PSM] MutationObserver error:', e.message);
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.3] — INJECT ALL (header buttons + health panel)
-    // ═══════════════════════════════════════════════════════════
-    function _injectAll() {
-        try {
-            _injectHeaderButtons();
-            _injectHealthPanel();
-        } catch (e) {
-            console.warn('[10.58-PSM] inject error:', e.message);
-        }
-    }
-
-    // ── 3.1 Inject dropdown "Storage" di header dashboard ──
-    function _injectHeaderButtons() {
-        // Cari container tombol — anchor: tombol dengan onclick md58BukaUpload
-        var uploadBtn = document.querySelector(
-            '#kontenDasbor button[onclick*="md58BukaUpload"]'
-        );
-        if (!uploadBtn) return;
-        var container = uploadBtn.parentNode;
-        if (!container) return;
-
-        // Sudah ada? skip
-        if (container.querySelector('.psm-header-btn')) return;
-
-        var dropdown = document.createElement('div');
-        dropdown.className = 'dropdown psm-header-btn';
-        dropdown.innerHTML = ''
-            + '<button class="btn btn-outline-light btn-sm dropdown-toggle" '
-            +   'type="button" data-bs-toggle="dropdown" aria-expanded="false">'
-            +   '<i class="fas fa-hdd me-1"></i>Storage'
-            + '</button>'
-            + '<ul class="dropdown-menu dropdown-menu-end shadow">'
-            +   '<li><h6 class="dropdown-header"><i class="fas fa-heartbeat me-1"></i>Health</h6></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58HealthCheck();">'
-            +     '<i class="fas fa-chart-pie me-2 text-danger"></i>Lihat Health Storage</a></li>'
-            +   '<li><hr class="dropdown-divider"></li>'
-            +   '<li><h6 class="dropdown-header"><i class="fas fa-broom me-1"></i>Cleanup</h6></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58CleanupLRU();">'
-            +     '<i class="fas fa-clock me-2 text-warning"></i>Cleanup LRU (bebas N KB)</a></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58CleanupOlder();">'
-            +     '<i class="fas fa-calendar-times me-2 text-warning"></i>Cleanup &gt; N hari</a></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58CleanupOrphan();">'
-            +     '<i class="fas fa-unlink me-2 text-warning"></i>Cleanup Orphan</a></li>'
-            +   '<li><hr class="dropdown-divider"></li>'
-            +   '<li><h6 class="dropdown-header"><i class="fas fa-tools me-1"></i>Optimize</h6></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58Dedupe();">'
-            +     '<i class="fas fa-copy me-2 text-info"></i>Dedupe (deteksi duplikat)</a></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58OptimizeAll();">'
-            +     '<i class="fas fa-compress-alt me-2 text-info"></i>Optimize semua gambar</a></li>'
-            +   '<li><hr class="dropdown-divider"></li>'
-            +   '<li><h6 class="dropdown-header"><i class="fas fa-database me-1"></i>Backup</h6></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58Backup();">'
-            +     '<i class="fas fa-download me-2 text-success"></i>Backup semua media</a></li>'
-            +   '<li><a class="dropdown-item" href="#" '
-            +     'onclick="event.preventDefault();md58BackupRestore();">'
-            +     '<i class="fas fa-upload me-2 text-success"></i>Restore dari file</a></li>'
-            + '</ul>';
-
-        container.insertBefore(dropdown, container.firstChild);
-    }
-
-    // ── 3.2 Inject health panel setelah stat cards ──
-    function _injectHealthPanel() {
-        // Sudah ada? skip
-        if (document.getElementById('md58PsmPanel')) return;
-
-        // Cari stat cards row — anchor: cari row yang berisi card "Total Media"
-        var rows = document.querySelectorAll('#kontenDasbor .row.g-2.mb-3');
-        var statRow = null;
-        for (var i = 0; i < rows.length; i++) {
-            if (rows[i].textContent.indexOf('Total Media') !== -1) {
-                statRow = rows[i];
-                break;
-            }
-        }
-        if (!statRow) return;
-
-        var panel = document.createElement('div');
-        panel.id = 'md58PsmPanel';
-        panel.className = 'mb-3';
-        panel.innerHTML = ''
-            + '<div class="card border-0 shadow-sm">'
-            +   '<div class="card-body py-2">'
-            +     '<div class="d-flex align-items-center gap-2">'
-            +       '<i class="fas fa-spinner fa-spin text-muted"></i>'
-            +       '<small class="text-muted">Mengecek health storage...</small>'
-            +     '</div>'
-            +   '</div>'
-            + '</div>';
-
-        statRow.parentNode.insertBefore(panel, statRow.nextSibling);
-
-        // Async fill
-        _fillHealthPanel();
-    }
-
-    // ── 3.3 Fill health panel async ──
-    function _fillHealthPanel() {
-        var panel = document.getElementById('md58PsmPanel');
-        if (!panel) return;
-
-        if (typeof window.psmCekQuota !== 'function') {
-            panel.innerHTML = '<div class="alert alert-warning small mb-0">'
-                + 'PSM tidak tersedia</div>';
-            return;
-        }
-
-        window.psmCekQuota().then(function(q) {
-            if (!q.sukses) {
-                panel.innerHTML = '<div class="alert alert-warning small mb-0">'
-                    + 'Gagal cek storage: ' + (q.pesan || '-') + '</div>';
-                return;
-            }
-
-            var warna = q.status === 'critical' ? 'danger'
-                      : q.status === 'danger'   ? 'danger'
-                      : q.status === 'warning'  ? 'warning'
-                      : 'success';
-            var ikon  = q.status === 'critical' ? 'fa-exclamation-triangle'
-                      : q.status === 'danger'   ? 'fa-exclamation-circle'
-                      : q.status === 'warning'  ? 'fa-exclamation-triangle'
-                      : 'fa-check-circle';
-            var label = q.status === 'critical' ? 'KRITIS'
-                      : q.status === 'danger'   ? 'DANGER'
-                      : q.status === 'warning'  ? 'WARNING'
-                      : 'SEHAT';
-
-            var needsCleanup = q.persen >= 80;
-
-            var html = ''
-                + '<div class="card border-0 shadow-sm" '
-                +   'style="border-left:4px solid var(--bs-' + warna + ') !important;">'
-                +   '<div class="card-body py-2">'
-                +     '<div class="d-flex justify-content-between align-items-center '
-                +       'mb-2 flex-wrap gap-2">'
-                +       '<div>'
-                +         '<i class="fas ' + ikon + ' text-' + warna + ' me-1"></i>'
-                +         '<strong>Storage ' + label + '</strong>'
-                +         '<small class="text-muted ms-2">'
-                +           q.usageLabel + ' / ' + q.quotaLabel
-                +         '</small>'
-                +       '</div>'
-                +       '<div class="d-flex gap-1">'
-                +         '<button class="btn btn-outline-' + warna + ' btn-sm" '
-                +           'onclick="md58HealthCheck()" title="Detail Health">'
-                +           '<i class="fas fa-info-circle me-1"></i>Detail</button>'
-                +         (needsCleanup
-                            ? '<button class="btn btn-danger btn-sm" '
-                            + 'onclick="md58CleanupLRU()" title="Bebaskan ruang">'
-                            + '<i class="fas fa-broom me-1"></i>Cleanup</button>'
-                            : '')
-                +       '</div>'
-                +     '</div>'
-                +     '<div class="progress" style="height:8px;">'
-                +       '<div class="progress-bar bg-' + warna + '" '
-                +         'style="width:' + Math.min(q.persen, 100) + '%;"></div>'
-                +     '</div>'
-                +     '<div class="d-flex justify-content-between mt-1" '
-                +       'style="font-size:10px;color:#999;">'
-                +       '<span>' + q.persen + '% terpakai</span>'
-                +       '<span>' + q.sisaLabel + ' tersisa</span>'
-                +     '</div>'
-                +   '</div>'
-                + '</div>';
-            panel.innerHTML = html;
-        }).catch(function(err) {
-            panel.innerHTML = '<div class="alert alert-warning small mb-0">'
-                + 'Error: ' + err.message + '</div>';
-        });
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.4] — ACTION HANDLERS (8 fungsi)
-    // ═══════════════════════════════════════════════════════════
-
-    // ── 4.1 Health Check Modal ──
-    window.md58HealthCheck = function() {
-        if (typeof window.psmGetInfo !== 'function') {
-            if (typeof window.csToast === 'function') window.csToast('PSM tidak tersedia', 'warning');
-            return;
-        }
-        window.psmGetInfo().then(function(info) {
-            if (!info.sukses) {
-                if (typeof window.csToast === 'function') window.csToast('❌ ' + (info.pesan || '-'), 'danger');
-                return;
-            }
-            _renderHealthModal(info);
-        });
-    };
-
-    function _renderHealthModal(info) {
-        var q = info.quota || {};
-        var stat = info.statistik || {};
-        var perKat = info.perKategori || {};
-        var perUmur = info.perUmur || {};
-        var rek = info.rekomendasi || [];
-
-        var statusColor = (q.status === 'critical' || q.status === 'danger') ? 'danger'
-                        : q.status === 'warning' ? 'warning' : 'success';
-
-        var kategoriHtml = Object.keys(perKat)
-            .filter(function(k) { return perKat[k].total > 0; })
-            .map(function(k) {
-                var p = perKat[k];
-                return '<tr>'
-                    + '<td><strong>' + k + '</strong></td>'
-                    + '<td>' + p.total + '</td>'
-                    + '<td>' + p.sizeLabel + '</td>'
-                    + '</tr>';
-            }).join('');
-        if (!kategoriHtml) {
-            kategoriHtml = '<tr><td colspan="3" class="text-center text-muted">Belum ada data</td></tr>';
-        }
-
-        var umurHtml = Object.keys(perUmur).map(function(k) {
-            var p = perUmur[k];
-            return '<tr>'
-                + '<td>' + k + '</td>'
-                + '<td>' + p.total + '</td>'
-                + '<td>' + (p.sizeLabel || '-') + '</td>'
-                + '</tr>';
-        }).join('');
-
-        var rekHtml = rek.length > 0
-            ? rek.map(function(r) {
-                var warna = r.prioritas === 'tinggi' ? 'danger'
-                          : r.prioritas === 'sedang' ? 'warning' : 'info';
-                return '<li class="small mb-1">'
-                    + '<span class="badge bg-' + warna + ' me-1">' + r.prioritas + '</span>'
-                    + r.pesan + '</li>';
-            }).join('')
-            : '<li class="small text-muted">Tidak ada rekomendasi</li>';
-
-        var html = ''
-            + '<div class="modal fade" id="md58HealthModal" tabindex="-1" aria-hidden="true">'
-            +   '<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">'
-            +     '<div class="modal-content border-0 shadow-lg">'
-            +       '<div class="modal-header text-white" '
-            +         'style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
-            +         '<h5 class="modal-title">'
-            +           '<i class="fas fa-heartbeat me-2"></i>Health Storage Media'
-            +         '</h5>'
-            +         '<button type="button" class="btn-close btn-close-white" '
-            +           'data-bs-dismiss="modal"></button>'
-            +       '</div>'
-            +       '<div class="modal-body">'
-
-            +         '<div class="alert alert-' + statusColor + ' small mb-3">'
-            +           '<div class="d-flex justify-content-between">'
-            +             '<span><strong>' + (info.healthLabel || '-') + '</strong></span>'
-            +             '<span>Score: ' + (info.health || 0) + '/100</span>'
-            +           '</div>'
-            +           '<div class="progress mt-2" style="height:10px;">'
-            +             '<div class="progress-bar bg-' + statusColor + '" '
-            +               'style="width:' + (info.health || 0) + '%;"></div>'
-            +           '</div>'
-            +           '<div class="d-flex justify-content-between mt-1" '
-            +             'style="font-size:10px;">'
-            +             '<span>' + q.usageLabel + ' / ' + q.quotaLabel + '</span>'
-            +             '<span>' + q.persen + '% terpakai</span>'
-            +           '</div>'
-            +         '</div>'
-
-            +         '<div class="row g-2 mb-3">'
-            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
-            +             '<div class="card-body py-2">'
-            +             '<h5 class="mb-0 fw-bold">' + (stat.totalMedia || 0) + '</h5>'
-            +             '<small class="text-muted">Media</small>'
-            +           '</div></div></div>'
-            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
-            +             '<div class="card-body py-2">'
-            +             '<h5 class="mb-0 fw-bold">' + (stat.base64Count || 0) + '</h5>'
-            +             '<small class="text-muted">Base64</small>'
-            +           '</div></div></div>'
-            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
-            +             '<div class="card-body py-2">'
-            +             '<h5 class="mb-0 fw-bold">' + (stat.urlCount || 0) + '</h5>'
-            +             '<small class="text-muted">URL</small>'
-            +           '</div></div></div>'
-            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
-            +             '<div class="card-body py-2">'
-            +             '<h5 class="mb-0 fw-bold" style="font-size:14px;">' 
-            +               (stat.totalSizeFileLabel || '0 B') + '</h5>'
-            +             '<small class="text-muted">Ukuran</small>'
-            +           '</div></div></div>'
-            +         '</div>'
-
-            +         '<h6 class="fw-bold mt-3">Per Kategori</h6>'
-            +         '<table class="table table-sm mb-3">'
-            +           '<thead><tr><th>Kategori</th><th>Jumlah</th><th>Ukuran</th></tr></thead>'
-            +           '<tbody>' + kategoriHtml + '</tbody>'
-            +         '</table>'
-
-            +         '<h6 class="fw-bold">Per Umur</h6>'
-            +         '<table class="table table-sm mb-3">'
-            +           '<thead><tr><th>Umur</th><th>Jumlah</th><th>Ukuran</th></tr></thead>'
-            +           '<tbody>' + umurHtml + '</tbody>'
-            +         '</table>'
-
-            +         '<h6 class="fw-bold">Rekomendasi</h6>'
-            +         '<ul class="mb-0 ps-3">' + rekHtml + '</ul>'
-
-            +       '</div>'
-            +       '<div class="modal-footer flex-wrap gap-1">'
-            +         '<button class="btn btn-outline-warning btn-sm" onclick="md58Dedupe()">'
-            +           '<i class="fas fa-copy me-1"></i>Dedupe</button>'
-            +         '<button class="btn btn-outline-info btn-sm" onclick="md58OptimizeAll()">'
-            +           '<i class="fas fa-compress-alt me-1"></i>Optimize</button>'
-            +         '<button class="btn btn-outline-secondary btn-sm" onclick="md58CleanupOrphan()">'
-            +           '<i class="fas fa-unlink me-1"></i>Orphan</button>'
-            +         '<button class="btn btn-danger btn-sm" onclick="md58CleanupLRU()">'
-            +           '<i class="fas fa-broom me-1"></i>Cleanup LRU</button>'
-            +         '<button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>'
-            +       '</div>'
-            +     '</div>'
-            +   '</div>'
-            + '</div>';
-
-        var existing = document.getElementById('md58HealthModal');
-        if (existing) existing.remove();
-        var wrapper = document.createElement('div');
-        wrapper.innerHTML = html;
-        document.body.appendChild(wrapper.firstElementChild);
-
-        try {
-            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-                bootstrap.Modal.getOrCreateInstance(
-                    document.getElementById('md58HealthModal')
-                ).show();
-            }
-        } catch (e) {}
-    }
-
-    // ── 4.2 Cleanup LRU ──
-    window.md58CleanupLRU = function() {
-        var targetKB = prompt(
-            'Bebaskan berapa KB?\n\n' +
-            'Contoh: 500 = 500 KB, 1000 = 1 MB, 5000 = 5 MB',
-            '1000'
-        );
-        if (targetKB === null) return;
-        var n = parseInt(targetKB, 10);
-        if (!n || n <= 0) {
-            if (typeof window.csToast === 'function') window.csToast('Nilai invalid', 'warning');
-            return;
-        }
-        if (!confirm('Hapus media TERLAMA sampai bebas ' + n + ' KB?\n\n'
-                    + '⚠️ Tidak bisa dibatalkan.')) return;
-
-        if (typeof window.psmCleanupLRU !== 'function') {
-            if (typeof window.csToast === 'function') window.csToast('PSM tidak tersedia', 'warning');
-            return;
-        }
-        var r = window.psmCleanupLRU(n);
-        if (r.sukses) {
-            if (typeof window.csToast === 'function') {
-                window.csToast(
-                    '🧹 Cleanup: ' + r.dihapus + ' file · freed ' + r.freedLabel,
-                    r.dihapus > 0 ? 'success' : 'info'
-                );
-            }
-            _closeHealthModal();
-            setTimeout(function() {
-                if (typeof window.md58Refresh === 'function') window.md58Refresh();
-                _fillHealthPanel();
-            }, 500);
-        } else {
-            if (typeof window.csToast === 'function') window.csToast('❌ ' + r.pesan, 'danger');
-        }
-    };
-
-    // ── 4.3 Cleanup Orphan ──
-    window.md58CleanupOrphan = function() {
-        if (!confirm('Hapus media ORPHAN?\n\n'
-                    + '(metadata ada, tapi content sudah hilang)')) return;
-        if (typeof window.psmCleanupOrphan !== 'function') return;
-        var r = window.psmCleanupOrphan();
-        if (r.sukses) {
-            if (typeof window.csToast === 'function') {
-                window.csToast(
-                    r.dihapus > 0
-                        ? '🧹 ' + r.dihapus + ' media orphan dihapus'
-                        : '✅ Tidak ada orphan',
-                    r.dihapus > 0 ? 'success' : 'info'
-                );
-            }
-            _closeHealthModal();
-            setTimeout(function() {
-                if (typeof window.md58Refresh === 'function') window.md58Refresh();
-                _fillHealthPanel();
-            }, 500);
-        }
-    };
-
-    // ── 4.4 Cleanup Older Than ──
-    window.md58CleanupOlder = function() {
-        var hari = prompt('Hapus media yang lebih tua dari berapa hari?', '30');
-        if (hari === null) return;
-        var n = parseInt(hari, 10);
-        if (!n || n <= 0) {
-            if (typeof window.csToast === 'function') window.csToast('Nilai invalid', 'warning');
-            return;
-        }
-        if (!confirm('Hapus semua media > ' + n + ' hari?\n\n'
-                    + '⚠️ Tidak bisa dibatalkan.')) return;
-
-        if (typeof window.psmCleanupOlderThan !== 'function') return;
-        var r = window.psmCleanupOlderThan(n);
-        if (r.sukses) {
-            if (typeof window.csToast === 'function') {
-                window.csToast(
-                    '🧹 Cleanup: ' + r.dihapus + ' file · freed ' + r.freedLabel,
-                    r.dihapus > 0 ? 'success' : 'info'
-                );
-            }
-            _closeHealthModal();
-            setTimeout(function() {
-                if (typeof window.md58Refresh === 'function') window.md58Refresh();
-                _fillHealthPanel();
-            }, 500);
-        }
-    };
-
-    // ── 4.5 Dedupe ──
-    window.md58Dedupe = function() {
-        if (typeof window.psmDedupe !== 'function') return;
-        if (typeof window.csToast === 'function') window.csToast('🔍 Scanning duplikat...', 'info');
-
-        var dry = window.psmDedupe({ dryRun: true });
-        if (!dry.sukses) {
-            if (typeof window.csToast === 'function') window.csToast('❌ ' + (dry.pesan || '-'), 'danger');
-            return;
-        }
-        if (dry.totalGrup === 0) {
-            if (typeof window.csToast === 'function') window.csToast('✅ Tidak ada duplikat', 'success');
-            return;
-        }
-        if (!confirm(
-            'Ditemukan ' + dry.totalGrup + ' grup duplikat.\n\n' +
-            'Perkiraan: ' + dry.perkiraanHapus + ' file bisa dihapus\n' +
-            '(akan menyisakan yang paling lama)\n\n' +
-            'Lanjutkan?'
-        )) return;
-
-        var r = window.psmDedupe({ dryRun: false });
-        if (r.sukses) {
-            if (typeof window.csToast === 'function') {
-                window.csToast(
-                    '🧹 Dedupe: ' + r.dihapus + ' file dihapus · freed ' + r.freedLabel,
-                    'success'
-                );
-            }
-            _closeHealthModal();
-            setTimeout(function() {
-                if (typeof window.md58Refresh === 'function') window.md58Refresh();
-                _fillHealthPanel();
-            }, 500);
-        }
-    };
-
-    // ── 4.6 Optimize All Images ──
-    window.md58OptimizeAll = function() {
-        if (typeof window.psmOptimizeImage !== 'function') return;
-
-        var list = window.mdListSemua({ limit: 9999 }).filter(function(m) {
-            return m._hasContent &&
-                ['foto','icon','banner','thumbnail','avatar','logo','stiker']
-                    .indexOf(m.kategori) !== -1;
-        });
-        if (list.length === 0) {
-            if (typeof window.csToast === 'function') {
-                window.csToast('Tidak ada gambar untuk dioptimasi', 'info');
-            }
-            return;
-        }
-
-        var preset = prompt(
-            'Pilih preset kompres untuk ' + list.length + ' gambar:\n\n' +
-            'thumb  — 200px,  q60% (paling kecil)\n' +
-            'small  — 400px,  q70%\n' +
-            'medium — 800px,  q75% (recommended)\n' +
-            'large  — 1200px, q80%\n\n' +
-            'Ketik: thumb / small / medium / large',
-            'medium'
-        );
-        if (!preset) return;
-        if (['thumb','small','medium','large','hq','ultra'].indexOf(preset) === -1) {
-            if (typeof window.csToast === 'function') window.csToast('Preset invalid', 'warning');
-            return;
-        }
-
-        if (typeof window.csToast === 'function') {
-            window.csToast('⏳ Mengoptimasi ' + list.length + ' gambar (preset: ' + preset + ')...', 'info');
-        }
-
-        var done = 0, sukses = 0, totalSaved = 0;
-        var promises = list.map(function(m) {
-            return window.psmOptimizeImage(m.id, preset).then(function(r) {
-                if (r.sukses) {
-                    sukses++;
-                    totalSaved += r.saved || 0;
-                }
-                done++;
-            }).catch(function() { done++; });
-        });
-
-        Promise.all(promises).then(function() {
-            var savedLabel = totalSaved < 1024 ? totalSaved + ' B'
-                           : totalSaved < 1048576 ? (totalSaved / 1024).toFixed(1) + ' KB'
-                           : (totalSaved / 1048576).toFixed(2) + ' MB';
-            if (typeof window.csToast === 'function') {
-                window.csToast(
-                    '✅ Optimize: ' + sukses + '/' + list.length +
-                    ' gambar · saved ' + savedLabel,
-                    'success'
-                );
-            }
-            _closeHealthModal();
-            setTimeout(function() {
-                if (typeof window.md58Refresh === 'function') window.md58Refresh();
-                _fillHealthPanel();
-            }, 800);
-        });
-    };
-
-    // ── 4.7 Backup ──
-    window.md58Backup = function() {
-        if (typeof window.psmBackup !== 'function') return;
-        var r = window.psmBackup({ includeContent: true });
-        if (!r.sukses) {
-            if (typeof window.csToast === 'function') window.csToast('❌ ' + (r.pesan || '-'), 'danger');
-            return;
-        }
-        if (typeof window.csDownloadJSON === 'function') {
-            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-            window.csDownloadJSON(r.paket, 'md_backup_' + ts + '.json');
-            if (typeof window.csToast === 'function') {
-                window.csToast(
-                    '💾 Backup: ' + r.totalMedia + ' media diunduh',
-                    'success'
-                );
-            }
-        }
-    };
-
-    // ── 4.8 Backup Restore ──
-    window.md58BackupRestore = function() {
-        // File picker
-        var input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json,application/json';
-        input.onchange = function(e) {
-            var file = e.target.files && e.target.files[0];
-            if (!file) return;
-            if (typeof window.csBacaFileAsJSON !== 'function') {
-                if (typeof window.csToast === 'function') window.csToast('CS10 tidak tersedia', 'warning');
-                return;
-            }
-            window.csBacaFileAsJSON(file).then(function(baca) {
-                if (!baca.sukses) {
-                    if (typeof window.csToast === 'function') window.csToast('❌ File invalid', 'danger');
-                    return;
-                }
-                if (!confirm('Restore ' + ((baca.data._meta && baca.data._meta.totalMedia) || 0) +
-                            ' media dari backup?\n\n(File existing tidak akan tertimpa)')) return;
-                if (typeof window.psmRestore !== 'function') return;
-                var r = window.psmRestore(baca.data, { overwrite: false });
-                if (r.sukses) {
-                    if (typeof window.csToast === 'function') {
-                        window.csToast(
-                            '✅ Restore: ' + r.berhasil + ' dipulihkan · ' + r.skip + ' skip',
-                            'success'
-                        );
-                    }
-                    setTimeout(function() {
-                        if (typeof window.md58Refresh === 'function') window.md58Refresh();
-                    }, 500);
-                }
-            });
-        };
-        input.click();
-    };
-
-    function _closeHealthModal() {
-        try {
-            var modal = document.getElementById('md58HealthModal');
-            if (!modal) return;
-            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-                var inst = bootstrap.Modal.getInstance(modal);
-                if (inst) inst.hide();
-            }
-        } catch (e) {}
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.5] — AUTO-REFRESH HEALTH PANEL setelah event
-    // ═══════════════════════════════════════════════════════════
-    window.addEventListener('r2coin:media-baru', function() {
-        if (document.getElementById('md58PsmPanel')) {
-            setTimeout(_fillHealthPanel, 300);
-        }
-    });
-    window.addEventListener('r2coin:media-hapus', function() {
-        if (document.getElementById('md58PsmPanel')) {
-            setTimeout(_fillHealthPanel, 300);
-        }
-    });
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.6] — DEBUG (A5)
-    // ═══════════════════════════════════════════════════════════
-    window.debugPsmBridge = function() {
-        var info = {
-            blok: '10.58-PSM-BRIDGE',
-            versi: window._blok1058PsmVersi,
-            guard: window._blok1058PsmDoneV1,
-            dependency: {
-                blok1058: !!window._blok1058DoneV1,
-                psm:      typeof window.psmCekQuota === 'function',
-                tampilkan: typeof window.tampilkanPenyimpananMediaSA === 'function'
-            },
-            statusPanel: {
-                headerDropdown: !!document.querySelector('.psm-header-btn'),
-                healthPanel:    !!document.getElementById('md58PsmPanel')
-            },
-            fungsi: {
-                md58HealthCheck:     typeof window.md58HealthCheck,
-                md58CleanupLRU:      typeof window.md58CleanupLRU,
-                md58CleanupOrphan:   typeof window.md58CleanupOrphan,
-                md58CleanupOlder:    typeof window.md58CleanupOlder,
-                md58Dedupe:          typeof window.md58Dedupe,
-                md58OptimizeAll:     typeof window.md58OptimizeAll,
-                md58Backup:          typeof window.md58Backup,
-                md58BackupRestore:   typeof window.md58BackupRestore
-            }
-        };
-        console.log('🔍 debugPsmBridge v1.0:', info);
-        return info;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.7] — AUTO-REGISTRY
-    // ═══════════════════════════════════════════════════════════
-    setTimeout(function() {
-        try {
-            if (typeof window.cpTambahBlok === 'function') {
-                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
-                    return b && b.kode === '10.58.1';
-                });
-                if (!ada) {
-                    window.cpTambahBlok({
-                        kode: '10.58.1',
-                        nama: 'PSM Bridge — Health + Cleanup (10.58 extension)',
-                        layer: 'L5',
-                        status: 'Selesai',
-                        tanggal: new Date().toISOString().substring(0, 10)
-                    });
-                }
-            }
-            if (typeof window.cpTambahRiwayat === 'function') {
-                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
-                    return r && r.blok === '10.58.1';
-                });
-                if (!adaR) {
-                    window.cpTambahRiwayat({
-                        tanggal: new Date().toISOString().substring(0, 10),
-                        blok: '10.58.1',
-                        nama: 'PSM Bridge v1.0 — Integrasi 10.58',
-                        keterangan: 'Wrap tampilkanPenyimpananMediaSA · ' +
-                                    'MutationObserver re-inject · ' +
-                                    'Health panel (async quota) + Storage dropdown · ' +
-                                    '8 action handlers (Health/LRU/Orphan/Older/Dedupe/Optimize/Backup/Restore)'
-                    });
-                }
-            }
-        } catch (e) {}
-    }, 1200);
-
-    // ═══════════════════════════════════════════════════════════
-    // [BRIDGE.8] — LOG TERPASANG
-    // ═══════════════════════════════════════════════════════════
-    console.log(
-        '%c🇮🇩 BLOK 10.58.1 — PSM BRIDGE terpasang.',
-        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
-        'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
-    );
-    console.log(
-        '   💾 Auto-inject ke dashboard 10.58: ' +
-        'Health Panel (progress bar quota) + Storage Dropdown (8 actions) · ' +
-        'MutationObserver re-inject · debugPsmBridge()'
-    );
-})();
-</script>
-<!-- ═══ AKHIR BLOK 10.58-PSM BRIDGE v1.0 ═════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK OM — ORPHAN MANAGEMENT v2.0 FINAL ═══════════════ -->
