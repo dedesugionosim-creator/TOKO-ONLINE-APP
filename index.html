@@ -60128,6 +60128,897 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 <!-- ═══ AKHIR BLOK R 10.29 — DASBOR JASA SA 🇮🇩 v1.0 ═════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK 10.58 — PENYIMPANAN MEDIA (AUTO-COLLECTOR) v1.0 ══ -->
+<!-- ═══ Layer: L5 (UI Viewer — Media Dashboard) ═══════════════ -->
+<!-- ═══ Guard: _blok1058DoneV1 (A32) · Versi: 1.0 ═════════════ -->
+<!-- ═══ Dep: MD (L4), CS2, CS4, CS6, CS10, GID, FDU ══════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ FITUR AUTO-DETECT (KUNCI):                               -->
+<!-- ═══   [1] Intercept global mdSimpan / mdSimpanBase64 / URL    -->
+<!-- ═══   [2] Auto-detect sumber blok via stack trace             -->
+<!-- ═══   [3] Catat _sumberBlok ke meta media                     -->
+<!-- ═══   [4] Fire event 'r2coin:media-baru' → update badge       -->
+<!-- ═══   [5] Auto re-render grid kalau dashboard sedang buka     -->
+<!-- ═══   [6] Future UI blocks: ZERO config — tinggal panggil     -->
+<!-- ═══       mdSimpan() → otomatis tersimpan & tampil            -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ FITUR DASHBOARD:                                          -->
+<!-- ═══   • Grid 14 kategori (foto/video/audio/dokumen/pdf/gif/   -->
+<!-- ═══     svg/icon/banner/thumbnail/avatar/logo/stiker/lampiran)-->
+<!-- ═══   • Tab filter kategori + search + filter sumber          -->
+<!-- ═══   • Preview video/audio/pdf/gif di modal detail           -->
+<!-- ═══   • Upload manual drag-drop                               -->
+<!-- ═══   • Download, hapus, bulk delete, cleanup orphan          -->
+<!-- ═══   • Statistik realtime                                    -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Aturan (A1, A2, A3, A5, A10, A11, A19, A25, A29-A35) ══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_10_58_PENYIMPANAN_MEDIA_V1() {
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.0] — GUARD + DEPENDENCY CHECK (A32)
+    // ═══════════════════════════════════════════════════════════
+    if (window._blok1058DoneV1) {
+        console.log('ℹ️ BLOK 10.58 v1.0 sudah terpasang.');
+        return;
+    }
+    if (!window.csLoadJSON || !window.csSaveJSON) {
+        console.warn('⚠️ 10.58 v1.0: CS2 belum siap. Ditunda.');
+        return;
+    }
+    if (typeof window.mdSimpan !== 'function' ||
+        typeof window.mdListSemua !== 'function') {
+        console.warn('⚠️ 10.58 v1.0: BLOK MD belum terpasang. Ditunda.');
+        return;
+    }
+    window._blok1058DoneV1 = true;
+    window._blok1058Versi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.1] — STATE GLOBAL
+    // ═══════════════════════════════════════════════════════════
+    var STATE = {
+        filterKategori: 'semua',
+        filterSumber:   'semua',
+        cari:           '',
+        sedangBuka:     false,      // dashboard sedang tampil?
+        detailId:       null        // id media di modal detail
+    };
+    window._md58State = STATE;
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.2] — HELPER: source detection via stack trace
+    // ═══════════════════════════════════════════════════════════
+    // Cari nama IIFE BLOK_* di stack trace. Kalau tidak ketemu,
+    // fallback ke 'unknown'.
+    // ═══════════════════════════════════════════════════════════
+    function _detectCallerBlok() {
+        try {
+            var stack = (new Error()).stack || '';
+            // Cari BLOK_XXX_VX atau BLOK_XXX_Y_ZZ
+            var m = stack.match(/BLOK[_A-Z0-9]+_V\d+/);
+            if (m) return m[0];
+            m = stack.match(/BLOK[_A-Z0-9]+/);
+            if (m) return m[0];
+            return 'unknown';
+        } catch (e) { return 'unknown'; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.3] — HELPER: catat _sumberBlok ke meta media
+    // ═══════════════════════════════════════════════════════════
+    function _catatSumber(idMedia, sumberBlok) {
+        try {
+            var key = (window.CS_KEY && window.CS_KEY.MD_INDEX) || 'dataMediaIndex';
+            var idx = window.csLoadJSON(key, {});
+            if (!idx || typeof idx !== 'object') return false;
+            if (!idx[idMedia]) return false;
+            idx[idMedia]._sumberBlok = sumberBlok || 'unknown';
+            window.csSaveJSON(key, idx, { backup: false });
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.4] — HELPER: reaksi setelah media tersimpan
+    // ═══════════════════════════════════════════════════════════
+    function _setelahMediaTersimpan(hasil, sumberBlok) {
+        try {
+            if (!hasil || !hasil.sukses || !hasil.idMedia) return;
+            _catatSumber(hasil.idMedia, sumberBlok);
+
+            // Fire event untuk notif / blok lain
+            try {
+                window.dispatchEvent(new CustomEvent('r2coin:media-baru', {
+                    detail: {
+                        idMedia:    hasil.idMedia,
+                        meta:       hasil.meta,
+                        sumberBlok: sumberBlok
+                    }
+                }));
+            } catch (e) {}
+
+            // Update badge notif header
+            try {
+                if (typeof window.csUpdateBadgeNotif === 'function') {
+                    setTimeout(window.csUpdateBadgeNotif, 200);
+                }
+            } catch (e) {}
+
+            // Kalau dashboard sedang buka → auto re-render
+            if (STATE.sedangBuka) {
+                setTimeout(function() {
+                    try { _renderSemua(); } catch (e) {}
+                }, 150);
+            }
+
+            // Toast (halus)
+            try {
+                if (typeof window.csToast === 'function') {
+                    window.csToast('📸 Media tersimpan: ' + hasil.meta.kategori, 'success');
+                }
+            } catch (e) {}
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.5] — AUTO-DETECT: WRAP mdSimpan* (INTI FITUR)
+    // ═══════════════════════════════════════════════════════════
+    // Semua blok UI (sekarang & masa depan) yang panggil
+    // mdSimpan/mdSimpanBase64/mdSimpanURL → otomatis tercatat.
+    // ═══════════════════════════════════════════════════════════
+    (function _installHooks() {
+        // ── 5.1 mdSimpan (Promise) ──
+        var _origMdSimpan = window.mdSimpan;
+        window.mdSimpan = function(file, kat, opts) {
+            opts = opts || {};
+            if (!opts._sumberBlok) opts._sumberBlok = _detectCallerBlok();
+            return _origMdSimpan.call(this, file, kat, opts).then(function(r) {
+                if (r && r.sukses) _setelahMediaTersimpan(r, opts._sumberBlok);
+                return r;
+            });
+        };
+
+        // ── 5.2 mdSimpanBase64 (sync) ──
+        var _origMdSimpanBase64 = window.mdSimpanBase64;
+        window.mdSimpanBase64 = function(base64, kat, opts) {
+            opts = opts || {};
+            if (!opts._sumberBlok) opts._sumberBlok = _detectCallerBlok();
+            var r = _origMdSimpanBase64.call(this, base64, kat, opts);
+            if (r && r.sukses) _setelahMediaTersimpan(r, opts._sumberBlok);
+            return r;
+        };
+
+        // ── 5.3 mdSimpanURL (sync) ──
+        var _origMdSimpanURL = window.mdSimpanURL;
+        window.mdSimpanURL = function(url, kat, opts) {
+            opts = opts || {};
+            if (!opts._sumberBlok) opts._sumberBlok = _detectCallerBlok();
+            var r = _origMdSimpanURL.call(this, url, kat, opts);
+            if (r && r.sukses) _setelahMediaTersimpan(r, opts._sumberBlok);
+            return r;
+        };
+
+        console.log('✅ 10.58: Auto-detector terpasang — semua mdSimpan* dari blok mana pun akan terdeteksi.');
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.6] — HELPER: format & escape
+    // ═══════════════════════════════════════════════════════════
+    function _esc(s) {
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+    function _fmtSize(b) {
+        if (typeof window.csFormatSizeFile === 'function') return window.csFormatSizeFile(b);
+        var n = parseInt(b, 10) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / 1024 / 1024).toFixed(2) + ' MB';
+    }
+    function _fmtDate(iso) {
+        try {
+            if (!iso) return '-';
+            var d = new Date(iso);
+            return d.toLocaleDateString('id-ID', {
+                day: '2-digit', month: 'short',
+                hour: '2-digit', minute: '2-digit'
+            });
+        } catch (e) { return '-'; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.7] — GET LIST FILTERED (by STATE)
+    // ═══════════════════════════════════════════════════════════
+    function _getFiltered() {
+        try {
+            var list = window.mdListSemua({ limit: 9999 });
+            if (STATE.filterKategori !== 'semua') {
+                list = list.filter(function(m) { return m.kategori === STATE.filterKategori; });
+            }
+            if (STATE.filterSumber !== 'semua') {
+                list = list.filter(function(m) {
+                    return (m._sumberBlok || 'unknown') === STATE.filterSumber;
+                });
+            }
+            if (STATE.cari) {
+                var q = STATE.cari.toLowerCase();
+                list = list.filter(function(m) {
+                    return String(m.nama || '').toLowerCase().indexOf(q) !== -1;
+                });
+            }
+            return list;
+        } catch (e) { return []; }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.8] — RENDER: statistik bar
+    // ═══════════════════════════════════════════════════════════
+    function _renderStatistik() {
+        var stat = window.mdStatistik();
+        if (!stat) return '';
+        var perKat = stat.perKategori || {};
+        var listKategori = Object.keys(perKat).filter(function(k) {
+            return perKat[k] && perKat[k].total > 0;
+        });
+
+        var html = ''
+            + '<div class="row g-2 mb-3">'
+            +   '<div class="col-6 col-md-3">'
+            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #DC3545 !important;">'
+            +       '<div class="card-body py-2">'
+            +         '<h5 class="fw-bold mb-0">' + stat.totalMedia + '</h5>'
+            +         '<small class="text-muted">Total Media</small>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            +   '<div class="col-6 col-md-3">'
+            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #FFC107 !important;">'
+            +       '<div class="card-body py-2">'
+            +         '<h5 class="fw-bold mb-0">' + (stat.totalSizeLabel || '0 B') + '</h5>'
+            +         '<small class="text-muted">Total Ukuran</small>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            +   '<div class="col-6 col-md-3">'
+            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #198754 !important;">'
+            +       '<div class="card-body py-2">'
+            +         '<h5 class="fw-bold mb-0">' + (stat.berContent || 0) + '</h5>'
+            +         '<small class="text-muted">Base64 Tersimpan</small>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            +   '<div class="col-6 col-md-3">'
+            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #17A2B8 !important;">'
+            +       '<div class="card-body py-2">'
+            +         '<h5 class="fw-bold mb-0">' + (stat.externalUrl || 0) + '</h5>'
+            +         '<small class="text-muted">URL External</small>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            + '</div>';
+
+        // Compact per kategori
+        if (listKategori.length > 0) {
+            html += '<div class="mb-3 small text-muted">'
+                + listKategori.map(function(k) {
+                    return '<span class="badge bg-light text-dark me-1 mb-1" style="font-size:11px;">'
+                        + _esc(k) + ': <b>' + perKat[k].total + '</b></span>';
+                }).join('')
+                + '</div>';
+        }
+        return html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.9] — RENDER: filter tabs kategori
+    // ═══════════════════════════════════════════════════════════
+    function _renderFilterTabs() {
+        var list = window.mdGetKategori() || [];
+        var perKat = (window.mdStatistik() || {}).perKategori || {};
+        var total = (window.mdStatistik() || {}).totalMedia || 0;
+
+        var html = '<div class="d-flex flex-wrap gap-1 mb-3">';
+        // Tab "semua"
+        var aktif = STATE.filterKategori === 'semua' ? ' active' : '';
+        html += '<button type="button" class="btn btn-sm btn-outline-danger' + aktif + '" '
+             + 'onclick="md58SetFilter(\'semua\')">'
+             + '📁 Semua <span class="badge bg-danger ms-1">' + total + '</span>'
+             + '</button>';
+
+        // Tab per kategori
+        list.forEach(function(k) {
+            var jml = (perKat[k.kode] && perKat[k.kode].total) || 0;
+            var a = STATE.filterKategori === k.kode ? ' active' : '';
+            html += '<button type="button" class="btn btn-sm btn-outline-secondary' + a + '" '
+                 + 'onclick="md58SetFilter(\'' + _esc(k.kode) + '\')">'
+                 + '<i class="' + _esc(k.ikon) + ' me-1"></i>' + _esc(k.label)
+                 + ' <span class="badge bg-secondary ms-1">' + jml + '</span>'
+                 + '</button>';
+        });
+        html += '</div>';
+        return html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.10] — RENDER: grid media cards
+    // ═══════════════════════════════════════════════════════════
+    function _renderGrid() {
+        var list = _getFiltered();
+        if (list.length === 0) {
+            return ''
+                + '<div class="card border-0 shadow-sm text-center py-5">'
+                +   '<div class="card-body">'
+                +     '<i class="fas fa-folder-open fa-4x text-muted opacity-25 mb-3"></i>'
+                +     '<h6 class="text-muted">Belum ada media</h6>'
+                +     '<p class="small text-muted mb-3">'
+                +       'Media dari blok UI mana pun akan otomatis muncul di sini.'
+                +     '</p>'
+                +     '<button type="button" class="btn btn-danger btn-sm" onclick="md58BukaUpload()">'
+                +       '<i class="fas fa-upload me-1"></i>Upload Manual'
+                +     '</button>'
+                +   '</div>'
+                + '</div>';
+        }
+
+        var html = '<div class="row g-2">';
+        list.forEach(function(m) {
+            var info = window.mdGetKategoriInfo(m.kategori) || { label: m.kategori, ikon: 'fas fa-file', warna: 'secondary' };
+            var preview = '';
+
+            // Preview thumbnail per tipe
+            if (['foto','icon','banner','thumbnail','avatar','logo','gif','stiker'].indexOf(m.kategori) !== -1) {
+                preview = '<img src="' + _esc(window.mdGetUrlPublik(m.id) || '') + '" '
+                        + 'style="width:100%;height:100px;object-fit:cover;border-radius:8px 8px 0 0;" '
+                        + 'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';" '
+                        + 'alt="' + _esc(m.nama) + '">'
+                        + '<div style="display:none;width:100%;height:100px;background:#f8f9fa;align-items:center;justify-content:center;border-radius:8px 8px 0 0;">'
+                        +   '<i class="' + _esc(info.ikon) + ' fa-2x text-' + _esc(info.warna) + ' opacity-50"></i>'
+                        + '</div>';
+            } else if (m.kategori === 'video') {
+                preview = '<video src="' + _esc(window.mdGetUrlPublik(m.id) || '') + '" '
+                        + 'style="width:100%;height:100px;object-fit:cover;border-radius:8px 8px 0 0;" '
+                        + 'muted preload="metadata"></video>';
+            } else if (m.kategori === 'audio') {
+                preview = '<div style="width:100%;height:100px;background:linear-gradient(135deg,#DC3545,#8B0000);'
+                        + 'display:flex;align-items:center;justify-content:center;border-radius:8px 8px 0 0;">'
+                        +   '<i class="fas fa-music fa-3x text-white"></i>'
+                        + '</div>';
+            } else {
+                preview = '<div style="width:100%;height:100px;background:#f8f9fa;'
+                        + 'display:flex;align-items:center;justify-content:center;border-radius:8px 8px 0 0;">'
+                        +   '<i class="' + _esc(info.ikon) + ' fa-3x text-' + _esc(info.warna) + ' opacity-50"></i>'
+                        + '</div>';
+            }
+
+            html += ''
+                + '<div class="col-6 col-md-4 col-lg-3">'
+                +   '<div class="card border-0 shadow-sm h-100" style="cursor:pointer;overflow:hidden;">'
+                +     '<div onclick="md58BukaDetail(\'' + _esc(m.id) + '\')">'
+                +       preview
+                +       '<div class="card-body p-2">'
+                +         '<div class="small fw-bold text-truncate" title="' + _esc(m.nama) + '">' + _esc(m.nama) + '</div>'
+                +         '<div class="d-flex justify-content-between align-items-center mt-1">'
+                +           '<span class="badge bg-' + _esc(info.warna) + '" style="font-size:9px;">' + _esc(m.kategori) + '</span>'
+                +           '<small class="text-muted" style="font-size:10px;">' + _esc(m.sizeLabel || '0') + '</small>'
+                +         '</div>'
+                +         (m._sumberBlok ?
+                            '<div class="mt-1" style="font-size:9px;color:#999;">'
+                            + '<i class="fas fa-link me-1"></i>' + _esc(m._sumberBlok) +
+                            '</div>' : '')
+                +       '</div>'
+                +     '</div>'
+                +   '</div>'
+                + '</div>';
+        });
+        html += '</div>';
+        return html;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.11] — RENDER: UI utama (dashboard)
+    // ═══════════════════════════════════════════════════════════
+    function _renderSemua() {
+        try {
+            var konten = document.getElementById('kontenDasbor');
+            if (!konten) return false;
+
+            if (!window.kontenAsliDasbor) {
+                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
+            }
+
+            // Daftar sumber unik (untuk filter)
+            var listSumber = {};
+            window.mdListSemua({ limit: 9999 }).forEach(function(m) {
+                var s = m._sumberBlok || 'unknown';
+                listSumber[s] = (listSumber[s] || 0) + 1;
+            });
+
+            var html = ''
+            + '<div class="container-fluid px-3 px-md-4 py-3 py-md-4" style="background:var(--orange);min-height:100vh;">'
+
+            // ── Header ──
+            +   '<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">'
+            +     '<div>'
+            +       '<h4 class="fw-bold text-white mb-0">'
+            +         '<i class="fas fa-folder-open me-2"></i>Penyimpanan Media'
+            +         '<span class="badge bg-warning text-dark ms-2" style="font-size:0.7em;">AUTO</span>'
+            +       '</h4>'
+            +       '<small class="text-white-50">'
+            +         '<i class="fas fa-magic me-1"></i>'
+            +         'Semua media dari blok UI manapun otomatis tersimpan di sini'
+            +       '</small>'
+            +     '</div>'
+            +     '<div class="d-flex gap-2">'
+            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="md58BukaUpload()">'
+            +         '<i class="fas fa-upload me-1"></i>Upload'
+            +       '</button>'
+            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="md58Cleanup()">'
+            +         '<i class="fas fa-broom me-1"></i>Cleanup'
+            +       '</button>'
+            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="md58Refresh()">'
+            +         '<i class="fas fa-sync-alt me-1"></i>Refresh'
+            +       '</button>'
+            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">'
+            +         '<i class="fas fa-arrow-left me-1"></i>Kembali'
+            +       '</button>'
+            +     '</div>'
+            +   '</div>'
+
+            // ── Statistik ──
+            +   _renderStatistik()
+
+            // ── Filter Kategori ──
+            +   _renderFilterTabs()
+
+            // ── Search + Filter Sumber ──
+            +   '<div class="row g-2 mb-3">'
+            +     '<div class="col-md-8">'
+            +       '<div class="input-group">'
+            +         '<span class="input-group-text bg-white"><i class="fas fa-search"></i></span>'
+            +         '<input type="text" id="md58CariInput" class="form-control" '
+            +           'placeholder="Cari nama media..." value="' + _esc(STATE.cari) + '" '
+            +           'oninput="md58SetCari(this.value)">'
+            +       '</div>'
+            +     '</div>'
+            +     '<div class="col-md-4">'
+            +       '<select class="form-select" onchange="md58SetSumber(this.value)">'
+            +         '<option value="semua">Semua Sumber Blok</option>'
+            +         Object.keys(listSumber).map(function(s) {
+                            return '<option value="' + _esc(s) + '"' +
+                                (STATE.filterSumber === s ? ' selected' : '') + '>'
+                                + _esc(s) + ' (' + listSumber[s] + ')</option>';
+                        }).join('')
+            +       '</select>'
+            +     '</div>'
+            +   '</div>'
+
+            // ── Grid Media ──
+            +   _renderGrid()
+
+            + '</div>';
+
+            konten.innerHTML = html;
+            STATE.sedangBuka = true;
+            return true;
+        } catch (e) {
+            console.error('[10.58] _renderSemua error:', e);
+            return false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.12] — RENDER: modal detail media
+    // ═══════════════════════════════════════════════════════════
+    function _renderDetailModal(m) {
+        if (!m) return;
+
+        var info = window.mdGetKategoriInfo(m.kategori) || {};
+        var url = window.mdGetUrlPublik(m.id) || '';
+        var preview = '';
+
+        if (['foto','icon','banner','thumbnail','avatar','logo','gif','stiker'].indexOf(m.kategori) !== -1) {
+            preview = '<img src="' + _esc(url) + '" class="img-fluid rounded mb-2" '
+                    + 'style="max-height:400px;" alt="' + _esc(m.nama) + '">';
+        } else if (m.kategori === 'video') {
+            preview = '<video src="' + _esc(url) + '" controls class="w-100 rounded mb-2" '
+                    + 'style="max-height:400px;"></video>';
+        } else if (m.kategori === 'audio') {
+            preview = '<audio src="' + _esc(url) + '" controls class="w-100 mb-2"></audio>';
+        } else if (m.kategori === 'pdf') {
+            preview = '<embed src="' + _esc(url) + '" type="application/pdf" '
+                    + 'class="w-100 rounded mb-2" style="height:400px;">';
+        } else {
+            preview = '<div class="text-center py-4 mb-2" style="background:#f8f9fa;border-radius:8px;">'
+                    + '<i class="' + _esc(info.ikon || 'fas fa-file') + ' fa-4x text-muted mb-2"></i>'
+                    + '<p class="small text-muted mb-0">Preview tidak tersedia. Klik Unduh untuk melihat.</p>'
+                    + '</div>';
+        }
+
+        var modal = ''
+            + '<div class="modal fade" id="md58DetailModal" tabindex="-1" aria-hidden="true">'
+            +   '<div class="modal-dialog modal-lg modal-dialog-centered">'
+            +     '<div class="modal-content border-0 shadow-lg">'
+            +       '<div class="modal-header text-white" style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
+            +         '<h5 class="modal-title"><i class="' + _esc(info.ikon || 'fas fa-file') + ' me-2"></i>'
+            +           _esc(m.nama) + '</h5>'
+            +         '<button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>'
+            +       '</div>'
+            +       '<div class="modal-body">'
+            +         preview
+            +         '<table class="table table-sm mb-0 small">'
+            +           '<tr><td class="text-muted" style="width:140px;">ID</td>'
+            +               '<td><code style="font-size:11px;">' + _esc(m.id) + '</code></td></tr>'
+            +           '<tr><td class="text-muted">Kategori</td>'
+            +               '<td><span class="badge bg-' + _esc(info.warna || 'secondary') + '">'
+            +               _esc(m.kategori) + '</span></td></tr>'
+            +           '<tr><td class="text-muted">Ukuran</td><td>' + _esc(m.sizeLabel || _fmtSize(m.size)) + '</td></tr>'
+            +           '<tr><td class="text-muted">MIME</td><td>' + _esc(m.mimeType || '-') + '</td></tr>'
+            +           '<tr><td class="text-muted">Dibuat</td><td>' + _esc(_fmtDate(m.createdAt)) + '</td></tr>'
+            +           (m._sumberBlok ?
+                            '<tr><td class="text-muted">Sumber Blok</td>'
+                            + '<td><code style="font-size:11px;">' + _esc(m._sumberBlok) + '</code></td></tr>' : '')
+            +           (m.idOwner ?
+                            '<tr><td class="text-muted">Owner</td><td>' + _esc(m.idOwner) + '</td></tr>' : '')
+            +         '</table>'
+            +       '</div>'
+            +       '<div class="modal-footer">'
+            +         '<button type="button" class="btn btn-outline-primary" '
+            +           'onclick="md58Download(\'' + _esc(m.id) + '\')">'
+            +           '<i class="fas fa-download me-1"></i>Unduh</button>'
+            +         '<button type="button" class="btn btn-danger" '
+            +           'onclick="md58Hapus(\'' + _esc(m.id) + '\')">'
+            +           '<i class="fas fa-trash me-1"></i>Hapus</button>'
+            +         '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            + '</div>';
+
+        var existing = document.getElementById('md58DetailModal');
+        if (existing) existing.remove();
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = modal;
+        document.body.appendChild(wrapper.firstElementChild);
+
+        try {
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                bootstrap.Modal.getOrCreateInstance(
+                    document.getElementById('md58DetailModal')
+                ).show();
+            }
+        } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.13] — ACTION HANDLERS (dipanggil dari inline onclick)
+    // ═══════════════════════════════════════════════════════════
+    window.md58SetFilter = function(kategori) {
+        STATE.filterKategori = kategori || 'semua';
+        _renderSemua();
+    };
+    window.md58SetSumber = function(sumber) {
+        STATE.filterSumber = sumber || 'semua';
+        _renderSemua();
+    };
+    window.md58SetCari = function(q) {
+        STATE.cari = String(q || '');
+        _renderSemua();
+        // Fokus balik ke input
+        setTimeout(function() {
+            var input = document.getElementById('md58CariInput');
+            if (input) {
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }
+        }, 10);
+    };
+    window.md58Refresh = function() {
+        _renderSemua();
+        if (typeof window.csToast === 'function') window.csToast('✅ Media di-refresh', 'success');
+    };
+    window.md58Cleanup = function() {
+        if (!confirm('Bersihkan media orphan (metadata ada tapi content hilang)?')) return;
+        var r = window.mdCleanup({ orphan: true });
+        if (r && r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast('🧹 Cleanup: ' + r.dihapus + ' media dihapus', 'success');
+            }
+            _renderSemua();
+        }
+    };
+    window.md58Download = function(id) {
+        var r = window.mdDownload(id);
+        if (r && !r.sukses && typeof window.csToast === 'function') {
+            window.csToast('❌ ' + (r.pesan || 'Gagal download'), 'danger');
+        }
+    };
+    window.md58Hapus = function(id) {
+        if (!confirm('Hapus media ini permanen?')) return;
+        var r = window.mdHapus(id);
+        if (r && r.sukses) {
+            var modal = document.getElementById('md58DetailModal');
+            if (modal) {
+                try {
+                    var inst = bootstrap.Modal.getInstance(modal);
+                    if (inst) inst.hide();
+                } catch (e) {}
+            }
+            if (typeof window.csToast === 'function') window.csToast('🗑️ Media dihapus', 'success');
+            _renderSemua();
+        } else {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + (r.pesan || 'Gagal'), 'danger');
+        }
+    };
+    window.md58BukaDetail = function(id) {
+        var m = window.mdAmbilMeta(id);
+        if (!m) return;
+        _renderDetailModal(m);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.14] — UPLOAD MANUAL (drag-drop)
+    // ═══════════════════════════════════════════════════════════
+    window.md58BukaUpload = function() {
+        var kategoriOpts = (window.mdGetKategori() || []).map(function(k) {
+            return '<option value="' + _esc(k.kode) + '">' + _esc(k.label) + '</option>';
+        }).join('');
+
+        var modal = ''
+            + '<div class="modal fade" id="md58UploadModal" tabindex="-1" aria-hidden="true">'
+            +   '<div class="modal-dialog modal-lg modal-dialog-centered">'
+            +     '<div class="modal-content border-0 shadow-lg">'
+            +       '<div class="modal-header text-white" style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
+            +         '<h5 class="modal-title"><i class="fas fa-upload me-2"></i>Upload Media</h5>'
+            +         '<button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>'
+            +       '</div>'
+            +       '<div class="modal-body">'
+            +         '<div class="mb-3">'
+            +           '<label class="form-label fw-bold">Kategori</label>'
+            +           '<select id="md58UploadKategori" class="form-select">' + kategoriOpts + '</select>'
+            +         '</div>'
+            +         '<div id="md58Dropzone" style="border:3px dashed #DC3545;border-radius:12px;'
+            +           'padding:40px 20px;text-align:center;cursor:pointer;background:#FFF5F5;" '
+            +           'onclick="document.getElementById(\'md58UploadInput\').click();">'
+            +           '<i class="fas fa-cloud-upload-alt fa-4x text-danger mb-3"></i>'
+            +           '<h6 class="fw-bold">Drop file di sini / Klik untuk pilih</h6>'
+            +           '<p class="small text-muted mb-0">Maks 5 MB untuk foto · 50 MB untuk video</p>'
+            +         '</div>'
+            +         '<input type="file" id="md58UploadInput" multiple style="display:none;" '
+            +           'onchange="md58UploadFiles(this.files)">'
+            +         '<div id="md58UploadProgress" class="mt-3"></div>'
+            +       '</div>'
+            +     '</div>'
+            +   '</div>'
+            + '</div>';
+
+        var existing = document.getElementById('md58UploadModal');
+        if (existing) existing.remove();
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = modal;
+        document.body.appendChild(wrapper.firstElementChild);
+
+        // Drag-drop handlers
+        setTimeout(function() {
+            var dz = document.getElementById('md58Dropzone');
+            if (!dz) return;
+            ['dragenter','dragover'].forEach(function(ev) {
+                dz.addEventListener(ev, function(e) {
+                    e.preventDefault(); dz.style.background = '#FFE6E6';
+                });
+            });
+            ['dragleave','drop'].forEach(function(ev) {
+                dz.addEventListener(ev, function(e) {
+                    e.preventDefault(); dz.style.background = '#FFF5F5';
+                });
+            });
+            dz.addEventListener('drop', function(e) {
+                e.preventDefault();
+                if (e.dataTransfer && e.dataTransfer.files) {
+                    window.md58UploadFiles(e.dataTransfer.files);
+                }
+            });
+        }, 100);
+
+        try {
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                bootstrap.Modal.getOrCreateInstance(
+                    document.getElementById('md58UploadModal')
+                ).show();
+            }
+        } catch (e) {}
+    };
+
+    window.md58UploadFiles = function(files) {
+        if (!files || files.length === 0) return;
+        var kategori = (document.getElementById('md58UploadKategori') || {}).value || 'foto';
+        var progress = document.getElementById('md58UploadProgress');
+        if (progress) progress.innerHTML = '<div class="alert alert-info small">Mengunggah ' + files.length + ' file...</div>';
+
+        var done = 0, sukses = 0, gagal = 0;
+        var promises = [];
+        Array.from(files).forEach(function(file) {
+            var p = window.mdSimpan(file, kategori, { _sumberBlok: '10.58-manual' })
+                .then(function(r) {
+                    if (r && r.sukses) sukses++; else gagal++;
+                    done++;
+                    if (progress) {
+                        progress.innerHTML = '<div class="alert alert-info small">'
+                            + 'Progress: ' + done + '/' + files.length
+                            + ' · Sukses: ' + sukses + ' · Gagal: ' + gagal + '</div>';
+                    }
+                    return r;
+                });
+            promises.push(p);
+        });
+
+        Promise.all(promises).then(function() {
+            if (progress) {
+                progress.innerHTML = '<div class="alert alert-' + (gagal > 0 ? 'warning' : 'success') + ' small">'
+                    + '✅ Selesai: ' + sukses + ' sukses, ' + gagal + ' gagal</div>';
+            }
+            setTimeout(function() {
+                var modal = document.getElementById('md58UploadModal');
+                if (modal) {
+                    try {
+                        var inst = bootstrap.Modal.getInstance(modal);
+                        if (inst) inst.hide();
+                    } catch (e) {}
+                }
+                _renderSemua();
+            }, 1500);
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.15] — ENTRY POINT + MENU HANDLER (A10)
+    // ═══════════════════════════════════════════════════════════
+    window.tampilkanPenyimpananMediaSA = function() {
+        try {
+            if (typeof window.tutupMenu === 'function') window.tutupMenu();
+            return _renderSemua();
+        } catch (e) {
+            console.error('[10.58] tampilkan error:', e);
+            return false;
+        }
+    };
+
+    // Register menu handler (A10 — 1 baris delegasi)
+    window.menuHandlers = window.menuHandlers || {};
+    window.menuHandlers['penyimpananMedia'] = function() {
+        return window.tampilkanPenyimpananMediaSA();
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.16] — AUTO-REFRESH: saat dashboard buka & media baru
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:media-baru', function(e) {
+        // Kalau dashboard terbuka, _setelahMediaTersimpan sudah handle re-render
+        // Listener ini hanya untuk sinkron badge global
+        try {
+            if (typeof window.csUpdateBadgeNotif === 'function') {
+                window.csUpdateBadgeNotif();
+            }
+        } catch (err) {}
+    });
+
+    // Detect kalau user keluar dari dashboard (kembali ke halaman lain)
+    window.addEventListener('r2coin:user-logout', function() {
+        STATE.sedangBuka = false;
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.17] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debug58 = function() {
+        var stat = window.mdStatistik();
+        var listSumber = {};
+        try {
+            window.mdListSemua({ limit: 9999 }).forEach(function(m) {
+                var s = m._sumberBlok || 'unknown';
+                listSumber[s] = (listSumber[s] || 0) + 1;
+            });
+        } catch (e) {}
+
+        var info = {
+            blok: '10.58',
+            versi: window._blok1058Versi,
+            guard: window._blok1058DoneV1,
+            state: Object.assign({}, STATE),
+            statistik: stat,
+            sumberBlok: listSumber,
+            autoDetect: {
+                mdSimpanWrapped:       window.mdSimpan && window.mdSimpan.toString().indexOf('_sumberBlok') !== -1,
+                mdSimpanBase64Wrapped: window.mdSimpanBase64 && window.mdSimpanBase64.toString().indexOf('_sumberBlok') !== -1,
+                mdSimpanURLWrapped:    window.mdSimpanURL && window.mdSimpanURL.toString().indexOf('_sumberBlok') !== -1
+            },
+            fungsi: {
+                tampilkanPenyimpananMediaSA: typeof window.tampilkanPenyimpananMediaSA,
+                md58SetFilter:   typeof window.md58SetFilter,
+                md58SetSumber:   typeof window.md58SetSumber,
+                md58SetCari:     typeof window.md58SetCari,
+                md58BukaDetail:  typeof window.md58BukaDetail,
+                md58BukaUpload:  typeof window.md58BukaUpload,
+                md58Download:    typeof window.md58Download,
+                md58Hapus:       typeof window.md58Hapus,
+                md58Refresh:     typeof window.md58Refresh,
+                md58Cleanup:     typeof window.md58Cleanup
+            }
+        };
+        console.log('🔍 debug58 v1.0:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.18] — AUTO-REGISTRY (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === '10.58';
+                });
+                var namaBlok = 'Penyimpanan Media v1.0 (Auto-Collector)';
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: '10.58', nama: namaBlok,
+                        layer: 'L5', status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('10.58', { status: 'Selesai', nama: namaBlok });
+                }
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === '10.58';
+                });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        tanggal: new Date().toISOString().substring(0, 10),
+                        blok: '10.58',
+                        nama: 'Penyimpanan Media v1.0 (Auto-Collector)',
+                        keterangan: 'AUTO-DETECT semua mdSimpan* dari blok UI manapun · ' +
+                                    'Intercept + stack trace source detection · ' +
+                                    'Fire event r2coin:media-baru · ' +
+                                    'Dashboard grid 14 kategori · ' +
+                                    'Upload drag-drop · Cleanup orphan'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('md58', {
+                    nama: 'UI Penyimpanan Media (L5)',
+                    status: 'Selesai',
+                    jumlah: 12
+                });
+            }
+        } catch (e) {
+            console.warn('[10.58 v1.0] Auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [10.58.19] — LOG TERPASANG (A5)
+    // ═══════════════════════════════════════════════════════════
+    console.log(
+        '%c🇮🇩 BLOK 10.58 v1.0 — PENYIMPANAN MEDIA (AUTO-COLLECTOR) terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
+        'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
+    );
+    console.log(
+        '   🎯 AUTO-DETECT: Semua mdSimpan/mdSimpanBase64/mdSimpanURL dari ' +
+        'blok UI MANAPUN (sekarang & masa depan) → otomatis tersimpan & tampil · ' +
+        'Sumber blok via stack trace · ' +
+        'Dashboard grid 14 kategori + upload drag-drop · debug58()'
+    );
+})();
+</script>
+<!-- ═══ AKHIR BLOK 10.58 — PENYIMPANAN MEDIA (AUTO-COLLECTOR) v1.0 ═ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.63 — UI CHAT DENGAN AI SA (HTML) 🇮🇩 v1.0 ════ -->
 <!-- ═══ Layer: L5 (Blok UI — AI Asisten & Data Retrieval) ══════ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
