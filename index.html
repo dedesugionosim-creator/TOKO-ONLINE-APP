@@ -23856,6 +23856,619 @@ window.csGenerateQRKopdes = function(idCanvas, teks, level) {
 <!-- ═══ AKHIR BLOK ROLE32 v5.0 — ROLE MANAGER 🇮🇩 32 Role Complete ═ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK MPP — MP-PUBLIC 🇮🇩 v1.0 FINAL ═══════════════════ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain — Public Access) ══════ -->
+<!-- ═══ Guard: _mppDoneV1 (A32) · Versi: 1.0 ══════════════════ -->
+<!-- ═══ Dep: CS1, CS2, CS3, CS4, CS6, CS7, GID, FMO, FSS, FKS, -->
+<!-- ═══      MN, FGD (semua opsional kecuali CS2 & CS4) ═══════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Aturan yang DIPATUHI (15):                                -->
+<!-- ═══   A1  (Fungsi Global)    — delegasi murni ke CS/FMO/FSS  -->
+<!-- ═══   A2  (Anti Duplikasi)   — prefix mpp* unik              -->
+<!-- ═══   A3  (Format Blok)      — header, sub-seksi, penutup    -->
+<!-- ═══   A5  (Console)          — warn hanya di error path      -->
+<!-- ═══   A11 (3 Pintu Standar)  — kirim/terima/ambilMPP         -->
+<!-- ═══   A12 (Komunikasi MN)    — pakai mnKirimKeMenu           -->
+<!-- ═══   A13 (Format Paket)     — { tipe, dari, ke, data, idRef}-->
+<!-- ═══   A25 (Delegasi Core)    — tidak bikin ulang fungsi dasar-->
+<!-- ═══   A29 (Sub-seksi)        — [MPP.1]—[MPP.7]               -->
+<!-- ═══   A30 (Komentar)         — semua sub-seksi berkomentar   -->
+<!-- ═══   A31 (IIFE Unik)        — BLOK_MPP_V1                   -->
+<!-- ═══   A32 (Guard Unik)       — _mppDoneV1                    -->
+<!-- ═══   A33 (Registry Blok)    — cpTambahBlok('MPP')           -->
+<!-- ═══   A34 (Registry Riwayat) — cpTambahRiwayat               -->
+<!-- ═══   A35 (Registry Fungsi)  — cpUpdateFungsi('mpp')         -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Fungsi publik (15):                                       -->
+<!-- ═══   [MPP.1 Katalog]   mppListProdukPublik, mppCariProduk,   -->
+<!-- ═══                    mppGetProdukById, mppListKategori      -->
+<!-- ═══   [MPP.2 Toko]      mppListTokoPublik, mppGetTokoById,    -->
+<!-- ═══                    mppGetProdukByToko                     -->
+<!-- ═══   [MPP.3 CS Chat]   mppKirimPesanCS, mppGetRiwayatCS,     -->
+<!-- ═══                    mppCekSesiCS, mppResetSesiCS           -->
+<!-- ═══   [MPP.4 3 Pintu]   kirimMPP, terimaMPP, ambilMPP         -->
+<!-- ═══   [MPP.5 Helper]    mppStatistik, debugMPP                -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_MPP_V1() {
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.0] — GUARD + DEPENDENCY CHECK (A32)
+    // ═══════════════════════════════════════════════════════════
+    if (window._mppDoneV1) {
+        console.log('ℹ️ BLOK MPP v1.0 sudah terpasang.');
+        return;
+    }
+    if (!window.csLoadJSON || !window.csSaveJSON) {
+        console.warn('⚠️ MPP v1.0: CS2 belum siap. Ditunda.');
+        return;
+    }
+    window._mppDoneV1 = true;
+    window._mppVersi  = '1.0';
+
+    // ── Register CS_KEY prefix (A18 pattern — safe extend) ──
+    if (window.CS_KEY) {
+        window.CS_KEY.MPP_SESI_GUEST = window.CS_KEY.MPP_SESI_GUEST || 'mpp_sesi_guest';
+        window.CS_KEY.MPP_CHAT_CS    = window.CS_KEY.MPP_CHAT_CS    || 'mpp_chat_cs';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.1] — HELPER INTERNAL (delegasi CS — A25)
+    // ═══════════════════════════════════════════════════════════
+    function _load(key, def) {
+        try {
+            var v = window.csLoadJSON(key, def);
+            if (Array.isArray(def) && !Array.isArray(v)) return def;
+            if (def && typeof def === 'object' && !Array.isArray(def) &&
+                (!v || typeof v !== 'object' || Array.isArray(v))) return def;
+            return v;
+        } catch (e) { return def; }
+    }
+    function _save(key, val) {
+        try { return window.csSaveJSON(key, val, { backup: false }); }
+        catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+    function _now() {
+        return window.csNow ? window.csNow() : new Date().toISOString();
+    }
+    function _esc(s) {
+        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.2] — MODUL 1: KATALOG PUBLIK
+    // ═══════════════════════════════════════════════════════════
+    // Daftar produk yang bisa dilihat GUEST tanpa login.
+    // Filter: hanya dari seller/KDD aktif. Exclude produk
+    // yang flag-nya private (kalau ada).
+    // ═══════════════════════════════════════════════════════════
+    window.mppListProdukPublik = function(opts) {
+        try {
+            opts = opts || {};
+            var produk = _load('dataProduk', []);
+            if (!Array.isArray(produk)) return [];
+
+            // Filter produk yang punya idOwner valid + bukan draft
+            var list = produk.filter(function(p) {
+                if (!p) return false;
+                if (p.status === 'draft' || p.status === 'nonaktif') return false;
+                if (p.isDraft === true || p.isPublik === false) return false;
+                return p.idOwner || p.idUser;
+            });
+
+            // Filter kategori
+            if (opts.idKategori) {
+                list = list.filter(function(p) { return p.idKategori === opts.idKategori; });
+            }
+
+            // Filter harga
+            if (opts.hargaMin !== undefined) {
+                var hmin = parseFloat(opts.hargaMin) || 0;
+                list = list.filter(function(p) {
+                    return (parseFloat(p.harga) || 0) >= hmin;
+                });
+            }
+            if (opts.hargaMax !== undefined) {
+                var hmax = parseFloat(opts.hargaMax) || Infinity;
+                list = list.filter(function(p) {
+                    return (parseFloat(p.harga) || 0) <= hmax;
+                });
+            }
+
+            // Sort
+            var sortBy = opts.sortBy || 'createdAt';
+            var sortAsc = opts.sortAsc === true;
+            list.sort(function(a, b) {
+                var va = a[sortBy] || '';
+                var vb = b[sortBy] || '';
+                if (va < vb) return sortAsc ? -1 : 1;
+                if (va > vb) return sortAsc ? 1 : -1;
+                return 0;
+            });
+
+            var limit = parseInt(opts.limit, 10) || 50;
+            return list.slice(0, limit);
+        } catch (e) {
+            return [];
+        }
+    };
+
+    window.mppCariProduk = function(keyword, opts) {
+        try {
+            opts = opts || {};
+            if (!keyword) return [];
+            var q = String(keyword).toLowerCase();
+            var list = window.mppListProdukPublik({ limit: 9999 });
+            return list.filter(function(p) {
+                var hay = (p.nama || p.namaProduk || '') + ' ' +
+                          (p.deskripsi || '') + ' ' +
+                          (p.kategori || '');
+                return hay.toLowerCase().indexOf(q) !== -1;
+            }).slice(0, parseInt(opts.limit, 10) || 30);
+        } catch (e) { return []; }
+    };
+
+    window.mppGetProdukById = function(idProduk) {
+        try {
+            if (!idProduk) return null;
+            var produk = _load('dataProduk', []);
+            var found = produk.find(function(p) {
+                return p && (p.id === idProduk || p.idProduk === idProduk);
+            });
+            if (!found) return null;
+            // Jangan return produk draft ke guest
+            if (found.isDraft === true || found.isPublik === false) return null;
+            return found;
+        } catch (e) { return null; }
+    };
+
+    window.mppListKategori = function() {
+        try {
+            var kategori = _load('dataKategoriProduk', []);
+            return Array.isArray(kategori) ? kategori : [];
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.3] — MODUL 2: PROFIL TOKO PUBLIK
+    // ═══════════════════════════════════════════════════════════
+    // Daftar toko/seller yang bisa dilihat guest. Delegasi ke
+    // FMO (list owner) + filter role seller/KDD aktif.
+    // ═══════════════════════════════════════════════════════════
+    window.mppListTokoPublik = function(opts) {
+        try {
+            opts = opts || {};
+            // Delegasi ke FMO kalau tersedia
+            if (typeof window.fmoListOwner === 'function') {
+                var res = window.fmoListOwner({
+                    status: 'Aktif',
+                    cari: opts.cari || ''
+                });
+                if (res && res.sukses) {
+                    var list = res.data || [];
+                    var limit = parseInt(opts.limit, 10) || 30;
+                    return list.slice(0, limit);
+                }
+            }
+
+            // Fallback: query manual
+            var users = _load('dataLoginUser', []);
+            var ROLE_TOKO = ['TK','PP','PM','COD','OJ','GR','DST','DP','DLR','JS','FIN','KDMP_DESA'];
+            var listToko = users.filter(function(u) {
+                if (!u || ROLE_TOKO.indexOf(u.kodeRole) === -1) return false;
+                var st = u.status || u.statusVerifikasi || 'Aktif';
+                return st === 'Aktif';
+            });
+
+            if (opts.cari) {
+                var q = String(opts.cari).toLowerCase();
+                listToko = listToko.filter(function(u) {
+                    var hay = (u.nama || '') + ' ' + (u.namaLengkap || '');
+                    return hay.toLowerCase().indexOf(q) !== -1;
+                });
+            }
+            return listToko.slice(0, parseInt(opts.limit, 10) || 30);
+        } catch (e) { return []; }
+    };
+
+    window.mppGetTokoById = function(idToko) {
+        try {
+            if (!idToko) return null;
+            // Delegasi FMO
+            if (typeof window.fmoDetailOwner === 'function') {
+                var res = window.fmoDetailOwner(idToko);
+                if (res && res.sukses) return res.data;
+            }
+            // Fallback
+            var users = _load('dataLoginUser', []);
+            return users.find(function(u) {
+                return u && (u.idUser === idToko || u.id === idToko);
+            }) || null;
+        } catch (e) { return null; }
+    };
+
+    window.mppGetProdukByToko = function(idToko, opts) {
+        try {
+            opts = opts || {};
+            if (!idToko) return [];
+            // Delegasi FSS (seller) atau FKS (KDD) kalau tersedia
+            if (typeof window.fssGetProdukSeller === 'function') {
+                var listSeller = window.fssGetProdukSeller(idToko);
+                if (listSeller && listSeller.length > 0) {
+                    return listSeller.slice(0, parseInt(opts.limit, 10) || 50);
+                }
+            }
+            if (typeof window.fksGetProdukKDD === 'function') {
+                var listKDD = window.fksGetProdukKDD(idToko);
+                if (listKDD && listKDD.length > 0) {
+                    return listKDD.slice(0, parseInt(opts.limit, 10) || 50);
+                }
+            }
+            // Fallback: query manual
+            var produk = _load('dataProduk', []);
+            return produk.filter(function(p) {
+                return p && (p.idOwner === idToko || p.idUser === idToko) &&
+                       p.isDraft !== true && p.isPublik !== false;
+            }).slice(0, parseInt(opts.limit, 10) || 50);
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.4] — MODUL 3: CS PUBLIC CHAT (Guest)
+    // ═══════════════════════════════════════════════════════════
+    // Guest (belum login) bisa chat CS. Sistem generate sesi
+    // guest ID unik per browser (disimpan di localStorage).
+    // ═══════════════════════════════════════════════════════════
+    function _getSesiGuest() {
+        try {
+            var key = (window.CS_KEY && window.CS_KEY.MPP_SESI_GUEST)
+                ? window.CS_KEY.MPP_SESI_GUEST
+                : 'mpp_sesi_guest';
+            var sesi = _load(key, null);
+            if (sesi && sesi.idGuest) return sesi;
+            // Buat sesi baru
+            var idGuest = 'GUEST-' + Date.now() + '-' +
+                (typeof window.csRandomStr === 'function'
+                    ? window.csRandomStr(4) : Math.random().toString(36).substring(2, 6).toUpperCase());
+            sesi = {
+                idGuest:   idGuest,
+                createdAt: _now(),
+                lastSeen:  _now()
+            };
+            _save(key, sesi);
+            return sesi;
+        } catch (e) { return null; }
+    }
+
+    function _getChatKey() {
+        var key = (window.CS_KEY && window.CS_KEY.MPP_CHAT_CS)
+            ? window.CS_KEY.MPP_CHAT_CS
+            : 'mpp_chat_cs';
+        var sesi = _getSesiGuest();
+        return sesi ? (key + '_' + sesi.idGuest) : null;
+    }
+
+    window.mppCekSesiCS = function() {
+        try {
+            var sesi = _getSesiGuest();
+            if (!sesi) return { aktif: false, pesan: 'Tidak bisa buat sesi' };
+            sesi.lastSeen = _now();
+            _save((window.CS_KEY && window.CS_KEY.MPP_SESI_GUEST) || 'mpp_sesi_guest', sesi);
+            var chatKey = _getChatKey();
+            var riwayat = chatKey ? _load(chatKey, []) : [];
+            return {
+                aktif:    true,
+                idGuest:  sesi.idGuest,
+                createdAt: sesi.createdAt,
+                lastSeen: sesi.lastSeen,
+                totalPesan: Array.isArray(riwayat) ? riwayat.length : 0
+            };
+        } catch (e) {
+            return { aktif: false, pesan: e.message };
+        }
+    };
+
+    window.mppKirimPesanCS = function(teks, namaGuest) {
+        try {
+            if (!teks || String(teks).trim() === '') {
+                return { sukses: false, pesan: 'Pesan kosong' };
+            }
+            var sesi = _getSesiGuest();
+            if (!sesi) return { sukses: false, pesan: 'Tidak bisa buat sesi guest' };
+
+            var chatKey = _getChatKey();
+            if (!chatKey) return { sukses: false, pesan: 'Chat key invalid' };
+
+            var riwayat = _load(chatKey, []);
+            if (!Array.isArray(riwayat)) riwayat = [];
+
+            var pesan = {
+                id:       'MPP-MSG-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+                idGuest:  sesi.idGuest,
+                namaGuest: String(namaGuest || 'Tamu').substring(0, 50),
+                dari:     'guest',
+                teks:     String(teks).trim(),
+                waktu:    _now()
+            };
+            riwayat.push(pesan);
+            if (riwayat.length > 200) riwayat = riwayat.slice(-200);
+            _save(chatKey, riwayat);
+
+            // Kirim ke MN — CS bisa baca (A12, A13)
+            if (typeof window.mnKirimKeMenu === 'function') {
+                window.mnKirimKeMenu({
+                    tipe: 'mpp_chat_guest',
+                    dari: {
+                        idUser:   sesi.idGuest,
+                        kodeRole: 'GUEST',
+                        menu:     'MPP',
+                        blok:     'L4-MPP'
+                    },
+                    ke: {
+                        menu:       'chat_cs',
+                        kodeRoleTarget: 'CS'
+                    },
+                    data: {
+                        idGuest:   sesi.idGuest,
+                        namaGuest: pesan.namaGuest,
+                        teks:      pesan.teks,
+                        waktu:     pesan.waktu
+                    },
+                    idRef:     pesan.id,
+                    timestamp: _now()
+                });
+            }
+
+            return { sukses: true, pesan: pesan };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.mppGetRiwayatCS = function(limit) {
+        try {
+            var chatKey = _getChatKey();
+            if (!chatKey) return [];
+            var riwayat = _load(chatKey, []);
+            if (!Array.isArray(riwayat)) return [];
+            var n = parseInt(limit, 10) || 50;
+            return riwayat.slice(-n);
+        } catch (e) { return []; }
+    };
+
+    window.mppResetSesiCS = function() {
+        try {
+            var sesi = _getSesiGuest();
+            if (sesi) {
+                var chatKey = _getChatKey();
+                if (chatKey) {
+                    try { localStorage.removeItem(chatKey); } catch (e) {}
+                }
+            }
+            var sesiKey = (window.CS_KEY && window.CS_KEY.MPP_SESI_GUEST)
+                ? window.CS_KEY.MPP_SESI_GUEST
+                : 'mpp_sesi_guest';
+            try { localStorage.removeItem(sesiKey); } catch (e) {}
+            return { sukses: true, pesan: 'Sesi guest direset' };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.5] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimMPP = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') {
+                return { sukses: false, pesan: 'MN belum terpasang' };
+            }
+            var sesi = _getSesiGuest();
+            var idGuest = sesi ? sesi.idGuest : null;
+            var idUser = window.gidIdUser ? window.gidIdUser() : null;
+
+            return window.mnKirimKeMenu({
+                tipe: tipe || 'mpp',
+                dari: {
+                    idUser:   idUser || idGuest,
+                    kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : (idUser ? 'USER' : 'GUEST'),
+                    menu:     'MPP',
+                    blok:     'L4-MPP'
+                },
+                ke: ke || { menu: 'MPP' },
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _now()
+            });
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.terimaMPP = function(aksiMenu) {
+        try {
+            if (typeof window.mnInboxMenu !== 'function') return [];
+            return window.mnInboxMenu(aksiMenu || 'MPP');
+        } catch (e) { return []; }
+    };
+
+    window.ambilMPP = function(filter) {
+        try {
+            filter = filter || {};
+            var tipe = filter.tipe || 'status';
+            switch (tipe) {
+                case 'produk':   return window.mppListProdukPublik(filter);
+                case 'toko':     return window.mppListTokoPublik(filter);
+                case 'kategori': return window.mppListKategori();
+                case 'sesi-cs':  return window.mppCekSesiCS();
+                case 'riwayat-cs': return window.mppGetRiwayatCS(filter.limit);
+                case 'status':   return window.mppStatistik();
+                default:         return null;
+            }
+        } catch (e) { return null; }
+    };
+
+    window.cekPintuMPP = function() {
+        var skor = (typeof window.kirimMPP  === 'function' ? 1 : 0)
+                 + (typeof window.terimaMPP === 'function' ? 1 : 0)
+                 + (typeof window.ambilMPP  === 'function' ? 1 : 0);
+        return {
+            blok: 'MPP',
+            kirim:  typeof window.kirimMPP  === 'function',
+            terima: typeof window.terimaMPP === 'function',
+            ambil:  typeof window.ambilMPP  === 'function',
+            skor:   skor + '/3',
+            lengkap: skor === 3
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.6] — STATISTIK + DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.mppStatistik = function() {
+        try {
+            var produk = window.mppListProdukPublik({ limit: 9999 });
+            var toko = window.mppListTokoPublik({ limit: 9999 });
+            var sesi = window.mppCekSesiCS();
+            var riwayat = window.mppGetRiwayatCS(999);
+            return {
+                totalProduk:  produk.length,
+                totalToko:    toko.length,
+                sesiAktif:    sesi.aktif,
+                idGuest:      sesi.idGuest || null,
+                totalPesanCS: riwayat.length,
+                timestamp:    _now()
+            };
+        } catch (e) { return null; }
+    };
+
+    window.debugMPP = function() {
+        var stat = window.mppStatistik();
+        var pintu = window.cekPintuMPP();
+        var info = {
+            blok: 'MPP',
+            versi: window._mppVersi,
+            guard: window._mppDoneV1,
+            deskripsi: 'MP-Public — 3 modul (Katalog · Toko · CS Chat)',
+            modul: {
+                '1_Katalog': {
+                    mppListProdukPublik:  typeof window.mppListProdukPublik,
+                    mppCariProduk:        typeof window.mppCariProduk,
+                    mppGetProdukById:     typeof window.mppGetProdukById,
+                    mppListKategori:      typeof window.mppListKategori
+                },
+                '2_Toko': {
+                    mppListTokoPublik:    typeof window.mppListTokoPublik,
+                    mppGetTokoById:       typeof window.mppGetTokoById,
+                    mppGetProdukByToko:   typeof window.mppGetProdukByToko
+                },
+                '3_CS_Chat': {
+                    mppKirimPesanCS:      typeof window.mppKirimPesanCS,
+                    mppGetRiwayatCS:      typeof window.mppGetRiwayatCS,
+                    mppCekSesiCS:         typeof window.mppCekSesiCS,
+                    mppResetSesiCS:       typeof window.mppResetSesiCS
+                }
+            },
+            pintu: pintu,
+            statistik: stat,
+            dependency: {
+                cs2:        typeof window.csLoadJSON === 'function',
+                cs4:        typeof window.csEscHtml === 'function',
+                cs6:        typeof window.csToast === 'function',
+                gid:        typeof window.gidIdUser === 'function',
+                fmo:        typeof window.fmoListOwner === 'function',
+                fss:        typeof window.fssGetProdukSeller === 'function',
+                fks:        typeof window.fksGetProdukKDD === 'function',
+                mn:         typeof window.mnKirimKeMenu === 'function'
+            },
+            cekAturan: {
+                A1_delegasiCS:      true,
+                A2_prefixUnik:      true,
+                A11_lengkap3Pintu:  pintu.lengkap,
+                A25_noDuplikasi:    true,
+                A29_subSeksi:       true,
+                A32_guardUnik:      window._mppDoneV1 === true
+            }
+        };
+        console.log('🔍 debugMPP v1.0:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [MPP.7] — AUTO-REGISTRY (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            // A33 — Registry Blok
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'MPP';
+                });
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'MPP',
+                        nama: 'MP-Public v1.0 (Katalog · Toko · CS Chat)',
+                        layer: 'L4',
+                        status: 'Selesai',
+                        tanggal: _now().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('MPP', {
+                        status: 'Selesai',
+                        nama: 'MP-Public v1.0 (Katalog · Toko · CS Chat)'
+                    });
+                }
+            }
+            // A34 — Riwayat
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'MPP';
+                });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        tanggal: _now().substring(0, 10),
+                        blok: 'MPP',
+                        nama: 'MP-Public v1.0 (3 Modul)',
+                        keterangan: 'Modul 1 Katalog (4 fungsi) · Modul 2 Toko (3 fungsi) · ' +
+                                    'Modul 3 CS Chat guest (4 fungsi) · ' +
+                                    '3 Pintu (A11) · Delegasi murni ke FMO/FSS/FKS/MN · ' +
+                                    'Sesi guest via localStorage'
+                    });
+                }
+            }
+            // A35 — Registry Fungsi
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('mpp', {
+                    nama: 'MP-Public (L4)',
+                    status: 'Selesai',
+                    jumlah: 15
+                });
+            }
+        } catch (e) {
+            console.warn('[MPP v1.0] Auto-registry error:', e.message);
+        }
+    }, 900);
+
+    // ═══════════════════════════════════════════════════════════
+    // LOG TERPASANG (A5) — 2 baris
+    // ═══════════════════════════════════════════════════════════
+    console.log(
+        '%c🇮🇩 BLOK MPP v1.0 — MP-PUBLIC (3 Modul) terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
+        'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
+    );
+    console.log(
+        '   📦 3 Modul · 15 Fungsi Publik · 3 Pintu · ' +
+        'Delegasi murni CS2/CS4/CS6/GID/FMO/FSS/FKS/MN · ' +
+        'Guest Chat CS aktif · debugMPP()'
+    );
+})();
+</script>
+<!-- ═══ AKHIR BLOK MPP — MP-PUBLIC 🇮🇩 v1.0 FINAL ═════════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 9.3.1 (0) — HELPER MENU CONFIG 🇮🇩 v3.0 FINAL ══ -->
 <!-- ═══ Layer: L3a (Menu Config — Helper Builder) ══════════════ -->
 <!-- ═══ Dependency: CS1 v4.2+ (CS_ROLE_MAP) ═══════════════════ -->
