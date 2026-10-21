@@ -7726,761 +7726,6 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
 <!-- ═══ AKHIR BLOK CS1 — KONSTANTA & 32 ROLE 🇮🇩 v4.2 FINAL ═════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK CS2 — STORAGE ENGINE 🇮🇩 v4.0 FINAL ══════════════ -->
-<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
-<!-- ═══ Dependency: CS1 v4.2 (CS_KEY + CS_LIMIT + CS_FLAG) ════ -->
-<!-- ═══ Guard: _coreSystem2DoneV4 (UTAMA) ═════════════════════ -->
-<!-- ═══        + alias _coreSystem2DoneV3 + V2 + V1 ═══════════ -->
-<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Role Storage) ═════ -->
-<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36 ═════ -->
-<!-- ═══ Isi: 12 modul [CS2.1]—[CS2.12] ═══════════════════════ -->
-<!-- ═══   [CS2.1]   csLoadJSON (with fallback) ═══════════════ -->
-<!-- ═══   [CS2.2]   csSaveJSON (quota handling + auto-backup) ═ -->
-<!-- ═══   [CS2.3]   csRemoveJSON ═════════════════════════════ -->
-<!-- ═══   [CS2.4]   csEmergencyCleanup ═══════════════════════ -->
-<!-- ═══   [CS2.5]   csHitungSizeStorage ══════════════════════ -->
-<!-- ═══   [CS2.6]   simpanDataKeLocalStorage (19 key) ════════ -->
-<!-- ═══   [CS2.7]   loadDataDariLocalStorage (19 key) ════════ -->
-<!-- ═══   [CS2.8]   csMigrasiKasirOwnerId (auto-fix A42) ═════ -->
-<!-- ═══   [CS2.9]   csLoadArsip + csSaveArsip ════════════════ -->
-<!-- ═══   [CS2.10]  csLoadKasir + csSaveKasir ════════════════ -->
-<!-- ═══   [CS2.11]  csCekKonsistensiStorage32 (10 titik) ═════ -->
-<!-- ═══   [CS2.12]  csBersihkanStorageAman + Debug + Log ═════ -->
-<!-- ═══ ⚠️ Auto-backup sebelum save (jika CS_FLAG.AUTO_BACKUP) -->
-<!-- ═══ ⚠️ Emergency cleanup jika quota exceeded ═════════════ -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<script>
-(function BLOK_CS2_STORAGE_V4() {
-    // ═══════════════════════════════════════════════════════════
-    // [A32] — GUARD FLAG UNIK + ALIAS BACKWARD COMPAT
-    // ═══════════════════════════════════════════════════════════
-    if (window._coreSystem2DoneV4) {
-        console.log('ℹ️ CS2 v' + (window._coreSystem2Versi || '?') + ' sudah terpasang.');
-        return;
-    }
-
-    // ── Cek dependency CS1 ──
-    var cs1Ok = window._coreSystem1DoneV4_2 ||
-                window._coreSystem1DoneV4 ||
-                window._coreSystem1DoneV3;
-    if (!cs1Ok) {
-        console.warn('⚠️ CS1 belum terpasang. CS2 v4.0 ditunda.');
-        return;
-    }
-    if (!window.CS_KEY || !window.CS_LIMIT || !window.CS_FLAG) {
-        console.warn('⚠️ CS_KEY/CS_LIMIT/CS_FLAG tidak ada. CS2 v4.0 ditunda.');
-        return;
-    }
-
-    // ── Guard + alias ──
-    window._coreSystem2DoneV4 = true;
-    window._coreSystem2DoneV3 = true;
-    window._coreSystem2DoneV2 = true;
-    window._coreSystem2DoneV1 = true;
-    window._coreSystem2Done   = true;
-    window._coreSystem2Versi  = '4.0';
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.1] — csLoadJSON (dengan fallback)
-    // ═══════════════════════════════════════════════════════════
-    window.csLoadJSON = function(key, fallback) {
-        try {
-            if (!key) return fallback;
-            var s = localStorage.getItem(key);
-            if (!s) return fallback;
-            var parsed = JSON.parse(s);
-            return (parsed === null || parsed === undefined) ? fallback : parsed;
-        } catch (e) {
-            console.warn('csLoadJSON error "' + key + '":', e.message);
-            return fallback;
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.2] — csSaveJSON (quota handling + auto-backup)
-    // ═══════════════════════════════════════════════════════════
-    window.csSaveJSON = function(key, data, opts) {
-        opts = opts || {};
-        try {
-            if (!key) return { sukses: false, pesan: 'Key kosong' };
-
-            // ── Backup otomatis (kalau diaktifkan) ──
-            if (window.CS_FLAG && window.CS_FLAG.AUTO_BACKUP && opts.backup !== false) {
-                try {
-                    var existing = localStorage.getItem(key);
-                    if (existing) {
-                        localStorage.setItem(
-                            (window.CS_KEY ? window.CS_KEY.BACKUP_PREFIX : 'backup_') + key,
-                            existing.substring(0, 2000)
-                        );
-                    }
-                } catch (e) {}
-            }
-
-            var json = JSON.stringify(data);
-            var sizeKB = Math.round(json.length / 1024);
-
-            if (window.CS_LIMIT && sizeKB > window.CS_LIMIT.MAX_STORAGE_MB * 1024) {
-                console.warn('⚠️ Data terlalu besar: ' + sizeKB + ' KB');
-            }
-
-            try {
-                localStorage.setItem(key, json);
-                return { sukses: true, sizeKB: sizeKB };
-            } catch (e) {
-                if (e.name === 'QuotaExceededError' ||
-                    (e.message && e.message.indexOf('quota') !== -1)) {
-                    console.warn('⚠️ Storage penuh — emergency cleanup…');
-                    window.csEmergencyCleanup();
-                    try {
-                        localStorage.setItem(key, json);
-                        return { sukses: true, afterCleanup: true, sizeKB: sizeKB };
-                    } catch (e2) {
-                        return { sukses: false, pesan: 'Storage penuh setelah cleanup' };
-                    }
-                }
-                return { sukses: false, pesan: e.message };
-            }
-        } catch (e) {
-            console.error('csSaveJSON error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.3] — csRemoveJSON
-    // ═══════════════════════════════════════════════════════════
-    window.csRemoveJSON = function(key) {
-        try {
-            localStorage.removeItem(key);
-            return true;
-        } catch (e) {
-            return false;
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.4] — csEmergencyCleanup
-    // ═══════════════════════════════════════════════════════════
-    window.csEmergencyCleanup = function() {
-        try {
-            var freed = 0;
-
-            // 1. Hapus semua backup
-            Object.keys(localStorage).forEach(function(k) {
-                if (k.indexOf('backup_') === 0) {
-                    freed += (localStorage.getItem(k) || '').length;
-                    try { localStorage.removeItem(k); } catch (e) {}
-                }
-            });
-
-            // 2. Trim log audit
-            try {
-                var la = window.csLoadJSON(window.CS_KEY.LOG_AUDIT_SA, { log: [] });
-                if (la.log && la.log.length > 100) {
-                    la.log = la.log.slice(0, 100);
-                    localStorage.setItem(window.CS_KEY.LOG_AUDIT_SA, JSON.stringify(la));
-                }
-            } catch (e) {}
-
-            // 3. Trim histori aktivitas
-            try {
-                var ha = window.csLoadJSON(window.CS_HISTORI_KEY || 'dataHistoriAktivitas', []);
-                if (ha.length > 100) {
-                    ha = ha.slice(0, 100);
-                    localStorage.setItem(window.CS_KEY.HISTORI_AKTIVITAS, JSON.stringify(ha));
-                }
-            } catch (e) {}
-
-            console.log('🧹 Emergency cleanup: ~' + Math.round(freed / 1024) + ' KB dibebaskan');
-            return { sukses: true, freedKB: Math.round(freed / 1024) };
-        } catch (e) {
-            console.error('csEmergencyCleanup error:', e);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.5] — csHitungSizeStorage
-    // ═══════════════════════════════════════════════════════════
-    window.csHitungSizeStorage = function() {
-        try {
-            var total = 0;
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                var v = localStorage.getItem(k) || '';
-                total += (k.length + v.length) * 2;
-            }
-            return {
-                bytes: total,
-                KB: Math.round(total / 1024),
-                MB: Math.round(total / 1024 / 1024 * 100) / 100
-            };
-        } catch (e) {
-            return { bytes: 0, KB: 0, MB: 0 };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.6] — simpanDataKeLocalStorage (19 KEY)
-    // ═══════════════════════════════════════════════════════════
-    // Simpan semua variabel global VG ke localStorage.
-    // +DATA_ARSIP_AKUN +DATA_KASIR (sinkron 32 role).
-    // ═══════════════════════════════════════════════════════════
-    window.simpanDataKeLocalStorage = function() {
-        try {
-            var hasil = { sukses: 0, gagal: 0, listGagal: [] };
-
-            var map = [
-                { var: 'dataLoginUser',         key: 'dataLoginUser' },
-                { var: 'dataAkunAktif',         key: 'dataAkunAktif' },
-                { var: 'dataWilayah',           key: 'dataWilayah' },
-                { var: 'dataPengajuanBukaAkun', key: 'dataPengajuanBukaAkun' },
-                { var: 'dataVerifikasiDokumen', key: 'dataVerifikasiDokumen' },
-                { var: 'dataLogAuditSA',        key: 'dataLogAuditSA' },
-                { var: 'dataHistoriAktivitas',  key: 'dataHistoriAktivitas' },
-                { var: 'dataRekening',          key: 'dataRekening' },
-                { var: 'dataTopUpHistory',      key: 'dataTopUpHistory' },
-                { var: 'dataWithdrawHistory',   key: 'dataWithdrawHistory' },
-                { var: 'dataKasir',             key: 'dataKasir' },
-                { var: 'dataArsipAkun',         key: 'dataArsipAkun' },
-                { var: 'dataOrder',             key: 'dataOrder' },
-                { var: 'dataProduk',            key: 'dataProduk' },
-                { var: 'dataKategoriProduk',    key: 'dataKategoriProduk' },
-                { var: 'dataNotifikasi',        key: 'dataNotifikasi' },
-                { var: 'dataChat',              key: 'dataChat' },
-                { var: 'dataKoleksiGif',        key: 'dataKoleksiGif' },
-                { var: 'dataMediaIndex',        key: 'dataMediaIndex' }
-            ];
-
-            map.forEach(function(m) {
-                try {
-                    var val = window[m.var];
-                    if (val === undefined) return;
-                    var r = window.csSaveJSON(m.key, val, { backup: false });
-                    if (r && r.sukses) hasil.sukses++;
-                    else {
-                        hasil.gagal++;
-                        hasil.listGagal.push(m.key);
-                    }
-                } catch (e) {
-                    hasil.gagal++;
-                    hasil.listGagal.push(m.key + ' (' + e.message + ')');
-                }
-            });
-
-            return hasil;
-        } catch (e) {
-            console.error('simpanDataKeLocalStorage error:', e);
-            return { sukses: 0, gagal: 1, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.7] — loadDataDariLocalStorage (19 KEY)
-    // ═══════════════════════════════════════════════════════════
-    window.loadDataDariLocalStorage = function() {
-        try {
-            var map = [
-                { var: 'dataLoginUser',         key: 'dataLoginUser',         def: [] },
-                { var: 'dataAkunAktif',         key: 'dataAkunAktif',         def: [] },
-                { var: 'dataWilayah',           key: 'dataWilayah',           def: [] },
-                { var: 'dataPengajuanBukaAkun', key: 'dataPengajuanBukaAkun', def: [] },
-                { var: 'dataVerifikasiDokumen', key: 'dataVerifikasiDokumen', def: [] },
-                { var: 'dataLogAuditSA',        key: 'dataLogAuditSA',        def: { log: [] } },
-                { var: 'dataHistoriAktivitas',  key: 'dataHistoriAktivitas',  def: [] },
-                { var: 'dataRekening',          key: 'dataRekening',          def: [] },
-                { var: 'dataTopUpHistory',      key: 'dataTopUpHistory',      def: [] },
-                { var: 'dataWithdrawHistory',   key: 'dataWithdrawHistory',   def: [] },
-                { var: 'dataKasir',             key: 'dataKasir',             def: [] },
-                { var: 'dataArsipAkun',         key: 'dataArsipAkun',         def: [] },
-                { var: 'dataOrder',             key: 'dataOrder',             def: [] },
-                { var: 'dataProduk',            key: 'dataProduk',            def: [] },
-                { var: 'dataKategoriProduk',    key: 'dataKategoriProduk',    def: [] },
-                { var: 'dataNotifikasi',        key: 'dataNotifikasi',        def: [] },
-                { var: 'dataChat',              key: 'dataChat',              def: [] },
-                { var: 'dataKoleksiGif',        key: 'dataKoleksiGif',        def: [] },
-                { var: 'dataMediaIndex',        key: 'dataMediaIndex',        def: {} }
-            ];
-
-            var hasil = {};
-            map.forEach(function(m) {
-                try {
-                    var loaded = window.csLoadJSON(m.key, m.def);
-                    var target = window[m.var];
-
-                    if (Array.isArray(target) && Array.isArray(loaded)) {
-                        target.length = 0;
-                        loaded.forEach(function(x) { target.push(x); });
-                    } else if (target && typeof target === 'object' &&
-                               !Array.isArray(target) && typeof loaded === 'object') {
-                        Object.keys(target).forEach(function(k) { delete target[k]; });
-                        Object.assign(target, loaded);
-                    }
-                    if (Array.isArray(loaded)) hasil[m.var] = loaded.length;
-                    else if (typeof loaded === 'object') hasil[m.var] = Object.keys(loaded).length;
-                    else hasil[m.var] = 0;
-                } catch (e) {
-                    hasil[m.var] = 0;
-                }
-            });
-
-            // ── AUTO-MIGRASI: perbaiki kasir tanpa idOwner (data lama) ──
-            try {
-                window.csMigrasiKasirOwnerId();
-            } catch (_e) {
-                console.warn('Migrasi kasir warning:', _e.message);
-            }
-
-            return hasil;
-        } catch (e) {
-            console.error('loadDataDariLocalStorage error:', e);
-            return {};
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.8] — csMigrasiKasirOwnerId (auto-fix A42)
-    // ═══════════════════════════════════════════════════════════
-    // Perbaiki kasir lama yang belum punya idOwner/ownerId/idInduk.
-    // Sinkron dengan 6 varian kasir.
-    // ═══════════════════════════════════════════════════════════
-    window.csMigrasiKasirOwnerId = function() {
-        try {
-            var _KASIR_KODE = ['KSR_TK','KSR_PP','KSR_PM','KSR_DST','KSR_GR','KSR_KDMP'];
-            var _lu = window.dataLoginUser || [];
-            if (!Array.isArray(_lu) || _lu.length === 0) return { sukses: true, fixed: 0 };
-
-            var _fixed = 0;
-            for (var _i = 0; _i < _lu.length; _i++) {
-                var _u = _lu[_i];
-                if (!_u || _KASIR_KODE.indexOf(_u.kodeRole) === -1) continue;
-                if (_u.idOwner) continue;
-
-                // Cari induk
-                var _induk = 'TK';
-                if (_u.kodeRole === 'KSR_KDMP') _induk = 'KDMP_DESA';
-                else if (_u.kodeRole && _u.kodeRole.indexOf('KSR_') === 0) {
-                    _induk = _u.kodeRole.replace('KSR_', '');
-                }
-
-                var _kandidat = _lu.filter(function(x) {
-                    return x && x.kodeRole === _induk;
-                });
-                if (_kandidat.length === 0) continue;
-
-                var _chosen = _kandidat[0];
-                _u.idOwner = _chosen.idUser || _chosen.id;
-                _u.ownerId = _u.idOwner;
-                _u.idInduk = _u.idOwner;
-                if (_chosen.kodeToko) _u.kodeOwner = _chosen.kodeToko;
-                if (!_u.createdBy) _u.createdBy = _u.idOwner;
-                _fixed++;
-            }
-
-            if (_fixed > 0) {
-                window.csSaveJSON('dataLoginUser', _lu, { backup: false });
-                console.log('%c🔧 Migrasi kasir: ' + _fixed +
-                    ' akun diperbaiki (idOwner)',
-                    'background:#DC3545;color:#fff;padding:2px 6px;');
-            }
-            return { sukses: true, fixed: _fixed };
-        } catch (e) {
-            console.warn('csMigrasiKasirOwnerId error:', e.message);
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.9] — csLoadArsip + csSaveArsip
-    // ═══════════════════════════════════════════════════════════
-    window.csLoadArsip = function() {
-        try {
-            var v = window.csLoadJSON('dataArsipAkun', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    };
-
-    window.csSaveArsip = function(list) {
-        try {
-            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
-            var r = window.csSaveJSON('dataArsipAkun', list, { backup: false });
-            if (Array.isArray(window.dataArsipAkun)) {
-                window.dataArsipAkun.length = 0;
-                list.forEach(function(x) { window.dataArsipAkun.push(x); });
-            }
-            return r;
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.10] — csLoadKasir + csSaveKasir
-    // ═══════════════════════════════════════════════════════════
-    window.csLoadKasir = function() {
-        try {
-            var v = window.csLoadJSON('dataKasir', []);
-            return Array.isArray(v) ? v : [];
-        } catch (e) { return []; }
-    };
-
-    window.csSaveKasir = function(list) {
-        try {
-            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
-            var r = window.csSaveJSON('dataKasir', list, { backup: false });
-            if (Array.isArray(window.dataKasir)) {
-                window.dataKasir.length = 0;
-                list.forEach(function(x) { window.dataKasir.push(x); });
-            }
-            return r;
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.11] — csCekKonsistensiStorage32 (10 TITIK CEK)
-    // ═══════════════════════════════════════════════════════════
-    window.csCekKonsistensiStorage32 = function() {
-        var hasil = { ok: true, totalCek: 0, totalWarning: 0, detail: [] };
-
-        function _addCek(nama, status, pesan) {
-            hasil.totalCek++;
-            if (status !== 'ok') hasil.totalWarning++;
-            hasil.detail.push({ cek: nama, status: status, pesan: pesan || '-' });
-            if (status !== 'ok') hasil.ok = false;
-        }
-
-        try {
-            // ── 1. Key storage utama ada ──
-            var keyUtama = [
-                'dataLoginUser', 'dataAkunAktif', 'dataKasir',
-                'dataArsipAkun', 'dataPengajuanBukaAkun', 'dataVerifikasiDokumen'
-            ];
-            var keyHilang = keyUtama.filter(function(k) {
-                try { return localStorage.getItem(k) === null; }
-                catch (e) { return true; }
-            });
-            if (keyHilang.length === 0) {
-                _addCek('Key storage utama', 'ok', '6 key utama ada');
-            } else {
-                _addCek('Key storage utama', 'warning',
-                    'Belum ada: ' + keyHilang.join(', '));
-            }
-
-            // ── 2. dataLoginUser ter-load ──
-            if (Array.isArray(window.dataLoginUser)) {
-                _addCek('dataLoginUser ter-load', 'ok',
-                    window.dataLoginUser.length + ' user');
-            } else {
-                _addCek('dataLoginUser ter-load', 'warning', 'Bukan array');
-            }
-
-            // ── 3. dataKasir ter-load ──
-            if (Array.isArray(window.dataKasir)) {
-                _addCek('dataKasir ter-load', 'ok',
-                    window.dataKasir.length + ' kasir (6 varian)');
-            } else {
-                _addCek('dataKasir ter-load', 'warning', 'Bukan array');
-            }
-
-            // ── 4. dataArsipAkun ter-load ──
-            if (Array.isArray(window.dataArsipAkun)) {
-                _addCek('dataArsipAkun ter-load', 'ok',
-                    window.dataArsipAkun.length + ' akun diarsipkan');
-            } else {
-                _addCek('dataArsipAkun ter-load', 'warning', 'Bukan array');
-            }
-
-            // ── 5. Storage size < limit ──
-            var size = window.csHitungSizeStorage();
-            if (size.MB < window.CS_LIMIT.MAX_STORAGE_MB) {
-                _addCek('Storage size', 'ok',
-                    size.KB + ' KB (limit ' + (window.CS_LIMIT.MAX_STORAGE_MB * 1024) + ' KB)');
-            } else {
-                _addCek('Storage size', 'warning',
-                    'Hampir penuh: ' + size.KB + ' KB');
-            }
-
-            // ── 6. Auto-backup aktif ──
-            if (window.CS_FLAG.AUTO_BACKUP) {
-                _addCek('Auto-backup aktif', 'ok', 'Backup otomatis saat save');
-            } else {
-                _addCek('Auto-backup aktif', 'warning', 'Auto-backup nonaktif');
-            }
-
-            // ── 7. Total key R2C ──
-            var totalKeyR2C = 0;
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (k && (k.indexOf('r2c_') === 0 ||
-                          k.indexOf('data') === 0 ||
-                          k.indexOf('profil_') === 0)) {
-                    totalKeyR2C++;
-                }
-            }
-            _addCek('Total key R2C', 'ok', totalKeyR2C + ' key terdaftar');
-
-            // ── 8. CS_KEY punya DATA_ARSIP_AKUN ──
-            if (window.CS_KEY.DATA_ARSIP_AKUN) {
-                _addCek('CS_KEY.DATA_ARSIP_AKUN', 'ok', window.CS_KEY.DATA_ARSIP_AKUN);
-            } else {
-                _addCek('CS_KEY.DATA_ARSIP_AKUN', 'warning', 'Belum ada');
-            }
-
-            // ── 9. CS_KEY punya DATA_KASIR ──
-            if (window.CS_KEY.DATA_KASIR) {
-                _addCek('CS_KEY.DATA_KASIR', 'ok', window.CS_KEY.DATA_KASIR);
-            } else {
-                _addCek('CS_KEY.DATA_KASIR', 'warning', 'Belum ada');
-            }
-
-            // ── 10. CS1 v4.2 sinkron ──
-            if (window._coreSystem1DoneV4_2) {
-                _addCek('CS1 v4.2 sinkron', 'ok', 'Guard _coreSystem1DoneV4_2');
-            } else {
-                _addCek('CS1 v4.2 sinkron', 'warning', 'CS1 belum v4.2');
-            }
-        } catch (e) {
-            hasil.ok = false;
-            hasil.detail.push({ cek: 'exception', status: 'error', pesan: e.message });
-        }
-
-        return hasil;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.12a] — csBersihkanStorageAman
-    // ═══════════════════════════════════════════════════════════
-    // Bersihkan storage dengan backup otomatis dulu.
-    // ═══════════════════════════════════════════════════════════
-    window.csBersihkanStorageAman = function(opts) {
-        opts = opts || {};
-        try {
-            // ── Backup dulu ──
-            var backup = {
-                timestamp: window.csNow ? window.csNow() : new Date().toISOString(),
-                dataLoginUser:         window.dataLoginUser || [],
-                dataAkunAktif:         window.dataAkunAktif || [],
-                dataKasir:             window.dataKasir || [],
-                dataArsipAkun:         window.dataArsipAkun || [],
-                dataPengajuanBukaAkun: window.dataPengajuanBukaAkun || [],
-                dataVerifikasiDokumen: window.dataVerifikasiDokumen || []
-            };
-            try {
-                localStorage.setItem('r2c_backup_bersih_' + Date.now(),
-                    JSON.stringify(backup).substring(0, 100000));
-            } catch (e) {}
-
-            // ── Hapus key tertentu ──
-            var hapus = 0;
-            if (Array.isArray(opts.target)) {
-                opts.target.forEach(function(k) {
-                    try { localStorage.removeItem(k); hapus++; } catch (e) {}
-                });
-            } else {
-                // Default: hapus backup lama saja
-                Object.keys(localStorage).forEach(function(k) {
-                    if (k.indexOf('backup_') === 0 ||
-                        k.indexOf('r2c_backup_') === 0) {
-                        try { localStorage.removeItem(k); hapus++; } catch (e) {}
-                    }
-                });
-            }
-
-            return { sukses: true, hapus: hapus };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.12b] — Alias kompatibilitas
-    // ═══════════════════════════════════════════════════════════
-    window.hfLoadJSON   = window.csLoadJSON;
-    window.hfSaveJSON   = window.csSaveJSON;
-    window.hfRemoveJSON = window.csRemoveJSON;
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.12c] — Helper: csCekKeyStorage, csListKeyR2C, csHapusKeyR2C
-    // ═══════════════════════════════════════════════════════════
-    window.csCekKeyStorage = function(key) {
-        try {
-            return localStorage.getItem(key) !== null;
-        } catch (e) {
-            return false;
-        }
-    };
-
-    window.csListKeyR2C = function() {
-        try {
-            var hasil = [];
-            for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (k && (k.indexOf('r2c_') === 0 ||
-                          k.indexOf('data') === 0 ||
-                          k.indexOf('profil_') === 0 ||
-                          k.indexOf('mpp_') === 0 ||
-                          k.indexOf('md_') === 0)) {
-                    hasil.push(k);
-                }
-            }
-            return hasil.sort();
-        } catch (e) {
-            return [];
-        }
-    };
-
-    window.csHapusKeyR2C = function() {
-        try {
-            var list = window.csListKeyR2C();
-            var hapus = 0;
-            list.forEach(function(k) {
-                try { localStorage.removeItem(k); hapus++; } catch (e) {}
-            });
-            return { sukses: true, dihapus: hapus };
-        } catch (e) {
-            return { sukses: false, pesan: e.message };
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.12d] — DEBUG (A5) — v4.0
-    // ═══════════════════════════════════════════════════════════
-    window.debugCS2 = function() {
-        var info = {
-            blok: 'CS2',
-            versi: '4.0-R2COIN',
-            guard: {
-                v4: window._coreSystem2DoneV4,
-                v3: window._coreSystem2DoneV3,
-                v2: window._coreSystem2DoneV2,
-                v1: window._coreSystem2DoneV1,
-                alias: window._coreSystem2Done
-            },
-            storage: window.csHitungSizeStorage(),
-            limit: window.CS_LIMIT.MAX_STORAGE_MB + ' MB',
-            autoBackup: window.CS_FLAG.AUTO_BACKUP,
-            emergencyMode: window.CS_FLAG.EMERGENCY,
-            totalKeyR2C: window.csListKeyR2C().length,
-            konsistensi32: window.csCekKonsistensiStorage32(),
-            dataAktif: {
-                dataLoginUser:  Array.isArray(window.dataLoginUser)  ? window.dataLoginUser.length  : 0,
-                dataAkunAktif:  Array.isArray(window.dataAkunAktif)  ? window.dataAkunAktif.length  : 0,
-                dataKasir:      Array.isArray(window.dataKasir)      ? window.dataKasir.length      : 0,
-                dataArsipAkun:  Array.isArray(window.dataArsipAkun)  ? window.dataArsipAkun.length  : 0,
-                dataPengajuan:  Array.isArray(window.dataPengajuanBukaAkun)  ? window.dataPengajuanBukaAkun.length  : 0,
-                dataVerifikasi: Array.isArray(window.dataVerifikasiDokumen)  ? window.dataVerifikasiDokumen.length  : 0
-            },
-            fungsi: {
-                csLoadJSON:                 typeof window.csLoadJSON,
-                csSaveJSON:                 typeof window.csSaveJSON,
-                csRemoveJSON:               typeof window.csRemoveJSON,
-                csEmergencyCleanup:         typeof window.csEmergencyCleanup,
-                csHitungSizeStorage:        typeof window.csHitungSizeStorage,
-                simpanDataKeLocalStorage:   typeof window.simpanDataKeLocalStorage,
-                loadDataDariLocalStorage:   typeof window.loadDataDariLocalStorage,
-                csMigrasiKasirOwnerId:      typeof window.csMigrasiKasirOwnerId,
-                csLoadArsip:                typeof window.csLoadArsip,
-                csSaveArsip:                typeof window.csSaveArsip,
-                csLoadKasir:                typeof window.csLoadKasir,
-                csSaveKasir:                typeof window.csSaveKasir,
-                csCekKonsistensiStorage32:  typeof window.csCekKonsistensiStorage32,
-                csBersihkanStorageAman:     typeof window.csBersihkanStorageAman,
-                csCekKeyStorage:            typeof window.csCekKeyStorage,
-                csListKeyR2C:               typeof window.csListKeyR2C,
-                csHapusKeyR2C:              typeof window.csHapusKeyR2C,
-                hfLoadJSON:                 typeof window.hfLoadJSON,
-                hfSaveJSON:                 typeof window.hfSaveJSON,
-                hfRemoveJSON:               typeof window.hfRemoveJSON
-            }
-        };
-        console.log('🔍 debugCS2 v4.0-R2COIN:', info);
-        return info;
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.12e] — AUTO-REGISTRY KE 3 REGISTRY
-    // ═══════════════════════════════════════════════════════════
-    setTimeout(function() {
-        try {
-            if (typeof window.cpUpdateBlok === 'function') {
-                window.cpUpdateBlok('CS2', {
-                    status: 'Selesai',
-                    tanggal: new Date().toISOString().substring(0, 10),
-                    nama: 'Storage Engine v4.0'
-                });
-            }
-            if (typeof window.cpTambahRiwayat === 'function') {
-                var ada = (window.CP_RIWAYAT || []).some(function(r) {
-                    return r && r.blok === 'CS2';
-                });
-                if (!ada) {
-                    window.cpTambahRiwayat({
-                        blok: 'CS2',
-                        nama: 'Storage Engine v4.0',
-                        keterangan: 'csLoadJSON · csSaveJSON · csRemoveJSON · ' +
-                                    'csEmergencyCleanup · csHitungSizeStorage · ' +
-                                    'simpan/load 19 key · csMigrasiKasirOwnerId · ' +
-                                    'csCekKonsistensiStorage32 (10 titik)'
-                    });
-                }
-            }
-            if (typeof window.cpUpdateFungsi === 'function') {
-                window.cpUpdateFungsi('cs', {
-                    nama: 'Core System (L1)',
-                    status: 'Selesai',
-                    jumlah: '~250'
-                });
-            }
-        } catch (e) {
-            console.warn('CS2 auto-registry error:', e.message);
-        }
-    }, 1000);
-
-    // ═══════════════════════════════════════════════════════════
-    // [CS2.12f] — LOG TERPASANG (A5) — v4.0
-    // ═══════════════════════════════════════════════════════════
-    var _stat = window.csHitungSizeStorage();
-    var _konsis = window.csCekKonsistensiStorage32();
-
-    console.log('%c🇮🇩 BLOK CS2 v4.0 — STORAGE ENGINE terpasang.',
-        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
-        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
-    console.log('   📤 Exported:');
-    console.log('      • csLoadJSON, csSaveJSON, csRemoveJSON');
-    console.log('      • hfLoadJSON, hfSaveJSON, hfRemoveJSON (alias)');
-    console.log('   💾 Auto-backup  : ' + (window.CS_FLAG.AUTO_BACKUP ? 'Aktif' : 'Nonaktif'));
-    console.log('   📊 Storage      : ' + _stat.KB + ' KB / ' +
-                (window.CS_LIMIT.MAX_STORAGE_MB * 1024) + ' KB');
-    console.log('   🔑 Total key R2C: ' + window.csListKeyR2C().length);
-    console.log('   🎯 Konsistensi  : ' + (_konsis.ok ? '✅ ' : '⚠️ ') +
-                _konsis.totalCek + ' cek · ' + _konsis.totalWarning + ' warning');
-    console.log('');
-    console.log('   📦 19 Key Storage:');
-    console.log('      • dataLoginUser, dataAkunAktif, dataKasir, dataArsipAkun');
-    console.log('      • dataWilayah, dataPengajuanBukaAkun, dataVerifikasiDokumen');
-    console.log('      • dataLogAuditSA, dataHistoriAktivitas');
-    console.log('      • dataRekening, dataTopUpHistory, dataWithdrawHistory');
-    console.log('      • dataOrder, dataProduk, dataKategoriProduk');
-    console.log('      • dataNotifikasi, dataChat, dataKoleksiGif, dataMediaIndex');
-    console.log('');
-    console.log('   ⭐ v4.0 FINAL:');
-    console.log('      • Guard 3 lapis: _coreSystem2DoneV4 → V3 → V2 → V1');
-    console.log('      • Dep check: CS1 v4.2 (fallback v4/v3)');
-    console.log('      • simpan/load: 19 key (+dataKasir +dataArsipAkun)');
-    console.log('      • +csMigrasiKasirOwnerId() — auto-fix kasir tanpa idOwner');
-    console.log('      • +csLoadArsip() + csSaveArsip() — soft delete');
-    console.log('      • +csLoadKasir() + csSaveKasir() — 6 varian kasir');
-    console.log('      • +csBersihkanStorageAman() — backup dulu sebelum hapus');
-    console.log('      • +csCekKonsistensiStorage32() — 10 titik cek');
-    console.log('   🔍 Debug: debugCS2()');
-})();
-</script>
-<!-- ═══ AKHIR BLOK CS2 — STORAGE ENGINE 🇮🇩 v4.0 FINAL ═════════ -->
-
-<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK SW — SEEDER WILAYAH 🇮🇩 v2.0 FINAL ════════════════ -->
 <!-- ═══ Layer: L2 (Seeder & Builder) ═══════════════════════════ -->
 <!-- ═══ Guard: _swDoneV2 (A32) ════════════════════════════════ -->
@@ -9410,6 +8655,761 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
 })();
 </script>
 <!-- ═══ AKHIR BLOK SW — SEEDER WILAYAH 🇮🇩 v2.0 FINAL ═════════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK CS2 — STORAGE ENGINE 🇮🇩 v4.0 FINAL ══════════════ -->
+<!-- ═══ Layer: L1 (Core System) ═══════════════════════════════ -->
+<!-- ═══ Dependency: CS1 v4.2 (CS_KEY + CS_LIMIT + CS_FLAG) ════ -->
+<!-- ═══ Guard: _coreSystem2DoneV4 (UTAMA) ═════════════════════ -->
+<!-- ═══        + alias _coreSystem2DoneV3 + V2 + V1 ═══════════ -->
+<!-- ═══ Versi: 4.0 — R2COIN Merah Putih (32 Role Storage) ═════ -->
+<!-- ═══ Aturan: A3, A5, A21—A25, A32, A33, A34, A35, A36 ═════ -->
+<!-- ═══ Isi: 12 modul [CS2.1]—[CS2.12] ═══════════════════════ -->
+<!-- ═══   [CS2.1]   csLoadJSON (with fallback) ═══════════════ -->
+<!-- ═══   [CS2.2]   csSaveJSON (quota handling + auto-backup) ═ -->
+<!-- ═══   [CS2.3]   csRemoveJSON ═════════════════════════════ -->
+<!-- ═══   [CS2.4]   csEmergencyCleanup ═══════════════════════ -->
+<!-- ═══   [CS2.5]   csHitungSizeStorage ══════════════════════ -->
+<!-- ═══   [CS2.6]   simpanDataKeLocalStorage (19 key) ════════ -->
+<!-- ═══   [CS2.7]   loadDataDariLocalStorage (19 key) ════════ -->
+<!-- ═══   [CS2.8]   csMigrasiKasirOwnerId (auto-fix A42) ═════ -->
+<!-- ═══   [CS2.9]   csLoadArsip + csSaveArsip ════════════════ -->
+<!-- ═══   [CS2.10]  csLoadKasir + csSaveKasir ════════════════ -->
+<!-- ═══   [CS2.11]  csCekKonsistensiStorage32 (10 titik) ═════ -->
+<!-- ═══   [CS2.12]  csBersihkanStorageAman + Debug + Log ═════ -->
+<!-- ═══ ⚠️ Auto-backup sebelum save (jika CS_FLAG.AUTO_BACKUP) -->
+<!-- ═══ ⚠️ Emergency cleanup jika quota exceeded ═════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_CS2_STORAGE_V4() {
+    // ═══════════════════════════════════════════════════════════
+    // [A32] — GUARD FLAG UNIK + ALIAS BACKWARD COMPAT
+    // ═══════════════════════════════════════════════════════════
+    if (window._coreSystem2DoneV4) {
+        console.log('ℹ️ CS2 v' + (window._coreSystem2Versi || '?') + ' sudah terpasang.');
+        return;
+    }
+
+    // ── Cek dependency CS1 ──
+    var cs1Ok = window._coreSystem1DoneV4_2 ||
+                window._coreSystem1DoneV4 ||
+                window._coreSystem1DoneV3;
+    if (!cs1Ok) {
+        console.warn('⚠️ CS1 belum terpasang. CS2 v4.0 ditunda.');
+        return;
+    }
+    if (!window.CS_KEY || !window.CS_LIMIT || !window.CS_FLAG) {
+        console.warn('⚠️ CS_KEY/CS_LIMIT/CS_FLAG tidak ada. CS2 v4.0 ditunda.');
+        return;
+    }
+
+    // ── Guard + alias ──
+    window._coreSystem2DoneV4 = true;
+    window._coreSystem2DoneV3 = true;
+    window._coreSystem2DoneV2 = true;
+    window._coreSystem2DoneV1 = true;
+    window._coreSystem2Done   = true;
+    window._coreSystem2Versi  = '4.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.1] — csLoadJSON (dengan fallback)
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadJSON = function(key, fallback) {
+        try {
+            if (!key) return fallback;
+            var s = localStorage.getItem(key);
+            if (!s) return fallback;
+            var parsed = JSON.parse(s);
+            return (parsed === null || parsed === undefined) ? fallback : parsed;
+        } catch (e) {
+            console.warn('csLoadJSON error "' + key + '":', e.message);
+            return fallback;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.2] — csSaveJSON (quota handling + auto-backup)
+    // ═══════════════════════════════════════════════════════════
+    window.csSaveJSON = function(key, data, opts) {
+        opts = opts || {};
+        try {
+            if (!key) return { sukses: false, pesan: 'Key kosong' };
+
+            // ── Backup otomatis (kalau diaktifkan) ──
+            if (window.CS_FLAG && window.CS_FLAG.AUTO_BACKUP && opts.backup !== false) {
+                try {
+                    var existing = localStorage.getItem(key);
+                    if (existing) {
+                        localStorage.setItem(
+                            (window.CS_KEY ? window.CS_KEY.BACKUP_PREFIX : 'backup_') + key,
+                            existing.substring(0, 2000)
+                        );
+                    }
+                } catch (e) {}
+            }
+
+            var json = JSON.stringify(data);
+            var sizeKB = Math.round(json.length / 1024);
+
+            if (window.CS_LIMIT && sizeKB > window.CS_LIMIT.MAX_STORAGE_MB * 1024) {
+                console.warn('⚠️ Data terlalu besar: ' + sizeKB + ' KB');
+            }
+
+            try {
+                localStorage.setItem(key, json);
+                return { sukses: true, sizeKB: sizeKB };
+            } catch (e) {
+                if (e.name === 'QuotaExceededError' ||
+                    (e.message && e.message.indexOf('quota') !== -1)) {
+                    console.warn('⚠️ Storage penuh — emergency cleanup…');
+                    window.csEmergencyCleanup();
+                    try {
+                        localStorage.setItem(key, json);
+                        return { sukses: true, afterCleanup: true, sizeKB: sizeKB };
+                    } catch (e2) {
+                        return { sukses: false, pesan: 'Storage penuh setelah cleanup' };
+                    }
+                }
+                return { sukses: false, pesan: e.message };
+            }
+        } catch (e) {
+            console.error('csSaveJSON error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.3] — csRemoveJSON
+    // ═══════════════════════════════════════════════════════════
+    window.csRemoveJSON = function(key) {
+        try {
+            localStorage.removeItem(key);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.4] — csEmergencyCleanup
+    // ═══════════════════════════════════════════════════════════
+    window.csEmergencyCleanup = function() {
+        try {
+            var freed = 0;
+
+            // 1. Hapus semua backup
+            Object.keys(localStorage).forEach(function(k) {
+                if (k.indexOf('backup_') === 0) {
+                    freed += (localStorage.getItem(k) || '').length;
+                    try { localStorage.removeItem(k); } catch (e) {}
+                }
+            });
+
+            // 2. Trim log audit
+            try {
+                var la = window.csLoadJSON(window.CS_KEY.LOG_AUDIT_SA, { log: [] });
+                if (la.log && la.log.length > 100) {
+                    la.log = la.log.slice(0, 100);
+                    localStorage.setItem(window.CS_KEY.LOG_AUDIT_SA, JSON.stringify(la));
+                }
+            } catch (e) {}
+
+            // 3. Trim histori aktivitas
+            try {
+                var ha = window.csLoadJSON(window.CS_HISTORI_KEY || 'dataHistoriAktivitas', []);
+                if (ha.length > 100) {
+                    ha = ha.slice(0, 100);
+                    localStorage.setItem(window.CS_KEY.HISTORI_AKTIVITAS, JSON.stringify(ha));
+                }
+            } catch (e) {}
+
+            console.log('🧹 Emergency cleanup: ~' + Math.round(freed / 1024) + ' KB dibebaskan');
+            return { sukses: true, freedKB: Math.round(freed / 1024) };
+        } catch (e) {
+            console.error('csEmergencyCleanup error:', e);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.5] — csHitungSizeStorage
+    // ═══════════════════════════════════════════════════════════
+    window.csHitungSizeStorage = function() {
+        try {
+            var total = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                var v = localStorage.getItem(k) || '';
+                total += (k.length + v.length) * 2;
+            }
+            return {
+                bytes: total,
+                KB: Math.round(total / 1024),
+                MB: Math.round(total / 1024 / 1024 * 100) / 100
+            };
+        } catch (e) {
+            return { bytes: 0, KB: 0, MB: 0 };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.6] — simpanDataKeLocalStorage (19 KEY)
+    // ═══════════════════════════════════════════════════════════
+    // Simpan semua variabel global VG ke localStorage.
+    // +DATA_ARSIP_AKUN +DATA_KASIR (sinkron 32 role).
+    // ═══════════════════════════════════════════════════════════
+    window.simpanDataKeLocalStorage = function() {
+        try {
+            var hasil = { sukses: 0, gagal: 0, listGagal: [] };
+
+            var map = [
+                { var: 'dataLoginUser',         key: 'dataLoginUser' },
+                { var: 'dataAkunAktif',         key: 'dataAkunAktif' },
+                { var: 'dataWilayah',           key: 'dataWilayah' },
+                { var: 'dataPengajuanBukaAkun', key: 'dataPengajuanBukaAkun' },
+                { var: 'dataVerifikasiDokumen', key: 'dataVerifikasiDokumen' },
+                { var: 'dataLogAuditSA',        key: 'dataLogAuditSA' },
+                { var: 'dataHistoriAktivitas',  key: 'dataHistoriAktivitas' },
+                { var: 'dataRekening',          key: 'dataRekening' },
+                { var: 'dataTopUpHistory',      key: 'dataTopUpHistory' },
+                { var: 'dataWithdrawHistory',   key: 'dataWithdrawHistory' },
+                { var: 'dataKasir',             key: 'dataKasir' },
+                { var: 'dataArsipAkun',         key: 'dataArsipAkun' },
+                { var: 'dataOrder',             key: 'dataOrder' },
+                { var: 'dataProduk',            key: 'dataProduk' },
+                { var: 'dataKategoriProduk',    key: 'dataKategoriProduk' },
+                { var: 'dataNotifikasi',        key: 'dataNotifikasi' },
+                { var: 'dataChat',              key: 'dataChat' },
+                { var: 'dataKoleksiGif',        key: 'dataKoleksiGif' },
+                { var: 'dataMediaIndex',        key: 'dataMediaIndex' }
+            ];
+
+            map.forEach(function(m) {
+                try {
+                    var val = window[m.var];
+                    if (val === undefined) return;
+                    var r = window.csSaveJSON(m.key, val, { backup: false });
+                    if (r && r.sukses) hasil.sukses++;
+                    else {
+                        hasil.gagal++;
+                        hasil.listGagal.push(m.key);
+                    }
+                } catch (e) {
+                    hasil.gagal++;
+                    hasil.listGagal.push(m.key + ' (' + e.message + ')');
+                }
+            });
+
+            return hasil;
+        } catch (e) {
+            console.error('simpanDataKeLocalStorage error:', e);
+            return { sukses: 0, gagal: 1, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.7] — loadDataDariLocalStorage (19 KEY)
+    // ═══════════════════════════════════════════════════════════
+    window.loadDataDariLocalStorage = function() {
+        try {
+            var map = [
+                { var: 'dataLoginUser',         key: 'dataLoginUser',         def: [] },
+                { var: 'dataAkunAktif',         key: 'dataAkunAktif',         def: [] },
+                { var: 'dataWilayah',           key: 'dataWilayah',           def: [] },
+                { var: 'dataPengajuanBukaAkun', key: 'dataPengajuanBukaAkun', def: [] },
+                { var: 'dataVerifikasiDokumen', key: 'dataVerifikasiDokumen', def: [] },
+                { var: 'dataLogAuditSA',        key: 'dataLogAuditSA',        def: { log: [] } },
+                { var: 'dataHistoriAktivitas',  key: 'dataHistoriAktivitas',  def: [] },
+                { var: 'dataRekening',          key: 'dataRekening',          def: [] },
+                { var: 'dataTopUpHistory',      key: 'dataTopUpHistory',      def: [] },
+                { var: 'dataWithdrawHistory',   key: 'dataWithdrawHistory',   def: [] },
+                { var: 'dataKasir',             key: 'dataKasir',             def: [] },
+                { var: 'dataArsipAkun',         key: 'dataArsipAkun',         def: [] },
+                { var: 'dataOrder',             key: 'dataOrder',             def: [] },
+                { var: 'dataProduk',            key: 'dataProduk',            def: [] },
+                { var: 'dataKategoriProduk',    key: 'dataKategoriProduk',    def: [] },
+                { var: 'dataNotifikasi',        key: 'dataNotifikasi',        def: [] },
+                { var: 'dataChat',              key: 'dataChat',              def: [] },
+                { var: 'dataKoleksiGif',        key: 'dataKoleksiGif',        def: [] },
+                { var: 'dataMediaIndex',        key: 'dataMediaIndex',        def: {} }
+            ];
+
+            var hasil = {};
+            map.forEach(function(m) {
+                try {
+                    var loaded = window.csLoadJSON(m.key, m.def);
+                    var target = window[m.var];
+
+                    if (Array.isArray(target) && Array.isArray(loaded)) {
+                        target.length = 0;
+                        loaded.forEach(function(x) { target.push(x); });
+                    } else if (target && typeof target === 'object' &&
+                               !Array.isArray(target) && typeof loaded === 'object') {
+                        Object.keys(target).forEach(function(k) { delete target[k]; });
+                        Object.assign(target, loaded);
+                    }
+                    if (Array.isArray(loaded)) hasil[m.var] = loaded.length;
+                    else if (typeof loaded === 'object') hasil[m.var] = Object.keys(loaded).length;
+                    else hasil[m.var] = 0;
+                } catch (e) {
+                    hasil[m.var] = 0;
+                }
+            });
+
+            // ── AUTO-MIGRASI: perbaiki kasir tanpa idOwner (data lama) ──
+            try {
+                window.csMigrasiKasirOwnerId();
+            } catch (_e) {
+                console.warn('Migrasi kasir warning:', _e.message);
+            }
+
+            return hasil;
+        } catch (e) {
+            console.error('loadDataDariLocalStorage error:', e);
+            return {};
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.8] — csMigrasiKasirOwnerId (auto-fix A42)
+    // ═══════════════════════════════════════════════════════════
+    // Perbaiki kasir lama yang belum punya idOwner/ownerId/idInduk.
+    // Sinkron dengan 6 varian kasir.
+    // ═══════════════════════════════════════════════════════════
+    window.csMigrasiKasirOwnerId = function() {
+        try {
+            var _KASIR_KODE = ['KSR_TK','KSR_PP','KSR_PM','KSR_DST','KSR_GR','KSR_KDMP'];
+            var _lu = window.dataLoginUser || [];
+            if (!Array.isArray(_lu) || _lu.length === 0) return { sukses: true, fixed: 0 };
+
+            var _fixed = 0;
+            for (var _i = 0; _i < _lu.length; _i++) {
+                var _u = _lu[_i];
+                if (!_u || _KASIR_KODE.indexOf(_u.kodeRole) === -1) continue;
+                if (_u.idOwner) continue;
+
+                // Cari induk
+                var _induk = 'TK';
+                if (_u.kodeRole === 'KSR_KDMP') _induk = 'KDMP_DESA';
+                else if (_u.kodeRole && _u.kodeRole.indexOf('KSR_') === 0) {
+                    _induk = _u.kodeRole.replace('KSR_', '');
+                }
+
+                var _kandidat = _lu.filter(function(x) {
+                    return x && x.kodeRole === _induk;
+                });
+                if (_kandidat.length === 0) continue;
+
+                var _chosen = _kandidat[0];
+                _u.idOwner = _chosen.idUser || _chosen.id;
+                _u.ownerId = _u.idOwner;
+                _u.idInduk = _u.idOwner;
+                if (_chosen.kodeToko) _u.kodeOwner = _chosen.kodeToko;
+                if (!_u.createdBy) _u.createdBy = _u.idOwner;
+                _fixed++;
+            }
+
+            if (_fixed > 0) {
+                window.csSaveJSON('dataLoginUser', _lu, { backup: false });
+                console.log('%c🔧 Migrasi kasir: ' + _fixed +
+                    ' akun diperbaiki (idOwner)',
+                    'background:#DC3545;color:#fff;padding:2px 6px;');
+            }
+            return { sukses: true, fixed: _fixed };
+        } catch (e) {
+            console.warn('csMigrasiKasirOwnerId error:', e.message);
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.9] — csLoadArsip + csSaveArsip
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadArsip = function() {
+        try {
+            var v = window.csLoadJSON('dataArsipAkun', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    };
+
+    window.csSaveArsip = function(list) {
+        try {
+            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
+            var r = window.csSaveJSON('dataArsipAkun', list, { backup: false });
+            if (Array.isArray(window.dataArsipAkun)) {
+                window.dataArsipAkun.length = 0;
+                list.forEach(function(x) { window.dataArsipAkun.push(x); });
+            }
+            return r;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.10] — csLoadKasir + csSaveKasir
+    // ═══════════════════════════════════════════════════════════
+    window.csLoadKasir = function() {
+        try {
+            var v = window.csLoadJSON('dataKasir', []);
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    };
+
+    window.csSaveKasir = function(list) {
+        try {
+            if (!Array.isArray(list)) return { sukses: false, pesan: 'Bukan array' };
+            var r = window.csSaveJSON('dataKasir', list, { backup: false });
+            if (Array.isArray(window.dataKasir)) {
+                window.dataKasir.length = 0;
+                list.forEach(function(x) { window.dataKasir.push(x); });
+            }
+            return r;
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.11] — csCekKonsistensiStorage32 (10 TITIK CEK)
+    // ═══════════════════════════════════════════════════════════
+    window.csCekKonsistensiStorage32 = function() {
+        var hasil = { ok: true, totalCek: 0, totalWarning: 0, detail: [] };
+
+        function _addCek(nama, status, pesan) {
+            hasil.totalCek++;
+            if (status !== 'ok') hasil.totalWarning++;
+            hasil.detail.push({ cek: nama, status: status, pesan: pesan || '-' });
+            if (status !== 'ok') hasil.ok = false;
+        }
+
+        try {
+            // ── 1. Key storage utama ada ──
+            var keyUtama = [
+                'dataLoginUser', 'dataAkunAktif', 'dataKasir',
+                'dataArsipAkun', 'dataPengajuanBukaAkun', 'dataVerifikasiDokumen'
+            ];
+            var keyHilang = keyUtama.filter(function(k) {
+                try { return localStorage.getItem(k) === null; }
+                catch (e) { return true; }
+            });
+            if (keyHilang.length === 0) {
+                _addCek('Key storage utama', 'ok', '6 key utama ada');
+            } else {
+                _addCek('Key storage utama', 'warning',
+                    'Belum ada: ' + keyHilang.join(', '));
+            }
+
+            // ── 2. dataLoginUser ter-load ──
+            if (Array.isArray(window.dataLoginUser)) {
+                _addCek('dataLoginUser ter-load', 'ok',
+                    window.dataLoginUser.length + ' user');
+            } else {
+                _addCek('dataLoginUser ter-load', 'warning', 'Bukan array');
+            }
+
+            // ── 3. dataKasir ter-load ──
+            if (Array.isArray(window.dataKasir)) {
+                _addCek('dataKasir ter-load', 'ok',
+                    window.dataKasir.length + ' kasir (6 varian)');
+            } else {
+                _addCek('dataKasir ter-load', 'warning', 'Bukan array');
+            }
+
+            // ── 4. dataArsipAkun ter-load ──
+            if (Array.isArray(window.dataArsipAkun)) {
+                _addCek('dataArsipAkun ter-load', 'ok',
+                    window.dataArsipAkun.length + ' akun diarsipkan');
+            } else {
+                _addCek('dataArsipAkun ter-load', 'warning', 'Bukan array');
+            }
+
+            // ── 5. Storage size < limit ──
+            var size = window.csHitungSizeStorage();
+            if (size.MB < window.CS_LIMIT.MAX_STORAGE_MB) {
+                _addCek('Storage size', 'ok',
+                    size.KB + ' KB (limit ' + (window.CS_LIMIT.MAX_STORAGE_MB * 1024) + ' KB)');
+            } else {
+                _addCek('Storage size', 'warning',
+                    'Hampir penuh: ' + size.KB + ' KB');
+            }
+
+            // ── 6. Auto-backup aktif ──
+            if (window.CS_FLAG.AUTO_BACKUP) {
+                _addCek('Auto-backup aktif', 'ok', 'Backup otomatis saat save');
+            } else {
+                _addCek('Auto-backup aktif', 'warning', 'Auto-backup nonaktif');
+            }
+
+            // ── 7. Total key R2C ──
+            var totalKeyR2C = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && (k.indexOf('r2c_') === 0 ||
+                          k.indexOf('data') === 0 ||
+                          k.indexOf('profil_') === 0)) {
+                    totalKeyR2C++;
+                }
+            }
+            _addCek('Total key R2C', 'ok', totalKeyR2C + ' key terdaftar');
+
+            // ── 8. CS_KEY punya DATA_ARSIP_AKUN ──
+            if (window.CS_KEY.DATA_ARSIP_AKUN) {
+                _addCek('CS_KEY.DATA_ARSIP_AKUN', 'ok', window.CS_KEY.DATA_ARSIP_AKUN);
+            } else {
+                _addCek('CS_KEY.DATA_ARSIP_AKUN', 'warning', 'Belum ada');
+            }
+
+            // ── 9. CS_KEY punya DATA_KASIR ──
+            if (window.CS_KEY.DATA_KASIR) {
+                _addCek('CS_KEY.DATA_KASIR', 'ok', window.CS_KEY.DATA_KASIR);
+            } else {
+                _addCek('CS_KEY.DATA_KASIR', 'warning', 'Belum ada');
+            }
+
+            // ── 10. CS1 v4.2 sinkron ──
+            if (window._coreSystem1DoneV4_2) {
+                _addCek('CS1 v4.2 sinkron', 'ok', 'Guard _coreSystem1DoneV4_2');
+            } else {
+                _addCek('CS1 v4.2 sinkron', 'warning', 'CS1 belum v4.2');
+            }
+        } catch (e) {
+            hasil.ok = false;
+            hasil.detail.push({ cek: 'exception', status: 'error', pesan: e.message });
+        }
+
+        return hasil;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12a] — csBersihkanStorageAman
+    // ═══════════════════════════════════════════════════════════
+    // Bersihkan storage dengan backup otomatis dulu.
+    // ═══════════════════════════════════════════════════════════
+    window.csBersihkanStorageAman = function(opts) {
+        opts = opts || {};
+        try {
+            // ── Backup dulu ──
+            var backup = {
+                timestamp: window.csNow ? window.csNow() : new Date().toISOString(),
+                dataLoginUser:         window.dataLoginUser || [],
+                dataAkunAktif:         window.dataAkunAktif || [],
+                dataKasir:             window.dataKasir || [],
+                dataArsipAkun:         window.dataArsipAkun || [],
+                dataPengajuanBukaAkun: window.dataPengajuanBukaAkun || [],
+                dataVerifikasiDokumen: window.dataVerifikasiDokumen || []
+            };
+            try {
+                localStorage.setItem('r2c_backup_bersih_' + Date.now(),
+                    JSON.stringify(backup).substring(0, 100000));
+            } catch (e) {}
+
+            // ── Hapus key tertentu ──
+            var hapus = 0;
+            if (Array.isArray(opts.target)) {
+                opts.target.forEach(function(k) {
+                    try { localStorage.removeItem(k); hapus++; } catch (e) {}
+                });
+            } else {
+                // Default: hapus backup lama saja
+                Object.keys(localStorage).forEach(function(k) {
+                    if (k.indexOf('backup_') === 0 ||
+                        k.indexOf('r2c_backup_') === 0) {
+                        try { localStorage.removeItem(k); hapus++; } catch (e) {}
+                    }
+                });
+            }
+
+            return { sukses: true, hapus: hapus };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12b] — Alias kompatibilitas
+    // ═══════════════════════════════════════════════════════════
+    window.hfLoadJSON   = window.csLoadJSON;
+    window.hfSaveJSON   = window.csSaveJSON;
+    window.hfRemoveJSON = window.csRemoveJSON;
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12c] — Helper: csCekKeyStorage, csListKeyR2C, csHapusKeyR2C
+    // ═══════════════════════════════════════════════════════════
+    window.csCekKeyStorage = function(key) {
+        try {
+            return localStorage.getItem(key) !== null;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    window.csListKeyR2C = function() {
+        try {
+            var hasil = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && (k.indexOf('r2c_') === 0 ||
+                          k.indexOf('data') === 0 ||
+                          k.indexOf('profil_') === 0 ||
+                          k.indexOf('mpp_') === 0 ||
+                          k.indexOf('md_') === 0)) {
+                    hasil.push(k);
+                }
+            }
+            return hasil.sort();
+        } catch (e) {
+            return [];
+        }
+    };
+
+    window.csHapusKeyR2C = function() {
+        try {
+            var list = window.csListKeyR2C();
+            var hapus = 0;
+            list.forEach(function(k) {
+                try { localStorage.removeItem(k); hapus++; } catch (e) {}
+            });
+            return { sukses: true, dihapus: hapus };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12d] — DEBUG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    window.debugCS2 = function() {
+        var info = {
+            blok: 'CS2',
+            versi: '4.0-R2COIN',
+            guard: {
+                v4: window._coreSystem2DoneV4,
+                v3: window._coreSystem2DoneV3,
+                v2: window._coreSystem2DoneV2,
+                v1: window._coreSystem2DoneV1,
+                alias: window._coreSystem2Done
+            },
+            storage: window.csHitungSizeStorage(),
+            limit: window.CS_LIMIT.MAX_STORAGE_MB + ' MB',
+            autoBackup: window.CS_FLAG.AUTO_BACKUP,
+            emergencyMode: window.CS_FLAG.EMERGENCY,
+            totalKeyR2C: window.csListKeyR2C().length,
+            konsistensi32: window.csCekKonsistensiStorage32(),
+            dataAktif: {
+                dataLoginUser:  Array.isArray(window.dataLoginUser)  ? window.dataLoginUser.length  : 0,
+                dataAkunAktif:  Array.isArray(window.dataAkunAktif)  ? window.dataAkunAktif.length  : 0,
+                dataKasir:      Array.isArray(window.dataKasir)      ? window.dataKasir.length      : 0,
+                dataArsipAkun:  Array.isArray(window.dataArsipAkun)  ? window.dataArsipAkun.length  : 0,
+                dataPengajuan:  Array.isArray(window.dataPengajuanBukaAkun)  ? window.dataPengajuanBukaAkun.length  : 0,
+                dataVerifikasi: Array.isArray(window.dataVerifikasiDokumen)  ? window.dataVerifikasiDokumen.length  : 0
+            },
+            fungsi: {
+                csLoadJSON:                 typeof window.csLoadJSON,
+                csSaveJSON:                 typeof window.csSaveJSON,
+                csRemoveJSON:               typeof window.csRemoveJSON,
+                csEmergencyCleanup:         typeof window.csEmergencyCleanup,
+                csHitungSizeStorage:        typeof window.csHitungSizeStorage,
+                simpanDataKeLocalStorage:   typeof window.simpanDataKeLocalStorage,
+                loadDataDariLocalStorage:   typeof window.loadDataDariLocalStorage,
+                csMigrasiKasirOwnerId:      typeof window.csMigrasiKasirOwnerId,
+                csLoadArsip:                typeof window.csLoadArsip,
+                csSaveArsip:                typeof window.csSaveArsip,
+                csLoadKasir:                typeof window.csLoadKasir,
+                csSaveKasir:                typeof window.csSaveKasir,
+                csCekKonsistensiStorage32:  typeof window.csCekKonsistensiStorage32,
+                csBersihkanStorageAman:     typeof window.csBersihkanStorageAman,
+                csCekKeyStorage:            typeof window.csCekKeyStorage,
+                csListKeyR2C:               typeof window.csListKeyR2C,
+                csHapusKeyR2C:              typeof window.csHapusKeyR2C,
+                hfLoadJSON:                 typeof window.hfLoadJSON,
+                hfSaveJSON:                 typeof window.hfSaveJSON,
+                hfRemoveJSON:               typeof window.hfRemoveJSON
+            }
+        };
+        console.log('🔍 debugCS2 v4.0-R2COIN:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12e] — AUTO-REGISTRY KE 3 REGISTRY
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpUpdateBlok === 'function') {
+                window.cpUpdateBlok('CS2', {
+                    status: 'Selesai',
+                    tanggal: new Date().toISOString().substring(0, 10),
+                    nama: 'Storage Engine v4.0'
+                });
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var ada = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'CS2';
+                });
+                if (!ada) {
+                    window.cpTambahRiwayat({
+                        blok: 'CS2',
+                        nama: 'Storage Engine v4.0',
+                        keterangan: 'csLoadJSON · csSaveJSON · csRemoveJSON · ' +
+                                    'csEmergencyCleanup · csHitungSizeStorage · ' +
+                                    'simpan/load 19 key · csMigrasiKasirOwnerId · ' +
+                                    'csCekKonsistensiStorage32 (10 titik)'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('cs', {
+                    nama: 'Core System (L1)',
+                    status: 'Selesai',
+                    jumlah: '~250'
+                });
+            }
+        } catch (e) {
+            console.warn('CS2 auto-registry error:', e.message);
+        }
+    }, 1000);
+
+    // ═══════════════════════════════════════════════════════════
+    // [CS2.12f] — LOG TERPASANG (A5) — v4.0
+    // ═══════════════════════════════════════════════════════════
+    var _stat = window.csHitungSizeStorage();
+    var _konsis = window.csCekKonsistensiStorage32();
+
+    console.log('%c🇮🇩 BLOK CS2 v4.0 — STORAGE ENGINE terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 50%,#FFFFFF 50%,#FFFFFF 100%);' +
+        'color:#000;padding:4px 8px;font-weight:bold;border:2px solid #DC3545;');
+    console.log('   📤 Exported:');
+    console.log('      • csLoadJSON, csSaveJSON, csRemoveJSON');
+    console.log('      • hfLoadJSON, hfSaveJSON, hfRemoveJSON (alias)');
+    console.log('   💾 Auto-backup  : ' + (window.CS_FLAG.AUTO_BACKUP ? 'Aktif' : 'Nonaktif'));
+    console.log('   📊 Storage      : ' + _stat.KB + ' KB / ' +
+                (window.CS_LIMIT.MAX_STORAGE_MB * 1024) + ' KB');
+    console.log('   🔑 Total key R2C: ' + window.csListKeyR2C().length);
+    console.log('   🎯 Konsistensi  : ' + (_konsis.ok ? '✅ ' : '⚠️ ') +
+                _konsis.totalCek + ' cek · ' + _konsis.totalWarning + ' warning');
+    console.log('');
+    console.log('   📦 19 Key Storage:');
+    console.log('      • dataLoginUser, dataAkunAktif, dataKasir, dataArsipAkun');
+    console.log('      • dataWilayah, dataPengajuanBukaAkun, dataVerifikasiDokumen');
+    console.log('      • dataLogAuditSA, dataHistoriAktivitas');
+    console.log('      • dataRekening, dataTopUpHistory, dataWithdrawHistory');
+    console.log('      • dataOrder, dataProduk, dataKategoriProduk');
+    console.log('      • dataNotifikasi, dataChat, dataKoleksiGif, dataMediaIndex');
+    console.log('');
+    console.log('   ⭐ v4.0 FINAL:');
+    console.log('      • Guard 3 lapis: _coreSystem2DoneV4 → V3 → V2 → V1');
+    console.log('      • Dep check: CS1 v4.2 (fallback v4/v3)');
+    console.log('      • simpan/load: 19 key (+dataKasir +dataArsipAkun)');
+    console.log('      • +csMigrasiKasirOwnerId() — auto-fix kasir tanpa idOwner');
+    console.log('      • +csLoadArsip() + csSaveArsip() — soft delete');
+    console.log('      • +csLoadKasir() + csSaveKasir() — 6 varian kasir');
+    console.log('      • +csBersihkanStorageAman() — backup dulu sebelum hapus');
+    console.log('      • +csCekKonsistensiStorage32() — 10 titik cek');
+    console.log('   🔍 Debug: debugCS2()');
+})();
+</script>
+<!-- ═══ AKHIR BLOK CS2 — STORAGE ENGINE 🇮🇩 v4.0 FINAL ═════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK CS3 — SESSION & USER STATE 🇮🇩 v4.0 FINAL ════════ -->
