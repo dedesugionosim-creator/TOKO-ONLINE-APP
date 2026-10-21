@@ -24649,10 +24649,10 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
 <!-- ═══ Dependency: CS2 (Storage) · CS4 (csNow) · CS6 (csKonfirmasi) -->
 <!-- ═══             CS_KEY.DATA_WILAYAH ═══════════════════════ -->
 <!-- ═══ Guard: _swDoneV21 (UTAMA) + _swDoneV2 + _swDoneV1 ═════ -->
-<!-- ═══ Versi: 2.1 — FIX 6 isu audit (A25, A29, A33, A34, A5, A6) -->
+<!-- ═══ Versi: 2.2 — Extended (13 helper global baru) -->
 <!-- ═══ Aturan: A1, A2, A3, A5, A6, A7, A11—A13, A25, A26, ═══ -->
 <!-- ═══         A27, A28, A29, A30, A31, A32, A33, A34, A35 ══ -->
-<!-- ═══ Isi: 11 sub-seksi [SW.0]—[SW.10] ═════════════════════ -->
+<!-- ═══ Isi: 11 sub-seksi [SW.0]—[SW.10] + [SW.3.1]—[SW.3.20] -->
 <!-- ═══   [SW.0]  Guard + dependency check (A32) ═════════════ -->
 <!-- ═══   [SW.1]  WILAYAH_MAP (3 provinsi + 100 kabupaten) ═══ -->
 <!-- ═══   [SW.2]  Helper internal (_now, _buildWilayahFlat) ══ -->
@@ -25046,6 +25046,433 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
         return window.swGetWilayahById(kodeProvinsi);
     };
 
+	    // ═══════════════════════════════════════════════════════════
+    // [SW.3.8] — swNormalisasiNama(nama)
+    // ═══════════════════════════════════════════════════════════
+    // Normalisasi nama wilayah untuk matching fuzzy (CS11, BLOK 3, dll)
+    // Input: "Kab. Bandung Barat " → "bandung barat"
+    // Input: "KOTA BOGOR" → "bogor"
+    // Input: "kabupaten  ciamis" → "ciamis"
+    // ═══════════════════════════════════════════════════════════
+    window.swNormalisasiNama = function(nama) {
+        try {
+            if (!nama) return '';
+            var s = String(nama).toLowerCase().trim();
+            // Hapus prefix "kab.", "kabupaten", "kota"
+            s = s.replace(/^(kab\.?|kabupaten|kota)\s+/i, '');
+            // Hapus karakter non-alphanumeric (kecuali spasi)
+            s = s.replace(/[^a-z0-9\s]/g, '');
+            // Collapse spasi ganda
+            s = s.replace(/\s+/g, ' ').trim();
+            return s;
+        } catch (e) { return ''; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.9] — swBersihkanNamaKabupaten(nama)
+    // ═══════════════════════════════════════════════════════════
+    // Hapus prefix "Kab. " / "Kota " dari nama kabupaten
+    // "Kab. Bogor" → "Bogor"
+    // "Kota Bandung" → "Bandung"
+    // ═══════════════════════════════════════════════════════════
+    window.swBersihkanNamaKabupaten = function(nama) {
+        try {
+            if (!nama) return '';
+            return String(nama).replace(/^(Kab\.?|Kabupaten|Kota)\s+/i, '').trim();
+        } catch (e) { return ''; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.10] — swValidasiKode(kode)
+    // ═══════════════════════════════════════════════════════════
+    // Validasi format kode wilayah. Mendukung 4 format:
+    //   • '32'         → kode provinsi BPS
+    //   • '32.01'      → kode kabupaten BPS
+    //   • 'JB'         → kode wilayah (bukan BPS)
+    //   • 'JB-32.01'   → kode wilayah lengkap
+    // Return: { valid, tipe, kodeProvinsi, kodeKabupaten, kodeWilayah, pesan }
+    // ═══════════════════════════════════════════════════════════
+    window.swValidasiKode = function(kode) {
+        try {
+            if (!kode) return { valid: false, tipe: null, pesan: 'Kode kosong' };
+            var s = String(kode).toUpperCase().trim();
+
+            // Format '32' — kode provinsi
+            if (/^\d{2}$/.test(s)) {
+                var ada = !!WILAYAH_MAP[s];
+                return {
+                    valid:         ada,
+                    tipe:          'provinsi',
+                    kodeProvinsi:  s,
+                    kodeWilayah:   ada ? WILAYAH_MAP[s].kodeWilayah : null,
+                    pesan:         ada ? 'Kode provinsi valid' : 'Kode provinsi tidak dikenal: ' + s
+                };
+            }
+
+            // Format '32.01' — kode kabupaten BPS
+            if (/^\d{2}\.\d{2}$/.test(s)) {
+                var kab = window.swGetKabupatenById(s);
+                return {
+                    valid:         !!kab,
+                    tipe:          'kabupaten',
+                    kodeKabupaten: s,
+                    kodeProvinsi:  kab ? kab.wilayahInduk : null,
+                    kodeWilayah:   kab ? kab.kodeWilayah : null,
+                    pesan:         kab ? 'Kode kabupaten valid' : 'Kode kabupaten tidak dikenal: ' + s
+                };
+            }
+
+            // Format 'JB' — kode wilayah (JB/JT/JI)
+            if (/^[A-Z]{2}$/.test(s)) {
+                var wil = window.swGetWilayahById(s);
+                return {
+                    valid:        !!wil,
+                    tipe:         'kodeWilayah',
+                    kodeWilayah:  s,
+                    kodeProvinsi: wil ? wil.kode : null,
+                    pesan:        wil ? 'Kode wilayah valid' : 'Kode wilayah tidak dikenal: ' + s
+                };
+            }
+
+            // Format 'JB-32.01' — kode wilayah lengkap
+            if (/^[A-Z]{2}-\d{2}\.\d{2}$/.test(s)) {
+                var parts = s.split('-');
+                var kProv = parts[0], kKab = parts[1];
+                var kab2 = window.swGetKabupatenById(kKab);
+                var cocok = kab2 && kab2.kodeWilayah === s;
+                return {
+                    valid:         cocok,
+                    tipe:          'kodeWilayahLengkap',
+                    kodeProvinsi:  kProv,
+                    kodeKabupaten: kKab,
+                    kodeWilayah:   s,
+                    pesan:         cocok
+                        ? 'Kode wilayah lengkap valid'
+                        : 'Kode wilayah tidak cocok dengan data'
+                };
+            }
+
+            return {
+                valid: false, tipe: null,
+                pesan: 'Format kode tidak dikenali: ' + s +
+                       ' (harap: 32 / 32.01 / JB / JB-32.01)'
+            };
+        } catch (e) {
+            return { valid: false, tipe: null, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.11] — swParseKode(kode)
+    // ═══════════════════════════════════════════════════════════
+    // Parse kode wilayah jadi komponen lengkap (untuk Kopdes BLOK 10.70)
+    // '32.01' → { kodeProvinsi:'32', namaProvinsi:'Jawa Barat',
+    //             kodeKabupaten:'32.01', namaKabupaten:'Kab. Bogor',
+    //             kodeWilayah:'JB-32.01' }
+    // ═══════════════════════════════════════════════════════════
+    window.swParseKode = function(kode) {
+        try {
+            var val = window.swValidasiKode(kode);
+            if (!val.valid) {
+                return { sukses: false, pesan: val.pesan, tipe: null };
+            }
+            if (val.tipe === 'provinsi') {
+                var p = WILAYAH_MAP[val.kodeProvinsi];
+                return {
+                    sukses: true, tipe: 'provinsi',
+                    kodeProvinsi: val.kodeProvinsi,
+                    namaProvinsi: p.nama,
+                    kodeWilayah:  p.kodeWilayah
+                };
+            }
+            if (val.tipe === 'kabupaten') {
+                var kab = window.swGetKabupatenById(val.kodeKabupaten);
+                return {
+                    sukses: true, tipe: 'kabupaten',
+                    kodeProvinsi:  kab.wilayahInduk,
+                    namaProvinsi:  kab.wilayahNama,
+                    kodeKabupaten: val.kodeKabupaten,
+                    namaKabupaten: kab.nama,
+                    kodeWilayah:   kab.kodeWilayah
+                };
+            }
+            if (val.tipe === 'kodeWilayah') {
+                var wil = window.swGetWilayahById(val.kodeWilayah);
+                return {
+                    sukses: true, tipe: 'kodeWilayah',
+                    kodeProvinsi: val.kodeWilayah === 'JB' ? '32' : val.kodeWilayah === 'JT' ? '33' : '35',
+                    namaProvinsi: wil.nama,
+                    kodeWilayah:  wil.kodeWilayah
+                };
+            }
+            if (val.tipe === 'kodeWilayahLengkap') {
+                var kab2 = window.swGetKabupatenById(val.kodeKabupaten);
+                return {
+                    sukses: true, tipe: 'kodeWilayahLengkap',
+                    kodeProvinsi:  kab2.wilayahInduk,
+                    namaProvinsi:  kab2.wilayahNama,
+                    kodeKabupaten: val.kodeKabupaten,
+                    namaKabupaten: kab2.nama,
+                    kodeWilayah:   kab2.kodeWilayah
+                };
+            }
+            return { sukses: false, pesan: 'Tipe tidak diketahui', tipe: null };
+        } catch (e) {
+            return { sukses: false, pesan: e.message, tipe: null };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.12] — swCariByNama(nama, opts)
+    // ═══════════════════════════════════════════════════════════
+    // Cari provinsi/kabupaten fuzzy based on nama (normalized)
+    // opts: { tipe: 'provinsi'|'kabupaten'|null (default: keduanya) }
+    // ═══════════════════════════════════════════════════════════
+    window.swCariByNama = function(nama, opts) {
+        opts = opts || {};
+        try {
+            if (!nama) return [];
+            var q = window.swNormalisasiNama(nama);
+            if (!q) return [];
+            var hasil = [];
+
+            // Cari provinsi
+            if (opts.tipe !== 'kabupaten') {
+                window.swGetListWilayah().forEach(function(p) {
+                    if (window.swNormalisasiNama(p.nama).indexOf(q) !== -1) {
+                        hasil.push({
+                            tipe: 'provinsi',
+                            kode: p.kode, nama: p.nama,
+                            kodeWilayah: p.kodeWilayah,
+                            level: 'provinsi'
+                        });
+                    }
+                });
+            }
+
+            // Cari kabupaten
+            if (opts.tipe !== 'provinsi') {
+                Object.keys(WILAYAH_MAP).forEach(function(pk) {
+                    var p = WILAYAH_MAP[pk];
+                    p.kabupaten.forEach(function(c) {
+                        if (window.swNormalisasiNama(c[1]).indexOf(q) !== -1) {
+                            hasil.push({
+                                tipe: 'kabupaten',
+                                kode: c[0], nama: c[1],
+                                kodeWilayah: p.kodeWilayah + '-' + c[0],
+                                wilayahInduk: p.kode,
+                                wilayahNama: p.nama,
+                                level: 'kabupaten'
+                            });
+                        }
+                    });
+                });
+            }
+
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.13] — swGetSemuaKabupaten()
+    // ═══════════════════════════════════════════════════════════
+    // Flatten semua 100 kabupaten/kota
+    // ═══════════════════════════════════════════════════════════
+    window.swGetSemuaKabupaten = function() {
+        try {
+            var hasil = [];
+            Object.keys(WILAYAH_MAP).forEach(function(pk) {
+                var p = WILAYAH_MAP[pk];
+                p.kabupaten.forEach(function(c) {
+                    hasil.push({
+                        kode:         c[0],
+                        nama:         c[1],
+                        kodeWilayah:  p.kodeWilayah + '-' + c[0],
+                        wilayahInduk: p.kode,
+                        wilayahNama:  p.nama
+                    });
+                });
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.14] — swGetKodeListProvinsi()
+    // ═══════════════════════════════════════════════════════════
+    window.swGetKodeListProvinsi = function() {
+        try {
+            return Object.keys(WILAYAH_MAP);
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.15] — swGetKodeListKabupaten()
+    // ═══════════════════════════════════════════════════════════
+    window.swGetKodeListKabupaten = function() {
+        try {
+            var hasil = [];
+            Object.keys(WILAYAH_MAP).forEach(function(pk) {
+                WILAYAH_MAP[pk].kabupaten.forEach(function(c) {
+                    hasil.push(c[0]);
+                });
+            });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.16] — swGetProvinsiByNama(nama)
+    // ═══════════════════════════════════════════════════════════
+    window.swGetProvinsiByNama = function(nama) {
+        try {
+            if (!nama) return null;
+            var q = window.swNormalisasiNama(nama);
+            if (!q) return null;
+            var found = null;
+            Object.keys(WILAYAH_MAP).forEach(function(pk) {
+                var p = WILAYAH_MAP[pk];
+                if (!found && window.swNormalisasiNama(p.nama).indexOf(q) !== -1) {
+                    found = {
+                        kode: p.kode, kodeWilayah: p.kodeWilayah,
+                        nama: p.nama, urut: p.urut,
+                        ikon: p.ikon, warna: p.warna,
+                        totalKabupaten: p.kabupaten.length
+                    };
+                }
+            });
+            return found;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.17] — swGetKabupatenByNama(nama, kodeProvinsi)
+    // ═══════════════════════════════════════════════════════════
+    // Cari kabupaten by nama. Jika kodeProvinsi diisi, filter di provinsi itu saja
+    // ═══════════════════════════════════════════════════════════
+    window.swGetKabupatenByNama = function(nama, kodeProvinsi) {
+        try {
+            if (!nama) return null;
+            var q = window.swNormalisasiNama(nama);
+            if (!q) return null;
+            var list = kodeProvinsi
+                ? window.swGetKabupatenByWilayah(kodeProvinsi)
+                : window.swGetSemuaKabupaten();
+            var found = null;
+            list.forEach(function(c) {
+                if (!found && window.swNormalisasiNama(c.nama).indexOf(q) !== -1) {
+                    found = c;
+                }
+            });
+            return found;
+        } catch (e) { return null; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.18] — swGetOpsiDropdown(tipe, opts)
+    // ═══════════════════════════════════════════════════════════
+    // Generate HTML <option> untuk form dropdown (BLOK 3, BLOK 10.19)
+    // opts:
+    //   selected       : kode terpilih (string)
+    //   placeholder    : teks placeholder (default: '-- Pilih --')
+    //   withEmpty      : tampilkan option kosong (default: true)
+    //   filterProvinsi : (kabupaten only) filter by kode provinsi
+    //   format         : 'label' | 'kode' | 'kode-provinsi'
+    // ═══════════════════════════════════════════════════════════
+    window.swGetOpsiDropdown = function(tipe, opts) {
+        opts = opts || {};
+        try {
+            var html = '';
+            var placeholder = opts.placeholder || '-- Pilih --';
+            var selected    = opts.selected || '';
+            var withEmpty   = opts.withEmpty !== false;
+
+            if (withEmpty) {
+                html += '<option value="">' + placeholder + '</option>';
+            }
+
+            if (tipe === 'provinsi') {
+                window.swGetListWilayah().forEach(function(p) {
+                    var sel = (p.kode === selected) ? ' selected' : '';
+                    html += '<option value="' + p.kode + '"' + sel + '>'
+                          + p.nama + ' (' + p.totalKabupaten + ' kab)'
+                          + '</option>';
+                });
+            } else if (tipe === 'kabupaten') {
+                var listKab = opts.filterProvinsi
+                    ? window.swGetKabupatenByWilayah(opts.filterProvinsi)
+                    : window.swGetSemuaKabupaten();
+                listKab.forEach(function(c) {
+                    var sel = (c.kode === selected) ? ' selected' : '';
+                    var label = c.nama;
+                    if (opts.format === 'kode') {
+                        label = c.kode + ' — ' + c.nama;
+                    } else if (opts.format === 'kode-provinsi') {
+                        label = c.kode + ' — ' + c.nama + ' (' + c.wilayahNama + ')';
+                    }
+                    html += '<option value="' + c.kode + '"' + sel + '>'
+                          + label + '</option>';
+                });
+            }
+
+            return html;
+        } catch (e) { return ''; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.19] — swCariGlobal(keyword, opts)
+    // ═══════════════════════════════════════════════════════════
+    // Search gabungan provinsi + kabupaten dalam 1 panggilan
+    // Return: { provinsi:[], kabupaten:[], total, keyword }
+    // ═══════════════════════════════════════════════════════════
+    window.swCariGlobal = function(keyword, opts) {
+        opts = opts || {};
+        try {
+            if (!keyword) return { provinsi: [], kabupaten: [], total: 0 };
+            var limit = parseInt(opts.limit, 10) || 20;
+            var provinsi  = window.swCariProvinsi(keyword);
+            var kabupaten = window.swCariKabupaten(keyword);
+            return {
+                provinsi:  provinsi.slice(0, limit),
+                kabupaten: kabupaten.slice(0, limit),
+                total:     provinsi.length + kabupaten.length,
+                keyword:   keyword
+            };
+        } catch (e) {
+            return { provinsi: [], kabupaten: [], total: 0, error: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [SW.3.20] — swGetStatistikDetailPerProvinsi()
+    // ═══════════════════════════════════════════════════════════
+    // Detail lengkap per provinsi (untuk chart di BLOK 10.x)
+    // Return array: [{ kode, nama, totalKabupaten, listKabupaten:[{kode,nama}], ... }]
+    // ═══════════════════════════════════════════════════════════
+    window.swGetStatistikDetailPerProvinsi = function() {
+        try {
+            var hasil = [];
+            Object.keys(WILAYAH_MAP).forEach(function(pk) {
+                var p = WILAYAH_MAP[pk];
+                var listKab = p.kabupaten.map(function(c) {
+                    return { kode: c[0], nama: c[1] };
+                });
+                hasil.push({
+                    kode:           p.kode,
+                    kodeWilayah:    p.kodeWilayah,
+                    nama:           p.nama,
+                    urut:           p.urut,
+                    ikon:           p.ikon,
+                    warna:          p.warna,
+                    totalKabupaten: p.kabupaten.length,
+                    listKabupaten:  listKab
+                });
+            });
+            hasil.sort(function(a, b) { return a.urut - b.urut; });
+            return hasil;
+        } catch (e) { return []; }
+    };
+
     // ═══════════════════════════════════════════════════════════
     // [SW.4] — 2 FUNGSI STATISTIK
     // ═══════════════════════════════════════════════════════════
@@ -25347,7 +25774,8 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
                 A34_riwayatRevisi:        true,
                 A35_registryFungsi:       true
             },
-            fungsi: {
+                        fungsi: {
+                // ── Core (13) ──
                 swGetListWilayah:        typeof window.swGetListWilayah,
                 swGetWilayahById:        typeof window.swGetWilayahById,
                 swGetKabupatenByWilayah: typeof window.swGetKabupatenByWilayah,
@@ -25360,10 +25788,25 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
                 swMigrasiV1KeV2:         typeof window.swMigrasiV1KeV2,
                 swSeedWilayahToStorage:  typeof window.swSeedWilayahToStorage,
                 swResetWilayah:          typeof window.swResetWilayah,
+                cekPintuSW:              typeof window.cekPintuSW,
+                // ── Helper Lanjutan (13) — [SW.3.8]—[SW.3.20] ──
+                swNormalisasiNama:           typeof window.swNormalisasiNama,
+                swBersihkanNamaKabupaten:    typeof window.swBersihkanNamaKabupaten,
+                swValidasiKode:              typeof window.swValidasiKode,
+                swParseKode:                 typeof window.swParseKode,
+                swCariByNama:                typeof window.swCariByNama,
+                swGetSemuaKabupaten:         typeof window.swGetSemuaKabupaten,
+                swGetKodeListProvinsi:       typeof window.swGetKodeListProvinsi,
+                swGetKodeListKabupaten:      typeof window.swGetKodeListKabupaten,
+                swGetProvinsiByNama:         typeof window.swGetProvinsiByNama,
+                swGetKabupatenByNama:        typeof window.swGetKabupatenByNama,
+                swGetOpsiDropdown:           typeof window.swGetOpsiDropdown,
+                swCariGlobal:                typeof window.swCariGlobal,
+                swGetStatistikDetailPerProvinsi: typeof window.swGetStatistikDetailPerProvinsi,
+                // ── 3 Pintu ──
                 kirimSW:                 typeof window.kirimSW,
                 terimaSW:                typeof window.terimaSW,
-                ambilSW:                 typeof window.ambilSW,
-                cekPintuSW:              typeof window.cekPintuSW
+                ambilSW:                 typeof window.ambilSW
             }
         };
         console.log('🔍 debugSW v2.1:', info);
@@ -25448,8 +25891,14 @@ h6 { font-size: clamp(0.9rem, 1.5vw, 1rem); }
             }
 
             // ═══ A35: Registry Fungsi ═══
-            window.cpUpdateFungsi('sw', {
+                        window.cpUpdateFungsi('sw', {
                 nama: 'Seeder Wilayah (L2)',
+                status: 'Selesai',
+                jumlah: 13
+            });
+            // ── Register domain helper lanjutan (13 fungsi) ──
+            window.cpUpdateFungsi('swHelp', {
+                nama: 'Helper Wilayah Lanjutan (L2)',
                 status: 'Selesai',
                 jumlah: 13
             });
