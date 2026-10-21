@@ -25711,6 +25711,1061 @@ window.csGenerateQRKopdes = function(idCanvas, teks, level) {
 <!-- ═══ AKHIR BLOK MD — MEDIA MANAGER 🇮🇩 v1.0 FINAL ═════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ BLOK PSM — PENYIMPANAN MEDIA HELPER 🇮🇩 v1.0 FINAL ═══ -->
+<!-- ═══ Layer: L4 (Fungsi Global Domain — Storage Helper) ═════ -->
+<!-- ═══ Guard: _psmDoneV1 (A32) · Versi: 1.0 ══════════════════ -->
+<!-- ═══ Dep: MD (L4), CS2, CS4, CS7, CS10, GID, MN ════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Aturan yang DIPATUHI (20):                                -->
+<!-- ═══   A1  · A2  · A3  · A5  · A11 · A12 · A13 · A18 · A19     -->
+<!-- ═══   A25 · A26 · A28 · A29 · A30 · A31 · A32 · A33 · A34     -->
+<!-- ═══   A35 (auto-registry) ═══════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ Fokus PSM: STORAGE MANAGEMENT (bukan CRUD — itu MD) ═══ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ 22 Fungsi publik:                                         -->
+<!-- ═══   [Quota]     psmCekQuota                                 -->
+<!-- ═══   [Statistik] psmStatistikStorage · psmStoragePerKategori -->
+<!-- ═══               psmStoragePerOwner · psmStoragePerUmur      -->
+<!-- ═══   [Cleanup]   psmCleanupLRU · psmCleanupPerKategori       -->
+<!-- ═══               psmCleanupOlderThan · psmCleanupOrphan      -->
+<!-- ═══   [Dedupe]    psmDedupe                                   -->
+<!-- ═══   [Batch]     psmBatchDelete                              -->
+<!-- ═══   [Backup]    psmBackup · psmRestore                      -->
+<!-- ═══   [Optimize]  psmPresetKompres · psmOptimizeImage         -->
+<!-- ═══   [Health]    psmGetInfo                                  -->
+<!-- ═══   [3 Pintu]   kirimPSM · terimaPSM · ambilPSM             -->
+<!-- ═══   [Helper]    cekPintuPSM · debugPSM                      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function BLOK_PSM_V1() {
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.0] — GUARD + DEPENDENCY CHECK (A32)
+    // ═══════════════════════════════════════════════════════════
+    if (window._psmDoneV1) {
+        console.log('ℹ️ BLOK PSM v1.0 sudah terpasang.');
+        return;
+    }
+    if (!window.csLoadJSON || !window.csSaveJSON) {
+        console.warn('⚠️ PSM v1.0: CS2 belum siap. Ditunda.');
+        return;
+    }
+    if (typeof window.mdListSemua !== 'function' ||
+        typeof window.mdAmbilMeta !== 'function') {
+        console.warn('⚠️ PSM v1.0: BLOK MD belum terpasang. Ditunda.');
+        return;
+    }
+    window._psmDoneV1 = true;
+    window._psmVersi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.1] — KONSTANTA
+    // ═══════════════════════════════════════════════════════════
+    // Preset kompresi standar untuk optimasi gambar
+    // ═══════════════════════════════════════════════════════════
+    var PRESET_KOMPRES = {
+        'thumb':  { quality: 0.60, maxDim: 200,  label: 'Thumbnail 200px' },
+        'small':  { quality: 0.70, maxDim: 400,  label: 'Small 400px' },
+        'medium': { quality: 0.75, maxDim: 800,  label: 'Medium 800px' },
+        'large':  { quality: 0.80, maxDim: 1200, label: 'Large 1200px' },
+        'hq':     { quality: 0.90, maxDim: 1600, label: 'High Quality 1600px' },
+        'ultra':  { quality: 0.95, maxDim: 2400, label: 'Ultra 2400px' }
+    };
+
+    // Threshold warning quota (persen dari total localStorage)
+    var THRESHOLD = {
+        aman:     0.60,   // < 60% = aman
+        warning:  0.80,   // 60-80% = warning
+        danger:   0.90,   // 80-90% = danger
+        critical: 0.95    // > 95% = critical
+    };
+
+    var USIA_LAMA_HARI = 30;    // default cleanup umur
+    var QUOTA_LOCALSTORAGE_MB = 5;  // standar browser (bisa override dari csHitungSizeStorage)
+
+    window.PSM_PRESET_KOMPRES = PRESET_KOMPRES;
+    window.PSM_THRESHOLD = THRESHOLD;
+
+    // Register CS_KEY prefix (A18)
+    if (window.CS_KEY) {
+        window.CS_KEY.PSM_LOG = window.CS_KEY.PSM_LOG || 'psm_log_operasi';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.2] — HELPER INTERNAL
+    // ═══════════════════════════════════════════════════════════
+    function _loadIndex() {
+        try {
+            var key = (window.CS_KEY && window.CS_KEY.MD_INDEX) || 'dataMediaIndex';
+            var v = window.csLoadJSON(key, {});
+            if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+            return v;
+        } catch (e) { return {}; }
+    }
+    function _saveIndex(idx) {
+        try {
+            var key = (window.CS_KEY && window.CS_KEY.MD_INDEX) || 'dataMediaIndex';
+            return window.csSaveJSON(key, idx, { backup: false });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    }
+    function _now() {
+        return window.csNow ? window.csNow() : new Date().toISOString();
+    }
+    function _fmtSize(b) {
+        if (typeof window.csFormatSizeFile === 'function') return window.csFormatSizeFile(b);
+        var n = parseInt(b, 10) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / 1024 / 1024).toFixed(2) + ' MB';
+    }
+    function _catatLog(aksi, detail, opts) {
+        try {
+            opts = opts || {};
+            var key = (window.CS_KEY && window.CS_KEY.PSM_LOG) || 'psm_log_operasi';
+            var logs = window.csLoadJSON(key, []);
+            if (!Array.isArray(logs)) logs = [];
+            logs.unshift({
+                id:       'PSM-' + Date.now(),
+                idUser:   window.gidIdUser ? window.gidIdUser() : 'SYSTEM',
+                kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                aksi:     String(aksi || '-').substring(0, 80),
+                detail:   String(detail || '-').substring(0, 200),
+                hasil:    opts.hasil || null,
+                waktu:    _now()
+            });
+            if (logs.length > 200) logs = logs.slice(0, 200);
+            window.csSaveJSON(key, logs, { backup: false });
+        } catch (e) {}
+    }
+    function _hashContent(base64) {
+        if (!base64 || typeof base64 !== 'string') return '';
+        // Coba csHash (CS4)
+        if (typeof window.csHash === 'function') {
+            return window.csHash(base64);
+        }
+        // Fallback: simple hash
+        var h = 5381;
+        for (var i = 0; i < base64.length; i++) {
+            h = ((h << 5) + h) + base64.charCodeAt(i);
+            h = h & h;
+        }
+        return 'h' + Math.abs(h).toString(36);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.3] — CEK QUOTA STORAGE
+    // ═══════════════════════════════════════════════════════════
+    // Return Promise<{ sukses, usage, quota, persen, status, ... }>
+    // Pakai navigator.storage.estimate() kalau tersedia
+    // ═══════════════════════════════════════════════════════════
+    window.psmCekQuota = function() {
+        return new Promise(function(resolve) {
+            try {
+                // Estimasi dari csHitungSizeStorage (CS2)
+                var info = null;
+                if (typeof window.csHitungSizeStorage === 'function') {
+                    info = window.csHitungSizeStorage();
+                }
+                var usageManual = info ? (info.bytes || 0) : 0;
+                var quotaManual = QUOTA_LOCALSTORAGE_MB * 1024 * 1024;
+
+                // Coba navigator.storage (lebih akurat di browser modern)
+                if (navigator.storage && navigator.storage.estimate) {
+                    navigator.storage.estimate().then(function(est) {
+                        var usage = est.usage || usageManual;
+                        var quota = est.quota || quotaManual;
+                        var persen = quota > 0 ? (usage / quota) : 0;
+                        var status = 'aman';
+                        if (persen >= THRESHOLD.critical)      status = 'critical';
+                        else if (persen >= THRESHOLD.danger)   status = 'danger';
+                        else if (persen >= THRESHOLD.warning)  status = 'warning';
+
+                        resolve({
+                            sukses:   true,
+                            usage:    usage,
+                            quota:    quota,
+                            persen:   Math.round(persen * 1000) / 10,
+                            status:   status,
+                            usageLabel: _fmtSize(usage),
+                            quotaLabel: _fmtSize(quota),
+                            sisa:     quota - usage,
+                            sisaLabel: _fmtSize(quota - usage),
+                            metode:   'navigator.storage.estimate'
+                        });
+                    }).catch(function() {
+                        resolve(_fallbackQuota(usageManual, quotaManual));
+                    });
+                } else {
+                    resolve(_fallbackQuota(usageManual, quotaManual));
+                }
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    function _fallbackQuota(usage, quota) {
+        var persen = quota > 0 ? (usage / quota) : 0;
+        var status = 'aman';
+        if (persen >= THRESHOLD.critical)      status = 'critical';
+        else if (persen >= THRESHOLD.danger)   status = 'danger';
+        else if (persen >= THRESHOLD.warning)  status = 'warning';
+        return {
+            sukses:   true,
+            usage:    usage,
+            quota:    quota,
+            persen:   Math.round(persen * 1000) / 10,
+            status:   status,
+            usageLabel: _fmtSize(usage),
+            quotaLabel: _fmtSize(quota),
+            sisa:     quota - usage,
+            sisaLabel: _fmtSize(quota - usage),
+            metode:   'manual'
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.4] — STATISTIK STORAGE (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+    window.psmStatistikStorage = function() {
+        try {
+            var list = window.mdListSemua({ limit: 9999 });
+            var mdStat = window.mdStatistik ? window.mdStatistik() : null;
+
+            var totalSize = 0;
+            var base64Count = 0, urlCount = 0;
+            list.forEach(function(m) {
+                totalSize += parseInt(m.size, 10) || 0;
+                if (m._hasContent) base64Count++;
+                if (m.url) urlCount++;
+            });
+
+            // Total ukuran key MD di localStorage
+            var sizeKonten = 0;
+            var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX) || 'md_content_';
+            try {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (k && k.indexOf(prefix) === 0) {
+                        sizeKonten += (localStorage.getItem(k) || '').length * 2;
+                    }
+                }
+            } catch (e) {}
+
+            return {
+                totalMedia:    list.length,
+                base64Count:   base64Count,
+                urlCount:      urlCount,
+                totalSizeFile: totalSize,
+                totalSizeFileLabel: _fmtSize(totalSize),
+                totalSizeKonten: sizeKonten,
+                totalSizeKontenLabel: _fmtSize(sizeKonten),
+                mdStatistik:   mdStat,
+                timestamp:     _now()
+            };
+        } catch (e) { return null; }
+    };
+
+    window.psmStoragePerKategori = function() {
+        try {
+            var list = window.mdListSemua({ limit: 9999 });
+            var perKat = {};
+            var KAT_LIST = window.mdGetKategori ? window.mdGetKategori() : [];
+            KAT_LIST.forEach(function(k) {
+                perKat[k.kode] = { total: 0, size: 0, sizeLabel: '0 B' };
+            });
+
+            list.forEach(function(m) {
+                var k = m.kategori || 'lain';
+                if (!perKat[k]) perKat[k] = { total: 0, size: 0, sizeLabel: '0 B' };
+                perKat[k].total++;
+                perKat[k].size += parseInt(m.size, 10) || 0;
+            });
+
+            // Update label
+            Object.keys(perKat).forEach(function(k) {
+                perKat[k].sizeLabel = _fmtSize(perKat[k].size);
+            });
+
+            return perKat;
+        } catch (e) { return {}; }
+    };
+
+    window.psmStoragePerOwner = function() {
+        try {
+            var list = window.mdListSemua({ limit: 9999 });
+            var perOwner = {};
+            list.forEach(function(m) {
+                var o = m.idOwner || 'unowned';
+                if (!perOwner[o]) perOwner[o] = { total: 0, size: 0, sizeLabel: '0 B' };
+                perOwner[o].total++;
+                perOwner[o].size += parseInt(m.size, 10) || 0;
+            });
+            Object.keys(perOwner).forEach(function(o) {
+                perOwner[o].sizeLabel = _fmtSize(perOwner[o].size);
+            });
+            return perOwner;
+        } catch (e) { return {}; }
+    };
+
+    window.psmStoragePerUmur = function() {
+        try {
+            var list = window.mdListSemua({ limit: 9999 });
+            var now = Date.now();
+            var buckets = {
+                '< 7 hari':  { total: 0, size: 0 },
+                '7-30 hari': { total: 0, size: 0 },
+                '30-90 hari':{ total: 0, size: 0 },
+                '> 90 hari': { total: 0, size: 0 }
+            };
+            list.forEach(function(m) {
+                var t = new Date(m.createdAt || 0).getTime();
+                if (!t) return;
+                var hari = (now - t) / (1000 * 60 * 60 * 24);
+                var key = hari < 7 ? '< 7 hari'
+                        : hari < 30 ? '7-30 hari'
+                        : hari < 90 ? '30-90 hari'
+                        : '> 90 hari';
+                buckets[key].total++;
+                buckets[key].size += parseInt(m.size, 10) || 0;
+            });
+            Object.keys(buckets).forEach(function(k) {
+                buckets[k].sizeLabel = _fmtSize(buckets[k].size);
+            });
+            return buckets;
+        } catch (e) { return {}; }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.5] — CLEANUP STRATEGIES (4 fungsi)
+    // ═══════════════════════════════════════════════════════════
+
+    // ── 5.1 Cleanup LRU (hapus yang paling lama tidak update) ──
+    window.psmCleanupLRU = function(targetSizeKB) {
+        try {
+            var targetBytes = (parseInt(targetSizeKB, 10) || 0) * 1024;
+            if (targetBytes <= 0) {
+                return { sukses: false, pesan: 'targetSizeKB harus > 0' };
+            }
+            var list = window.mdListSemua({ limit: 9999 });
+            // Sort ascending by updatedAt (paling lama = pertama dihapus)
+            list.sort(function(a, b) {
+                return new Date(a.updatedAt || a.createdAt || 0).getTime() -
+                       new Date(b.updatedAt || b.createdAt || 0).getTime();
+            });
+
+            var freed = 0;
+            var dihapus = [];
+            for (var i = 0; i < list.length && freed < targetBytes; i++) {
+                var m = list[i];
+                var size = parseInt(m.size, 10) || 0;
+                var r = window.mdHapus(m.id);
+                if (r && r.sukses) {
+                    freed += size;
+                    dihapus.push(m.id);
+                }
+            }
+            _catatLog('Cleanup LRU', 'Hapus ' + dihapus.length + ' file, freed ' + _fmtSize(freed));
+            return {
+                sukses:  true,
+                dihapus: dihapus.length,
+                freed:   freed,
+                freedLabel: _fmtSize(freed),
+                listId:  dihapus
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 5.2 Cleanup per kategori ──
+    window.psmCleanupPerKategori = function(kategori, opts) {
+        try {
+            opts = opts || {};
+            if (!kategori) return { sukses: false, pesan: 'Kategori kosong' };
+            var list = window.mdListSemua({ kategori: kategori, limit: 9999 });
+            if (!opts.includeYangDipakai) {
+                // Skip yang _dipakai = true (kalau ada)
+                list = list.filter(function(m) { return !m._dipakai; });
+            }
+            var freed = 0;
+            var dihapus = [];
+            list.forEach(function(m) {
+                var size = parseInt(m.size, 10) || 0;
+                var r = window.mdHapus(m.id);
+                if (r && r.sukses) {
+                    freed += size;
+                    dihapus.push(m.id);
+                }
+            });
+            _catatLog('Cleanup Kategori', kategori + ' — ' + dihapus.length + ' file');
+            return {
+                sukses:  true,
+                kategori: kategori,
+                dihapus: dihapus.length,
+                freed:   freed,
+                freedLabel: _fmtSize(freed),
+                listId:  dihapus
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 5.3 Cleanup older-than (hapus file lebih tua dari N hari) ──
+    window.psmCleanupOlderThan = function(hari) {
+        try {
+            var n = parseInt(hari, 10) || USIA_LAMA_HARI;
+            var maxAge = n * 24 * 60 * 60 * 1000;
+            var now = Date.now();
+            var list = window.mdListSemua({ limit: 9999 });
+
+            var dihapus = [];
+            var freed = 0;
+            list.forEach(function(m) {
+                var t = new Date(m.createdAt || 0).getTime();
+                if (!t) return;
+                if ((now - t) > maxAge) {
+                    var size = parseInt(m.size, 10) || 0;
+                    var r = window.mdHapus(m.id);
+                    if (r && r.sukses) {
+                        freed += size;
+                        dihapus.push(m.id);
+                    }
+                }
+            });
+            _catatLog('Cleanup Older', n + ' hari — ' + dihapus.length + ' file');
+            return {
+                sukses:  true,
+                hari:    n,
+                dihapus: dihapus.length,
+                freed:   freed,
+                freedLabel: _fmtSize(freed),
+                listId:  dihapus
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ── 5.4 Cleanup orphan (metadata ada tapi content hilang) ──
+    window.psmCleanupOrphan = function() {
+        try {
+            var list = window.mdListSemua({ limit: 9999 });
+            var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX) || 'md_content_';
+            var dihapus = [];
+            list.forEach(function(m) {
+                if (!m._hasContent) return;   // external URL — skip
+                var contentKey = prefix + m.id;
+                var content = null;
+                try { content = localStorage.getItem(contentKey); } catch (e) {}
+                if (!content) {
+                    var r = window.mdHapus(m.id);
+                    if (r && r.sukses) dihapus.push(m.id);
+                }
+            });
+            _catatLog('Cleanup Orphan', dihapus.length + ' file yatim dihapus');
+            return {
+                sukses:  true,
+                dihapus: dihapus.length,
+                listId:  dihapus
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.6] — DEDUPE (cari konten duplikat via hash)
+    // ═══════════════════════════════════════════════════════════
+    window.psmDedupe = function(opts) {
+        try {
+            opts = opts || {};
+            var list = window.mdListSemua({ limit: 9999 });
+            var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX) || 'md_content_';
+
+            // Filter yang punya content
+            var berContent = list.filter(function(m) { return m._hasContent; });
+
+            // Hash semua content
+            var hashMap = {};
+            berContent.forEach(function(m) {
+                try {
+                    var content = localStorage.getItem(prefix + m.id);
+                    if (!content) return;
+                    var hash = _hashContent(content);
+                    if (!hashMap[hash]) hashMap[hash] = [];
+                    hashMap[hash].push(m);
+                } catch (e) {}
+            });
+
+            // Cari grup dengan > 1 → hapus yang lebih baru (keep oldest)
+            var duplikat = [];
+            var dihapus = [];
+            var freed = 0;
+            Object.keys(hashMap).forEach(function(hash) {
+                var grup = hashMap[hash];
+                if (grup.length < 2) return;
+                duplikat.push({ hash: hash, total: grup.length });
+
+                // Sort by createdAt ascending (keep oldest)
+                grup.sort(function(a, b) {
+                    return new Date(a.createdAt || 0).getTime() -
+                           new Date(b.createdAt || 0).getTime();
+                });
+
+                // Hapus yang kedua dan seterusnya
+                for (var i = 1; i < grup.length; i++) {
+                    var m = grup[i];
+                    var size = parseInt(m.size, 10) || 0;
+                    var r = window.mdHapus(m.id);
+                    if (r && r.sukses) {
+                        freed += size;
+                        dihapus.push(m.id);
+                    }
+                }
+            });
+
+            // Mode dry-run (cari saja)
+            if (opts.dryRun) {
+                return {
+                    sukses:   true,
+                    dryRun:   true,
+                    grupDuplikat: duplikat,
+                    totalGrup: duplikat.length,
+                    perkiraanHapus: duplikat.reduce(function(s, g) { return s + g.total - 1; }, 0)
+                };
+            }
+
+            _catatLog('Dedupe', duplikat.length + ' grup, ' + dihapus.length + ' file dihapus');
+            return {
+                sukses:   true,
+                grupDuplikat: duplikat,
+                totalGrup: duplikat.length,
+                dihapus:  dihapus.length,
+                freed:    freed,
+                freedLabel: _fmtSize(freed),
+                listId:   dihapus
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.7] — BATCH DELETE
+    // ═══════════════════════════════════════════════════════════
+    window.psmBatchDelete = function(idList) {
+        try {
+            if (!Array.isArray(idList)) {
+                return { sukses: false, pesan: 'idList harus array' };
+            }
+            if (idList.length > 100) {
+                return { sukses: false, pesan: 'Maksimal 100 ID per batch' };
+            }
+            var dihapus = [], gagal = [];
+            var freed = 0;
+            idList.forEach(function(id) {
+                var meta = window.mdAmbilMeta(id);
+                var size = meta ? (parseInt(meta.size, 10) || 0) : 0;
+                var r = window.mdHapus(id);
+                if (r && r.sukses) {
+                    freed += size;
+                    dihapus.push(id);
+                } else {
+                    gagal.push(id);
+                }
+            });
+            _catatLog('Batch Delete', dihapus.length + ' dari ' + idList.length);
+            return {
+                sukses:  true,
+                dihapus: dihapus.length,
+                gagal:   gagal.length,
+                freed:   freed,
+                freedLabel: _fmtSize(freed),
+                listId:  dihapus,
+                listGagal: gagal
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.8] — BACKUP & RESTORE
+    // ═══════════════════════════════════════════════════════════
+    window.psmBackup = function(opts) {
+        try {
+            opts = opts || {};
+            var kategoriFilter = opts.kategori || null;
+            var includeContent = opts.includeContent !== false;  // default true
+            var list = window.mdListSemua({ limit: 9999 });
+
+            if (kategoriFilter) {
+                list = list.filter(function(m) { return m.kategori === kategoriFilter; });
+            }
+
+            var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX) || 'md_content_';
+            var paket = {
+                _meta: {
+                    versi: '1.0',
+                    tipe: 'psm-backup-media',
+                    timestamp: _now(),
+                    totalMedia: list.length,
+                    kategoriFilter: kategoriFilter,
+                    includeContent: includeContent
+                },
+                metadata: list.map(function(m) {
+                    return Object.assign({}, m);
+                }),
+                content: {}
+            };
+
+            if (includeContent) {
+                list.forEach(function(m) {
+                    if (!m._hasContent) return;
+                    try {
+                        var c = localStorage.getItem(prefix + m.id);
+                        if (c) paket.content[m.id] = c;
+                    } catch (e) {}
+                });
+            }
+
+            _catatLog('Backup', list.length + ' media, content=' + includeContent);
+            return {
+                sukses: true,
+                paket:  paket,
+                totalMedia: list.length
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    window.psmRestore = function(paket, opts) {
+        try {
+            opts = opts || {};
+            if (!paket || !paket._meta || paket._meta.tipe !== 'psm-backup-media') {
+                return { sukses: false, pesan: 'Format backup tidak valid' };
+            }
+            var list = paket.metadata || [];
+            if (!Array.isArray(list)) list = [];
+
+            var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX) || 'md_content_';
+            var idx = _loadIndex();
+            var berhasil = 0, skip = 0;
+
+            list.forEach(function(m) {
+                if (!m || !m.id) return;
+                if (idx[m.id] && !opts.overwrite) {
+                    skip++;
+                    return;
+                }
+                idx[m.id] = m;
+                // Restore content
+                if (paket.content && paket.content[m.id]) {
+                    try {
+                        localStorage.setItem(prefix + m.id, paket.content[m.id]);
+                    } catch (e) {}
+                }
+                berhasil++;
+            });
+
+            _saveIndex(idx);
+
+            // Sync VG
+            try {
+                if (window.dataMediaIndex && typeof window.dataMediaIndex === 'object') {
+                    Object.assign(window.dataMediaIndex, idx);
+                }
+            } catch (e) {}
+
+            _catatLog('Restore', berhasil + ' dipulihkan, ' + skip + ' skip');
+            return {
+                sukses:  true,
+                berhasil: berhasil,
+                skip:    skip,
+                total:   list.length
+            };
+        } catch (e) {
+            return { sukses: false, pesan: e.message };
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.9] — OPTIMIZE IMAGE (delegate mdKompresBase64)
+    // ═══════════════════════════════════════════════════════════
+    window.psmPresetKompres = function() {
+        try {
+            return Object.keys(PRESET_KOMPRES).map(function(k) {
+                var p = PRESET_KOMPRES[k];
+                return {
+                    kode:    k,
+                    label:   p.label,
+                    quality: p.quality,
+                    maxDim:  p.maxDim
+                };
+            });
+        } catch (e) { return []; }
+    };
+
+    window.psmOptimizeImage = function(idMedia, presetKode) {
+        // Return Promise<{ sukses, sizeBefore, sizeAfter, saved, savedLabel }>
+        return new Promise(function(resolve) {
+            try {
+                if (!idMedia) {
+                    return resolve({ sukses: false, pesan: 'idMedia kosong' });
+                }
+                var preset = PRESET_KOMPRES[presetKode];
+                if (!preset) {
+                    return resolve({
+                        sukses: false,
+                        pesan: 'Preset tidak dikenal: ' + presetKode +
+                               '. Pilihan: ' + Object.keys(PRESET_KOMPRES).join(', ')
+                    });
+                }
+                var meta = window.mdAmbilMeta(idMedia);
+                if (!meta) {
+                    return resolve({ sukses: false, pesan: 'Media tidak ditemukan' });
+                }
+                if (['foto','icon','banner','thumbnail','avatar','logo','stiker'].indexOf(meta.kategori) === -1) {
+                    return resolve({
+                        sukses: false,
+                        pesan: 'Hanya untuk kategori image (foto/icon/banner/thumbnail/avatar/logo/stiker)'
+                    });
+                }
+                if (!meta._hasContent) {
+                    return resolve({
+                        sukses: false,
+                        pesan: 'File external URL — tidak bisa dioptimasi'
+                    });
+                }
+                if (typeof window.mdKompresBase64 !== 'function') {
+                    return resolve({ sukses: false, pesan: 'mdKompresBase64 tidak tersedia' });
+                }
+
+                var content = window.mdAmbilContent(idMedia);
+                if (!content || content.indexOf('data:image/') !== 0) {
+                    return resolve({ sukses: false, pesan: 'Content bukan image' });
+                }
+
+                var sizeBefore = content.length;
+
+                window.mdKompresBase64(content, {
+                    quality: preset.quality,
+                    maxDim:  preset.maxDim
+                }).then(function(r) {
+                    if (!r.sukses) return resolve(r);
+
+                    // Simpan content baru (overwrite)
+                    var prefix = (window.CS_KEY && window.CS_KEY.MD_CONTENT_PREFIX) || 'md_content_';
+                    try {
+                        localStorage.setItem(prefix + idMedia, r.base64);
+                    } catch (e) {
+                        return resolve({ sukses: false, pesan: 'Gagal simpan: ' + e.message });
+                    }
+
+                    // Update meta.size
+                    var idx = _loadIndex();
+                    if (idx[idMedia]) {
+                        idx[idMedia].size = r.sizeAfter;
+                        idx[idMedia].sizeLabel = _fmtSize(r.sizeAfter);
+                        idx[idMedia].updatedAt = _now();
+                        idx[idMedia]._optimizedAt = _now();
+                        idx[idMedia]._optimizedPreset = presetKode;
+                        _saveIndex(idx);
+                    }
+
+                    var saved = sizeBefore - r.sizeAfter;
+                    _catatLog('Optimize', idMedia + ' — saved ' + _fmtSize(saved) + ' (' + presetKode + ')');
+                    resolve({
+                        sukses:      true,
+                        idMedia:     idMedia,
+                        preset:      presetKode,
+                        sizeBefore:  sizeBefore,
+                        sizeAfter:   r.sizeAfter,
+                        saved:       saved,
+                        savedLabel:  _fmtSize(saved),
+                        persenSaved: sizeBefore > 0 ? Math.round((saved / sizeBefore) * 100) : 0,
+                        dimensi:     r.dimensi
+                    });
+                }).catch(function(err) {
+                    resolve({ sukses: false, pesan: err.message });
+                });
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.10] — HEALTH INFO (gabungan semua)
+    // ═══════════════════════════════════════════════════════════
+    window.psmGetInfo = function() {
+        // Return Promise<{ quota, statistik, perKategori, perUmur, health }>
+        return new Promise(function(resolve) {
+            try {
+                window.psmCekQuota().then(function(quota) {
+                    var statistik = window.psmStatistikStorage();
+                    var perKat = window.psmStoragePerKategori();
+                    var perUmur = window.psmStoragePerUmur();
+
+                    // Health score: 100 = sehat, 0 = kritis
+                    var health = 100;
+                    if (quota.sukses) {
+                        var p = quota.persen;
+                        if (p >= 95) health = 10;
+                        else if (p >= 90) health = 30;
+                        else if (p >= 80) health = 60;
+                        else if (p >= 60) health = 80;
+                    }
+                    var healthLabel = health >= 80 ? 'SEHAT'
+                                    : health >= 60 ? 'WARNING'
+                                    : health >= 30 ? 'DANGER'
+                                    : 'KRITIS';
+
+                    resolve({
+                        sukses:    true,
+                        quota:     quota,
+                        statistik: statistik,
+                        perKategori: perKat,
+                        perUmur:   perUmur,
+                        health:    health,
+                        healthLabel: healthLabel,
+                        rekomendasi: _getRekomendasi(quota, statistik),
+                        timestamp: _now()
+                    });
+                });
+            } catch (e) {
+                resolve({ sukses: false, pesan: e.message });
+            }
+        });
+    };
+
+    function _getRekomendasi(quota, stat) {
+        var rek = [];
+        try {
+            if (!quota.sukses) return rek;
+            if (quota.persen >= 90) {
+                rek.push({
+                    prioritas: 'tinggi',
+                    aksi: 'cleanup-lru',
+                    pesan: 'Storage > 90% — jalankan psmCleanupLRU(1000) untuk bebaskan 1 MB'
+                });
+            } else if (quota.persen >= 80) {
+                rek.push({
+                    prioritas: 'sedang',
+                    aksi: 'optimize',
+                    pesan: 'Storage > 80% — coba psmOptimizeImage() untuk kompres gambar lama'
+                });
+            }
+            if (stat && stat.base64Count > 50) {
+                rek.push({
+                    prioritas: 'rendah',
+                    aksi: 'dedupe',
+                    pesan: 'Banyak file base64 — jalankan psmDedupe({ dryRun: true }) untuk cek duplikat'
+                });
+            }
+        } catch (e) {}
+        return rek;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.11] — 3 PINTU STANDAR (A11, A12, A13)
+    // ═══════════════════════════════════════════════════════════
+    window.kirimPSM = function(tipe, ke, data, idRef) {
+        try {
+            if (typeof window.mnKirimKeMenu !== 'function') {
+                return { sukses: false, pesan: 'MN belum terpasang' };
+            }
+            return window.mnKirimKeMenu({
+                tipe: tipe || 'psm',
+                dari: {
+                    idUser:   window.gidIdUser ? window.gidIdUser() : null,
+                    kodeRole: window.gidKodeRoleUser ? window.gidKodeRoleUser() : null,
+                    menu:     'PSM', blok: 'L4-PSM'
+                },
+                ke: ke || { menu: 'PSM' },
+                data: data || {},
+                idRef: idRef || null,
+                timestamp: _now()
+            });
+        } catch (e) { return { sukses: false, pesan: e.message }; }
+    };
+
+    window.terimaPSM = function(aksiMenu) {
+        try {
+            if (typeof window.mnInboxMenu !== 'function') return [];
+            return window.mnInboxMenu(aksiMenu || 'PSM');
+        } catch (e) { return []; }
+    };
+
+    window.ambilPSM = function(filter) {
+        try {
+            filter = filter || {};
+            switch (filter.tipe || 'info') {
+                case 'info':       return window.psmGetInfo();
+                case 'quota':      return window.psmCekQuota();
+                case 'statistik':  return window.psmStatistikStorage();
+                case 'per-kat':    return window.psmStoragePerKategori();
+                case 'per-owner':  return window.psmStoragePerOwner();
+                case 'per-umur':   return window.psmStoragePerUmur();
+                case 'preset':     return window.psmPresetKompres();
+                case 'log':        return _ambilLog(filter.limit);
+                default:           return null;
+            }
+        } catch (e) { return null; }
+    };
+
+    function _ambilLog(limit) {
+        try {
+            var key = (window.CS_KEY && window.CS_KEY.PSM_LOG) || 'psm_log_operasi';
+            var logs = window.csLoadJSON(key, []);
+            if (!Array.isArray(logs)) return [];
+            return logs.slice(0, parseInt(limit, 10) || 50);
+        } catch (e) { return []; }
+    }
+
+    window.cekPintuPSM = function() {
+        var skor = (typeof window.kirimPSM  === 'function' ? 1 : 0)
+                 + (typeof window.terimaPSM === 'function' ? 1 : 0)
+                 + (typeof window.ambilPSM  === 'function' ? 1 : 0);
+        return {
+            blok: 'PSM',
+            kirim:  typeof window.kirimPSM  === 'function',
+            terima: typeof window.terimaPSM === 'function',
+            ambil:  typeof window.ambilPSM  === 'function',
+            skor:   skor + '/3',
+            lengkap: skor === 3
+        };
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.12] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugPSM = function() {
+        var pintu = window.cekPintuPSM();
+        var info = {
+            blok: 'PSM',
+            versi: window._psmVersi,
+            guard: window._psmDoneV1,
+            deskripsi: 'Penyimpanan Media Helper — storage optimization',
+            bedaDenganMD: 'MD = CRUD media · PSM = quota+cleanup+dedupe+backup · 10.58 = UI',
+            pintu: pintu,
+            konstanta: {
+                presetKompres: Object.keys(PRESET_KOMPRES),
+                threshold:     THRESHOLD,
+                usiaLamaHari:  USIA_LAMA_HARI
+            },
+            dependency: {
+                md:    typeof window.mdListSemua === 'function',
+                cs2:   typeof window.csLoadJSON === 'function',
+                cs4:   typeof window.csHash === 'function',
+                cs10:  typeof window.csBacaFileAsDataURL === 'function',
+                gid:   typeof window.gidIdUser === 'function',
+                mn:    typeof window.mnKirimKeMenu === 'function'
+            },
+            cekAturan: {
+                A11_lengkap3Pintu: pintu.lengkap,
+                A19_tipeArray:     Array.isArray(window.mdListSemua()),
+                A25_delegasiMD:    typeof window.mdHapus === 'function',
+                A32_guardUnik:     window._psmDoneV1 === true
+            },
+            fungsi: {
+                psmCekQuota:           typeof window.psmCekQuota,
+                psmStatistikStorage:   typeof window.psmStatistikStorage,
+                psmStoragePerKategori: typeof window.psmStoragePerKategori,
+                psmStoragePerOwner:    typeof window.psmStoragePerOwner,
+                psmStoragePerUmur:     typeof window.psmStoragePerUmur,
+                psmCleanupLRU:         typeof window.psmCleanupLRU,
+                psmCleanupPerKategori: typeof window.psmCleanupPerKategori,
+                psmCleanupOlderThan:   typeof window.psmCleanupOlderThan,
+                psmCleanupOrphan:      typeof window.psmCleanupOrphan,
+                psmDedupe:             typeof window.psmDedupe,
+                psmBatchDelete:        typeof window.psmBatchDelete,
+                psmBackup:             typeof window.psmBackup,
+                psmRestore:            typeof window.psmRestore,
+                psmPresetKompres:      typeof window.psmPresetKompres,
+                psmOptimizeImage:      typeof window.psmOptimizeImage,
+                psmGetInfo:            typeof window.psmGetInfo,
+                kirimPSM:              typeof window.kirimPSM,
+                terimaPSM:             typeof window.terimaPSM,
+                ambilPSM:              typeof window.ambilPSM,
+                cekPintuPSM:           typeof window.cekPintuPSM
+            }
+        };
+        console.log('🔍 debugPSM v1.0:', info);
+        return info;
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.13] — AUTO-REGISTRY (A33, A34, A35)
+    // ═══════════════════════════════════════════════════════════
+    setTimeout(function() {
+        try {
+            if (typeof window.cpTambahBlok === 'function') {
+                var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
+                    return b && b.kode === 'PSM';
+                });
+                var namaBlok = 'Penyimpanan Media Helper v1.0';
+                if (!ada) {
+                    window.cpTambahBlok({
+                        kode: 'PSM', nama: namaBlok,
+                        layer: 'L4', status: 'Selesai',
+                        tanggal: new Date().toISOString().substring(0, 10)
+                    });
+                } else if (typeof window.cpUpdateBlok === 'function') {
+                    window.cpUpdateBlok('PSM', { status: 'Selesai', nama: namaBlok });
+                }
+            }
+            if (typeof window.cpTambahRiwayat === 'function') {
+                var adaR = (window.CP_RIWAYAT || []).some(function(r) {
+                    return r && r.blok === 'PSM';
+                });
+                if (!adaR) {
+                    window.cpTambahRiwayat({
+                        tanggal: new Date().toISOString().substring(0, 10),
+                        blok: 'PSM',
+                        nama: 'Penyimpanan Media Helper v1.0',
+                        keterangan: 'Storage optimization: quota check · 4 cleanup strategies ' +
+                                    '(LRU/kategori/umur/orphan) · dedupe via hash · batch delete · ' +
+                                    'backup/restore · optimize image preset · health score. ' +
+                                    'Delegasi murni ke MD (CRUD). 22 fungsi publik · 3 pintu.'
+                    });
+                }
+            }
+            if (typeof window.cpUpdateFungsi === 'function') {
+                window.cpUpdateFungsi('psm', {
+                    nama: 'Penyimpanan Media Helper (L4)',
+                    status: 'Selesai',
+                    jumlah: 22
+                });
+            }
+        } catch (e) {
+            console.warn('[PSM v1.0] Auto-registry error:', e.message);
+        }
+    }, 900);
+
+    // ═══════════════════════════════════════════════════════════
+    // [PSM.14] — LOG TERPASANG (A5)
+    // ═══════════════════════════════════════════════════════════
+    console.log(
+        '%c🇮🇩 BLOK PSM v1.0 — PENYIMPANAN MEDIA HELPER terpasang.',
+        'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
+        'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
+    );
+    console.log(
+        '   💾 22 Fungsi · Storage optimization · ' +
+        'Cleanup (LRU/kategori/umur/orphan) · Dedupe (hash) · ' +
+        'Batch delete · Backup/Restore · Optimize preset (6) · ' +
+        'Health score · 3 pintu · debugPSM()'
+    );
+})();
+</script>
+<!-- ═══ AKHIR BLOK PSM — PENYIMPANAN MEDIA HELPER 🇮🇩 v1.0 ═════ -->
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 9.3.1 (0) — HELPER MENU CONFIG 🇮🇩 v3.0 FINAL ══ -->
 <!-- ═══ Layer: L3a (Menu Config — Helper Builder) ══════════════ -->
 <!-- ═══ Dependency: CS1 v4.2+ (CS_ROLE_MAP) ═══════════════════ -->
@@ -60128,895 +61183,794 @@ body.role-kopdes .offcanvas.offcanvas-shell {
 <!-- ═══ AKHIR BLOK R 10.29 — DASBOR JASA SA 🇮🇩 v1.0 ═════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ BLOK 10.58 — PENYIMPANAN MEDIA (AUTO-COLLECTOR) v1.0 ══ -->
-<!-- ═══ Layer: L5 (UI Viewer — Media Dashboard) ═══════════════ -->
-<!-- ═══ Guard: _blok1058DoneV1 (A32) · Versi: 1.0 ═════════════ -->
-<!-- ═══ Dep: MD (L4), CS2, CS4, CS6, CS10, GID, FDU ══════════ -->
+<!-- ═══ BLOK 10.58-PSM BRIDGE — INTEGRASI DASHBOARD v1.0 ═════ -->
+<!-- ═══ Layer: L5 (UI Extension — Health Panel + Cleanup Buttons) -->
+<!-- ═══ Guard: _blok1058PsmDoneV1 (A32) · Versi: 1.0 ═════════ -->
+<!-- ═══ Dep: 10.58 (harus sudah ada) · PSM (harus sudah ada) ══ -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ FITUR AUTO-DETECT (KUNCI):                               -->
-<!-- ═══   [1] Intercept global mdSimpan / mdSimpanBase64 / URL    -->
-<!-- ═══   [2] Auto-detect sumber blok via stack trace             -->
-<!-- ═══   [3] Catat _sumberBlok ke meta media                     -->
-<!-- ═══   [4] Fire event 'r2coin:media-baru' → update badge       -->
-<!-- ═══   [5] Auto re-render grid kalau dashboard sedang buka     -->
-<!-- ═══   [6] Future UI blocks: ZERO config — tinggal panggil     -->
-<!-- ═══       mdSimpan() → otomatis tersimpan & tampil            -->
+<!-- ═══ Auto-inject ke dashboard 10.58:                           -->
+<!-- ═══   [1] Health Panel (quota bar + status) — di bawah stat   -->
+<!-- ═══   [2] Dropdown "Storage" — di header: Health, Cleanup    -->
+<!-- ═══       LRU/Orphan/Older, Dedupe, Optimize, Backup         -->
+<!-- ═══   [3] Health Modal — detail lengkap (per kategori/umur)  -->
+<!-- ═══   [4] MutationObserver — re-inject saat filter/search    -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ FITUR DASHBOARD:                                          -->
-<!-- ═══   • Grid 14 kategori (foto/video/audio/dokumen/pdf/gif/   -->
-<!-- ═══     svg/icon/banner/thumbnail/avatar/logo/stiker/lampiran)-->
-<!-- ═══   • Tab filter kategori + search + filter sumber          -->
-<!-- ═══   • Preview video/audio/pdf/gif di modal detail           -->
-<!-- ═══   • Upload manual drag-drop                               -->
-<!-- ═══   • Download, hapus, bulk delete, cleanup orphan          -->
-<!-- ═══   • Statistik realtime                                    -->
-<!-- ═══════════════════════════════════════════════════════════════ -->
-<!-- ═══ Aturan (A1, A2, A3, A5, A10, A11, A19, A25, A29-A35) ══ -->
+<!-- ═══ 8 Action Handlers:                                       -->
+<!-- ═══   md58HealthCheck · md58CleanupLRU · md58CleanupOrphan   -->
+<!-- ═══   md58CleanupOlder · md58Dedupe · md58OptimizeAll        -->
+<!-- ═══   md58Backup · md58BackupRestore                         -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <script>
-(function BLOK_10_58_PENYIMPANAN_MEDIA_V1() {
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.0] — GUARD + DEPENDENCY CHECK (A32)
-    // ═══════════════════════════════════════════════════════════
-    if (window._blok1058DoneV1) {
-        console.log('ℹ️ BLOK 10.58 v1.0 sudah terpasang.');
-        return;
-    }
-    if (!window.csLoadJSON || !window.csSaveJSON) {
-        console.warn('⚠️ 10.58 v1.0: CS2 belum siap. Ditunda.');
-        return;
-    }
-    if (typeof window.mdSimpan !== 'function' ||
-        typeof window.mdListSemua !== 'function') {
-        console.warn('⚠️ 10.58 v1.0: BLOK MD belum terpasang. Ditunda.');
-        return;
-    }
-    window._blok1058DoneV1 = true;
-    window._blok1058Versi  = '1.0';
+(function BLOK_1058_PSM_BRIDGE_V1() {
 
     // ═══════════════════════════════════════════════════════════
-    // [10.58.1] — STATE GLOBAL
+    // [BRIDGE.0] — GUARD + RETRY (wait for 10.58 + PSM)
     // ═══════════════════════════════════════════════════════════
-    var STATE = {
-        filterKategori: 'semua',
-        filterSumber:   'semua',
-        cari:           '',
-        sedangBuka:     false,      // dashboard sedang tampil?
-        detailId:       null        // id media di modal detail
+    if (window._blok1058PsmDoneV1) return;
+
+    if (!window._blok1058DoneV1 || typeof window.tampilkanPenyimpananMediaSA !== 'function') {
+        var r1 = (window._psmBridgeRetry1 || 0) + 1;
+        window._psmBridgeRetry1 = r1;
+        if (r1 < 20) { setTimeout(BLOK_1058_PSM_BRIDGE_V1, 500); return; }
+        console.warn('⚠️ 10.58-PSM Bridge: 10.58 tidak terpasang setelah 20 retry.');
+        return;
+    }
+    if (typeof window.psmCekQuota !== 'function' || typeof window.psmCleanupLRU !== 'function') {
+        var r2 = (window._psmBridgeRetry2 || 0) + 1;
+        window._psmBridgeRetry2 = r2;
+        if (r2 < 20) { setTimeout(BLOK_1058_PSM_BRIDGE_V1, 500); return; }
+        console.warn('⚠️ 10.58-PSM Bridge: PSM tidak terpasang setelah 20 retry.');
+        return;
+    }
+
+    window._blok1058PsmDoneV1 = true;
+    window._blok1058PsmVersi  = '1.0';
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.1] — WRAP ENTRY POINT 10.58
+    // ═══════════════════════════════════════════════════════════
+    var _origTampil = window.tampilkanPenyimpananMediaSA;
+    window.tampilkanPenyimpananMediaSA = function() {
+        var r = _origTampil.apply(this, arguments);
+        setTimeout(_injectAll, 200);
+        return r;
     };
-    window._md58State = STATE;
 
     // ═══════════════════════════════════════════════════════════
-    // [10.58.2] — HELPER: source detection via stack trace
+    // [BRIDGE.2] — MUTATION OBSERVER (re-inject saat filter/cari)
     // ═══════════════════════════════════════════════════════════
-    // Cari nama IIFE BLOK_* di stack trace. Kalau tidak ketemu,
-    // fallback ke 'unknown'.
-    // ═══════════════════════════════════════════════════════════
-    function _detectCallerBlok() {
-        try {
-            var stack = (new Error()).stack || '';
-            // Cari BLOK_XXX_VX atau BLOK_XXX_Y_ZZ
-            var m = stack.match(/BLOK[_A-Z0-9]+_V\d+/);
-            if (m) return m[0];
-            m = stack.match(/BLOK[_A-Z0-9]+/);
-            if (m) return m[0];
-            return 'unknown';
-        } catch (e) { return 'unknown'; }
+    var _injectTimer = null;
+    function _scheduleInject() {
+        clearTimeout(_injectTimer);
+        _injectTimer = setTimeout(_injectAll, 150);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.3] — HELPER: catat _sumberBlok ke meta media
-    // ═══════════════════════════════════════════════════════════
-    function _catatSumber(idMedia, sumberBlok) {
-        try {
-            var key = (window.CS_KEY && window.CS_KEY.MD_INDEX) || 'dataMediaIndex';
-            var idx = window.csLoadJSON(key, {});
-            if (!idx || typeof idx !== 'object') return false;
-            if (!idx[idMedia]) return false;
-            idx[idMedia]._sumberBlok = sumberBlok || 'unknown';
-            window.csSaveJSON(key, idx, { backup: false });
-            return true;
-        } catch (e) { return false; }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.4] — HELPER: reaksi setelah media tersimpan
-    // ═══════════════════════════════════════════════════════════
-    function _setelahMediaTersimpan(hasil, sumberBlok) {
-        try {
-            if (!hasil || !hasil.sukses || !hasil.idMedia) return;
-            _catatSumber(hasil.idMedia, sumberBlok);
-
-            // Fire event untuk notif / blok lain
-            try {
-                window.dispatchEvent(new CustomEvent('r2coin:media-baru', {
-                    detail: {
-                        idMedia:    hasil.idMedia,
-                        meta:       hasil.meta,
-                        sumberBlok: sumberBlok
-                    }
-                }));
-            } catch (e) {}
-
-            // Update badge notif header
-            try {
-                if (typeof window.csUpdateBadgeNotif === 'function') {
-                    setTimeout(window.csUpdateBadgeNotif, 200);
-                }
-            } catch (e) {}
-
-            // Kalau dashboard sedang buka → auto re-render
-            if (STATE.sedangBuka) {
-                setTimeout(function() {
-                    try { _renderSemua(); } catch (e) {}
-                }, 150);
+    try {
+        var observer = new MutationObserver(function() {
+            // Trigger hanya kalau upload button ada (10.58 dashboard aktif)
+            var uploadBtn = document.querySelector(
+                '#kontenDasbor button[onclick*="md58BukaUpload"]'
+            );
+            if (!uploadBtn) return;
+            // Cek apakah inject sudah ada
+            var panel = document.getElementById('md58PsmPanel');
+            var dropdown = document.querySelector('.psm-header-btn');
+            if (!panel || !dropdown) {
+                _scheduleInject();
             }
-
-            // Toast (halus)
-            try {
-                if (typeof window.csToast === 'function') {
-                    window.csToast('📸 Media tersimpan: ' + hasil.meta.kategori, 'success');
-                }
-            } catch (e) {}
-        } catch (e) {}
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.5] — AUTO-DETECT: WRAP mdSimpan* (INTI FITUR)
-    // ═══════════════════════════════════════════════════════════
-    // Semua blok UI (sekarang & masa depan) yang panggil
-    // mdSimpan/mdSimpanBase64/mdSimpanURL → otomatis tercatat.
-    // ═══════════════════════════════════════════════════════════
-    (function _installHooks() {
-        // ── 5.1 mdSimpan (Promise) ──
-        var _origMdSimpan = window.mdSimpan;
-        window.mdSimpan = function(file, kat, opts) {
-            opts = opts || {};
-            if (!opts._sumberBlok) opts._sumberBlok = _detectCallerBlok();
-            return _origMdSimpan.call(this, file, kat, opts).then(function(r) {
-                if (r && r.sukses) _setelahMediaTersimpan(r, opts._sumberBlok);
-                return r;
-            });
-        };
-
-        // ── 5.2 mdSimpanBase64 (sync) ──
-        var _origMdSimpanBase64 = window.mdSimpanBase64;
-        window.mdSimpanBase64 = function(base64, kat, opts) {
-            opts = opts || {};
-            if (!opts._sumberBlok) opts._sumberBlok = _detectCallerBlok();
-            var r = _origMdSimpanBase64.call(this, base64, kat, opts);
-            if (r && r.sukses) _setelahMediaTersimpan(r, opts._sumberBlok);
-            return r;
-        };
-
-        // ── 5.3 mdSimpanURL (sync) ──
-        var _origMdSimpanURL = window.mdSimpanURL;
-        window.mdSimpanURL = function(url, kat, opts) {
-            opts = opts || {};
-            if (!opts._sumberBlok) opts._sumberBlok = _detectCallerBlok();
-            var r = _origMdSimpanURL.call(this, url, kat, opts);
-            if (r && r.sukses) _setelahMediaTersimpan(r, opts._sumberBlok);
-            return r;
-        };
-
-        console.log('✅ 10.58: Auto-detector terpasang — semua mdSimpan* dari blok mana pun akan terdeteksi.');
-    })();
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.6] — HELPER: format & escape
-    // ═══════════════════════════════════════════════════════════
-    function _esc(s) {
-        if (typeof window.csEscHtml === 'function') return window.csEscHtml(s);
-        var d = document.createElement('div');
-        d.textContent = s == null ? '' : String(s);
-        return d.innerHTML;
-    }
-    function _fmtSize(b) {
-        if (typeof window.csFormatSizeFile === 'function') return window.csFormatSizeFile(b);
-        var n = parseInt(b, 10) || 0;
-        if (n < 1024) return n + ' B';
-        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-        return (n / 1024 / 1024).toFixed(2) + ' MB';
-    }
-    function _fmtDate(iso) {
-        try {
-            if (!iso) return '-';
-            var d = new Date(iso);
-            return d.toLocaleDateString('id-ID', {
-                day: '2-digit', month: 'short',
-                hour: '2-digit', minute: '2-digit'
-            });
-        } catch (e) { return '-'; }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.7] — GET LIST FILTERED (by STATE)
-    // ═══════════════════════════════════════════════════════════
-    function _getFiltered() {
-        try {
-            var list = window.mdListSemua({ limit: 9999 });
-            if (STATE.filterKategori !== 'semua') {
-                list = list.filter(function(m) { return m.kategori === STATE.filterKategori; });
-            }
-            if (STATE.filterSumber !== 'semua') {
-                list = list.filter(function(m) {
-                    return (m._sumberBlok || 'unknown') === STATE.filterSumber;
-                });
-            }
-            if (STATE.cari) {
-                var q = STATE.cari.toLowerCase();
-                list = list.filter(function(m) {
-                    return String(m.nama || '').toLowerCase().indexOf(q) !== -1;
-                });
-            }
-            return list;
-        } catch (e) { return []; }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.8] — RENDER: statistik bar
-    // ═══════════════════════════════════════════════════════════
-    function _renderStatistik() {
-        var stat = window.mdStatistik();
-        if (!stat) return '';
-        var perKat = stat.perKategori || {};
-        var listKategori = Object.keys(perKat).filter(function(k) {
-            return perKat[k] && perKat[k].total > 0;
         });
+        setTimeout(function() {
+            var target = document.getElementById('kontenDasbor') || document.body;
+            if (target) {
+                observer.observe(target, { childList: true, subtree: true });
+            }
+        }, 500);
+    } catch (e) {
+        console.warn('[10.58-PSM] MutationObserver error:', e.message);
+    }
 
-        var html = ''
-            + '<div class="row g-2 mb-3">'
-            +   '<div class="col-6 col-md-3">'
-            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #DC3545 !important;">'
-            +       '<div class="card-body py-2">'
-            +         '<h5 class="fw-bold mb-0">' + stat.totalMedia + '</h5>'
-            +         '<small class="text-muted">Total Media</small>'
-            +       '</div>'
-            +     '</div>'
-            +   '</div>'
-            +   '<div class="col-6 col-md-3">'
-            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #FFC107 !important;">'
-            +       '<div class="card-body py-2">'
-            +         '<h5 class="fw-bold mb-0">' + (stat.totalSizeLabel || '0 B') + '</h5>'
-            +         '<small class="text-muted">Total Ukuran</small>'
-            +       '</div>'
-            +     '</div>'
-            +   '</div>'
-            +   '<div class="col-6 col-md-3">'
-            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #198754 !important;">'
-            +       '<div class="card-body py-2">'
-            +         '<h5 class="fw-bold mb-0">' + (stat.berContent || 0) + '</h5>'
-            +         '<small class="text-muted">Base64 Tersimpan</small>'
-            +       '</div>'
-            +     '</div>'
-            +   '</div>'
-            +   '<div class="col-6 col-md-3">'
-            +     '<div class="card border-0 shadow-sm text-center h-100" style="border-left:4px solid #17A2B8 !important;">'
-            +       '<div class="card-body py-2">'
-            +         '<h5 class="fw-bold mb-0">' + (stat.externalUrl || 0) + '</h5>'
-            +         '<small class="text-muted">URL External</small>'
-            +       '</div>'
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.3] — INJECT ALL (header buttons + health panel)
+    // ═══════════════════════════════════════════════════════════
+    function _injectAll() {
+        try {
+            _injectHeaderButtons();
+            _injectHealthPanel();
+        } catch (e) {
+            console.warn('[10.58-PSM] inject error:', e.message);
+        }
+    }
+
+    // ── 3.1 Inject dropdown "Storage" di header dashboard ──
+    function _injectHeaderButtons() {
+        // Cari container tombol — anchor: tombol dengan onclick md58BukaUpload
+        var uploadBtn = document.querySelector(
+            '#kontenDasbor button[onclick*="md58BukaUpload"]'
+        );
+        if (!uploadBtn) return;
+        var container = uploadBtn.parentNode;
+        if (!container) return;
+
+        // Sudah ada? skip
+        if (container.querySelector('.psm-header-btn')) return;
+
+        var dropdown = document.createElement('div');
+        dropdown.className = 'dropdown psm-header-btn';
+        dropdown.innerHTML = ''
+            + '<button class="btn btn-outline-light btn-sm dropdown-toggle" '
+            +   'type="button" data-bs-toggle="dropdown" aria-expanded="false">'
+            +   '<i class="fas fa-hdd me-1"></i>Storage'
+            + '</button>'
+            + '<ul class="dropdown-menu dropdown-menu-end shadow">'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-heartbeat me-1"></i>Health</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58HealthCheck();">'
+            +     '<i class="fas fa-chart-pie me-2 text-danger"></i>Lihat Health Storage</a></li>'
+            +   '<li><hr class="dropdown-divider"></li>'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-broom me-1"></i>Cleanup</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58CleanupLRU();">'
+            +     '<i class="fas fa-clock me-2 text-warning"></i>Cleanup LRU (bebas N KB)</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58CleanupOlder();">'
+            +     '<i class="fas fa-calendar-times me-2 text-warning"></i>Cleanup &gt; N hari</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58CleanupOrphan();">'
+            +     '<i class="fas fa-unlink me-2 text-warning"></i>Cleanup Orphan</a></li>'
+            +   '<li><hr class="dropdown-divider"></li>'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-tools me-1"></i>Optimize</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58Dedupe();">'
+            +     '<i class="fas fa-copy me-2 text-info"></i>Dedupe (deteksi duplikat)</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58OptimizeAll();">'
+            +     '<i class="fas fa-compress-alt me-2 text-info"></i>Optimize semua gambar</a></li>'
+            +   '<li><hr class="dropdown-divider"></li>'
+            +   '<li><h6 class="dropdown-header"><i class="fas fa-database me-1"></i>Backup</h6></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58Backup();">'
+            +     '<i class="fas fa-download me-2 text-success"></i>Backup semua media</a></li>'
+            +   '<li><a class="dropdown-item" href="#" '
+            +     'onclick="event.preventDefault();md58BackupRestore();">'
+            +     '<i class="fas fa-upload me-2 text-success"></i>Restore dari file</a></li>'
+            + '</ul>';
+
+        container.insertBefore(dropdown, container.firstChild);
+    }
+
+    // ── 3.2 Inject health panel setelah stat cards ──
+    function _injectHealthPanel() {
+        // Sudah ada? skip
+        if (document.getElementById('md58PsmPanel')) return;
+
+        // Cari stat cards row — anchor: cari row yang berisi card "Total Media"
+        var rows = document.querySelectorAll('#kontenDasbor .row.g-2.mb-3');
+        var statRow = null;
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].textContent.indexOf('Total Media') !== -1) {
+                statRow = rows[i];
+                break;
+            }
+        }
+        if (!statRow) return;
+
+        var panel = document.createElement('div');
+        panel.id = 'md58PsmPanel';
+        panel.className = 'mb-3';
+        panel.innerHTML = ''
+            + '<div class="card border-0 shadow-sm">'
+            +   '<div class="card-body py-2">'
+            +     '<div class="d-flex align-items-center gap-2">'
+            +       '<i class="fas fa-spinner fa-spin text-muted"></i>'
+            +       '<small class="text-muted">Mengecek health storage...</small>'
             +     '</div>'
             +   '</div>'
             + '</div>';
 
-        // Compact per kategori
-        if (listKategori.length > 0) {
-            html += '<div class="mb-3 small text-muted">'
-                + listKategori.map(function(k) {
-                    return '<span class="badge bg-light text-dark me-1 mb-1" style="font-size:11px;">'
-                        + _esc(k) + ': <b>' + perKat[k].total + '</b></span>';
-                }).join('')
-                + '</div>';
-        }
-        return html;
+        statRow.parentNode.insertBefore(panel, statRow.nextSibling);
+
+        // Async fill
+        _fillHealthPanel();
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.9] — RENDER: filter tabs kategori
-    // ═══════════════════════════════════════════════════════════
-    function _renderFilterTabs() {
-        var list = window.mdGetKategori() || [];
-        var perKat = (window.mdStatistik() || {}).perKategori || {};
-        var total = (window.mdStatistik() || {}).totalMedia || 0;
+    // ── 3.3 Fill health panel async ──
+    function _fillHealthPanel() {
+        var panel = document.getElementById('md58PsmPanel');
+        if (!panel) return;
 
-        var html = '<div class="d-flex flex-wrap gap-1 mb-3">';
-        // Tab "semua"
-        var aktif = STATE.filterKategori === 'semua' ? ' active' : '';
-        html += '<button type="button" class="btn btn-sm btn-outline-danger' + aktif + '" '
-             + 'onclick="md58SetFilter(\'semua\')">'
-             + '📁 Semua <span class="badge bg-danger ms-1">' + total + '</span>'
-             + '</button>';
-
-        // Tab per kategori
-        list.forEach(function(k) {
-            var jml = (perKat[k.kode] && perKat[k.kode].total) || 0;
-            var a = STATE.filterKategori === k.kode ? ' active' : '';
-            html += '<button type="button" class="btn btn-sm btn-outline-secondary' + a + '" '
-                 + 'onclick="md58SetFilter(\'' + _esc(k.kode) + '\')">'
-                 + '<i class="' + _esc(k.ikon) + ' me-1"></i>' + _esc(k.label)
-                 + ' <span class="badge bg-secondary ms-1">' + jml + '</span>'
-                 + '</button>';
-        });
-        html += '</div>';
-        return html;
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.10] — RENDER: grid media cards
-    // ═══════════════════════════════════════════════════════════
-    function _renderGrid() {
-        var list = _getFiltered();
-        if (list.length === 0) {
-            return ''
-                + '<div class="card border-0 shadow-sm text-center py-5">'
-                +   '<div class="card-body">'
-                +     '<i class="fas fa-folder-open fa-4x text-muted opacity-25 mb-3"></i>'
-                +     '<h6 class="text-muted">Belum ada media</h6>'
-                +     '<p class="small text-muted mb-3">'
-                +       'Media dari blok UI mana pun akan otomatis muncul di sini.'
-                +     '</p>'
-                +     '<button type="button" class="btn btn-danger btn-sm" onclick="md58BukaUpload()">'
-                +       '<i class="fas fa-upload me-1"></i>Upload Manual'
-                +     '</button>'
-                +   '</div>'
-                + '</div>';
+        if (typeof window.psmCekQuota !== 'function') {
+            panel.innerHTML = '<div class="alert alert-warning small mb-0">'
+                + 'PSM tidak tersedia</div>';
+            return;
         }
 
-        var html = '<div class="row g-2">';
-        list.forEach(function(m) {
-            var info = window.mdGetKategoriInfo(m.kategori) || { label: m.kategori, ikon: 'fas fa-file', warna: 'secondary' };
-            var preview = '';
-
-            // Preview thumbnail per tipe
-            if (['foto','icon','banner','thumbnail','avatar','logo','gif','stiker'].indexOf(m.kategori) !== -1) {
-                preview = '<img src="' + _esc(window.mdGetUrlPublik(m.id) || '') + '" '
-                        + 'style="width:100%;height:100px;object-fit:cover;border-radius:8px 8px 0 0;" '
-                        + 'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';" '
-                        + 'alt="' + _esc(m.nama) + '">'
-                        + '<div style="display:none;width:100%;height:100px;background:#f8f9fa;align-items:center;justify-content:center;border-radius:8px 8px 0 0;">'
-                        +   '<i class="' + _esc(info.ikon) + ' fa-2x text-' + _esc(info.warna) + ' opacity-50"></i>'
-                        + '</div>';
-            } else if (m.kategori === 'video') {
-                preview = '<video src="' + _esc(window.mdGetUrlPublik(m.id) || '') + '" '
-                        + 'style="width:100%;height:100px;object-fit:cover;border-radius:8px 8px 0 0;" '
-                        + 'muted preload="metadata"></video>';
-            } else if (m.kategori === 'audio') {
-                preview = '<div style="width:100%;height:100px;background:linear-gradient(135deg,#DC3545,#8B0000);'
-                        + 'display:flex;align-items:center;justify-content:center;border-radius:8px 8px 0 0;">'
-                        +   '<i class="fas fa-music fa-3x text-white"></i>'
-                        + '</div>';
-            } else {
-                preview = '<div style="width:100%;height:100px;background:#f8f9fa;'
-                        + 'display:flex;align-items:center;justify-content:center;border-radius:8px 8px 0 0;">'
-                        +   '<i class="' + _esc(info.ikon) + ' fa-3x text-' + _esc(info.warna) + ' opacity-50"></i>'
-                        + '</div>';
+        window.psmCekQuota().then(function(q) {
+            if (!q.sukses) {
+                panel.innerHTML = '<div class="alert alert-warning small mb-0">'
+                    + 'Gagal cek storage: ' + (q.pesan || '-') + '</div>';
+                return;
             }
 
-            html += ''
-                + '<div class="col-6 col-md-4 col-lg-3">'
-                +   '<div class="card border-0 shadow-sm h-100" style="cursor:pointer;overflow:hidden;">'
-                +     '<div onclick="md58BukaDetail(\'' + _esc(m.id) + '\')">'
-                +       preview
-                +       '<div class="card-body p-2">'
-                +         '<div class="small fw-bold text-truncate" title="' + _esc(m.nama) + '">' + _esc(m.nama) + '</div>'
-                +         '<div class="d-flex justify-content-between align-items-center mt-1">'
-                +           '<span class="badge bg-' + _esc(info.warna) + '" style="font-size:9px;">' + _esc(m.kategori) + '</span>'
-                +           '<small class="text-muted" style="font-size:10px;">' + _esc(m.sizeLabel || '0') + '</small>'
-                +         '</div>'
-                +         (m._sumberBlok ?
-                            '<div class="mt-1" style="font-size:9px;color:#999;">'
-                            + '<i class="fas fa-link me-1"></i>' + _esc(m._sumberBlok) +
-                            '</div>' : '')
+            var warna = q.status === 'critical' ? 'danger'
+                      : q.status === 'danger'   ? 'danger'
+                      : q.status === 'warning'  ? 'warning'
+                      : 'success';
+            var ikon  = q.status === 'critical' ? 'fa-exclamation-triangle'
+                      : q.status === 'danger'   ? 'fa-exclamation-circle'
+                      : q.status === 'warning'  ? 'fa-exclamation-triangle'
+                      : 'fa-check-circle';
+            var label = q.status === 'critical' ? 'KRITIS'
+                      : q.status === 'danger'   ? 'DANGER'
+                      : q.status === 'warning'  ? 'WARNING'
+                      : 'SEHAT';
+
+            var needsCleanup = q.persen >= 80;
+
+            var html = ''
+                + '<div class="card border-0 shadow-sm" '
+                +   'style="border-left:4px solid var(--bs-' + warna + ') !important;">'
+                +   '<div class="card-body py-2">'
+                +     '<div class="d-flex justify-content-between align-items-center '
+                +       'mb-2 flex-wrap gap-2">'
+                +       '<div>'
+                +         '<i class="fas ' + ikon + ' text-' + warna + ' me-1"></i>'
+                +         '<strong>Storage ' + label + '</strong>'
+                +         '<small class="text-muted ms-2">'
+                +           q.usageLabel + ' / ' + q.quotaLabel
+                +         '</small>'
                 +       '</div>'
+                +       '<div class="d-flex gap-1">'
+                +         '<button class="btn btn-outline-' + warna + ' btn-sm" '
+                +           'onclick="md58HealthCheck()" title="Detail Health">'
+                +           '<i class="fas fa-info-circle me-1"></i>Detail</button>'
+                +         (needsCleanup
+                            ? '<button class="btn btn-danger btn-sm" '
+                            + 'onclick="md58CleanupLRU()" title="Bebaskan ruang">'
+                            + '<i class="fas fa-broom me-1"></i>Cleanup</button>'
+                            : '')
+                +       '</div>'
+                +     '</div>'
+                +     '<div class="progress" style="height:8px;">'
+                +       '<div class="progress-bar bg-' + warna + '" '
+                +         'style="width:' + Math.min(q.persen, 100) + '%;"></div>'
+                +     '</div>'
+                +     '<div class="d-flex justify-content-between mt-1" '
+                +       'style="font-size:10px;color:#999;">'
+                +       '<span>' + q.persen + '% terpakai</span>'
+                +       '<span>' + q.sisaLabel + ' tersisa</span>'
                 +     '</div>'
                 +   '</div>'
                 + '</div>';
+            panel.innerHTML = html;
+        }).catch(function(err) {
+            panel.innerHTML = '<div class="alert alert-warning small mb-0">'
+                + 'Error: ' + err.message + '</div>';
         });
-        html += '</div>';
-        return html;
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [10.58.11] — RENDER: UI utama (dashboard)
+    // [BRIDGE.4] — ACTION HANDLERS (8 fungsi)
     // ═══════════════════════════════════════════════════════════
-    function _renderSemua() {
-        try {
-            var konten = document.getElementById('kontenDasbor');
-            if (!konten) return false;
 
-            if (!window.kontenAsliDasbor) {
-                try { window.kontenAsliDasbor = konten.innerHTML; } catch (e) {}
-            }
-
-            // Daftar sumber unik (untuk filter)
-            var listSumber = {};
-            window.mdListSemua({ limit: 9999 }).forEach(function(m) {
-                var s = m._sumberBlok || 'unknown';
-                listSumber[s] = (listSumber[s] || 0) + 1;
-            });
-
-            var html = ''
-            + '<div class="container-fluid px-3 px-md-4 py-3 py-md-4" style="background:var(--orange);min-height:100vh;">'
-
-            // ── Header ──
-            +   '<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">'
-            +     '<div>'
-            +       '<h4 class="fw-bold text-white mb-0">'
-            +         '<i class="fas fa-folder-open me-2"></i>Penyimpanan Media'
-            +         '<span class="badge bg-warning text-dark ms-2" style="font-size:0.7em;">AUTO</span>'
-            +       '</h4>'
-            +       '<small class="text-white-50">'
-            +         '<i class="fas fa-magic me-1"></i>'
-            +         'Semua media dari blok UI manapun otomatis tersimpan di sini'
-            +       '</small>'
-            +     '</div>'
-            +     '<div class="d-flex gap-2">'
-            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="md58BukaUpload()">'
-            +         '<i class="fas fa-upload me-1"></i>Upload'
-            +       '</button>'
-            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="md58Cleanup()">'
-            +         '<i class="fas fa-broom me-1"></i>Cleanup'
-            +       '</button>'
-            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="md58Refresh()">'
-            +         '<i class="fas fa-sync-alt me-1"></i>Refresh'
-            +       '</button>'
-            +       '<button type="button" class="btn btn-outline-light btn-sm" onclick="kembaliKeDasbor()">'
-            +         '<i class="fas fa-arrow-left me-1"></i>Kembali'
-            +       '</button>'
-            +     '</div>'
-            +   '</div>'
-
-            // ── Statistik ──
-            +   _renderStatistik()
-
-            // ── Filter Kategori ──
-            +   _renderFilterTabs()
-
-            // ── Search + Filter Sumber ──
-            +   '<div class="row g-2 mb-3">'
-            +     '<div class="col-md-8">'
-            +       '<div class="input-group">'
-            +         '<span class="input-group-text bg-white"><i class="fas fa-search"></i></span>'
-            +         '<input type="text" id="md58CariInput" class="form-control" '
-            +           'placeholder="Cari nama media..." value="' + _esc(STATE.cari) + '" '
-            +           'oninput="md58SetCari(this.value)">'
-            +       '</div>'
-            +     '</div>'
-            +     '<div class="col-md-4">'
-            +       '<select class="form-select" onchange="md58SetSumber(this.value)">'
-            +         '<option value="semua">Semua Sumber Blok</option>'
-            +         Object.keys(listSumber).map(function(s) {
-                            return '<option value="' + _esc(s) + '"' +
-                                (STATE.filterSumber === s ? ' selected' : '') + '>'
-                                + _esc(s) + ' (' + listSumber[s] + ')</option>';
-                        }).join('')
-            +       '</select>'
-            +     '</div>'
-            +   '</div>'
-
-            // ── Grid Media ──
-            +   _renderGrid()
-
-            + '</div>';
-
-            konten.innerHTML = html;
-            STATE.sedangBuka = true;
-            return true;
-        } catch (e) {
-            console.error('[10.58] _renderSemua error:', e);
-            return false;
+    // ── 4.1 Health Check Modal ──
+    window.md58HealthCheck = function() {
+        if (typeof window.psmGetInfo !== 'function') {
+            if (typeof window.csToast === 'function') window.csToast('PSM tidak tersedia', 'warning');
+            return;
         }
-    }
+        window.psmGetInfo().then(function(info) {
+            if (!info.sukses) {
+                if (typeof window.csToast === 'function') window.csToast('❌ ' + (info.pesan || '-'), 'danger');
+                return;
+            }
+            _renderHealthModal(info);
+        });
+    };
 
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.12] — RENDER: modal detail media
-    // ═══════════════════════════════════════════════════════════
-    function _renderDetailModal(m) {
-        if (!m) return;
+    function _renderHealthModal(info) {
+        var q = info.quota || {};
+        var stat = info.statistik || {};
+        var perKat = info.perKategori || {};
+        var perUmur = info.perUmur || {};
+        var rek = info.rekomendasi || [];
 
-        var info = window.mdGetKategoriInfo(m.kategori) || {};
-        var url = window.mdGetUrlPublik(m.id) || '';
-        var preview = '';
+        var statusColor = (q.status === 'critical' || q.status === 'danger') ? 'danger'
+                        : q.status === 'warning' ? 'warning' : 'success';
 
-        if (['foto','icon','banner','thumbnail','avatar','logo','gif','stiker'].indexOf(m.kategori) !== -1) {
-            preview = '<img src="' + _esc(url) + '" class="img-fluid rounded mb-2" '
-                    + 'style="max-height:400px;" alt="' + _esc(m.nama) + '">';
-        } else if (m.kategori === 'video') {
-            preview = '<video src="' + _esc(url) + '" controls class="w-100 rounded mb-2" '
-                    + 'style="max-height:400px;"></video>';
-        } else if (m.kategori === 'audio') {
-            preview = '<audio src="' + _esc(url) + '" controls class="w-100 mb-2"></audio>';
-        } else if (m.kategori === 'pdf') {
-            preview = '<embed src="' + _esc(url) + '" type="application/pdf" '
-                    + 'class="w-100 rounded mb-2" style="height:400px;">';
-        } else {
-            preview = '<div class="text-center py-4 mb-2" style="background:#f8f9fa;border-radius:8px;">'
-                    + '<i class="' + _esc(info.ikon || 'fas fa-file') + ' fa-4x text-muted mb-2"></i>'
-                    + '<p class="small text-muted mb-0">Preview tidak tersedia. Klik Unduh untuk melihat.</p>'
-                    + '</div>';
+        var kategoriHtml = Object.keys(perKat)
+            .filter(function(k) { return perKat[k].total > 0; })
+            .map(function(k) {
+                var p = perKat[k];
+                return '<tr>'
+                    + '<td><strong>' + k + '</strong></td>'
+                    + '<td>' + p.total + '</td>'
+                    + '<td>' + p.sizeLabel + '</td>'
+                    + '</tr>';
+            }).join('');
+        if (!kategoriHtml) {
+            kategoriHtml = '<tr><td colspan="3" class="text-center text-muted">Belum ada data</td></tr>';
         }
 
-        var modal = ''
-            + '<div class="modal fade" id="md58DetailModal" tabindex="-1" aria-hidden="true">'
-            +   '<div class="modal-dialog modal-lg modal-dialog-centered">'
-            +     '<div class="modal-content border-0 shadow-lg">'
-            +       '<div class="modal-header text-white" style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
-            +         '<h5 class="modal-title"><i class="' + _esc(info.ikon || 'fas fa-file') + ' me-2"></i>'
-            +           _esc(m.nama) + '</h5>'
-            +         '<button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>'
-            +       '</div>'
-            +       '<div class="modal-body">'
-            +         preview
-            +         '<table class="table table-sm mb-0 small">'
-            +           '<tr><td class="text-muted" style="width:140px;">ID</td>'
-            +               '<td><code style="font-size:11px;">' + _esc(m.id) + '</code></td></tr>'
-            +           '<tr><td class="text-muted">Kategori</td>'
-            +               '<td><span class="badge bg-' + _esc(info.warna || 'secondary') + '">'
-            +               _esc(m.kategori) + '</span></td></tr>'
-            +           '<tr><td class="text-muted">Ukuran</td><td>' + _esc(m.sizeLabel || _fmtSize(m.size)) + '</td></tr>'
-            +           '<tr><td class="text-muted">MIME</td><td>' + _esc(m.mimeType || '-') + '</td></tr>'
-            +           '<tr><td class="text-muted">Dibuat</td><td>' + _esc(_fmtDate(m.createdAt)) + '</td></tr>'
-            +           (m._sumberBlok ?
-                            '<tr><td class="text-muted">Sumber Blok</td>'
-                            + '<td><code style="font-size:11px;">' + _esc(m._sumberBlok) + '</code></td></tr>' : '')
-            +           (m.idOwner ?
-                            '<tr><td class="text-muted">Owner</td><td>' + _esc(m.idOwner) + '</td></tr>' : '')
-            +         '</table>'
-            +       '</div>'
-            +       '<div class="modal-footer">'
-            +         '<button type="button" class="btn btn-outline-primary" '
-            +           'onclick="md58Download(\'' + _esc(m.id) + '\')">'
-            +           '<i class="fas fa-download me-1"></i>Unduh</button>'
-            +         '<button type="button" class="btn btn-danger" '
-            +           'onclick="md58Hapus(\'' + _esc(m.id) + '\')">'
-            +           '<i class="fas fa-trash me-1"></i>Hapus</button>'
-            +         '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>'
-            +       '</div>'
-            +     '</div>'
-            +   '</div>'
-            + '</div>';
-
-        var existing = document.getElementById('md58DetailModal');
-        if (existing) existing.remove();
-        var wrapper = document.createElement('div');
-        wrapper.innerHTML = modal;
-        document.body.appendChild(wrapper.firstElementChild);
-
-        try {
-            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-                bootstrap.Modal.getOrCreateInstance(
-                    document.getElementById('md58DetailModal')
-                ).show();
-            }
-        } catch (e) {}
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.13] — ACTION HANDLERS (dipanggil dari inline onclick)
-    // ═══════════════════════════════════════════════════════════
-    window.md58SetFilter = function(kategori) {
-        STATE.filterKategori = kategori || 'semua';
-        _renderSemua();
-    };
-    window.md58SetSumber = function(sumber) {
-        STATE.filterSumber = sumber || 'semua';
-        _renderSemua();
-    };
-    window.md58SetCari = function(q) {
-        STATE.cari = String(q || '');
-        _renderSemua();
-        // Fokus balik ke input
-        setTimeout(function() {
-            var input = document.getElementById('md58CariInput');
-            if (input) {
-                input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
-            }
-        }, 10);
-    };
-    window.md58Refresh = function() {
-        _renderSemua();
-        if (typeof window.csToast === 'function') window.csToast('✅ Media di-refresh', 'success');
-    };
-    window.md58Cleanup = function() {
-        if (!confirm('Bersihkan media orphan (metadata ada tapi content hilang)?')) return;
-        var r = window.mdCleanup({ orphan: true });
-        if (r && r.sukses) {
-            if (typeof window.csToast === 'function') {
-                window.csToast('🧹 Cleanup: ' + r.dihapus + ' media dihapus', 'success');
-            }
-            _renderSemua();
-        }
-    };
-    window.md58Download = function(id) {
-        var r = window.mdDownload(id);
-        if (r && !r.sukses && typeof window.csToast === 'function') {
-            window.csToast('❌ ' + (r.pesan || 'Gagal download'), 'danger');
-        }
-    };
-    window.md58Hapus = function(id) {
-        if (!confirm('Hapus media ini permanen?')) return;
-        var r = window.mdHapus(id);
-        if (r && r.sukses) {
-            var modal = document.getElementById('md58DetailModal');
-            if (modal) {
-                try {
-                    var inst = bootstrap.Modal.getInstance(modal);
-                    if (inst) inst.hide();
-                } catch (e) {}
-            }
-            if (typeof window.csToast === 'function') window.csToast('🗑️ Media dihapus', 'success');
-            _renderSemua();
-        } else {
-            if (typeof window.csToast === 'function') window.csToast('❌ ' + (r.pesan || 'Gagal'), 'danger');
-        }
-    };
-    window.md58BukaDetail = function(id) {
-        var m = window.mdAmbilMeta(id);
-        if (!m) return;
-        _renderDetailModal(m);
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.14] — UPLOAD MANUAL (drag-drop)
-    // ═══════════════════════════════════════════════════════════
-    window.md58BukaUpload = function() {
-        var kategoriOpts = (window.mdGetKategori() || []).map(function(k) {
-            return '<option value="' + _esc(k.kode) + '">' + _esc(k.label) + '</option>';
+        var umurHtml = Object.keys(perUmur).map(function(k) {
+            var p = perUmur[k];
+            return '<tr>'
+                + '<td>' + k + '</td>'
+                + '<td>' + p.total + '</td>'
+                + '<td>' + (p.sizeLabel || '-') + '</td>'
+                + '</tr>';
         }).join('');
 
-        var modal = ''
-            + '<div class="modal fade" id="md58UploadModal" tabindex="-1" aria-hidden="true">'
-            +   '<div class="modal-dialog modal-lg modal-dialog-centered">'
+        var rekHtml = rek.length > 0
+            ? rek.map(function(r) {
+                var warna = r.prioritas === 'tinggi' ? 'danger'
+                          : r.prioritas === 'sedang' ? 'warning' : 'info';
+                return '<li class="small mb-1">'
+                    + '<span class="badge bg-' + warna + ' me-1">' + r.prioritas + '</span>'
+                    + r.pesan + '</li>';
+            }).join('')
+            : '<li class="small text-muted">Tidak ada rekomendasi</li>';
+
+        var html = ''
+            + '<div class="modal fade" id="md58HealthModal" tabindex="-1" aria-hidden="true">'
+            +   '<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">'
             +     '<div class="modal-content border-0 shadow-lg">'
-            +       '<div class="modal-header text-white" style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
-            +         '<h5 class="modal-title"><i class="fas fa-upload me-2"></i>Upload Media</h5>'
-            +         '<button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>'
+            +       '<div class="modal-header text-white" '
+            +         'style="background:linear-gradient(135deg,#DC3545,#8B0000);">'
+            +         '<h5 class="modal-title">'
+            +           '<i class="fas fa-heartbeat me-2"></i>Health Storage Media'
+            +         '</h5>'
+            +         '<button type="button" class="btn-close btn-close-white" '
+            +           'data-bs-dismiss="modal"></button>'
             +       '</div>'
             +       '<div class="modal-body">'
-            +         '<div class="mb-3">'
-            +           '<label class="form-label fw-bold">Kategori</label>'
-            +           '<select id="md58UploadKategori" class="form-select">' + kategoriOpts + '</select>'
+
+            +         '<div class="alert alert-' + statusColor + ' small mb-3">'
+            +           '<div class="d-flex justify-content-between">'
+            +             '<span><strong>' + (info.healthLabel || '-') + '</strong></span>'
+            +             '<span>Score: ' + (info.health || 0) + '/100</span>'
+            +           '</div>'
+            +           '<div class="progress mt-2" style="height:10px;">'
+            +             '<div class="progress-bar bg-' + statusColor + '" '
+            +               'style="width:' + (info.health || 0) + '%;"></div>'
+            +           '</div>'
+            +           '<div class="d-flex justify-content-between mt-1" '
+            +             'style="font-size:10px;">'
+            +             '<span>' + q.usageLabel + ' / ' + q.quotaLabel + '</span>'
+            +             '<span>' + q.persen + '% terpakai</span>'
+            +           '</div>'
             +         '</div>'
-            +         '<div id="md58Dropzone" style="border:3px dashed #DC3545;border-radius:12px;'
-            +           'padding:40px 20px;text-align:center;cursor:pointer;background:#FFF5F5;" '
-            +           'onclick="document.getElementById(\'md58UploadInput\').click();">'
-            +           '<i class="fas fa-cloud-upload-alt fa-4x text-danger mb-3"></i>'
-            +           '<h6 class="fw-bold">Drop file di sini / Klik untuk pilih</h6>'
-            +           '<p class="small text-muted mb-0">Maks 5 MB untuk foto · 50 MB untuk video</p>'
+
+            +         '<div class="row g-2 mb-3">'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold">' + (stat.totalMedia || 0) + '</h5>'
+            +             '<small class="text-muted">Media</small>'
+            +           '</div></div></div>'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold">' + (stat.base64Count || 0) + '</h5>'
+            +             '<small class="text-muted">Base64</small>'
+            +           '</div></div></div>'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold">' + (stat.urlCount || 0) + '</h5>'
+            +             '<small class="text-muted">URL</small>'
+            +           '</div></div></div>'
+            +           '<div class="col-6 col-md-3"><div class="card border-0 shadow-sm text-center">'
+            +             '<div class="card-body py-2">'
+            +             '<h5 class="mb-0 fw-bold" style="font-size:14px;">' 
+            +               (stat.totalSizeFileLabel || '0 B') + '</h5>'
+            +             '<small class="text-muted">Ukuran</small>'
+            +           '</div></div></div>'
             +         '</div>'
-            +         '<input type="file" id="md58UploadInput" multiple style="display:none;" '
-            +           'onchange="md58UploadFiles(this.files)">'
-            +         '<div id="md58UploadProgress" class="mt-3"></div>'
+
+            +         '<h6 class="fw-bold mt-3">Per Kategori</h6>'
+            +         '<table class="table table-sm mb-3">'
+            +           '<thead><tr><th>Kategori</th><th>Jumlah</th><th>Ukuran</th></tr></thead>'
+            +           '<tbody>' + kategoriHtml + '</tbody>'
+            +         '</table>'
+
+            +         '<h6 class="fw-bold">Per Umur</h6>'
+            +         '<table class="table table-sm mb-3">'
+            +           '<thead><tr><th>Umur</th><th>Jumlah</th><th>Ukuran</th></tr></thead>'
+            +           '<tbody>' + umurHtml + '</tbody>'
+            +         '</table>'
+
+            +         '<h6 class="fw-bold">Rekomendasi</h6>'
+            +         '<ul class="mb-0 ps-3">' + rekHtml + '</ul>'
+
+            +       '</div>'
+            +       '<div class="modal-footer flex-wrap gap-1">'
+            +         '<button class="btn btn-outline-warning btn-sm" onclick="md58Dedupe()">'
+            +           '<i class="fas fa-copy me-1"></i>Dedupe</button>'
+            +         '<button class="btn btn-outline-info btn-sm" onclick="md58OptimizeAll()">'
+            +           '<i class="fas fa-compress-alt me-1"></i>Optimize</button>'
+            +         '<button class="btn btn-outline-secondary btn-sm" onclick="md58CleanupOrphan()">'
+            +           '<i class="fas fa-unlink me-1"></i>Orphan</button>'
+            +         '<button class="btn btn-danger btn-sm" onclick="md58CleanupLRU()">'
+            +           '<i class="fas fa-broom me-1"></i>Cleanup LRU</button>'
+            +         '<button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>'
             +       '</div>'
             +     '</div>'
             +   '</div>'
             + '</div>';
 
-        var existing = document.getElementById('md58UploadModal');
+        var existing = document.getElementById('md58HealthModal');
         if (existing) existing.remove();
         var wrapper = document.createElement('div');
-        wrapper.innerHTML = modal;
+        wrapper.innerHTML = html;
         document.body.appendChild(wrapper.firstElementChild);
-
-        // Drag-drop handlers
-        setTimeout(function() {
-            var dz = document.getElementById('md58Dropzone');
-            if (!dz) return;
-            ['dragenter','dragover'].forEach(function(ev) {
-                dz.addEventListener(ev, function(e) {
-                    e.preventDefault(); dz.style.background = '#FFE6E6';
-                });
-            });
-            ['dragleave','drop'].forEach(function(ev) {
-                dz.addEventListener(ev, function(e) {
-                    e.preventDefault(); dz.style.background = '#FFF5F5';
-                });
-            });
-            dz.addEventListener('drop', function(e) {
-                e.preventDefault();
-                if (e.dataTransfer && e.dataTransfer.files) {
-                    window.md58UploadFiles(e.dataTransfer.files);
-                }
-            });
-        }, 100);
 
         try {
             if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 bootstrap.Modal.getOrCreateInstance(
-                    document.getElementById('md58UploadModal')
+                    document.getElementById('md58HealthModal')
                 ).show();
             }
         } catch (e) {}
+    }
+
+    // ── 4.2 Cleanup LRU ──
+    window.md58CleanupLRU = function() {
+        var targetKB = prompt(
+            'Bebaskan berapa KB?\n\n' +
+            'Contoh: 500 = 500 KB, 1000 = 1 MB, 5000 = 5 MB',
+            '1000'
+        );
+        if (targetKB === null) return;
+        var n = parseInt(targetKB, 10);
+        if (!n || n <= 0) {
+            if (typeof window.csToast === 'function') window.csToast('Nilai invalid', 'warning');
+            return;
+        }
+        if (!confirm('Hapus media TERLAMA sampai bebas ' + n + ' KB?\n\n'
+                    + '⚠️ Tidak bisa dibatalkan.')) return;
+
+        if (typeof window.psmCleanupLRU !== 'function') {
+            if (typeof window.csToast === 'function') window.csToast('PSM tidak tersedia', 'warning');
+            return;
+        }
+        var r = window.psmCleanupLRU(n);
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '🧹 Cleanup: ' + r.dihapus + ' file · freed ' + r.freedLabel,
+                    r.dihapus > 0 ? 'success' : 'info'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        } else {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + r.pesan, 'danger');
+        }
     };
 
-    window.md58UploadFiles = function(files) {
-        if (!files || files.length === 0) return;
-        var kategori = (document.getElementById('md58UploadKategori') || {}).value || 'foto';
-        var progress = document.getElementById('md58UploadProgress');
-        if (progress) progress.innerHTML = '<div class="alert alert-info small">Mengunggah ' + files.length + ' file...</div>';
+    // ── 4.3 Cleanup Orphan ──
+    window.md58CleanupOrphan = function() {
+        if (!confirm('Hapus media ORPHAN?\n\n'
+                    + '(metadata ada, tapi content sudah hilang)')) return;
+        if (typeof window.psmCleanupOrphan !== 'function') return;
+        var r = window.psmCleanupOrphan();
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    r.dihapus > 0
+                        ? '🧹 ' + r.dihapus + ' media orphan dihapus'
+                        : '✅ Tidak ada orphan',
+                    r.dihapus > 0 ? 'success' : 'info'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        }
+    };
 
-        var done = 0, sukses = 0, gagal = 0;
-        var promises = [];
-        Array.from(files).forEach(function(file) {
-            var p = window.mdSimpan(file, kategori, { _sumberBlok: '10.58-manual' })
-                .then(function(r) {
-                    if (r && r.sukses) sukses++; else gagal++;
-                    done++;
-                    if (progress) {
-                        progress.innerHTML = '<div class="alert alert-info small">'
-                            + 'Progress: ' + done + '/' + files.length
-                            + ' · Sukses: ' + sukses + ' · Gagal: ' + gagal + '</div>';
-                    }
-                    return r;
-                });
-            promises.push(p);
+    // ── 4.4 Cleanup Older Than ──
+    window.md58CleanupOlder = function() {
+        var hari = prompt('Hapus media yang lebih tua dari berapa hari?', '30');
+        if (hari === null) return;
+        var n = parseInt(hari, 10);
+        if (!n || n <= 0) {
+            if (typeof window.csToast === 'function') window.csToast('Nilai invalid', 'warning');
+            return;
+        }
+        if (!confirm('Hapus semua media > ' + n + ' hari?\n\n'
+                    + '⚠️ Tidak bisa dibatalkan.')) return;
+
+        if (typeof window.psmCleanupOlderThan !== 'function') return;
+        var r = window.psmCleanupOlderThan(n);
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '🧹 Cleanup: ' + r.dihapus + ' file · freed ' + r.freedLabel,
+                    r.dihapus > 0 ? 'success' : 'info'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        }
+    };
+
+    // ── 4.5 Dedupe ──
+    window.md58Dedupe = function() {
+        if (typeof window.psmDedupe !== 'function') return;
+        if (typeof window.csToast === 'function') window.csToast('🔍 Scanning duplikat...', 'info');
+
+        var dry = window.psmDedupe({ dryRun: true });
+        if (!dry.sukses) {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + (dry.pesan || '-'), 'danger');
+            return;
+        }
+        if (dry.totalGrup === 0) {
+            if (typeof window.csToast === 'function') window.csToast('✅ Tidak ada duplikat', 'success');
+            return;
+        }
+        if (!confirm(
+            'Ditemukan ' + dry.totalGrup + ' grup duplikat.\n\n' +
+            'Perkiraan: ' + dry.perkiraanHapus + ' file bisa dihapus\n' +
+            '(akan menyisakan yang paling lama)\n\n' +
+            'Lanjutkan?'
+        )) return;
+
+        var r = window.psmDedupe({ dryRun: false });
+        if (r.sukses) {
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '🧹 Dedupe: ' + r.dihapus + ' file dihapus · freed ' + r.freedLabel,
+                    'success'
+                );
+            }
+            _closeHealthModal();
+            setTimeout(function() {
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 500);
+        }
+    };
+
+    // ── 4.6 Optimize All Images ──
+    window.md58OptimizeAll = function() {
+        if (typeof window.psmOptimizeImage !== 'function') return;
+
+        var list = window.mdListSemua({ limit: 9999 }).filter(function(m) {
+            return m._hasContent &&
+                ['foto','icon','banner','thumbnail','avatar','logo','stiker']
+                    .indexOf(m.kategori) !== -1;
+        });
+        if (list.length === 0) {
+            if (typeof window.csToast === 'function') {
+                window.csToast('Tidak ada gambar untuk dioptimasi', 'info');
+            }
+            return;
+        }
+
+        var preset = prompt(
+            'Pilih preset kompres untuk ' + list.length + ' gambar:\n\n' +
+            'thumb  — 200px,  q60% (paling kecil)\n' +
+            'small  — 400px,  q70%\n' +
+            'medium — 800px,  q75% (recommended)\n' +
+            'large  — 1200px, q80%\n\n' +
+            'Ketik: thumb / small / medium / large',
+            'medium'
+        );
+        if (!preset) return;
+        if (['thumb','small','medium','large','hq','ultra'].indexOf(preset) === -1) {
+            if (typeof window.csToast === 'function') window.csToast('Preset invalid', 'warning');
+            return;
+        }
+
+        if (typeof window.csToast === 'function') {
+            window.csToast('⏳ Mengoptimasi ' + list.length + ' gambar (preset: ' + preset + ')...', 'info');
+        }
+
+        var done = 0, sukses = 0, totalSaved = 0;
+        var promises = list.map(function(m) {
+            return window.psmOptimizeImage(m.id, preset).then(function(r) {
+                if (r.sukses) {
+                    sukses++;
+                    totalSaved += r.saved || 0;
+                }
+                done++;
+            }).catch(function() { done++; });
         });
 
         Promise.all(promises).then(function() {
-            if (progress) {
-                progress.innerHTML = '<div class="alert alert-' + (gagal > 0 ? 'warning' : 'success') + ' small">'
-                    + '✅ Selesai: ' + sukses + ' sukses, ' + gagal + ' gagal</div>';
+            var savedLabel = totalSaved < 1024 ? totalSaved + ' B'
+                           : totalSaved < 1048576 ? (totalSaved / 1024).toFixed(1) + ' KB'
+                           : (totalSaved / 1048576).toFixed(2) + ' MB';
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '✅ Optimize: ' + sukses + '/' + list.length +
+                    ' gambar · saved ' + savedLabel,
+                    'success'
+                );
             }
+            _closeHealthModal();
             setTimeout(function() {
-                var modal = document.getElementById('md58UploadModal');
-                if (modal) {
-                    try {
-                        var inst = bootstrap.Modal.getInstance(modal);
-                        if (inst) inst.hide();
-                    } catch (e) {}
-                }
-                _renderSemua();
-            }, 1500);
+                if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                _fillHealthPanel();
+            }, 800);
         });
     };
 
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.15] — ENTRY POINT + MENU HANDLER (A10)
-    // ═══════════════════════════════════════════════════════════
-    window.tampilkanPenyimpananMediaSA = function() {
-        try {
-            if (typeof window.tutupMenu === 'function') window.tutupMenu();
-            return _renderSemua();
-        } catch (e) {
-            console.error('[10.58] tampilkan error:', e);
-            return false;
+    // ── 4.7 Backup ──
+    window.md58Backup = function() {
+        if (typeof window.psmBackup !== 'function') return;
+        var r = window.psmBackup({ includeContent: true });
+        if (!r.sukses) {
+            if (typeof window.csToast === 'function') window.csToast('❌ ' + (r.pesan || '-'), 'danger');
+            return;
+        }
+        if (typeof window.csDownloadJSON === 'function') {
+            var ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+            window.csDownloadJSON(r.paket, 'md_backup_' + ts + '.json');
+            if (typeof window.csToast === 'function') {
+                window.csToast(
+                    '💾 Backup: ' + r.totalMedia + ' media diunduh',
+                    'success'
+                );
+            }
         }
     };
 
-    // Register menu handler (A10 — 1 baris delegasi)
-    window.menuHandlers = window.menuHandlers || {};
-    window.menuHandlers['penyimpananMedia'] = function() {
-        return window.tampilkanPenyimpananMediaSA();
+    // ── 4.8 Backup Restore ──
+    window.md58BackupRestore = function() {
+        // File picker
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.onchange = function(e) {
+            var file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (typeof window.csBacaFileAsJSON !== 'function') {
+                if (typeof window.csToast === 'function') window.csToast('CS10 tidak tersedia', 'warning');
+                return;
+            }
+            window.csBacaFileAsJSON(file).then(function(baca) {
+                if (!baca.sukses) {
+                    if (typeof window.csToast === 'function') window.csToast('❌ File invalid', 'danger');
+                    return;
+                }
+                if (!confirm('Restore ' + ((baca.data._meta && baca.data._meta.totalMedia) || 0) +
+                            ' media dari backup?\n\n(File existing tidak akan tertimpa)')) return;
+                if (typeof window.psmRestore !== 'function') return;
+                var r = window.psmRestore(baca.data, { overwrite: false });
+                if (r.sukses) {
+                    if (typeof window.csToast === 'function') {
+                        window.csToast(
+                            '✅ Restore: ' + r.berhasil + ' dipulihkan · ' + r.skip + ' skip',
+                            'success'
+                        );
+                    }
+                    setTimeout(function() {
+                        if (typeof window.md58Refresh === 'function') window.md58Refresh();
+                    }, 500);
+                }
+            });
+        };
+        input.click();
     };
 
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.16] — AUTO-REFRESH: saat dashboard buka & media baru
-    // ═══════════════════════════════════════════════════════════
-    window.addEventListener('r2coin:media-baru', function(e) {
-        // Kalau dashboard terbuka, _setelahMediaTersimpan sudah handle re-render
-        // Listener ini hanya untuk sinkron badge global
+    function _closeHealthModal() {
         try {
-            if (typeof window.csUpdateBadgeNotif === 'function') {
-                window.csUpdateBadgeNotif();
+            var modal = document.getElementById('md58HealthModal');
+            if (!modal) return;
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                var inst = bootstrap.Modal.getInstance(modal);
+                if (inst) inst.hide();
             }
-        } catch (err) {}
-    });
-
-    // Detect kalau user keluar dari dashboard (kembali ke halaman lain)
-    window.addEventListener('r2coin:user-logout', function() {
-        STATE.sedangBuka = false;
-    });
-
-    // ═══════════════════════════════════════════════════════════
-    // [10.58.17] — DEBUG (A5)
-    // ═══════════════════════════════════════════════════════════
-    window.debug58 = function() {
-        var stat = window.mdStatistik();
-        var listSumber = {};
-        try {
-            window.mdListSemua({ limit: 9999 }).forEach(function(m) {
-                var s = m._sumberBlok || 'unknown';
-                listSumber[s] = (listSumber[s] || 0) + 1;
-            });
         } catch (e) {}
+    }
 
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.5] — AUTO-REFRESH HEALTH PANEL setelah event
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:media-baru', function() {
+        if (document.getElementById('md58PsmPanel')) {
+            setTimeout(_fillHealthPanel, 300);
+        }
+    });
+    window.addEventListener('r2coin:media-hapus', function() {
+        if (document.getElementById('md58PsmPanel')) {
+            setTimeout(_fillHealthPanel, 300);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // [BRIDGE.6] — DEBUG (A5)
+    // ═══════════════════════════════════════════════════════════
+    window.debugPsmBridge = function() {
         var info = {
-            blok: '10.58',
-            versi: window._blok1058Versi,
-            guard: window._blok1058DoneV1,
-            state: Object.assign({}, STATE),
-            statistik: stat,
-            sumberBlok: listSumber,
-            autoDetect: {
-                mdSimpanWrapped:       window.mdSimpan && window.mdSimpan.toString().indexOf('_sumberBlok') !== -1,
-                mdSimpanBase64Wrapped: window.mdSimpanBase64 && window.mdSimpanBase64.toString().indexOf('_sumberBlok') !== -1,
-                mdSimpanURLWrapped:    window.mdSimpanURL && window.mdSimpanURL.toString().indexOf('_sumberBlok') !== -1
+            blok: '10.58-PSM-BRIDGE',
+            versi: window._blok1058PsmVersi,
+            guard: window._blok1058PsmDoneV1,
+            dependency: {
+                blok1058: !!window._blok1058DoneV1,
+                psm:      typeof window.psmCekQuota === 'function',
+                tampilkan: typeof window.tampilkanPenyimpananMediaSA === 'function'
+            },
+            statusPanel: {
+                headerDropdown: !!document.querySelector('.psm-header-btn'),
+                healthPanel:    !!document.getElementById('md58PsmPanel')
             },
             fungsi: {
-                tampilkanPenyimpananMediaSA: typeof window.tampilkanPenyimpananMediaSA,
-                md58SetFilter:   typeof window.md58SetFilter,
-                md58SetSumber:   typeof window.md58SetSumber,
-                md58SetCari:     typeof window.md58SetCari,
-                md58BukaDetail:  typeof window.md58BukaDetail,
-                md58BukaUpload:  typeof window.md58BukaUpload,
-                md58Download:    typeof window.md58Download,
-                md58Hapus:       typeof window.md58Hapus,
-                md58Refresh:     typeof window.md58Refresh,
-                md58Cleanup:     typeof window.md58Cleanup
+                md58HealthCheck:     typeof window.md58HealthCheck,
+                md58CleanupLRU:      typeof window.md58CleanupLRU,
+                md58CleanupOrphan:   typeof window.md58CleanupOrphan,
+                md58CleanupOlder:    typeof window.md58CleanupOlder,
+                md58Dedupe:          typeof window.md58Dedupe,
+                md58OptimizeAll:     typeof window.md58OptimizeAll,
+                md58Backup:          typeof window.md58Backup,
+                md58BackupRestore:   typeof window.md58BackupRestore
             }
         };
-        console.log('🔍 debug58 v1.0:', info);
+        console.log('🔍 debugPsmBridge v1.0:', info);
         return info;
     };
 
     // ═══════════════════════════════════════════════════════════
-    // [10.58.18] — AUTO-REGISTRY (A33, A34, A35)
+    // [BRIDGE.7] — AUTO-REGISTRY
     // ═══════════════════════════════════════════════════════════
     setTimeout(function() {
         try {
             if (typeof window.cpTambahBlok === 'function') {
                 var ada = (window.CP_REGISTRY_BLOK || []).some(function(b) {
-                    return b && b.kode === '10.58';
+                    return b && b.kode === '10.58.1';
                 });
-                var namaBlok = 'Penyimpanan Media v1.0 (Auto-Collector)';
                 if (!ada) {
                     window.cpTambahBlok({
-                        kode: '10.58', nama: namaBlok,
-                        layer: 'L5', status: 'Selesai',
+                        kode: '10.58.1',
+                        nama: 'PSM Bridge — Health + Cleanup (10.58 extension)',
+                        layer: 'L5',
+                        status: 'Selesai',
                         tanggal: new Date().toISOString().substring(0, 10)
                     });
-                } else if (typeof window.cpUpdateBlok === 'function') {
-                    window.cpUpdateBlok('10.58', { status: 'Selesai', nama: namaBlok });
                 }
             }
             if (typeof window.cpTambahRiwayat === 'function') {
                 var adaR = (window.CP_RIWAYAT || []).some(function(r) {
-                    return r && r.blok === '10.58';
+                    return r && r.blok === '10.58.1';
                 });
                 if (!adaR) {
                     window.cpTambahRiwayat({
                         tanggal: new Date().toISOString().substring(0, 10),
-                        blok: '10.58',
-                        nama: 'Penyimpanan Media v1.0 (Auto-Collector)',
-                        keterangan: 'AUTO-DETECT semua mdSimpan* dari blok UI manapun · ' +
-                                    'Intercept + stack trace source detection · ' +
-                                    'Fire event r2coin:media-baru · ' +
-                                    'Dashboard grid 14 kategori · ' +
-                                    'Upload drag-drop · Cleanup orphan'
+                        blok: '10.58.1',
+                        nama: 'PSM Bridge v1.0 — Integrasi 10.58',
+                        keterangan: 'Wrap tampilkanPenyimpananMediaSA · ' +
+                                    'MutationObserver re-inject · ' +
+                                    'Health panel (async quota) + Storage dropdown · ' +
+                                    '8 action handlers (Health/LRU/Orphan/Older/Dedupe/Optimize/Backup/Restore)'
                     });
                 }
             }
-            if (typeof window.cpUpdateFungsi === 'function') {
-                window.cpUpdateFungsi('md58', {
-                    nama: 'UI Penyimpanan Media (L5)',
-                    status: 'Selesai',
-                    jumlah: 12
-                });
-            }
-        } catch (e) {
-            console.warn('[10.58 v1.0] Auto-registry error:', e.message);
-        }
-    }, 1000);
+        } catch (e) {}
+    }, 1200);
 
     // ═══════════════════════════════════════════════════════════
-    // [10.58.19] — LOG TERPASANG (A5)
+    // [BRIDGE.8] — LOG TERPASANG
     // ═══════════════════════════════════════════════════════════
     console.log(
-        '%c🇮🇩 BLOK 10.58 v1.0 — PENYIMPANAN MEDIA (AUTO-COLLECTOR) terpasang.',
+        '%c🇮🇩 BLOK 10.58.1 — PSM BRIDGE terpasang.',
         'background:linear-gradient(90deg,#DC3545 0%,#DC3545 33%,#FFFFFF 33%,#FFFFFF 66%,#DC3545 66%,#DC3545 100%);' +
         'color:#000;padding:3px 8px;font-weight:bold;border:2px solid #DC3545;'
     );
     console.log(
-        '   🎯 AUTO-DETECT: Semua mdSimpan/mdSimpanBase64/mdSimpanURL dari ' +
-        'blok UI MANAPUN (sekarang & masa depan) → otomatis tersimpan & tampil · ' +
-        'Sumber blok via stack trace · ' +
-        'Dashboard grid 14 kategori + upload drag-drop · debug58()'
+        '   💾 Auto-inject ke dashboard 10.58: ' +
+        'Health Panel (progress bar quota) + Storage Dropdown (8 actions) · ' +
+        'MutationObserver re-inject · debugPsmBridge()'
     );
 })();
 </script>
-<!-- ═══ AKHIR BLOK 10.58 — PENYIMPANAN MEDIA (AUTO-COLLECTOR) v1.0 ═ -->
+<!-- ═══ AKHIR BLOK 10.58-PSM BRIDGE v1.0 ═════════════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- ═══ BLOK R 10.63 — UI CHAT DENGAN AI SA (HTML) 🇮🇩 v1.0 ════ -->
