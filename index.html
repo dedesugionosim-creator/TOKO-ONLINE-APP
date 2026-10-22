@@ -65884,10 +65884,10 @@ body.role-kopdes .offcanvas.offcanvas-shell {
                     fotoUrl:   u.fotoUrl || '',
                     hp:        u.hp || '',
                     email:     u.email || '',
-                    levelKopdes: (function() {
-                        return { KDMP_PUSAT: 1, KDMP_KAB: 2, KDMP_KEC: 3, KDMP_DESA: 4 }[u.kodeRole] || null;
-                    })()
-                };
+                    levelKopdes: (typeof window.role32GetLevelKopdes === 'function')
+					? window.role32GetLevelKopdes(u.kodeRole)
+					: ({ KDMP_PUSAT: 1, KDMP_KAB: 2, KDMP_KEC: 3, KDMP_DESA: 4 }[u.kodeRole] || null)
+								};
             }).filter(function(u) { return u && u.idUser; });
         } catch (e) {
             console.error('[10.78] _ambilListUser error:', e);
@@ -66360,8 +66360,10 @@ body.role-kopdes .offcanvas.offcanvas-shell {
                 list = list.filter(function(u) { return u.kategori === filter.kategori; });
             }
             if (filter.hasCoord === true) {
-                list = list.filter(function(u) { return u.hasCoord; });
-            }
+				list = list.filter(function(u) { return u.hasCoord; });
+			} else if (filter.hasCoord === false) {
+				list = list.filter(function(u) { return !u.hasCoord; });
+			}
 
             return {
                 totalUser:  list.length,
@@ -66394,6 +66396,49 @@ body.role-kopdes .offcanvas.offcanvas-shell {
             lengkap: skor === 3
         };
     };
+
+	// ═══════════════════════════════════════════════════════════
+    // [10.78.10b] — AUTO-REFRESH LISTENER (invalidate cache)
+    // ═══════════════════════════════════════════════════════════
+    // Setiap kali setting ekonomi / dompet berubah (intervensi SA
+    // dari BLOK 10.8, 10.10, dll) → refresh data peta jika sedang
+    // dibuka. Cegah data saldo stale.
+    // ═══════════════════════════════════════════════════════════
+    window.addEventListener('r2coin:setting-changed', function(e) {
+        try {
+            // Hanya refresh kalau Peta sedang aktif di DOM
+            if (document.getElementById('petaStatTotalUser')) {
+                petaState.listCache = [];   // invalidate cache
+                petaReload();
+                console.log('[10.78] Auto-refresh: setting berubah →', e.detail || {});
+            }
+        } catch (err) {
+            console.warn('[10.78] Auto-refresh listener error:', err.message);
+        }
+    });
+	
+	// ═══════════════════════════════════════════════════════════
+	// [10.78.10c] — AUTO-REFRESH VIA MUTATION OBSERVER (alternatif)
+	// ═══════════════════════════════════════════════════════════
+	// Hanya aktif saat Peta dibuka. Auto-refresh kalau storage
+	// berubah karena intervensi dari blok lain.
+	// ═══════════════════════════════════════════════════════════
+	var _petaLastHash = '';
+	function _petaCekPerubahan() {
+		try {
+			if (!document.getElementById('petaStatTotalUser')) return;
+			var raw = localStorage.getItem('dataDompet') || '';
+			var hash = raw.length + '_' + raw.substring(0, 50);
+			if (hash !== _petaLastHash) {
+				if (_petaLastHash !== '') {
+					petaState.listCache = [];
+					petaReload();
+				}
+				_petaLastHash = hash;
+			}
+		} catch (e) {}
+	}
+	setInterval(_petaCekPerubahan, 5000);  // cek tiap 5 detik
 
     // ═══════════════════════════════════════════════════════════
     // [10.78.11] — MENU HANDLER (A10 — 1 baris delegasi)
@@ -66467,6 +66512,9 @@ body.role-kopdes .offcanvas.offcanvas-shell {
         return info;
     };
 
+		window.addEventListener('r2coin:setting-changed', function() {
+		if (document.getElementById('petaStatTotalUser')) petaReload();
+	});
     // ═══════════════════════════════════════════════════════════
     // [10.78.13] — AUTO-REGISTRY (A33, A34, A35)
     // ═══════════════════════════════════════════════════════════
@@ -66521,6 +66569,38 @@ body.role-kopdes .offcanvas.offcanvas-shell {
             console.warn('[10.78] Auto-registry error:', e.message);
         }
     }, 1000);
+
+	// ═══════════════════════════════════════════════════════════
+	// [10.78.13b] — EVENT LISTENER: r2coin:setting-changed
+	// ═══════════════════════════════════════════════════════════
+	// Auto-reload Peta Interaktif kalau ada perubahan setting
+	// ekonomi / dompet dari blok lain (10.8, 10.10, dll).
+	// ─────────────────────────────────────────────────────────
+	// FIX: data saldo / status verifikasi bisa berubah setelah
+	// SA intervensi coin di blok 10.10, atau update tarif di 10.8.
+	// Listener ini cegah tampilan stale tanpa user harus klik Refresh.
+	// ═══════════════════════════════════════════════════════════
+	window.addEventListener('r2coin:setting-changed', function(e) {
+		try {
+			// Cegah error kalau blok sedang tidak aktif / sudah di-unmount
+			if (!document.getElementById('petaStatTotalUser')) return;
+
+			// Guard: petaReload harus tersedia (defensif)
+			if (typeof window.petaReload !== 'function') return;
+
+			// Log ringan (opsional — bisa di-comment kalau terlalu verbose)
+			var tipe = (e && e.detail && e.detail.tipe) || 'umum';
+			console.log('🔄 [10.78] Auto-reload Peta — trigger: ' + tipe);
+
+			// Invalidate cache supaya list fresh dari storage
+			petaState.listCache = [];
+			petaState.page = 1;
+
+			window.petaReload();
+		} catch (err) {
+			console.warn('[10.78] setting-changed handler error:', err.message);
+		}
+	});
 
     // ═══════════════════════════════════════════════════════════
     // [10.78.14] — LOG TERPASANG (A5)
