@@ -69071,7 +69071,7 @@ function _tebakKodeBlokDariFlag(f) {
     function _now() { return window.csNow ? window.csNow() : new Date().toISOString(); }
     function _esc(s) { if (window.csEscHtml) return window.csEscHtml(s); var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 
-    function _source() {
+        function _source() {
         if (window._aeSourceCache) return window._aeSourceCache;
         try {
             var scripts = document.querySelectorAll('script:not([src])');
@@ -69081,11 +69081,17 @@ function _tebakKodeBlokDariFlag(f) {
             return html;
         } catch (e) { return ''; }
     }
-    function _resetSourceCache() { window._aeSourceCache = null; }
-    function _countMatches(str, re) {
-        if (!str || !re) return 0;
-        var m = str.match(re);
-        return m ? m.length : 0;
+    // ⭐ BARU v1.1: source HTML penuh (untuk A3 yang butuh HTML comments)
+    function _sourceHTML() {
+        if (window._aeSourceHTMLCache) return window._aeSourceHTMLCache;
+        try {
+            window._aeSourceHTMLCache = document.documentElement.outerHTML || '';
+            return window._aeSourceHTMLCache;
+        } catch (e) { return ''; }
+    }
+    function _resetSourceCache() {
+        window._aeSourceCache = null;
+        window._aeSourceHTMLCache = null;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -69094,30 +69100,49 @@ function _tebakKodeBlokDariFlag(f) {
     var V = {};
 
     // ── A1 + A2: duplikasi fungsi via source scan ──
-    V['A1'] = V['A2'] = function() {
+        V['A1'] = V['A2'] = function() {
         var src = _source();
         if (!src) return { status: 'na', pesan: 'Source tidak terbaca' };
-        var matches = src.match(/window\.([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*function/g) || [];
-        var seen = {}, dup = [];
-        matches.forEach(function(m) {
-            var n = m.replace(/window\.| = function/g, '').trim();
-            if (seen[n]) dup.push(n);
-            seen[n] = true;
-        });
-        if (dup.length === 0) return { status: 'ok', pesan: 'Tidak ada duplikasi fungsi' };
-        return { status: 'warn', pesan: dup.length + ' fungsi duplikat: ' + dup.slice(0, 3).join(', ') };
+        var re = /window\.([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*function/g;
+        var m, seen = {}, dup = [], guardedCount = 0;
+        while ((m = re.exec(src)) !== null) {
+            var name = m[1];
+            // ⭐ v1.1: Skip kalau 250 char sebelumnya ada guard pattern
+            //    "if (typeof window.X !== 'function')" = safe fallback, BUKAN duplikat
+            var back = src.substring(Math.max(0, m.index - 250), m.index);
+            var isGuarded = back.indexOf("typeof window." + name) !== -1 ||
+                            back.indexOf("typeof window['" + name + "']") !== -1;
+            if (isGuarded) {
+                guardedCount++;
+                continue;
+            }
+            if (seen[name] && dup.indexOf(name) === -1) dup.push(name);
+            seen[name] = true;
+        }
+        if (dup.length === 0) {
+            return {
+                status: 'ok',
+                pesan: 'Tidak ada duplikasi (' + guardedCount + ' fallback-guarded di-skip)'
+            };
+        }
+        return { status: 'warn', pesan: dup.length + ' fungsi duplikat REAL: ' + dup.slice(0, 5).join(', ') };
     };
 
     // ── A3: format blok (open vs AKHIR) ──
-    V['A3'] = function() {
-        var src = _source();
-        if (!src) return { status: 'na', pesan: 'Source tidak terbaca' };
-        var blokOpen  = _countMatches(src, /<!--\s*[═]+\s*(?:BLOK|\[[^\]]+\])/g);
-        var blokAkhir = _countMatches(src, /<!--\s*[═]+\s*AKHIR (?:BLOK|\[)/g);
+        V['A3'] = function() {
+        // ⭐ v1.1: gunakan HTML penuh, bukan hanya script
+        var src = _sourceHTML();
+        if (!src) return { status: 'na', pesan: 'HTML tidak terbaca' };
+        // Pattern fleksibel: <!-- BLOK ... --> atau <!-- [x.y.z] ... -->
+        var blokOpen  = _countMatches(src, /<!--[^>]*?BLOK[^>]*?-->/gi);
+        var blokAkhir = _countMatches(src, /<!--[^>]*?AKHIR[^>]*?-->/gi);
         if (blokOpen === 0) return { status: 'warn', pesan: 'Tidak ada header blok terdeteksi' };
         var persen = Math.round((blokAkhir / blokOpen) * 100);
-        if (persen < 70) return { status: 'warn', pesan: blokOpen + ' open vs ' + blokAkhir + ' akhir (' + persen + '%)' };
-        return { status: 'ok', pesan: blokOpen + ' blok, ' + blokAkhir + ' AKHIR (' + persen + '%)' };
+        if (persen < 70) return {
+            status: 'warn',
+            pesan: blokOpen + ' open · ' + blokAkhir + ' AKHIR (' + persen + '%)'
+        };
+        return { status: 'ok', pesan: blokOpen + ' blok · ' + blokAkhir + ' AKHIR (' + persen + '%)' };
     };
 
     // ── A4: N/A ──
@@ -69346,19 +69371,45 @@ function _tebakKodeBlokDariFlag(f) {
     };
 
     // ── A43: self-register guard via source scan ──
-    V['A43'] = function() {
+        V['A43'] = function() {
         try {
             var src = _source();
             if (!src) return { status: 'na', pesan: 'Source tidak terbaca' };
-            var nGuardMap = _countMatches(src, /BLOK_GUARD_MAP\s*\[/g);
-            var nDaftar  = _countMatches(src, /blokDaftarkanGuard\s*\(/g);
+
+            // Hitung 2 cara self-register:
+            //   1. Explicit: blokDaftarkanGuard('_flag', 'KODE')
+            //   2. Convention: window._<prefix>Done<V> = true  (auto-detect oleh 0.1.j)
+            var nExplicit  = _countMatches(src, /blokDaftarkanGuard\s*\(/g);
+            var nConvention = _countMatches(src, /window\._[a-zA-Z0-9_]+Done[A-Za-z0-9_]*\s*=\s*true/g);
+
+            // Dedupe: setiap blok bisa punya 1 flag utama
+            // Convention count = jumlah flag unik
+            var flagSet = {};
+            var reFlag = /window\.(_[a-zA-Z0-9_]+Done[A-Za-z0-9_]*)\s*=\s*true/g;
+            var mFlag;
+            while ((mFlag = reFlag.exec(src)) !== null) flagSet[mFlag[1]] = true;
+            var nUniqueFlags = Object.keys(flagSet).length;
+
+            // Coverage gabungan = explicit + unique flags (dengan dedupe kasar)
+            // Conservative: pakai max (kalau blok sudah explicit, mungkin juga punya flag)
+            var nCovered = Math.max(nExplicit, nUniqueFlags);
+
             var blokSelesai = (window.CP_REGISTRY_BLOK || []).filter(function(b) {
                 return b && b.status === 'Selesai' &&
                        ['MILESTONE', 'BUILD-FROM-ZERO', '⚠️ TEMUAN'].indexOf(b.kode) === -1;
             });
-            var coverage = nDaftar > 0 ? Math.round((nDaftar / blokSelesai.length) * 100) : 0;
-            if (coverage >= 80) return { status: 'ok', pesan: nDaftar + ' panggilan blokDaftarkanGuard (' + coverage + '%)' };
-            return { status: 'warn', pesan: nDaftar + ' panggilan blokDaftarkanGuard / ' + blokSelesai.length + ' blok (' + coverage + '%)' };
+            var total = blokSelesai.length || 1;
+            var coverage = Math.round((nCovered / total) * 100);
+
+            var detail = nExplicit + ' explicit + ' + nUniqueFlags + ' convention flag';
+
+            if (coverage >= 80) {
+                return { status: 'ok', pesan: detail + ' (' + coverage + '% coverage)' };
+            }
+            if (coverage >= 50) {
+                return { status: 'warn', pesan: detail + ' / ' + total + ' blok (' + coverage + '%)' };
+            }
+            return { status: 'warn', pesan: detail + ' / ' + total + ' blok (' + coverage + '%)' };
         } catch (e) { return { status: 'error', pesan: e.message }; }
     };
 
